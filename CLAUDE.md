@@ -28,7 +28,8 @@ Native SwiftUI port of the MyRoboTaxi design prototype. Two roles (owner / rider
 - **Reuse, don't fork** — `Button(variant:)` (6 variants), ConfirmDialog, SuccessToast, BottomSheet are built once (MYR-162) and consumed everywhere. `outline-draw` is reserved for ride-request CTAs only.
 - **M1 is simulated** — screens ship on fixture data matching the prototype's mocks (`VEHICLES`, `DRIVES`, `VIEWERS`, `PENDING`, `REQUESTED_RIDES`, `SCHEDULED_RIDES`). No network in M1.
 - **Honor Reduce Motion** — traces/pulses/shimmers fall back to static.
-- **Drift gate** — before a screen PR is done, cross-check it against the screen's `Anatomy.html` callouts and the matching `screenshots/` renders, and note the comparison in the PR body.
+- **Study the prototype BEFORE writing code** — for any screen/flow work, first run the local prototype (see drift gate below), navigate to your screen in **Flat** mode, and walk every state and animation you're about to build (drag the sheets, trigger the dialogs, run the flow end-to-end). Write down the states you observed; build to that, not to your reading of the jsx alone.
+- **Drift gate (AFTER)** — before a screen PR is done: (1) run the actual prototype locally (`cd design && python3 -m http.server 8722`, open `http://127.0.0.1:8722/prototype.html` via the chrome-devtools MCP tools — see `design/README.md`; **switch Appearance to Flat first, every time**), (2) drive your screen to each of its states there and screenshot, (3) screenshot the same states in your simulator build, (4) compare — layout, spacing, colors, AND motion (sequence/duration/curve per Handoff §8 + the `@keyframes`, including Reduce Motion fallbacks), (5) put the side-by-side comparison + verdict in the PR body. Also cross-check the screen's `Anatomy.html` callouts.
 - Min tap target 44pt. Hero numbers use `.monospacedDigit()`. Dark-appearance-only asset catalog.
 
 ## Structure
