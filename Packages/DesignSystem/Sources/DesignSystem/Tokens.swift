@@ -6,12 +6,8 @@ import SwiftUI
 // The app is dark-appearance-only; these are programmatic colors, no asset
 // catalog involved. NO hex values may appear outside this file.
 //
-// Provenance: values cross-verified against the design docs
-// (react-frontend/docs/design/design-system.md + src/app/globals.css) and the
-// MYR-161 issue spec. Values marked DERIVED could not be read from
-// `app/tokens.js` at implementation time (DesignSync unavailable) and were
-// derived from the documented gold ramp / glow shadows; verify against the
-// design project when available and correct here only.
+// Provenance: every value verified against the design project's
+// `app/tokens.js` (`window.T`) — the canonical source. Correct here only.
 enum Hex {
     // Backgrounds
     static let bg: UInt32 = 0x0A0A0A
@@ -29,7 +25,8 @@ enum Hex {
     static let gold: UInt32 = 0xC9A84C
     static let goldLight: UInt32 = 0xD4C88A
     static let goldDark: UInt32 = 0xA0862E
-    static let goldDeep: UInt32 = 0x7D6824 // DERIVED: continues the light→base→dark ramp
+    static let goldDeep: UInt32 = 0x8C6E2A // deep antique gold-brown — flat onboarding buttons + stepper
+    static let goldDeepSoft: UInt32 = 0xB49A56 // stepper labels + active numerals
 
     // Status
     static let driving: UInt32 = 0x30D158
@@ -66,8 +63,7 @@ public extension Color {
     static let mrtGoldLight = Color(hex: Hex.goldLight)
     static let mrtGoldDark = Color(hex: Hex.goldDark)
     static let mrtGoldDeep = Color(hex: Hex.goldDeep)
-    /// Soft translucent deep-gold fill (DERIVED — see Hex provenance note).
-    static let mrtGoldDeepSoft = Color(hex: Hex.goldDeep, alpha: 0.15)
+    static let mrtGoldDeepSoft = Color(hex: Hex.goldDeepSoft)
     /// Gold glow, strong — matches the documented CTA glow shadow rgba(201,168,76,0.6).
     static let mrtGoldGlow = Color(hex: Hex.gold, alpha: 0.6)
     /// Gold glow, soft — matches the documented outer glow shadow rgba(201,168,76,0.3).
@@ -78,6 +74,10 @@ public extension Color {
     static let mrtParked = Color(hex: Hex.parked)
     static let mrtCharging = Color(hex: Hex.charging)
     static let mrtOffline = Color(hex: Hex.offline)
+
+    // Battery (batHigh/batMid share the driving/charging hexes in tokens.js)
+    static let mrtBatHigh = Color(hex: Hex.driving)
+    static let mrtBatMid = Color(hex: Hex.charging)
 
     // Danger
     static let mrtBatLow = Color(hex: Hex.danger)
