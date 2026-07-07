@@ -38,6 +38,12 @@ final class TokenTests: XCTestCase {
             ("goldPulse", 0xF0D27A, .mrtGoldPulse),
             ("dialogCard", 0x1A1A1C, .mrtDialogCard),
             ("toastSurface", 0x22221F, .mrtToastSurface),
+            // MYR-163 — brand mark
+            ("arrowFacetLight", 0xE4D08A, .mrtArrowFacetLight),
+            ("arrowFacetDark", 0x9C7E2C, .mrtArrowFacetDark),
+            ("logoTileTop", 0x1B1407, .mrtLogoTileTop),
+            ("logoTileMid", 0x0D0B06, .mrtLogoTileMid),
+            ("logoTileBottom", 0x090806, .mrtLogoTileBottom),
         ]
 
         for (name, hex, color) in cases {
@@ -78,6 +84,26 @@ final class TokenTests: XCTestCase {
         for (name, alpha, color) in cases {
             var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
             XCTAssertTrue(UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a), name)
+            XCTAssertEqual(a, alpha, accuracy: 0.001, "\(name): alpha")
+        }
+    }
+
+    /// Bottom-nav colors carry their alpha baked in — verify RGB + alpha.
+    func testNavColorComponents() {
+        let cases: [(name: String, hex: UInt32, alpha: CGFloat, color: Color)] = [
+            ("navBarFill", 0x161619, 0.92, .mrtNavBarFill), // rgba(22,22,25,0.92)
+            ("navHairline", 0xFFFFFF, 0.09, .mrtNavHairline), // rgba(255,255,255,0.09)
+            ("navInactive", 0xC4AC6C, 0.62, .mrtNavInactive), // rgba(196,172,108,0.62)
+        ]
+        for (name, hex, alpha, color) in cases {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            XCTAssertTrue(
+                UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a),
+                "\(name): not convertible to RGBA"
+            )
+            XCTAssertEqual(UInt32(round(r * 255)), (hex >> 16) & 0xFF, "\(name): red")
+            XCTAssertEqual(UInt32(round(g * 255)), (hex >> 8) & 0xFF, "\(name): green")
+            XCTAssertEqual(UInt32(round(b * 255)), hex & 0xFF, "\(name): blue")
             XCTAssertEqual(a, alpha, accuracy: 0.001, "\(name): alpha")
         }
     }

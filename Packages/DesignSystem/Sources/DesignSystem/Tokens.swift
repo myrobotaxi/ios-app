@@ -55,6 +55,17 @@ enum Hex {
     // Overlays (Handoff §7)
     static let dialogCard: UInt32 = 0x1A1A1C // confirm-dialog card fill
     static let toastSurface: UInt32 = 0x22221F // success-toast pill fill
+
+    // Brand mark (components.jsx HexLogo/ArrowMark — facet + tile colors)
+    static let arrowFacetLight: UInt32 = 0xE4D08A // top-left facet polygon
+    static let arrowFacetDark: UInt32 = 0x9C7E2C // bottom-right facet polygon
+    static let logoTileTop: UInt32 = 0x1B1407 // tile gradient 0%
+    static let logoTileMid: UInt32 = 0x0D0B06 // tile gradient 55%
+    static let logoTileBottom: UInt32 = 0x090806 // tile gradient 100%
+
+    // Bottom nav (components.jsx BottomNav)
+    static let navBarFill: UInt32 = 0x161619 // rgb(22,22,25), used at 0.92 alpha
+    static let navInactive: UInt32 = 0xC4AC6C // rgb(196,172,108), used at 0.62 alpha
 }
 
 // MARK: - Color tokens
@@ -135,6 +146,21 @@ public extension Color {
     static let mrtDangerFillSoft = Color(hex: Hex.danger, alpha: 0.14)
     /// Positive dialog icon-circle tint — gold twin of `mrtDangerFillSoft`.
     static let mrtGoldFillSoft = Color(hex: Hex.gold, alpha: 0.14)
+
+    // Brand mark (HexLogo / ArrowMark facets + tile gradient stops)
+    static let mrtArrowFacetLight = Color(hex: Hex.arrowFacetLight)
+    static let mrtArrowFacetDark = Color(hex: Hex.arrowFacetDark)
+    static let mrtLogoTileTop = Color(hex: Hex.logoTileTop)
+    static let mrtLogoTileMid = Color(hex: Hex.logoTileMid)
+    static let mrtLogoTileBottom = Color(hex: Hex.logoTileBottom)
+
+    // Bottom nav (floating capsule tab bar)
+    /// Tab-bar fill — rgba(22,22,25,0.92) in components.jsx BottomNav.
+    static let mrtNavBarFill = Color(hex: Hex.navBarFill, alpha: 0.92)
+    /// Tab-bar hairline — rgba(255,255,255,0.09).
+    static let mrtNavHairline = Color(hex: Hex.text, alpha: 0.09)
+    /// Inactive tab tint — rgba(196,172,108,0.62), muted warm gold.
+    static let mrtNavInactive = Color(hex: Hex.navInactive, alpha: 0.62)
 }
 
 // MARK: - Hex init
