@@ -28,4 +28,9 @@ Native SwiftUI port of the MyRoboTaxi design prototype. Two roles (owner / rider
 
 ## Build
 
-Requires full Xcode (Command Line Tools alone cannot build iOS targets). Project generation approach (XcodeGen vs checked-in .xcodeproj) is decided in MYR-161 — update this section when it lands.
+Requires full Xcode (Command Line Tools alone cannot build iOS targets).
+
+- **Project generation: XcodeGen** (decided in MYR-161). The `.xcodeproj` is **not** checked in — `project.yml` is the source of truth. After cloning or whenever targets/sources/settings change, run `xcodegen generate` (install: `brew install xcodegen`), then build:
+  `xcodebuild -project MyRoboTaxi.xcodeproj -scheme MyRoboTaxi -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build`
+- DesignSystem package tests (run from `Packages/DesignSystem/`, the project-level package scheme has no test action): `xcodebuild -scheme DesignSystem -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test`
+- App target: `MyRoboTaxi`, bundle id `app.myrobotaxi.ios`, iOS 17 deployment target (Liquid Glass gates on iOS 26+ via `#available`), portrait iPhone only, forced dark (`UIUserInterfaceStyle: Dark`).
