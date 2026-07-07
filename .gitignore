@@ -21,3 +21,6 @@ Package.resolved
 
 # Agent worktrees + local claude config
 .claude/worktrees/
+
+# Verification screenshots (drift gate)
+.shots/
