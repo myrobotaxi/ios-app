@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - Layout metrics
 //
 // Ported from the design project (Handoff §1). Radii that differ between the
-// Flat and Liquid Glass looks are resolved through `SurfaceLook` — use
+// Flat and Liquid Glass looks are resolved through `MRTSurfaceLook` — use
 // `look.cardRadius` / `look.sheetRadius` instead of the raw constants when a
 // look is in scope.
 

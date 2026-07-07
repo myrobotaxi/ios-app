@@ -5,7 +5,7 @@ import DesignSystem
 /// swatches, the type scale, and both surface looks. Replaced by real screens
 /// in MYR-162+; the drift gate can screenshot this in the meantime.
 struct TokenShowcase: View {
-    @AppStorage(SurfaceLook.storageKey) private var lookRaw = SurfaceLook.flat.rawValue
+    @AppStorage(MRTSurfaceLook.storageKey) private var lookRaw = MRTSurfaceLook.flat.rawValue
     @Environment(\.mrtSurfaceLook) private var look
 
     var body: some View {
@@ -30,7 +30,7 @@ struct TokenShowcase: View {
 
     private var lookPicker: some View {
         Picker("Look", selection: $lookRaw) {
-            ForEach(SurfaceLook.allCases) { look in
+            ForEach(MRTSurfaceLook.allCases) { look in
                 Text(look.displayName).tag(look.rawValue)
             }
         }

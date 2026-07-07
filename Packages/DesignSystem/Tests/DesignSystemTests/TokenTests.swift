@@ -28,6 +28,8 @@ final class TokenTests: XCTestCase {
             ("batLow", 0xFF3B30, .mrtBatLow),
             ("dialogRed", 0xFF6B6B, .mrtDialogRed),
             ("border", 0x1F1F1F, .mrtBorder),
+            ("borderSubtle", 0x181818, .mrtBorderSubtle),
+            ("offline", 0x6B6B6B, .mrtOffline),
         ]
 
         for (name, hex, color) in cases {
@@ -53,10 +55,10 @@ final class TokenTests: XCTestCase {
     }
 
     func testLookRadii() {
-        XCTAssertEqual(SurfaceLook.flat.cardRadius, 14)
-        XCTAssertEqual(SurfaceLook.liquidGlass.cardRadius, 16)
-        XCTAssertEqual(SurfaceLook.flat.sheetRadius, 24)
-        XCTAssertEqual(SurfaceLook.liquidGlass.sheetRadius, 30)
+        XCTAssertEqual(MRTSurfaceLook.flat.cardRadius, 14)
+        XCTAssertEqual(MRTSurfaceLook.liquidGlass.cardRadius, 16)
+        XCTAssertEqual(MRTSurfaceLook.flat.sheetRadius, 24)
+        XCTAssertEqual(MRTSurfaceLook.liquidGlass.sheetRadius, 30)
         XCTAssertEqual(MRTMetrics.minTapTarget, 44)
     }
 

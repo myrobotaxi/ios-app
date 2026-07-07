@@ -3,10 +3,10 @@ import DesignSystem
 
 @main
 struct MyRoboTaxiApp: App {
-    @AppStorage(SurfaceLook.storageKey) private var lookRaw = SurfaceLook.flat.rawValue
+    @AppStorage(MRTSurfaceLook.storageKey) private var lookRaw = MRTSurfaceLook.flat.rawValue
 
-    private var look: SurfaceLook {
-        SurfaceLook(rawValue: lookRaw) ?? .flat
+    private var look: MRTSurfaceLook {
+        MRTSurfaceLook(rawValue: lookRaw) ?? .flat
     }
 
     var body: some Scene {
