@@ -4,7 +4,11 @@ Native SwiftUI port of the MyRoboTaxi design prototype. Two roles (owner / rider
 
 ## Canonical sources (in priority order)
 
-1. **Design project** (claude.ai design, DesignSync MCP, projectId `019e19a0-1707-77b7-a71e-97e4f5ed5769`):
+0. **`design/` in this repo** — a synced mirror of the design project for
+   agents (the DesignSync tool does not exist in subagent sessions). Read
+   `design/README.md` first; if a file you need isn't mirrored yet, say so in
+   your report instead of guessing.
+1. **Design project** (claude.ai design, DesignSync MCP — orchestrator only, projectId `019e19a0-1707-77b7-a71e-97e4f5ed5769`):
    - `Handoff for Claude Code.md` — the rebuild spec (tokens, buttons, flows, overlays, motion). Read it before any UI work.
    - `app/*.jsx` + `app/tokens.js` — prototype source; every color/radius/animation resolves to a real definition here.
    - `Anatomy.html` (renders `ds/anatomy-*.jsx`) — labeled exploded screens; `screenshots/` — reference renders.
@@ -14,6 +18,12 @@ Native SwiftUI port of the MyRoboTaxi design prototype. Two roles (owner / rider
 
 ## Hard rules
 
+- **Flat only** (product decision, Thomas 2026-07-06) — the app ships the
+  **Flat** look exclusively; Liquid Glass is out of scope. Do not build glass
+  variants, glass styling, or look toggles. The `MRTSurfaceLook` API exists in
+  DesignSystem but the app pins `.flat` at the root; when the prototype's
+  `useSurfaces()` offers flat + liquid styles, port **only the flat branch**
+  (e.g. Button uses the flat variant table + the `flat`/goldDeep styles).
 - **Tokens only** — every color/font/radius/spacing comes from the DesignSystem package (ported from `app/tokens.js` `window.T`). No hardcoded hex in screens. Gold `#C9A84C` is the sacred accent — CTAs, active nav, marker, route, brand; never decorative.
 - **Reuse, don't fork** — `Button(variant:)` (6 variants), ConfirmDialog, SuccessToast, BottomSheet are built once (MYR-162) and consumed everywhere. `outline-draw` is reserved for ride-request CTAs only.
 - **M1 is simulated** — screens ship on fixture data matching the prototype's mocks (`VEHICLES`, `DRIVES`, `VIEWERS`, `PENDING`, `REQUESTED_RIDES`, `SCHEDULED_RIDES`). No network in M1.
@@ -23,8 +33,8 @@ Native SwiftUI port of the MyRoboTaxi design prototype. Two roles (owner / rider
 
 ## Structure
 
-- `App/` — app target. `Packages/DesignSystem/` — tokens, type scale, Flat↔Liquid-Glass `Surface` modifier, buttons, overlays, primitives. `Packages/MyRoboTaxiKit/` — thin REST + WS client (M2, MYR-21).
-- Liquid Glass uses native glass APIs on iOS 26+; Flat (solid `surface` + hairline) is the baseline and the < iOS 26 fallback.
+- `App/` — app target. `Packages/DesignSystem/` — tokens, type scale, `Surface` modifier, buttons, overlays, primitives. `Packages/MyRoboTaxiKit/` — thin REST + WS client (M2, MYR-21). `design/` — read-only synced design mirror.
+- The app renders **Flat** (solid `surface` + hairline) everywhere — see the flat-only hard rule.
 
 ## Build
 

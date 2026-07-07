@@ -3,16 +3,13 @@ import DesignSystem
 
 @main
 struct MyRoboTaxiApp: App {
-    @AppStorage(MRTSurfaceLook.storageKey) private var lookRaw = MRTSurfaceLook.flat.rawValue
-
-    private var look: MRTSurfaceLook {
-        MRTSurfaceLook(rawValue: lookRaw) ?? .flat
-    }
-
     var body: some Scene {
         WindowGroup {
             TokenShowcase()
-                .mrtSurfaceLook(look)
+                // Product decision (Thomas, 2026-07-06): Flat only — Liquid
+                // Glass is out of scope. The look stays pinned here; the
+                // MRTSurfaceLook API remains for the showcase/tests only.
+                .mrtSurfaceLook(.flat)
                 .preferredColorScheme(.dark)
         }
     }
