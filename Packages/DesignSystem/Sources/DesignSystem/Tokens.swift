@@ -69,6 +69,30 @@ enum Hex {
 
     // Sign in (screens.jsx SignInScreen + ParticleLine, MYR-164)
     static let glimpseCream: UInt32 = 0xD0C9B8 // rgb(208,201,184) — ParticleLine non-live line color (screens.jsx `measure()`)
+
+    // Onboarding (design/app/onboarding.jsx, MYR-165)
+    static let keyCardMid: UInt32 = 0x0D0D0D // virtual-key card gradient 52% (onboarding.jsx:274; 0% stop is `surface` 0x1A1A1A)
+    static let keyCardDeep: UInt32 = 0x050505 // virtual-key card gradient 100% (onboarding.jsx:274)
+    static let etchLight: UInt32 = 0xF5ECC8 // etched wordmark gradient 0% (onboarding.jsx:286; 48% stop is `gold`)
+    static let etchDark: UInt32 = 0x8A6E23 // etched wordmark gradient 100% (onboarding.jsx:286)
+    static let linkedGreenLight: UInt32 = 0x3EE06A // linked-badge gradient top (onboarding.jsx:333; bottom stop is `driving`)
+    static let linkedCheckStroke: UInt32 = 0x0A2912 // linked-badge drawn checkmark stroke (onboarding.jsx:337)
+
+    // Simulated Tesla OAuth sheet (onboarding.jsx InAppBrowser, MYR-165).
+    // Original plausible mock, NOT Tesla's real UI; replaced wholesale by
+    // ASWebAuthenticationSession in MYR-115.
+    static let teslaRed: UInt32 = 0xE82127 // Tesla brand tile + Sign In button (onboarding.jsx:116,133)
+    static let browserBg: UInt32 = 0xF2F2F4 // browser sheet page background (onboarding.jsx:91)
+    static let browserChrome: UInt32 = 0xE8E8EC // faux Safari chrome bar (onboarding.jsx:96)
+    static let browserText: UInt32 = 0x1C1C1E // primary text on the light sheet (onboarding.jsx:101,121)
+    static let browserTextSec: UInt32 = 0x6B6B70 // secondary text (onboarding.jsx:122,124)
+    static let browserTextTert: UInt32 = 0x8A8A8F // scope-row subtitles (onboarding.jsx:164)
+    static let browserTextFaint: UInt32 = 0xA0A0A5 // revoke-anytime footnote (onboarding.jsx:173)
+    static let browserArrow: UInt32 = 0xB0B0B5 // consent header handoff arrow (onboarding.jsx:145)
+    static let browserSpinner: UInt32 = 0x8E8E93 // chrome-bar progress spinner (onboarding.jsx:105)
+    static let browserGlyph: UInt32 = 0x3A3A3C // URL-bar padlock glyph (onboarding.jsx:102)
+    static let linkBlue: UInt32 = 0x0A84FF // iOS-blue links: Cancel, Forgot password? (onboarding.jsx:99,135)
+    static let consentGreen: UInt32 = 0x34A853 // consent scope-row checkmarks (onboarding.jsx:166)
 }
 
 // MARK: - Color tokens
@@ -172,6 +196,54 @@ public extension Color {
     static let mrtNavHairline = Color(hex: Hex.text, alpha: 0.09)
     /// Inactive tab tint — rgba(196,172,108,0.62), muted warm gold.
     static let mrtNavInactive = Color(hex: Hex.navInactive, alpha: 0.62)
+
+    // Onboarding (design/app/onboarding.jsx + screens.jsx EmptyScreen, MYR-165)
+
+    /// PairStepper active-step fill — rgba(140,110,42,0.18) (onboarding.jsx:41).
+    static let mrtGoldDeepActiveFill = Color(hex: Hex.goldDeep, alpha: 0.18)
+    /// PairStepper active-step halo ring — rgba(140,110,42,0.12) (onboarding.jsx:43).
+    static let mrtGoldDeepHalo = Color(hex: Hex.goldDeep, alpha: 0.12)
+    /// Expanding pulse rings — `#C9A84C44` (onboarding.jsx:240,242,359).
+    static let mrtGoldRing = Color(hex: Hex.gold, alpha: Double(0x44) / 255.0)
+    /// Paired/joined success-card border — `#C9A84C3a` (onboarding.jsx:374,518).
+    static let mrtGoldCardBorder = Color(hex: Hex.gold, alpha: Double(0x3A) / 255.0)
+    /// Filled invite-code cell background — rgba(201,168,76,0.10) (onboarding.jsx:460).
+    static let mrtGoldCellFill = Color(hex: Hex.gold, alpha: 0.10)
+    /// Filled invite-code cell border — `#C9A84C66` (onboarding.jsx:461).
+    static let mrtGoldCellBorder = Color(hex: Hex.gold, alpha: Double(0x66) / 255.0)
+    /// Active invite-cell focus ring — rgba(201,168,76,0.12) (onboarding.jsx:462).
+    static let mrtGoldFocusRing = Color(hex: Hex.gold, alpha: 0.12)
+    /// Empty-screen primary card gradient start — `#C9A84C1c` (screens.jsx:272).
+    static let mrtGoldCardTint = Color(hex: Hex.gold, alpha: Double(0x1C) / 255.0)
+    /// Empty-screen primary card gradient end — `#C9A84C0a` (screens.jsx:272).
+    static let mrtGoldCardTintFaint = Color(hex: Hex.gold, alpha: Double(0x0A) / 255.0)
+    /// Empty-screen primary icon tile fill — `#C9A84C26` (screens.jsx:276).
+    static let mrtGoldIconTile = Color(hex: Hex.gold, alpha: Double(0x26) / 255.0)
+    /// Empty-screen quiet card border — `#C9A84C2e` (screens.jsx:273).
+    static let mrtGoldBorderQuiet = Color(hex: Hex.gold, alpha: Double(0x2E) / 255.0)
+
+    // Onboarding — virtual key card + linked badge (onboarding.jsx)
+    static let mrtKeyCardMid = Color(hex: Hex.keyCardMid)
+    static let mrtKeyCardDeep = Color(hex: Hex.keyCardDeep)
+    static let mrtEtchLight = Color(hex: Hex.etchLight)
+    static let mrtEtchDark = Color(hex: Hex.etchDark)
+    static let mrtLinkedGreenLight = Color(hex: Hex.linkedGreenLight)
+    static let mrtLinkedCheckStroke = Color(hex: Hex.linkedCheckStroke)
+
+    // Simulated Tesla OAuth sheet (MYR-165 — swapped for
+    // ASWebAuthenticationSession by MYR-115)
+    static let mrtTeslaRed = Color(hex: Hex.teslaRed)
+    static let mrtBrowserBg = Color(hex: Hex.browserBg)
+    static let mrtBrowserChrome = Color(hex: Hex.browserChrome)
+    static let mrtBrowserText = Color(hex: Hex.browserText)
+    static let mrtBrowserTextSec = Color(hex: Hex.browserTextSec)
+    static let mrtBrowserTextTert = Color(hex: Hex.browserTextTert)
+    static let mrtBrowserTextFaint = Color(hex: Hex.browserTextFaint)
+    static let mrtBrowserArrow = Color(hex: Hex.browserArrow)
+    static let mrtBrowserSpinner = Color(hex: Hex.browserSpinner)
+    static let mrtBrowserGlyph = Color(hex: Hex.browserGlyph)
+    static let mrtLinkBlue = Color(hex: Hex.linkBlue)
+    static let mrtConsentGreen = Color(hex: Hex.consentGreen)
 }
 
 // MARK: - Hex init

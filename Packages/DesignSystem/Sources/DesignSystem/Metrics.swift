@@ -51,4 +51,16 @@ public enum MRTMetrics {
     /// Sign in with Apple button corner radius (screens.jsx sign-in sheet
     /// button, `borderRadius: 14`).
     public static let appleButtonRadius: CGFloat = 14
+
+    // MARK: Onboarding (MYR-165, design/app/onboarding.jsx)
+
+    /// PairStepper distance from the top of the screen (onboarding.jsx:32
+    /// `top: 124` — clears the top-right Cancel action, Handoff §5.2).
+    public static let pairStepperTop: CGFloat = 124
+    /// PairStepper horizontal inset (onboarding.jsx:32 `left/right: 28`).
+    public static let pairStepperGutter: CGFloat = 28
+    /// Onboarding flows' content gutter (onboarding.jsx `padding…: 30`).
+    public static let onboardingGutter: CGFloat = 30
+    /// Top-right ghost Skip/Cancel offset (onboarding.jsx:19 `top: 82`).
+    public static let onboardingTopActionTop: CGFloat = 82
 }

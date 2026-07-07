@@ -46,6 +46,26 @@ final class TokenTests: XCTestCase {
             ("logoTileBottom", 0x090806, .mrtLogoTileBottom),
             // MYR-164 — sign in
             ("glimpseCream", 0xD0C9B8, .mrtGlimpseCream), // screens.jsx ParticleLine '208,201,184'
+            // MYR-165 — onboarding (design/app/onboarding.jsx)
+            ("keyCardMid", 0x0D0D0D, .mrtKeyCardMid), // jsx:274
+            ("keyCardDeep", 0x050505, .mrtKeyCardDeep), // jsx:274
+            ("etchLight", 0xF5ECC8, .mrtEtchLight), // jsx:286
+            ("etchDark", 0x8A6E23, .mrtEtchDark), // jsx:286
+            ("linkedGreenLight", 0x3EE06A, .mrtLinkedGreenLight), // jsx:333
+            ("linkedCheckStroke", 0x0A2912, .mrtLinkedCheckStroke), // jsx:337
+            // MYR-165 — simulated Tesla OAuth sheet (onboarding.jsx InAppBrowser)
+            ("teslaRed", 0xE82127, .mrtTeslaRed), // jsx:116
+            ("browserBg", 0xF2F2F4, .mrtBrowserBg), // jsx:91
+            ("browserChrome", 0xE8E8EC, .mrtBrowserChrome), // jsx:96
+            ("browserText", 0x1C1C1E, .mrtBrowserText), // jsx:101
+            ("browserTextSec", 0x6B6B70, .mrtBrowserTextSec), // jsx:122
+            ("browserTextTert", 0x8A8A8F, .mrtBrowserTextTert), // jsx:164
+            ("browserTextFaint", 0xA0A0A5, .mrtBrowserTextFaint), // jsx:173
+            ("browserArrow", 0xB0B0B5, .mrtBrowserArrow), // jsx:145
+            ("browserSpinner", 0x8E8E93, .mrtBrowserSpinner), // jsx:105
+            ("browserGlyph", 0x3A3A3C, .mrtBrowserGlyph), // jsx:102
+            ("linkBlue", 0x0A84FF, .mrtLinkBlue), // jsx:99
+            ("consentGreen", 0x34A853, .mrtConsentGreen), // jsx:166
         ]
 
         for (name, hex, color) in cases {
@@ -83,6 +103,18 @@ final class TokenTests: XCTestCase {
             ("dangerFillSoft", 0.14, .mrtDangerFillSoft),
             ("scrim", 0.6, .mrtScrim),
             ("scrimSoft", 0.5, .mrtScrimSoft), // MYR-164 — screens.jsx SignInScreen scrim rgba(0,0,0,0.5)
+            // MYR-165 — onboarding tints (design/app/onboarding.jsx + screens.jsx EmptyScreen)
+            ("goldDeepActiveFill", 0.18, .mrtGoldDeepActiveFill), // onboarding.jsx:41
+            ("goldDeepHalo", 0.12, .mrtGoldDeepHalo), // onboarding.jsx:43
+            ("goldRing", CGFloat(0x44) / 255.0, .mrtGoldRing), // onboarding.jsx:240
+            ("goldCardBorder", CGFloat(0x3A) / 255.0, .mrtGoldCardBorder), // onboarding.jsx:374
+            ("goldCellFill", 0.10, .mrtGoldCellFill), // onboarding.jsx:460
+            ("goldCellBorder", CGFloat(0x66) / 255.0, .mrtGoldCellBorder), // onboarding.jsx:461
+            ("goldFocusRing", 0.12, .mrtGoldFocusRing), // onboarding.jsx:462
+            ("goldCardTint", CGFloat(0x1C) / 255.0, .mrtGoldCardTint), // screens.jsx:272
+            ("goldCardTintFaint", CGFloat(0x0A) / 255.0, .mrtGoldCardTintFaint), // screens.jsx:272
+            ("goldIconTile", CGFloat(0x26) / 255.0, .mrtGoldIconTile), // screens.jsx:276
+            ("goldBorderQuiet", CGFloat(0x2E) / 255.0, .mrtGoldBorderQuiet), // screens.jsx:273
         ]
         for (name, alpha, color) in cases {
             var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
@@ -124,6 +156,21 @@ final class TokenTests: XCTestCase {
     func testSignInMetrics() {
         XCTAssertEqual(MRTMetrics.appleButtonHeight, 54)
         XCTAssertEqual(MRTMetrics.appleButtonRadius, 14)
+    }
+
+    /// MYR-165 — onboarding layout constants (design/app/onboarding.jsx:19,32
+    /// and the flows' `padding…: 30`).
+    func testOnboardingMetrics() {
+        XCTAssertEqual(MRTMetrics.pairStepperTop, 124)
+        XCTAssertEqual(MRTMetrics.pairStepperGutter, 28)
+        XCTAssertEqual(MRTMetrics.onboardingGutter, 30)
+        XCTAssertEqual(MRTMetrics.onboardingTopActionTop, 82)
+    }
+
+    /// MYR-165 — the stepper ships the prototype's exact four labels
+    /// (onboarding.jsx:30).
+    func testPairStepperLabels() {
+        XCTAssertEqual(PairStepper.defaultSteps, ["Sign in", "Linked", "Virtual key", "Paired"])
     }
 
     func testTypeScaleClamps() {
