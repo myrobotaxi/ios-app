@@ -66,6 +66,9 @@ enum Hex {
     // Bottom nav (components.jsx BottomNav)
     static let navBarFill: UInt32 = 0x161619 // rgb(22,22,25), used at 0.92 alpha
     static let navInactive: UInt32 = 0xC4AC6C // rgb(196,172,108), used at 0.62 alpha
+
+    // Sign in (screens.jsx SignInScreen + ParticleLine, MYR-164)
+    static let glimpseCream: UInt32 = 0xD0C9B8 // rgb(208,201,184) — ParticleLine non-live line color (screens.jsx `measure()`)
 }
 
 // MARK: - Color tokens
@@ -153,6 +156,14 @@ public extension Color {
     static let mrtLogoTileTop = Color(hex: Hex.logoTileTop)
     static let mrtLogoTileMid = Color(hex: Hex.logoTileMid)
     static let mrtLogoTileBottom = Color(hex: Hex.logoTileBottom)
+
+    // Sign in (screens.jsx SignInScreen + ParticleLine, MYR-164)
+    /// Glimpse-line greeting text — rgba(208,201,184,1), the non-live line
+    /// color in screens.jsx `ParticleLine.measure()`.
+    static let mrtGlimpseCream = Color(hex: Hex.glimpseCream)
+    /// Sign-in sheet scrim — rgba(0,0,0,0.5) (screens.jsx SignInScreen
+    /// "Scrim" layer; deliberately softer than the 0.6 overlay `mrtScrim`).
+    static let mrtScrimSoft = Color(hex: Hex.black, alpha: 0.5)
 
     // Bottom nav (floating capsule tab bar)
     /// Tab-bar fill — rgba(22,22,25,0.92) in components.jsx BottomNav.

@@ -42,4 +42,13 @@ public enum MRTMetrics {
     public static let toastBottomOffset: CGFloat = 116
     /// Home detent-sheet peek height (components.jsx `BottomSheet` peekH).
     public static let sheetPeekHeight: CGFloat = 260
+
+    // MARK: Sign in (MYR-164, design/app/screens.jsx SignInScreen)
+
+    /// Sign in with Apple button height (screens.jsx sign-in sheet button,
+    /// `height: 54`).
+    public static let appleButtonHeight: CGFloat = 54
+    /// Sign in with Apple button corner radius (screens.jsx sign-in sheet
+    /// button, `borderRadius: 14`).
+    public static let appleButtonRadius: CGFloat = 14
 }

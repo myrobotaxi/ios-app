@@ -44,6 +44,8 @@ final class TokenTests: XCTestCase {
             ("logoTileTop", 0x1B1407, .mrtLogoTileTop),
             ("logoTileMid", 0x0D0B06, .mrtLogoTileMid),
             ("logoTileBottom", 0x090806, .mrtLogoTileBottom),
+            // MYR-164 — sign in
+            ("glimpseCream", 0xD0C9B8, .mrtGlimpseCream), // screens.jsx ParticleLine '208,201,184'
         ]
 
         for (name, hex, color) in cases {
@@ -80,6 +82,7 @@ final class TokenTests: XCTestCase {
             ("dangerFill", 0.16, .mrtDangerFill),
             ("dangerFillSoft", 0.14, .mrtDangerFillSoft),
             ("scrim", 0.6, .mrtScrim),
+            ("scrimSoft", 0.5, .mrtScrimSoft), // MYR-164 — screens.jsx SignInScreen scrim rgba(0,0,0,0.5)
         ]
         for (name, alpha, color) in cases {
             var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
@@ -114,6 +117,13 @@ final class TokenTests: XCTestCase {
         XCTAssertEqual(MRTSurfaceLook.flat.sheetRadius, 24)
         XCTAssertEqual(MRTSurfaceLook.liquidGlass.sheetRadius, 30)
         XCTAssertEqual(MRTMetrics.minTapTarget, 44)
+    }
+
+    /// MYR-164 — sign-in sheet Apple button (screens.jsx SignInScreen:
+    /// height 54, borderRadius 14).
+    func testSignInMetrics() {
+        XCTAssertEqual(MRTMetrics.appleButtonHeight, 54)
+        XCTAssertEqual(MRTMetrics.appleButtonRadius, 14)
     }
 
     func testTypeScaleClamps() {
