@@ -30,6 +30,14 @@ final class TokenTests: XCTestCase {
             ("border", 0x1F1F1F, .mrtBorder),
             ("borderSubtle", 0x181818, .mrtBorderSubtle),
             ("offline", 0x6B6B6B, .mrtOffline),
+            // MYR-162 — buttons + overlays
+            ("goldButtonLabel", 0x1A1408, .mrtGoldButtonLabel),
+            ("goldDeepButtonLabel", 0x1C1505, .mrtGoldDeepButtonLabel),
+            ("goldTrace", 0xE7C975, .mrtGoldTrace),
+            ("goldTraceBright", 0xFFF3C8, .mrtGoldTraceBright),
+            ("goldPulse", 0xF0D27A, .mrtGoldPulse),
+            ("dialogCard", 0x1A1A1C, .mrtDialogCard),
+            ("toastSurface", 0x22221F, .mrtToastSurface),
         ]
 
         for (name, hex, color) in cases {
@@ -52,6 +60,26 @@ final class TokenTests: XCTestCase {
         XCTAssertEqual(a, 0.6, accuracy: 0.001)
         UIColor(Color.mrtGoldGlowSoft).getRed(&r, green: &g, blue: &b, alpha: &a)
         XCTAssertEqual(a, 0.3, accuracy: 0.001)
+    }
+
+    /// The alpha-composed tints introduced for MYR-162 (button chrome +
+    /// dialog fills + scrim) carry the exact rgba() alphas from the design.
+    func testComponentTintAlphas() {
+        let cases: [(name: String, alpha: CGFloat, color: Color)] = [
+            ("goldFillFaint", 0.06, .mrtGoldFillFaint),
+            ("goldBorderFaint", 0.22, .mrtGoldBorderFaint),
+            ("goldBorderSoft", CGFloat(0x55) / 255.0, .mrtGoldBorderSoft),
+            ("goldGlowFaint", 0.14, .mrtGoldGlowFaint),
+            ("goldFillSoft", 0.14, .mrtGoldFillSoft),
+            ("dangerFill", 0.16, .mrtDangerFill),
+            ("dangerFillSoft", 0.14, .mrtDangerFillSoft),
+            ("scrim", 0.6, .mrtScrim),
+        ]
+        for (name, alpha, color) in cases {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            XCTAssertTrue(UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a), name)
+            XCTAssertEqual(a, alpha, accuracy: 0.001, "\(name): alpha")
+        }
     }
 
     func testLookRadii() {

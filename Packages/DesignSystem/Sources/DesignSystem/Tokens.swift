@@ -41,6 +41,20 @@ enum Hex {
     // Borders
     static let border: UInt32 = 0x1F1F1F
     static let borderSubtle: UInt32 = 0x181818
+
+    // Pure black — base for the overlay scrim rgba(0,0,0,0.6) (Handoff §7).
+    static let black: UInt32 = 0x000000
+
+    // Buttons (design/app/components.jsx `Button` variants + MRT_STYLES)
+    static let goldButtonLabel: UInt32 = 0x1A1408 // near-black label on solid gold
+    static let goldDeepButtonLabel: UInt32 = 0x1C1505 // label on goldDeep (flat onboarding gold)
+    static let goldTrace: UInt32 = 0xE7C975 // border-trace highlight (conic 120°/180° stops)
+    static let goldTraceBright: UInt32 = 0xFFF3C8 // border-trace hot spot (conic 150° stop)
+    static let goldPulse: UInt32 = 0xF0D27A // mrt-gold-pulse peak text color
+
+    // Overlays (Handoff §7)
+    static let dialogCard: UInt32 = 0x1A1A1C // confirm-dialog card fill
+    static let toastSurface: UInt32 = 0x22221F // success-toast pill fill
 }
 
 // MARK: - Color tokens
@@ -87,6 +101,40 @@ public extension Color {
     // Borders
     static let mrtBorder = Color(hex: Hex.border)
     static let mrtBorderSubtle = Color(hex: Hex.borderSubtle)
+
+    // Buttons (design/app/components.jsx `Button` variants + MRT_STYLES)
+    /// Near-black label on the solid-gold button — `#1a1408`.
+    static let mrtGoldButtonLabel = Color(hex: Hex.goldButtonLabel)
+    /// Label on the goldDeep (flat-onboarding) gold button — `#1c1505`.
+    static let mrtGoldDeepButtonLabel = Color(hex: Hex.goldDeepButtonLabel)
+    /// Border-trace highlight — `#E7C975` (mrt-trace-spin conic 120°/180° stops).
+    static let mrtGoldTrace = Color(hex: Hex.goldTrace)
+    /// Border-trace hot spot — `#FFF3C8` (mrt-trace-spin conic 150° stop).
+    static let mrtGoldTraceBright = Color(hex: Hex.goldTraceBright)
+    /// Peak text color of the gold text pulse — `#F0D27A` (mrt-gold-pulse).
+    static let mrtGoldPulse = Color(hex: Hex.goldPulse)
+    /// Faint gold wash behind outline-draw / outline-static — rgba(201,168,76,0.06).
+    static let mrtGoldFillFaint = Color(hex: Hex.gold, alpha: 0.06)
+    /// Resting outline-draw border — rgba(201,168,76,0.22).
+    static let mrtGoldBorderFaint = Color(hex: Hex.gold, alpha: 0.22)
+    /// outline-static border — `#C9A84C55`.
+    static let mrtGoldBorderSoft = Color(hex: Hex.gold, alpha: Double(0x55) / 255.0)
+    /// Ambient glow under the outline-draw CTA — rgba(201,168,76,0.14).
+    static let mrtGoldGlowFaint = Color(hex: Hex.gold, alpha: 0.14)
+
+    // Overlays (Handoff §7)
+    /// Confirm-dialog card fill — `#1a1a1c`.
+    static let mrtDialogCard = Color(hex: Hex.dialogCard)
+    /// Success-toast pill fill — `#22221f`.
+    static let mrtToastSurface = Color(hex: Hex.toastSurface)
+    /// Full-screen backdrop behind dialogs/sheets — rgba(0,0,0,0.6).
+    static let mrtScrim = Color(hex: Hex.black, alpha: 0.6)
+    /// Destructive dialog button fill — rgba(255,59,48,0.16).
+    static let mrtDangerFill = Color(hex: Hex.danger, alpha: 0.16)
+    /// Destructive dialog icon-circle tint — rgba(255,59,48,0.14).
+    static let mrtDangerFillSoft = Color(hex: Hex.danger, alpha: 0.14)
+    /// Positive dialog icon-circle tint — gold twin of `mrtDangerFillSoft`.
+    static let mrtGoldFillSoft = Color(hex: Hex.gold, alpha: 0.14)
 }
 
 // MARK: - Hex init
