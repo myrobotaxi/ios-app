@@ -93,6 +93,25 @@ enum Hex {
     static let browserGlyph: UInt32 = 0x3A3A3C // URL-bar padlock glyph (onboarding.jsx:102)
     static let linkBlue: UInt32 = 0x0A84FF // iOS-blue links: Cancel, Forgot password? (onboarding.jsx:99,135)
     static let consentGreen: UInt32 = 0x34A853 // consent scope-row checkmarks (onboarding.jsx:166)
+
+    // MYR-166 — tutorials (design/app/tutorials.jsx) — StoryDeck vignette shell
+    static let vigCardTop: UInt32 = 0x222228 // MiniScreen gradient 0% — rgba(34,34,40,…) (tutorials.jsx:12)
+    static let vigCardBottom: UInt32 = 0x101014 // MiniScreen gradient 100% — rgba(16,16,20,…) (tutorials.jsx:12)
+    static let vigStatusPill: UInt32 = 0x141418 // status pill fill — rgba(20,20,24,0.66) (tutorials.jsx:35,192)
+
+    // MYR-166 — map backdrop (design/app/components.jsx MapBackground:305-397),
+    // ported for the story-deck live-map vignettes (VigLiveMap/VigTrack).
+    static let mapLand: UInt32 = 0x1B1D21 // land base fill (components.jsx:359,365)
+    static let mapPark: UInt32 = 0x18221A // park ellipses (components.jsx:369)
+    static let mapStreet: UInt32 = 0x26282D // residential street stroke (components.jsx:374)
+    static let mapCollectorCasing: UInt32 = 0x2E3138 // collector casing stroke (components.jsx:376)
+    static let mapCollectorFill: UInt32 = 0x3C4049 // collector fill stroke (components.jsx:377)
+    static let mapFreewayCasing: UInt32 = 0x2A2519 // freeway casing stroke (components.jsx:381)
+    static let mapFreewayFill: UInt32 = 0x4C4330 // freeway fill stroke (components.jsx:382)
+    static let mapWater: UInt32 = 0x0E1A26 // ocean fill (components.jsx:385)
+    static let mapCoast: UInt32 = 0x16273A // coastline stroke (components.jsx:386)
+    static let mapLabelOcean: UInt32 = 0x96B4D2 // "Pacific Ocean" label — rgba(150,180,210,…) (components.jsx:389)
+    static let mapLabelPark: UInt32 = 0x96C896 // park-name label — rgba(150,200,150,…) (components.jsx:390)
 }
 
 // MARK: - Color tokens
@@ -244,6 +263,49 @@ public extension Color {
     static let mrtBrowserGlyph = Color(hex: Hex.browserGlyph)
     static let mrtLinkBlue = Color(hex: Hex.linkBlue)
     static let mrtConsentGreen = Color(hex: Hex.consentGreen)
+
+    // MYR-166 — tutorials (design/app/tutorials.jsx) — StoryDeck vignette shell
+    // MiniScreen card gradient: linear-gradient(160deg, rgba(34,34,40,0.9), rgba(16,16,20,0.92)) (tutorials.jsx:12).
+    static let mrtVigCardTop = Color(hex: Hex.vigCardTop, alpha: 0.9)
+    static let mrtVigCardBottom = Color(hex: Hex.vigCardBottom, alpha: 0.92)
+    /// MiniScreen border — rgba(255,255,255,0.10) (tutorials.jsx:13).
+    static let mrtVigCardBorder = Color(hex: Hex.text, alpha: 0.10)
+    /// List-row fill shared by every vignette's rows (drives/sharing/history/
+    /// shared-cars/request) — rgba(255,255,255,0.05) (tutorials.jsx:59 et al.).
+    static let mrtVigRowFill = Color(hex: Hex.text, alpha: 0.05)
+    /// List-row border — rgba(255,255,255,0.08) (tutorials.jsx:59 et al.).
+    static let mrtVigRowBorder = Color(hex: Hex.text, alpha: 0.08)
+    /// Search-bar / Decline-button fill — rgba(255,255,255,0.06)
+    /// (tutorials.jsx:127,163).
+    static let mrtVigControlFill = Color(hex: Hex.text, alpha: 0.06)
+    /// Search-bar / Decline-button border — rgba(255,255,255,0.12)
+    /// (tutorials.jsx:127,163).
+    static let mrtVigControlBorder = Color(hex: Hex.text, alpha: 0.12)
+    /// Climate-tile off-state fill — rgba(255,255,255,0.04) (tutorials.jsx:148).
+    static let mrtVigTileOff = Color(hex: Hex.text, alpha: 0.04)
+    /// Drive/ride-history icon-tile fill — rgba(201,168,76,0.12)
+    /// (tutorials.jsx:60,223).
+    static let mrtGoldTileFaint = Color(hex: Hex.gold, alpha: 0.12)
+    /// Status-pill fill — rgba(20,20,24,0.66) (tutorials.jsx:35,192).
+    static let mrtVigStatusPill = Color(hex: Hex.vigStatusPill, alpha: 0.66)
+
+    // MYR-166 — map backdrop (design/app/components.jsx MapBackground),
+    // ported for the story-deck live-map vignettes.
+    static let mrtMapLand = Color(hex: Hex.mapLand)
+    static let mrtMapPark = Color(hex: Hex.mapPark)
+    static let mrtMapStreet = Color(hex: Hex.mapStreet)
+    static let mrtMapCollectorCasing = Color(hex: Hex.mapCollectorCasing)
+    static let mrtMapCollectorFill = Color(hex: Hex.mapCollectorFill)
+    static let mrtMapFreewayCasing = Color(hex: Hex.mapFreewayCasing)
+    static let mrtMapFreewayFill = Color(hex: Hex.mapFreewayFill)
+    static let mrtMapWater = Color(hex: Hex.mapWater)
+    static let mrtMapCoast = Color(hex: Hex.mapCoast)
+    /// "Pacific Ocean" label — rgba(150,180,210,0.36) (components.jsx:389).
+    static let mrtMapLabelOcean = Color(hex: Hex.mapLabelOcean, alpha: 0.36)
+    /// Park-name label — rgba(150,200,150,0.4) (components.jsx:390).
+    static let mrtMapLabelPark = Color(hex: Hex.mapLabelPark, alpha: 0.4)
+    /// Street-name label — rgba(255,255,255,0.26) (components.jsx:391).
+    static let mrtMapLabelStreet = Color(hex: Hex.text, alpha: 0.26)
 }
 
 // MARK: - Hex init

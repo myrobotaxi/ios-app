@@ -120,4 +120,69 @@ final class PrimitiveTests: XCTestCase {
         XCTAssertEqual(path.boundingRect, CGRect(x: 0, y: 0, width: 10, height: 10))
         XCTAssertTrue(RoutePolylineShape(points: []).path(in: .zero).isEmpty)
     }
+
+    // MARK: MYR-166 — sample route slicing (tutorials.jsx VigLiveMap/VigTrack)
+
+    /// `MRTSampleRoute.sliced(into:)` ports the jsx's
+    /// `preserveAspectRatio="xMidYMid slice"` (cover + center-crop) transform.
+    func testSampleRouteSliceCoversAndCenters() {
+        XCTAssertEqual(MRTSampleRoute.points.count, 12)
+        let target = CGSize(width: 252, height: 252)
+        let sliced = MRTSampleRoute.sliced(into: target)
+        XCTAssertEqual(sliced.count, MRTSampleRoute.points.count)
+
+        // "Slice" (cover) picks the *larger* of the two axis scales.
+        let expectedScale = max(
+            target.width / MRTSampleRoute.sourceSize.width,
+            target.height / MRTSampleRoute.sourceSize.height
+        )
+        XCTAssertEqual(expectedScale, target.width / MRTSampleRoute.sourceSize.width, accuracy: 0.0001)
+
+        // Spot-check the first point against the manual scale + center-crop math.
+        let scaledSize = CGSize(
+            width: MRTSampleRoute.sourceSize.width * expectedScale,
+            height: MRTSampleRoute.sourceSize.height * expectedScale
+        )
+        let dx = (target.width - scaledSize.width) / 2
+        let dy = (target.height - scaledSize.height) / 2
+        let first = MRTSampleRoute.points[0]
+        XCTAssertEqual(sliced[0].x, first.x * expectedScale + dx, accuracy: 0.01)
+        XCTAssertEqual(sliced[0].y, first.y * expectedScale + dy, accuracy: 0.01)
+    }
+
+    func testSampleRouteSliceIdentityAtSourceSize() {
+        let sliced = MRTSampleRoute.sliced(into: MRTSampleRoute.sourceSize)
+        for (a, b) in zip(sliced, MRTSampleRoute.points) {
+            XCTAssertEqual(a.x, b.x, accuracy: 0.0001)
+            XCTAssertEqual(a.y, b.y, accuracy: 0.0001)
+        }
+    }
+
+    // MARK: MYR-166 — seeded map RNG (components.jsx `seedRand`)
+
+    /// Same seed ⇒ identical deterministic sequence (so two `MapBackground`
+    /// instances with the same seed render pixel-identical street jitter).
+    func testSeededMapRandomIsDeterministic() {
+        var a = SeededMapRandom(seed: 42)
+        var b = SeededMapRandom(seed: 42)
+        for _ in 0..<20 {
+            XCTAssertEqual(a.next(), b.next())
+        }
+    }
+
+    /// Every draw lands in [0, 1) — the jsx divides by 233280, its own modulus.
+    func testSeededMapRandomInUnitRange() {
+        var rng = SeededMapRandom(seed: 7)
+        for _ in 0..<200 {
+            let v = rng.next()
+            XCTAssertGreaterThanOrEqual(v, 0)
+            XCTAssertLessThan(v, 1)
+        }
+    }
+
+    func testSeededMapRandomDiffersAcrossSeeds() {
+        var a = SeededMapRandom(seed: 42)
+        var b = SeededMapRandom(seed: 7)
+        XCTAssertNotEqual(a.next(), b.next())
+    }
 }

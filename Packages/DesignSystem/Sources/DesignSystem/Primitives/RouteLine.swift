@@ -36,6 +36,35 @@ public struct RoutePolylineShape: Shape {
     }
 }
 
+// MARK: - Sample route fixture (screens.jsx:45-49 `buildSampleRoute()`)
+
+/// The prototype's fixed demo route — 12 points in a 402×600 map-space,
+/// reused by several screens/vignettes (screens.jsx `buildSampleRoute()`,
+/// used by the story-deck vignettes `VigLiveMap`/`VigTrack`, tutorials.jsx).
+public enum MRTSampleRoute {
+    public static let points: [CGPoint] = [
+        CGPoint(x: 34, y: 92), CGPoint(x: 62, y: 130), CGPoint(x: 88, y: 170),
+        CGPoint(x: 120, y: 196), CGPoint(x: 150, y: 234), CGPoint(x: 184, y: 268),
+        CGPoint(x: 212, y: 304), CGPoint(x: 240, y: 348), CGPoint(x: 262, y: 388),
+        CGPoint(x: 288, y: 426), CGPoint(x: 322, y: 462), CGPoint(x: 358, y: 498),
+    ]
+
+    /// The route's native coordinate space — the jsx's SVG `viewBox="0 0 402 600"`.
+    public static let sourceSize = CGSize(width: 402, height: 600)
+
+    /// Maps `points` into a `target` frame the way the jsx's map-vignette SVG
+    /// does (`preserveAspectRatio="xMidYMid slice"`, tutorials.jsx:27,186):
+    /// uniform scale to **cover** the target, then center-crop.
+    public static func sliced(into target: CGSize) -> [CGPoint] {
+        guard sourceSize.width > 0, sourceSize.height > 0 else { return points }
+        let scale = max(target.width / sourceSize.width, target.height / sourceSize.height)
+        let scaledSize = CGSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
+        let dx = (target.width - scaledSize.width) / 2
+        let dy = (target.height - scaledSize.height) / 2
+        return points.map { CGPoint(x: $0.x * scale + dx, y: $0.y * scale + dy) }
+    }
+}
+
 public struct RouteLine: View {
     private let points: [CGPoint]
     private let progress: Double

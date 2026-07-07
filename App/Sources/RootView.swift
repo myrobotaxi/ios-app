@@ -19,8 +19,12 @@ enum AppScreen: Hashable {
     case addTesla
     /// Rider join flow (app.jsx 'inviteCode').
     case inviteCode
-    /// Temporary M1 post-flow destination — MYR-166 replaces it with the
-    /// Owner/Rider tutorials, then the home map (owner) / shared map (rider).
+    /// Post-pairing walkthrough (tutorials.jsx OwnerTutorial), 5 cards.
+    case ownerTutorial
+    /// Post-join walkthrough (tutorials.jsx RiderTutorial), 5 cards.
+    case riderTutorial
+    /// Temporary M1 post-tutorial destination — a later issue replaces it
+    /// with the home map (owner) / shared map (rider).
     case signedInPlaceholder
 }
 
@@ -53,26 +57,34 @@ struct RootView: View {
                     onInvite: { screen = .inviteCode }
                 )
             case .addTesla:
-                // app.jsx:94 — onComplete → OwnerTutorial (MYR-166; placeholder
-                // until it lands), onCancel → back to the choice screen.
+                // app.jsx:94 — onComplete → OwnerTutorial, onCancel → back to
+                // the choice screen.
                 AddTeslaFlow(
                     onComplete: {
                         role = .owner
-                        screen = .signedInPlaceholder
+                        screen = .ownerTutorial
                     },
                     onCancel: { screen = .emptyState }
                 )
             case .inviteCode:
-                // app.jsx:98-101 — onComplete → RiderTutorial (MYR-166;
-                // placeholder until it lands). The `returning` variant (from
-                // rider Settings) arrives with the Settings screen's issue.
+                // app.jsx:98-101 — onComplete → RiderTutorial. The `returning`
+                // variant (from rider Settings) arrives with the Settings
+                // screen's issue and skips the tutorial entirely.
                 InviteCodeFlow(
                     onComplete: {
                         role = .shared
-                        screen = .signedInPlaceholder
+                        screen = .riderTutorial
                     },
                     onCancel: { screen = .emptyState }
                 )
+            case .ownerTutorial:
+                // tutorials.jsx:363 — onDone (Continue on the last card, or
+                // Skip) → Live Map (placeholder until that issue lands).
+                OwnerTutorial(onDone: { screen = .signedInPlaceholder })
+            case .riderTutorial:
+                // tutorials.jsx:374 — onDone → Shared Live Map (placeholder
+                // until that issue lands).
+                RiderTutorial(onDone: { screen = .signedInPlaceholder })
             case .signedInPlaceholder:
                 TokenShowcase()
             }

@@ -10,54 +10,13 @@ import DesignSystem
 // styles, so the fallback design is ours: loops freeze to their resting
 // look, one-shot entrances become plain fades).
 
-// MARK: Gold wash
-
-/// Brand gold wash shared by every onboarding surface (onboarding.jsx:10-13;
-/// EmptyScreen uses the 380pt variant, screens.jsx:261):
-/// radial-gradient(140% 100% at 50% -20%, goldGlow3 0%, transparent 65%).
-struct OnboardingGoldWash: View {
-    var height: CGFloat = 360
-
-    var body: some View {
-        RadialGradient(
-            stops: [
-                .init(color: .mrtGoldGlowSoft, location: 0),
-                .init(color: Color.mrtGoldGlowSoft.opacity(0), location: 0.65),
-            ],
-            center: UnitPoint(x: 0.5, y: -0.2),
-            startRadius: 0,
-            endRadius: height
-        )
-        // rx = 140% of width vs ry = height ⇒ stretch x around the gradient
-        // center to make the CSS ellipse (same approach as SignInScreen).
-        .scaleEffect(x: 1.48, y: 1, anchor: UnitPoint(x: 0.5, y: -0.2))
-        .frame(height: height)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .allowsHitTesting(false)
-    }
-}
-
-// MARK: Top action
-
-/// Small ghost "Skip / Cancel" affordance, top-right (onboarding.jsx:16-24;
-/// top 82, right 20, 15/500 textSec). Padded out to the 44pt hit target.
-struct OnboardingTopAction: View {
-    let label: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Text(label)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(Color.mrtTextSec)
-                .padding(6)
-                .frame(minWidth: MRTMetrics.minTapTarget, minHeight: MRTMetrics.minTapTarget)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-        .padding(.top, MRTMetrics.onboardingTopActionTop - 6)
-        .padding(.trailing, 20 - 6)
-    }
-}
+// MARK: Gold wash + top action
+//
+// Promoted to DesignSystem (MYR-166) so the StoryDeck tutorials can reuse
+// them instead of forking a second copy — see `DesignSystem/GoldWash.swift`.
+// Kept as onboarding-named aliases so every call site below is unchanged.
+typealias OnboardingGoldWash = MRTGoldWash
+typealias OnboardingTopAction = MRTTopAction
 
 // MARK: Expanding pulses
 
