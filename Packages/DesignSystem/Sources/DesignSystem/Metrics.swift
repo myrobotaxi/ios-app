@@ -63,4 +63,25 @@ public enum MRTMetrics {
     public static let onboardingGutter: CGFloat = 30
     /// Top-right ghost Skip/Cancel offset (onboarding.jsx:19 `top: 82`).
     public static let onboardingTopActionTop: CGFloat = 82
+
+    // MARK: Tutorials / StoryDeck (MYR-166, design/app/tutorials.jsx)
+
+    /// Vignette shell (`MiniScreen`) corner radius (tutorials.jsx:11).
+    public static let vignetteRadius: CGFloat = 28
+    /// Kicker row distance from the top (tutorials.jsx:320 `top: 84`).
+    public static let storyKickerTop: CGFloat = 84
+    /// Kicker row left inset (tutorials.jsx:320 `left: 26`).
+    public static let storyKickerGutter: CGFloat = 26
+    /// Swipe surface top padding, clears the kicker/Skip row (tutorials.jsx:327
+    /// `paddingTop: 128`).
+    public static let storyContentTop: CGFloat = 128
+    /// Swipe surface bottom padding (tutorials.jsx:327 `paddingBottom: 34`).
+    public static let storyContentBottom: CGFloat = 34
+    /// Page-dot active width (tutorials.jsx:345).
+    public static let storyDotActiveWidth: CGFloat = 22
+    /// Page-dot size (both axes for an inactive dot, height for the active
+    /// pill) (tutorials.jsx:345).
+    public static let storyDotSize: CGFloat = 7
+    /// Gap between page dots (tutorials.jsx:342).
+    public static let storyDotGap: CGFloat = 7
 }

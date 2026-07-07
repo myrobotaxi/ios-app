@@ -66,6 +66,16 @@ final class TokenTests: XCTestCase {
             ("browserGlyph", 0x3A3A3C, .mrtBrowserGlyph), // jsx:102
             ("linkBlue", 0x0A84FF, .mrtLinkBlue), // jsx:99
             ("consentGreen", 0x34A853, .mrtConsentGreen), // jsx:166
+            // MYR-166 — map backdrop (design/app/components.jsx MapBackground)
+            ("mapLand", 0x1B1D21, .mrtMapLand), // components.jsx:359
+            ("mapPark", 0x18221A, .mrtMapPark), // components.jsx:369
+            ("mapStreet", 0x26282D, .mrtMapStreet), // components.jsx:374
+            ("mapCollectorCasing", 0x2E3138, .mrtMapCollectorCasing), // components.jsx:376
+            ("mapCollectorFill", 0x3C4049, .mrtMapCollectorFill), // components.jsx:377
+            ("mapFreewayCasing", 0x2A2519, .mrtMapFreewayCasing), // components.jsx:381
+            ("mapFreewayFill", 0x4C4330, .mrtMapFreewayFill), // components.jsx:382
+            ("mapWater", 0x0E1A26, .mrtMapWater), // components.jsx:385
+            ("mapCoast", 0x16273A, .mrtMapCoast), // components.jsx:386
         ]
 
         for (name, hex, color) in cases {
@@ -115,6 +125,18 @@ final class TokenTests: XCTestCase {
             ("goldCardTintFaint", CGFloat(0x0A) / 255.0, .mrtGoldCardTintFaint), // screens.jsx:272
             ("goldIconTile", CGFloat(0x26) / 255.0, .mrtGoldIconTile), // screens.jsx:276
             ("goldBorderQuiet", CGFloat(0x2E) / 255.0, .mrtGoldBorderQuiet), // screens.jsx:273
+            // MYR-166 — tutorials (design/app/tutorials.jsx) — vignette shell
+            ("vigCardBorder", 0.10, .mrtVigCardBorder), // tutorials.jsx:13
+            ("vigRowFill", 0.05, .mrtVigRowFill), // tutorials.jsx:59
+            ("vigRowBorder", 0.08, .mrtVigRowBorder), // tutorials.jsx:59
+            ("vigControlFill", 0.06, .mrtVigControlFill), // tutorials.jsx:127
+            ("vigControlBorder", 0.12, .mrtVigControlBorder), // tutorials.jsx:127
+            ("vigTileOff", 0.04, .mrtVigTileOff), // tutorials.jsx:148
+            ("goldTileFaint", 0.12, .mrtGoldTileFaint), // tutorials.jsx:60
+            // MYR-166 — map backdrop labels (design/app/components.jsx MapBackground)
+            ("mapLabelOcean", 0.36, .mrtMapLabelOcean), // components.jsx:389
+            ("mapLabelPark", 0.4, .mrtMapLabelPark), // components.jsx:390
+            ("mapLabelStreet", 0.26, .mrtMapLabelStreet), // components.jsx:391
         ]
         for (name, alpha, color) in cases {
             var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
@@ -129,6 +151,10 @@ final class TokenTests: XCTestCase {
             ("navBarFill", 0x161619, 0.92, .mrtNavBarFill), // rgba(22,22,25,0.92)
             ("navHairline", 0xFFFFFF, 0.09, .mrtNavHairline), // rgba(255,255,255,0.09)
             ("navInactive", 0xC4AC6C, 0.62, .mrtNavInactive), // rgba(196,172,108,0.62)
+            // MYR-166 — tutorials (design/app/tutorials.jsx) — vignette shell
+            ("vigCardTop", 0x222228, 0.9, .mrtVigCardTop), // rgba(34,34,40,0.9), tutorials.jsx:12
+            ("vigCardBottom", 0x101014, 0.92, .mrtVigCardBottom), // rgba(16,16,20,0.92), tutorials.jsx:12
+            ("vigStatusPill", 0x141418, 0.66, .mrtVigStatusPill), // rgba(20,20,24,0.66), tutorials.jsx:35
         ]
         for (name, hex, alpha, color) in cases {
             var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
@@ -171,6 +197,18 @@ final class TokenTests: XCTestCase {
     /// (onboarding.jsx:30).
     func testPairStepperLabels() {
         XCTAssertEqual(PairStepper.defaultSteps, ["Sign in", "Linked", "Virtual key", "Paired"])
+    }
+
+    /// MYR-166 — StoryDeck layout constants (design/app/tutorials.jsx:11,320,327,342,345).
+    func testTutorialMetrics() {
+        XCTAssertEqual(MRTMetrics.vignetteRadius, 28)
+        XCTAssertEqual(MRTMetrics.storyKickerTop, 84)
+        XCTAssertEqual(MRTMetrics.storyKickerGutter, 26)
+        XCTAssertEqual(MRTMetrics.storyContentTop, 128)
+        XCTAssertEqual(MRTMetrics.storyContentBottom, 34)
+        XCTAssertEqual(MRTMetrics.storyDotActiveWidth, 22)
+        XCTAssertEqual(MRTMetrics.storyDotSize, 7)
+        XCTAssertEqual(MRTMetrics.storyDotGap, 7)
     }
 
     func testTypeScaleClamps() {
