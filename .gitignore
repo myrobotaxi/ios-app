@@ -1,5 +1,5 @@
-# Xcode
-*.xcodeproj/xcuserdata/
+# Xcode — the project is generated from project.yml (XcodeGen); do not commit it
+*.xcodeproj/
 *.xcworkspace/xcuserdata/
 xcuserdata/
 DerivedData/
