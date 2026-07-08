@@ -137,6 +137,15 @@ final class TokenTests: XCTestCase {
             ("mapLabelOcean", 0.36, .mrtMapLabelOcean), // components.jsx:389
             ("mapLabelPark", 0.4, .mrtMapLabelPark), // components.jsx:390
             ("mapLabelStreet", 0.26, .mrtMapLabelStreet), // components.jsx:391
+            // MYR-167 — Live Map (design/app/screens.jsx MapHeader/FloatingMapButton)
+            ("mapChipBorder", 0.14, .mrtMapChipBorder), // screens.jsx:308
+            ("mapChipBorderActive", CGFloat(0x77) / 255.0, .mrtMapChipBorderActive), // screens.jsx:308
+            ("mapChipChevronFill", 0.08, .mrtMapChipChevronFill), // screens.jsx:313
+            ("mapPickerDivider", 0.07, .mrtMapPickerDivider), // screens.jsx:333
+            ("mapPickerRowActive", CGFloat(0x14) / 255.0, .mrtMapPickerRowActive), // screens.jsx:332
+            ("mapPickerIconActive", CGFloat(0x22) / 255.0, .mrtMapPickerIconActive), // screens.jsx:335
+            ("mapPickerIconInactive", 0.06, .mrtMapPickerIconInactive), // screens.jsx:335
+            ("mapCompassLabel", 0.25, .mrtMapCompassLabel), // components.jsx:407
         ]
         for (name, alpha, color) in cases {
             var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
@@ -155,6 +164,10 @@ final class TokenTests: XCTestCase {
             ("vigCardTop", 0x222228, 0.9, .mrtVigCardTop), // rgba(34,34,40,0.9), tutorials.jsx:12
             ("vigCardBottom", 0x101014, 0.92, .mrtVigCardBottom), // rgba(16,16,20,0.92), tutorials.jsx:12
             ("vigStatusPill", 0x141418, 0.66, .mrtVigStatusPill), // rgba(20,20,24,0.66), tutorials.jsx:35
+            // MYR-167 — Live Map chip/picker (design/app/screens.jsx MapHeader)
+            ("mapChipFill", 0x141418, 0.72, .mrtMapChipFill), // rgba(20,20,24,0.72), screens.jsx:307
+            ("mapPickerFill", 0x18181C, 0.92, .mrtMapPickerFill), // rgba(24,24,28,0.92), screens.jsx:324
+            ("floatButtonFill", 0x111111, 0.85, .mrtFloatButtonFill), // rgba(17,17,17,0.85), design.jsx:95
         ]
         for (name, hex, alpha, color) in cases {
             var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
@@ -209,6 +222,21 @@ final class TokenTests: XCTestCase {
         XCTAssertEqual(MRTMetrics.storyDotActiveWidth, 22)
         XCTAssertEqual(MRTMetrics.storyDotSize, 7)
         XCTAssertEqual(MRTMetrics.storyDotGap, 7)
+    }
+
+    /// MYR-167 — Live Map layout constants (design/app/screens.jsx:302,306,
+    /// 323,400-401,424; vehicle-controls.jsx:24-41 for the placeholder;
+    /// screens.jsx:542 for the sheet content bottom padding).
+    func testLiveMapMetrics() {
+        XCTAssertEqual(MRTMetrics.mapHeaderTop, 60)
+        XCTAssertEqual(MRTMetrics.mapChipHeight, 40)
+        XCTAssertEqual(MRTMetrics.mapPickerWidth, 250)
+        XCTAssertEqual(MRTMetrics.homePeekHeightDriving, 280)
+        XCTAssertEqual(MRTMetrics.homePeekHeightParked, 210)
+        XCTAssertEqual(MRTMetrics.homeHalfHeightFraction, 0.58)
+        XCTAssertEqual(MRTMetrics.mapButtonBottomGap, 80)
+        XCTAssertEqual(MRTMetrics.homeControlsPlaceholderHeight, 84)
+        XCTAssertEqual(MRTMetrics.homeSheetContentBottomPadding, 100)
     }
 
     func testTypeScaleClamps() {

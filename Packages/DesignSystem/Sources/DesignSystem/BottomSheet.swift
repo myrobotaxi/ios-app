@@ -159,6 +159,7 @@ public struct MRTDetentSheet<Content: View>: View {
     @Binding private var detent: MRTSheetDetent
     private let peekHeight: CGFloat
     private let halfHeight: CGFloat?
+    private let halfHeightFraction: CGFloat
     private let content: Content
 
     /// Live drag delta in points (positive = taller than the resting detent).
@@ -169,17 +170,22 @@ public struct MRTDetentSheet<Content: View>: View {
         detent: Binding<MRTSheetDetent>,
         peekHeight: CGFloat = MRTMetrics.sheetPeekHeight,
         halfHeight: CGFloat? = nil,
+        /// Fraction of the container height used for the half detent when
+        /// `halfHeight` is nil. Default 0.5; the Live Map screen passes
+        /// `MRTMetrics.homeHalfHeightFraction` (0.58, screens.jsx:401).
+        halfHeightFraction: CGFloat = 0.5,
         @ViewBuilder content: () -> Content
     ) {
         _detent = detent
         self.peekHeight = peekHeight
         self.halfHeight = halfHeight
+        self.halfHeightFraction = halfHeightFraction
         self.content = content()
     }
 
     public var body: some View {
         GeometryReader { geo in
-            let half = halfHeight ?? geo.size.height * 0.5
+            let half = halfHeight ?? geo.size.height * halfHeightFraction
             let base = detent == .peek ? peekHeight : half
             // Rubber-band 30pt past either detent, like the prototype.
             let height = min(half + 30, max(peekHeight - 30, base + dragOffset))

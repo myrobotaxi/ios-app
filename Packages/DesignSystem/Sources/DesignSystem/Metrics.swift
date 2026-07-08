@@ -84,4 +84,32 @@ public enum MRTMetrics {
     public static let storyDotSize: CGFloat = 7
     /// Gap between page dots (tutorials.jsx:342).
     public static let storyDotGap: CGFloat = 7
+
+    // MARK: Live Map (MYR-167, design/app/screens.jsx HomeScreen/MapHeader)
+
+    /// MapHeader distance from the top of the screen (screens.jsx:302 `top: 60`).
+    public static let mapHeaderTop: CGFloat = 60
+    /// Vehicle-switcher chip height (screens.jsx:306 `height: 40`).
+    public static let mapChipHeight: CGFloat = 40
+    /// Vehicle-switcher picker menu width (screens.jsx:323 `width: 250`).
+    public static let mapPickerWidth: CGFloat = 250
+    /// Sheet peek height while driving (screens.jsx:400 `peekH`).
+    public static let homePeekHeightDriving: CGFloat = 280
+    /// Sheet peek height while parked, "floating" style — the only
+    /// `parkedStyle` variant this app ships (screens.jsx:400,369 default).
+    public static let homePeekHeightParked: CGFloat = 210
+    /// Sheet half-detent as a fraction of the map container's height
+    /// (screens.jsx:401 `Math.round(mapHeight * 0.58)`).
+    public static let homeHalfHeightFraction: CGFloat = 0.58
+    /// Recenter `FloatingMapButton` clearance above the sheet peek
+    /// (screens.jsx:424 `bottom={peekH + 80}`).
+    public static let mapButtonBottomGap: CGFloat = 80
+    /// Reserved height for the half-detent `VehicleControls` placeholder —
+    /// approximates one `ControlTile` row (vehicle-controls.jsx:24-41: 20pt
+    /// icon + 8pt gap + two text lines + 13/12pt vertical padding), which
+    /// MYR-168 fills in.
+    public static let homeControlsPlaceholderHeight: CGFloat = 84
+    /// Sheet scroll-content bottom clearance above the floating tab bar
+    /// (screens.jsx:542 `padding: '6px 24px 100px'`).
+    public static let homeSheetContentBottomPadding: CGFloat = 100
 }
