@@ -43,6 +43,19 @@ struct VehicleMapView: View {
     /// `SharedViewerScreen.backgroundMap` opts out, mirroring `showRoute`'s
     /// identical default/opt-out shape immediately above.
     var showVehicle: Bool = true
+    /// MYR-199 fix (client QA round 4): the rider's idle/search/pinDrop map
+    /// was centering the camera — and RE-centering it every progress tick
+    /// (`.onChange(of: progressBucket)` below) — on the watched vehicle's
+    /// live simulated-driving position, even though `showVehicle`/`showRoute`
+    /// are both `false` at that call site (MYR-197/198 privacy rulings), so
+    /// nothing was ever drawn to explain why the map kept visibly panning
+    /// down the vehicle's route. Client QA: "why is the map moving around
+    /// when there's no ride booked… map should be set to the user's current
+    /// location." Fix: an optional static override coordinate — when set,
+    /// the camera centers there once (`onAppear`) and never re-centers on
+    /// vehicle telemetry; when `nil` (the owner's `HomeScreen` call site,
+    /// unchanged), legacy vehicle-follow behavior.
+    var centerOverride: CLLocationCoordinate2D?
     /// Reserved height along the bottom edge the sheet now physically
     /// covers (MYR-196 punch-list #2, `MRTDetentSheet`'s
     /// `.ignoresSafeArea(edges: .bottom)`). `MKMapView` reads its own
@@ -110,6 +123,9 @@ struct VehicleMapView: View {
         }
         .onAppear { recenter(animated: false) }
         .onChange(of: progressBucket) { _, _ in
+            // MYR-199 fix: a static `centerOverride` never re-centers on the
+            // ticking vehicle telemetry — see that property's header comment.
+            guard centerOverride == nil else { return }
             if isFollowing { recenter(animated: true) }
         }
         .onChange(of: isFollowing) { _, following in
@@ -163,7 +179,7 @@ struct VehicleMapView: View {
         // Covers the 0.8s animation plus slack for `.onEnd`'s async delivery.
         programmaticCameraUntil = Date().addingTimeInterval(1.2)
         let region = MKCoordinateRegion(
-            center: vehiclePosition.coordinate,
+            center: centerOverride ?? vehiclePosition.coordinate,
             span: MKCoordinateSpan(latitudeDelta: 0.06, longitudeDelta: 0.06)
         )
         if animated, !reduceMotion {

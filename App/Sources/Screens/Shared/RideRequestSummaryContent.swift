@@ -88,7 +88,13 @@ struct RideRequestSummaryContent: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 5) {
                         RideEyebrowText(text: "You rode in", size: 9.5)
-                        Text("\(fleetMember.model) \(fleetMember.name)")
+                        // MYR-199 fix: jsx (ride-request.jsx:989) headlines
+                        // on the paint-color nickname + model name alone —
+                        // `{carColor} {carName}` (e.g. "Quicksilver Model
+                        // Y"), no year/make subline here (unlike Booking/
+                        // Tracking's rows) — this was rendering "{model}
+                        // {name}" instead.
+                        Text("\(fleetMember.colorName) \(fleetMember.name)")
                             .font(.system(size: 15, weight: .semibold))
                             .tracking(-0.3)
                             .foregroundStyle(Color.mrtText)

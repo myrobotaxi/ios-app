@@ -38,7 +38,10 @@ struct RideRequestSearchContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            RideGrabHandle()
+            // MYR-199 fix: drag-down-to-dismiss — ride-request.jsx:1150
+            // `d > 36 && phase === 'search'` → `closeToIdle()` (full draft
+            // reset back to the greeting sheet).
+            RideGrabHandle(onDragDismiss: { viewerState.resetDraftToIdle() })
             chipRow
                 .padding(.bottom, viewerState.draftSchedule != nil ? 8 : 12)
             if let schedule = viewerState.draftSchedule {
@@ -51,6 +54,20 @@ struct RideRequestSearchContent: View {
             }
             routeCard
                 .padding(.bottom, 10)
+            // MYR-199 fix: client QA reported the results list "stopping
+            // short" with dead sheet surface below and a clipped last row.
+            // This `ScrollView` itself already sized/scrolled correctly —
+            // the actual cause was `VehicleMapView`'s camera continuously
+            // re-centering on the watched vehicle's ticking
+            // simulated-driving position on every telemetry tick (~30Hz),
+            // even though this idle/search map never draws that vehicle at
+            // all (see `VehicleMapView.centerOverride`'s header comment).
+            // That drove a ~30Hz re-render of the whole `SharedViewerScreen`
+            // tree underneath this sheet, which is what made the list feel
+            // stuck instead of scrolling smoothly to reveal Nearby. Fixed at
+            // the source — the map now holds a static "current location"
+            // camera while idle/searching, so this list scrolls its full
+            // content height exactly like the prototype.
             ScrollView {
                 resultsList
                     .padding(.bottom, 16)

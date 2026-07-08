@@ -50,16 +50,24 @@ public struct FleetMember: Identifiable, Sendable, Equatable {
     public let relationship: String // jsx `rel`
     public let name: String // "Model Y"
     public let model: String // "2025 Tesla" style long name, ride-request.jsx PendingContent
+    /// jsx `FLEET[].color` — the vehicle's paint color (e.g. "Quicksilver"),
+    /// distinct from `owner`/`name`. `PendingContent`/`TrackingContent`'s
+    /// "Your ride"/"Look for" card headlines on `{colorName} {name}` (e.g.
+    /// "Quicksilver Model Y"), subline on `model` alone (ride-request.jsx
+    /// 606-607,762-763 `vColor`/`carColor` + `vYearMake`/`carYearMake`) — see
+    /// `RideRequestTrackingContent.rideRow`'s MYR-199 fix comment.
+    public let colorName: String
     public let battery: Int
     public let etaMin: Int
     public let plate: String
 
-    public init(id: String, owner: String, relationship: String, name: String, model: String, battery: Int, etaMin: Int, plate: String) {
+    public init(id: String, owner: String, relationship: String, name: String, model: String, colorName: String, battery: Int, etaMin: Int, plate: String) {
         self.id = id
         self.owner = owner
         self.relationship = relationship
         self.name = name
         self.model = model
+        self.colorName = colorName
         self.battery = battery
         self.etaMin = etaMin
         self.plate = plate
@@ -114,9 +122,9 @@ public enum RideRequestFixtures {
     /// design/app/screens.jsx:15-19 `FLEET` — the Teslas shared with the
     /// rider. `fleet[0]` is the default selection in Review.
     public static let fleet: [FleetMember] = [
-        FleetMember(id: "alex", owner: "Alex", relationship: "Roommate", name: "Model Y", model: "2025 Tesla", battery: 68, etaMin: 3, plate: "RBO-2046"),
-        FleetMember(id: "mom", owner: "Mom", relationship: "Family", name: "Model Y", model: "2024 Tesla", battery: 91, etaMin: 8, plate: "RBO-7731"),
-        FleetMember(id: "jordan", owner: "Jordan", relationship: "Friend", name: "Model 3", model: "2023 Tesla", battery: 54, etaMin: 12, plate: "RBO-4419"),
+        FleetMember(id: "alex", owner: "Alex", relationship: "Roommate", name: "Model Y", model: "2025 Tesla", colorName: "Quicksilver", battery: 68, etaMin: 3, plate: "RBO-2046"),
+        FleetMember(id: "mom", owner: "Mom", relationship: "Family", name: "Model Y", model: "2024 Tesla", colorName: "Pearl White", battery: 91, etaMin: 8, plate: "RBO-7731"),
+        FleetMember(id: "jordan", owner: "Jordan", relationship: "Friend", name: "Model 3", model: "2023 Tesla", colorName: "Midnight Silver", battery: 54, etaMin: 12, plate: "RBO-4419"),
     ]
 
     /// design/app/ride-request.jsx:36-39 `RECENT_PASSENGERS`.

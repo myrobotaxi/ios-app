@@ -140,6 +140,13 @@ struct SharedViewerScreen: View {
                 isFollowing: $isFollowing,
                 showRoute: false, // MYR-197: no route/trip line on the rider's idle map before a ride is booked — see VehicleMapView.showRoute's header comment
                 showVehicle: false, // MYR-198 client ruling: no vehicle marker/label pre-acceptance — see VehicleMapView.showVehicle's header comment
+                // MYR-199 fix: pin the camera on the rider's own current
+                // location (M1 fixture stand-in — no real GPS in this milestone,
+                // reuses the same SF coordinate `RideRequestFixtures
+                // .savedPlaces[0]` ("Home") already points at) instead of
+                // silently following the watched vehicle's simulated driving
+                // route — see VehicleMapView.centerOverride's header comment.
+                centerOverride: DriveFixtures.home,
                 bottomContentInset: mapBottomInset
             )
         case .review, .booking:
@@ -229,6 +236,30 @@ struct SharedViewerScreen: View {
     // greeting/search/quick-places give way to a status pill
     // (ride-request.jsx's minimized-map "booked" state,
     // `.shots/prototype/07_idle_pending_pill.png`).
+    //
+    // MYR-199 fix (client QA round 4): this sheet used a FIXED height
+    // (`sharedIdleSheetHeight`, 286 — sized for the greeting + search bar +
+    // quick places content) unconditionally, including for the much shorter
+    // pending-pill content. That left the pill sitting in an oversized card
+    // with a dead gap of empty sheet surface between it and the floating
+    // nav. The jsx itself shortens `idleHeight` when a request is active
+    // (screens.jsx:2078 `reqActive ? 246 : 286`) — but that 246 is sized for
+    // ITS content (greeting kept + pill), not this app's simplified
+    // pill-only card (MYR-191 deliberately swaps the greeting out for the
+    // pill rather than stacking both — see this section's header comment),
+    // so porting 246 verbatim would still leave a mismatched gap. Instead:
+    // drop the fixed height for the pending case and let the sheet hug its
+    // (much shorter) pill content — the same content-sizing recipe
+    // Review/Booking/Tracking already use for their 'auto'-height phases.
+    // Top/bottom padding stay the same 14/98 either way — 98 is the nav
+    // clearance amount validated against the greeting sheet (nav floats
+    // within the sheet's own bottom padding, not past its content), so
+    // keeping it means the pill card still clears the floating nav
+    // correctly even though the sheet is now much shorter overall.
+
+    private var isPendingPill: Bool {
+        rideRequestService.activeRequest?.status == .pending
+    }
 
     private var idleSheet: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -239,13 +270,32 @@ struct SharedViewerScreen: View {
                     .padding(.bottom, 16)
                 searchBar
                 quickPlaces
+                // MYR-199 fix: this `Spacer` is what actually enforces the
+                // fixed `sharedIdleSheetHeight` (286) below — it's the
+                // flexible child a VStack needs to consume the "extra"
+                // proposed height rather than just hugging content.
+                // Scoping it to this (greeting) branch only was the missing
+                // piece: with the pill branch above ALSO having a trailing
+                // `Spacer`, `.frame(height: nil)` alone didn't stop it from
+                // greedily expanding — the outer bottom-pinning wrapper
+                // (`.frame(maxWidth:.infinity, maxHeight:.infinity,
+                // alignment:.bottom)` a few modifiers down) still proposes
+                // this VStack nearly the full screen height, and a `Spacer`
+                // anywhere inside happily consumes all of it regardless of
+                // the `nil` height frame. Without a flexible child at all,
+                // the pill branch's VStack now reports its own hugged
+                // (small) ideal size no matter what's proposed, and that
+                // wrapper's `alignment: .bottom` positions the
+                // already-compact card at the sheet's bottom — the same
+                // "hug content, get bottom-pinned by the outer frame" recipe
+                // Booking/Tracking's content-sized phases already rely on.
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
         }
         .padding(.horizontal, 22)
         .padding(.top, 14)
         .padding(.bottom, 98)
-        .frame(height: MRTMetrics.sharedIdleSheetHeight)
+        .frame(height: isPendingPill ? nil : MRTMetrics.sharedIdleSheetHeight)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(idleSheetBackground)
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: MRTMetrics.sheetRadius, topTrailingRadius: MRTMetrics.sheetRadius, style: .continuous))

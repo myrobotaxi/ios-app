@@ -79,9 +79,34 @@ extension View {
     }
 }
 
-// MARK: - Grab handle (ride-request.jsx:1189 — every phase but idle/tracking)
-
+// MARK: - Grab handle (ride-request.jsx:1189-1198 `onHandleDown` — every
+// phase but idle/tracking)
+//
+// MYR-199 fix (client QA round 4): the handle was purely decorative — no
+// drag gesture wired up anywhere, so none of the phases that render it
+// (Search/PinDrop/Review/Booking) supported drag-to-dismiss at all. The jsx's
+// `onHandleDown` (ride-request.jsx:1140-1163) tracks a pointer-down→move→up
+// delta and, on release, only acts for two phases: `search` (drag down >36px
+// → `closeToIdle()`, a full draft reset) and `tracking`/`pending` (drag down
+// >36px → `setPhase('idle')`, no reset — the sheet minimizes to the map, the
+// in-flight request keeps running). PinDrop/Review render the handle too but
+// have no matching branch in `onHandleDown`, so dragging them does nothing
+// in the jsx either — ported here as leaving `onDragDismiss` nil at those
+// call sites rather than inventing a dismiss behavior the design doesn't
+// have. (The jsx also drag-UP-reopens from `.idle`, but `.idle` never
+// renders this handle — `phase !== 'idle' && phase !== 'tracking'` — so that
+// branch is dead code in the source and isn't ported.)
 struct RideGrabHandle: View {
+    /// Nil = decorative only (PinDrop/Review). Non-nil = wired to the
+    /// matching phase's dismiss action (Search's `resetDraftToIdle()` /
+    /// Booking's `sheetPhase = .idle`) — see call sites.
+    var onDragDismiss: (() -> Void)?
+
+    /// ride-request.jsx:1150 `d > 36` — drag-down threshold before the
+    /// handle commits to dismissing (a light touch/scroll bounce shouldn't
+    /// trigger it).
+    private static let dismissThreshold: CGFloat = 36
+
     var body: some View {
         RoundedRectangle(cornerRadius: 2)
             .fill(Color.mrtElevated)
@@ -89,6 +114,14 @@ struct RideGrabHandle: View {
             .padding(.top, 8)
             .padding(.bottom, 6)
             .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 6)
+                    .onEnded { value in
+                        guard value.translation.height > Self.dismissThreshold else { return }
+                        onDragDismiss?()
+                    }
+            )
     }
 }
 
