@@ -80,6 +80,16 @@ struct RootView: View {
     /// `sharedTab` switch so the rider's watched vehicle keeps ticking
     /// telemetry across Ride History/Settings and back to Live Map.
     @State private var sharedViewerState = SharedViewerState()
+    /// MYR-171 — the M1↔M2 ride-request seam (`RideRequestService`'s header
+    /// comment). Lifted here, alongside every other role-scoped state above,
+    /// so the SAME instance is visible from both `SharedViewerScreen` (rider)
+    /// and `HomeScreen` (owner) — the mechanism that lets one simulated
+    /// request bridge across a role switch within a single app session.
+    @State private var rideRequestService = SimulatedRideRequestService()
+    /// MYR-171 — see `RideHistoryStore`'s header comment: lifted the same way
+    /// so a ride that finishes while the rider is on Live Map still lands in
+    /// Ride History.
+    @State private var rideHistoryStore = RideHistoryStore()
 
     var body: some View {
         ZStack {
@@ -177,7 +187,12 @@ struct RootView: View {
                         }
                     )
                 default:
-                    HomeScreen(homeState: ownerHomeState, ownerTab: $ownerTab)
+                    HomeScreen(
+                        homeState: ownerHomeState,
+                        ownerTab: $ownerTab,
+                        rideRequestService: rideRequestService,
+                        drivesState: ownerDrivesState
+                    )
                 }
             case .sharedHome:
                 // app.jsx:110-115 — SharedSettingsScreen owns the
@@ -198,14 +213,20 @@ struct RootView: View {
                         }
                     )
                 case "rideHistory":
-                    RideHistoryScreen(sharedTab: $sharedTab)
+                    RideHistoryScreen(sharedTab: $sharedTab, historyStore: rideHistoryStore)
                 default:
-                    SharedViewerScreen(viewerState: sharedViewerState, sharedTab: $sharedTab)
+                    SharedViewerScreen(
+                        viewerState: sharedViewerState,
+                        sharedTab: $sharedTab,
+                        rideRequestService: rideRequestService,
+                        historyStore: rideHistoryStore
+                    )
                 }
             }
         }
         .background(Color.mrtBg.ignoresSafeArea())
     }
+
 }
 
 #Preview {

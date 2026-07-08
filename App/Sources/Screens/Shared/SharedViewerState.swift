@@ -1,45 +1,86 @@
 import DesignSystem
 import Observation
 
-// MARK: - Rider sheet phase (MYR-191)
+// MARK: - Rider sheet phase (MYR-191, extended MYR-171)
 //
 // screens.jsx's `SharedViewerScreen` drives its expanding request sheet off
 // a local `phase` string (screens.jsx:1869 `useState(initialPhase || 'idle')`)
 // that `ExpandingRequestSheet` switches on (design/app/ride-request.jsx
 // 1218-1249: 'idle' | 'search' | 'pinDrop' | 'review' | 'pending' |
-// 'tracking'). This issue (MYR-191, "rider shell") ships only the resting
-// map + greeting sheet; the request→booking→tracking→summary flow is
-// MYR-171's scope. `RiderSheetPhase` is the seam: MYR-171 adds a case per
-// phase above (each backed by the same porting work `ExpandingRequestSheet`
-// already did in the prototype) and extends `SharedViewerScreen`'s body
-// switch to match — nothing about M1's `.idle` rendering needs to change.
+// 'tracking'). MYR-191 ("rider shell") shipped only the resting map +
+// greeting sheet (`.idle`); MYR-171 adds one case per remaining phase. Two
+// notes on naming vs. the jsx: (1) `.tracking`/`.summary` are split into two
+// cases here even though the jsx renders both from its single `'tracking'`
+// phase (switching content once `trackProgress >= 0.999`, ride-request.jsx:
+// 1125,1245 `isSummary`) — the split matches this story's own deliverable
+// list and keeps `SharedViewerScreen`'s switch exhaustive per rendered
+// layout; (2) `.pending` is named `.booking` to match CLAUDE.md's phase list
+// ("search, pinDrop, review, booking, tracking, summary") — same phase,
+// friendlier name for a case that's rendering a "Booking ride with {owner}"
+// title.
 public enum RiderSheetPhase: Equatable, Sendable {
     case idle
-    // MYR-171 adds: .search, .pinDrop, .review, .pending, .tracking
-    // (+ the requestState-driven .rejected banner).
+    case search
+    case pinDrop(returnTo: PinDropReturn)
+    case review
+    case booking
+    case tracking
+    case summary
 }
 
-// MARK: - Shared viewer state (MYR-191)
+/// Where `.pinDrop` returns to once the pickup pin is confirmed —
+/// ride-request.jsx's `pinReturn` (`'search'` from the pickup row's "Set on
+/// map"; `'review'` when a destination was picked with no pickup set yet, or
+/// from the idle sheet's Home/Work quick chips, screens.jsx:2195).
+public enum PinDropReturn: Equatable, Sendable {
+    case search
+    case review
+}
+
+// MARK: - Shared viewer state (MYR-191, extended MYR-171)
 //
-// Owns the rider's live-map telemetry + sheet phase, lifted above the
-// `sharedTab` switch in `RootView` — mirrors `OwnerHomeState`'s reasoning
-// (see that file's header comment) so the watched vehicle's ticking
-// telemetry survives switching to Ride History/Settings and back.
+// Owns the rider's live-map telemetry + sheet phase + in-progress request
+// draft, lifted above the `sharedTab` switch in `RootView` — mirrors
+// `OwnerHomeState`'s reasoning (see that file's header comment) so the
+// watched vehicle's ticking telemetry (and, as of MYR-171, the rider's place
+// in the request flow) survives switching to Ride History/Settings and back.
 @Observable
 @MainActor
 public final class SharedViewerState {
     /// The one shared vehicle the rider is watching on the live map
-    /// (screens.jsx:1865 `v = VEHICLES[0]`). Riders don't get a fleet
-    /// switcher on the idle map — `FLEET` (screens.jsx:15-19, the Teslas
-    /// shared with the rider) only comes into play once MYR-171's Review
-    /// step lets them choose whose Tesla to request; M1 fixes the rider's
-    /// view to the one shared vehicle, reusing the same fixture + telemetry
-    /// seam MYR-167 built for the owner's map.
+    /// (screens.jsx:1865 `v = VEHICLES[0]`). Distinct from `FLEET`
+    /// (screens.jsx:15-19, ported as `RideRequestFixtures.fleet`) — the
+    /// Teslas the rider can actually *request* in Review; M1 fixes the
+    /// resting map's view to this one vehicle regardless of which fleet
+    /// member ends up carrying an active request.
     public let vehicle: Vehicle
     public let telemetrySource: any VehicleTelemetrySource
 
     /// MYR-191 extension point — see `RiderSheetPhase`.
     public var sheetPhase: RiderSheetPhase = .idle
+
+    // MARK: MYR-171 — in-progress request draft
+    //
+    // Local UI-only fields the rider fills in across Search → PinDrop →
+    // Review before `RideRequestService.submit(_:)` stamps them into a
+    // shared `RideRequestRecord`. Kept here (not in the service) because
+    // they're per-device draft state with no cross-role meaning until
+    // submitted — mirrors `SharedViewerScreen`'s own local `useState`s in the
+    // jsx (`requestDest`, `requestPassenger`, …, screens.jsx:1866-1885).
+
+    public var draftPickup: RidePlace?
+    public var draftDestination: RidePlace?
+    public var draftFleetMemberID: String = RideRequestFixtures.fleet[0].id
+    public var draftPassenger: RidePassenger?
+    public var draftSchedule: RideSchedule?
+    /// Set by the idle sheet's Home/Work chips or Search's "Set on map" —
+    /// where `.pinDrop` should write its confirmed pin back into.
+    public var pinReturn: PinDropReturn = .search
+    /// Drives `DeclinedNotice`'s overlay on `.search` (ride-request.jsx:
+    /// 1254-1258) — a rejected request shows this once, then the rider
+    /// dismisses or rebooks; it isn't a `RiderSheetPhase` case of its own
+    /// (the jsx overlays it on top of `search`, not a separate screen).
+    public var showDeclinedNotice = false
 
     public init(vehicle: Vehicle = VehicleFixtures.vehicles[0]) {
         self.vehicle = vehicle
@@ -50,4 +91,15 @@ public final class SharedViewerState {
 
     public func startTelemetry() { telemetrySource.start() }
     public func stopTelemetry() { telemetrySource.stop() }
+
+    /// Resets the draft + returns to `.idle` — ride-request.jsx `closeToIdle`.
+    public func resetDraftToIdle() {
+        sheetPhase = .idle
+        draftPickup = nil
+        draftDestination = nil
+        draftFleetMemberID = RideRequestFixtures.fleet[0].id
+        draftPassenger = nil
+        draftSchedule = nil
+        showDeclinedNotice = false
+    }
 }

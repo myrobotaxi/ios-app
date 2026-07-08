@@ -1,0 +1,116 @@
+import SwiftUI
+import DesignSystem
+
+// MARK: - RideRequestPinDropContent (MYR-171, design/app/ride-request.jsx
+// PinDropContent 719-739)
+//
+// Compact sheet shown while choosing pickup on the map. `RidePinDropMapOverlay`
+// is the center-fixed pin drawn over the map layer itself (in
+// `SharedViewerScreen`'s ZStack, not this sheet).
+struct RideRequestPinDropContent: View {
+    @Bindable var viewerState: SharedViewerState
+    let returnTo: PinDropReturn
+    var totalHeight: CGFloat?
+
+    /// M1 scope simplification (explicitly allowed by the story spec): the
+    /// jsx picks one of `PIN_SPOTS` deterministically off drag distance —
+    /// this app has no drag-to-move-the-pin gesture yet, so the pin always
+    /// resolves to `pinSpots[0]`, matching the prototype capture's own
+    /// default (`.shots/prototype/03_after_dest_select.png` → "Folsom & 2nd St").
+    static let pinAddress = RideRequestFixtures.pinSpots[0]
+
+    var body: some View {
+        // MYR-171 fix: this phase's content is short and fixed (no list to
+        // scroll) — ride-request.jsx:1119-1131 sizes it to content ('auto'),
+        // not to a fraction of the screen. A `ScrollView` here (even with a
+        // `.frame(maxHeight:)` cap) greedily claims the full proposed
+        // height regardless of content size, which both stretched this
+        // sheet to ~88% of the screen (a large empty scrollable area below
+        // the actual content) and pushed its top edge up into the map pin
+        // overlay's fixed position. A plain `VStack` hugs its own content
+        // height instead, matching the jsx's 'auto'.
+        VStack(alignment: .leading, spacing: 0) {
+            RideGrabHandle()
+
+            HStack(spacing: 11) {
+                Circle()
+                    .fill(Color.mrtGold.opacity(0.16))
+                    .frame(width: 36, height: 36)
+                    .overlay(Circle().strokeBorder(Color.mrtGold.opacity(Double(0x55) / 255.0), lineWidth: MRTMetrics.hairline))
+                    .overlay(Image(systemName: "mappin").font(.system(size: 16)).foregroundStyle(Color.mrtGold))
+                VStack(alignment: .leading, spacing: 2) {
+                    RideEyebrowText(text: "Pickup location", size: 10)
+                    Text(Self.pinAddress)
+                        .font(.system(size: 16, weight: .semibold))
+                        .tracking(-0.2)
+                        .foregroundStyle(Color.mrtText)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.bottom, 12)
+
+            Text("Drag the map to move the pin, then confirm your pickup spot.")
+                .font(.system(size: 12.5))
+                .tracking(-0.1)
+                .foregroundStyle(Color.mrtTextSec)
+                .padding(.bottom, 16)
+
+            MRTButton("Confirm pickup here", variant: .outlineDraw, action: confirm)
+                .padding(.bottom, 10)
+
+            Button("Cancel", action: cancel)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Color.mrtTextSec)
+                .buttonStyle(.plain)
+                .frame(minHeight: MRTMetrics.minTapTarget - 20)
+        }
+        .padding(.horizontal, 22)
+        .padding(.bottom, 16)
+        .rideRequestSheetChrome()
+    }
+
+    private func confirm() {
+        viewerState.draftPickup = RidePlace(
+            id: "pin",
+            label: Self.pinAddress,
+            subtitle: nil,
+            miles: 0,
+            minutes: 0,
+            icon: "mappin.circle.fill",
+            coordinate: DriveFixtures.financialDistrict
+        )
+        switch returnTo {
+        case .search: viewerState.sheetPhase = .search
+        case .review: viewerState.sheetPhase = .review
+        }
+    }
+
+    private func cancel() {
+        viewerState.sheetPhase = .search
+    }
+}
+
+// MARK: - Center-fixed pin (drawn over the map layer, not the sheet)
+
+struct RidePinDropMapOverlay: View {
+    let label: String
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Text(label)
+                .font(.system(size: 13, weight: .semibold))
+                .tracking(-0.1)
+                .foregroundStyle(Color.mrtText)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(Color.mrtBg.opacity(0.92), in: Capsule())
+            Image(systemName: "mappin")
+                .font(.system(size: 34))
+                .foregroundStyle(Color.mrtGold)
+                .shadow(color: .mrtGoldGlow, radius: 6)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}

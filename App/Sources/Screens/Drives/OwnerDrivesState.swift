@@ -27,4 +27,12 @@ public final class OwnerDrivesState {
     public func cancelUpcoming(id: String) {
         upcoming.removeAll { $0.id == id }
     }
+
+    /// MYR-171 — `IncomingRequestSheet` accepting a *scheduled* ride request
+    /// reserves it into Drives → Upcoming instead of dispatching now
+    /// (app.jsx:135-139 `handleOwnerAccept`'s scheduled branch: `setOwnerUpcoming
+    /// ((u) => [{id:'ou'+Date.now(), rider, dest, schedule, vehicle}, ...u])`).
+    public func addUpcoming(_ ride: UpcomingRide) {
+        upcoming.insert(ride, at: 0)
+    }
 }

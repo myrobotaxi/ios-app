@@ -15,6 +15,14 @@ import DesignSystem
 struct HomeScreen: View {
     @Bindable var homeState: OwnerHomeState
     @Binding var ownerTab: String
+    /// MYR-171 — the M1↔M2 ride-request seam; `@Bindable` so SwiftUI tracks
+    /// reads of `.activeRequest` reliably inside this view's body (see
+    /// `RideRequestService`'s header comment for why one instance is shared
+    /// with the rider's `SharedViewerScreen`).
+    @Bindable var rideRequestService: SimulatedRideRequestService
+    /// MYR-171 — accepting a *scheduled* request reserves it into Drives →
+    /// Upcoming (`addUpcoming`) instead of dispatching now.
+    @Bindable var drivesState: OwnerDrivesState
 
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var isFollowing = true
@@ -22,6 +30,18 @@ struct HomeScreen: View {
     /// screen's root so the scrim covers the whole screen, matching every
     /// other shared overlay in this codebase (ConfirmDialog, SuccessToast).
     @State private var isEditingPlate = false
+    /// MYR-171 — `RouteSentToast`'s content, `nil` when hidden. Set by
+    /// `handleAccept` the moment `IncomingRequestSheet`'s local choreography
+    /// finishes; cleared by the toast's own auto-dismiss timer.
+    @State private var routeSentToast: RouteSentToastContent?
+
+    /// MYR-171 — `IncomingRequestSheet` shows only while there's a request
+    /// actually awaiting this owner's decision; once accepted/declined the
+    /// service's `activeRequest.status` moves off `.pending` and this goes
+    /// `nil`, which is also what drives the sheet's own dismiss animation.
+    private var incomingRequest: RideRequestRecord? {
+        rideRequestService.activeRequest?.status == .pending ? rideRequestService.activeRequest : nil
+    }
 
     private var vehicle: Vehicle { homeState.selectedVehicle }
     private var snapshot: VehicleTelemetrySnapshot { homeState.selectedTelemetry.snapshot }
@@ -114,6 +134,70 @@ struct HomeScreen: View {
                 }
             )
         }
+        // MYR-171 — both applied as `.overlay`s AFTER `.mrtBottomNav` (itself
+        // an `.overlay`, BottomNav.swift) so the request sheet/toast render
+        // above the floating tab bar — matches the jsx's z-index ordering
+        // (`IncomingRequestSheet`/`RouteSentToast` at 60/55 vs. `BottomNav`
+        // at 40, ride-request.jsx:1284,1432).
+        .overlay {
+            IncomingRequestSheet(
+                request: incomingRequest,
+                onAccept: handleAccept,
+                onDecline: { rideRequestService.decline() }
+            )
+        }
+        .overlay {
+            RouteSentToast(content: $routeSentToast)
+        }
+    }
+
+    /// MYR-171 — fires once `IncomingRequestSheet`'s own sending/sent
+    /// choreography finishes (~1.7s after the tap, ride-request.jsx:1279).
+    /// Calls the service, reserves a scheduled request into Drives ⇢
+    /// Upcoming (app.jsx:135-139 `handleOwnerAccept`'s scheduled branch —
+    /// `OwnerDrivesState.addUpcoming`'s doc comment), and shows the
+    /// `RouteSentToast` copy variant for this request's shape.
+    private func handleAccept() {
+        guard let request = rideRequestService.activeRequest else { return }
+        rideRequestService.accept()
+
+        let fleetMember = request.input.fleetMember
+        let destination = request.input.destination
+
+        if let schedule = request.input.schedule {
+            drivesState.addUpcoming(
+                UpcomingRide(
+                    id: "ou-" + request.id,
+                    rider: "Sam",
+                    destination: .init(
+                        label: destination.label,
+                        subtitle: destination.subtitle ?? "",
+                        miles: destination.miles,
+                        mins: destination.minutes
+                    ),
+                    scheduleDay: schedule.day,
+                    scheduleTime: schedule.time,
+                    vehicleName: fleetMember.name
+                )
+            )
+            routeSentToast = RouteSentToastContent(
+                title: "Ride scheduled \u{00B7} \(schedule.day) \(schedule.time)",
+                subtitle: "Sam \u{00B7} \(destination.label) \u{00B7} \(fleetMember.name) reserved",
+                isScheduled: true
+            )
+        } else if let passenger = request.input.passenger {
+            routeSentToast = RouteSentToastContent(
+                title: "Destination sent to \(fleetMember.name)",
+                subtitle: "\(passenger.name) got a tracking link \u{00B7} \(destination.label)",
+                isScheduled: false
+            )
+        } else {
+            routeSentToast = RouteSentToastContent(
+                title: "Destination sent to \(fleetMember.name)",
+                subtitle: "Heading to \(destination.label) \u{00B7} \(destination.minutes) min",
+                isScheduled: false
+            )
+        }
     }
 
     @ViewBuilder
@@ -142,7 +226,12 @@ struct HomeScreen: View {
 }
 
 #Preview {
-    HomeScreen(homeState: OwnerHomeState(), ownerTab: .constant("home"))
-        .mrtSurfaceLook(.flat)
-        .preferredColorScheme(.dark)
+    HomeScreen(
+        homeState: OwnerHomeState(),
+        ownerTab: .constant("home"),
+        rideRequestService: SimulatedRideRequestService(),
+        drivesState: OwnerDrivesState()
+    )
+    .mrtSurfaceLook(.flat)
+    .preferredColorScheme(.dark)
 }
