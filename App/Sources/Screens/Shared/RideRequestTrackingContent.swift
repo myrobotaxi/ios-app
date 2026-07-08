@@ -190,27 +190,54 @@ struct RideRequestTrackingContent: View {
                 }
                 .frame(width: 12, height: 12)
                 if !last {
-                    Rectangle().fill(atPickup ? Color.mrtGold : Color.mrtBorder).frame(width: 2).frame(maxHeight: .infinity)
+                    connector
                 }
             }
             .padding(.top, 3)
         }
     }
 
+    /// MYR-199 fix: the pickup→drop-off connector was always a solid
+    /// `Rectangle` — the jsx (ride-request.jsx:794) renders it DOTTED
+    /// (`repeating-linear-gradient`, a 3px-on/3px-off vertical dash) while
+    /// the car is still heading to pickup, switching to a SOLID gold line
+    /// only once `pickupDone` (`atPickup`). This app was solid throughout
+    /// (a QA round 2/3 regression), losing that pre-pickup "still in
+    /// progress" cue. Ported with a dashed `Shape` for the pre-pickup state.
+    @ViewBuilder
+    private var connector: some View {
+        if atPickup {
+            Rectangle().fill(Color.mrtGold).frame(width: 2).frame(maxHeight: .infinity)
+        } else {
+            RideConnectorDash()
+                .stroke(Color.mrtBorder, style: StrokeStyle(lineWidth: 2, dash: [3, 3]))
+                .frame(width: 2)
+                .frame(maxHeight: .infinity)
+        }
+    }
+
     // MARK: Ride row — "Look for" (spotting, pickup leg) vs "Your ride"
     // (quiet reference, in-ride leg) — ride-request.jsx:683-695 `RideRow`.
 
+    /// MYR-199 fix: headline was rendering `"{model} {name}"` (e.g. "2025
+    /// Tesla Model Y") as a single combined line with no subline at all —
+    /// the jsx's `RideRow` (ride-request.jsx:683-695) actually splits this
+    /// into a headline on the vehicle's paint-color nickname + model name
+    /// (`{carColor} {carName}`, e.g. "Quicksilver Model Y") and a quiet
+    /// subline on the year/make alone (`carYearMake`, e.g. "2025 Tesla"),
+    /// optionally suffixed with the passenger note. Ported verbatim here —
+    /// same split `RideRequestBookingContent.vehicleRow` uses.
     private func rideRow(emphasize: Bool) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 5) {
                 RideEyebrowText(text: emphasize ? "Look for" : "Your ride", color: emphasize ? .mrtGold : Color.mrtGold.opacity(0.6), size: 9.5)
-                Text("\(fleetMember.model) \(fleetMember.name)")
+                Text("\(fleetMember.colorName) \(fleetMember.name)")
                     .font(.system(size: emphasize ? 17 : 15, weight: .semibold))
                     .tracking(-0.3)
                     .foregroundStyle(Color.mrtText)
-                if let passenger, !passenger.name.isEmpty {
-                    Text("for \(passenger.name)").font(.system(size: 12.5)).foregroundStyle(Color.mrtTextSec)
-                }
+                Text(fleetMember.model + (passenger?.name.isEmpty == false ? " \u{00B7} for \(passenger!.name)" : ""))
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Color.mrtTextSec)
             }
             Spacer(minLength: 0)
             if emphasize {
@@ -229,10 +256,16 @@ struct RideRequestTrackingContent: View {
     }
 
     /// Big bright plate for the "spotting the car" pickup leg — the jsx
-    /// additionally sweeps a shine gradient across the plate's own
-    /// background (`mrt-plate-shine`); simplified here to a static bright
-    /// gold chip (no new background-shimmer primitive for one plate) — see
-    /// PR deviations note.
+    /// sweeps a shine gradient across the plate's own background
+    /// (`mrt-plate-shine`, Handoff §8). MYR-199 fix: this had been left a
+    /// static gold chip ("no new background-shimmer primitive for one
+    /// plate," a prior PR's deviations note) — but the onboarding pairing
+    /// flow's virtual-key card (`AddTeslaFlow.VirtualKeyCard`) already ships
+    /// the equivalent diagonal-sweep treatment (`mrtShimmer`), now lifted to
+    /// `DesignSystem.MRTShimmerBand` (see that type's header comment) exactly
+    /// so this plate reuses it instead of re-deriving a second shimmer
+    /// primitive (CLAUDE.md "Reuse, don't fork"). `MRTShimmerBand` already
+    /// honors Reduce Motion (renders nothing, static base chip only).
     private var emphasizedPlateChip: some View {
         Text(fleetMember.plate)
             .font(.system(size: 18, weight: .bold))
@@ -242,6 +275,8 @@ struct RideRequestTrackingContent: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
             .background(Color.mrtGold, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(MRTShimmerBand())
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .shadow(color: .mrtGoldGlow, radius: 10)
     }
 
@@ -288,5 +323,17 @@ struct RideRequestTrackingContent: View {
 
             rideRow(emphasize: false)
         }
+    }
+}
+
+/// A plain vertical line filling its proposed rect — stroked dashed by
+/// `RideRequestTrackingContent.connector` for the pre-pickup itinerary
+/// segment (see that property's MYR-199 fix comment).
+private struct RideConnectorDash: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        return path
     }
 }

@@ -36,7 +36,11 @@ struct RideRequestBookingContent: View {
             // MYR-171 fix: no `ScrollView` — see `RideRequestPinDropContent`'s
             // identical fix comment (this phase also sizes to content).
             VStack(alignment: .leading, spacing: 0) {
-                RideGrabHandle()
+                // MYR-199 fix: drag-down-to-dismiss — ride-request.jsx:1151
+                // `d > 36 && (phase === 'tracking' || phase === 'pending')`
+                // → `setPhase('idle')` (minimize to the map's pending-pill
+                // state; no draft reset — the request keeps running).
+                RideGrabHandle(onDragDismiss: { viewerState.sheetPhase = .idle })
                     titleBlock(isSent: isSent, elapsed: elapsed)
                         .padding(.bottom, 12)
 
@@ -203,17 +207,23 @@ struct RideRequestBookingContent: View {
 
     // MARK: Vehicle row (ride-request.jsx:589-599)
 
+    /// MYR-199 fix: headline was `"{model} {name}"` (e.g. "2025 Tesla Model
+    /// Y") with no subline — the jsx's `VehicleRow` (ride-request.jsx:
+    /// 602-611) headlines on the paint-color nickname + model name
+    /// (`{vColor} {vName}`, e.g. "Quicksilver Model Y") and sublines on the
+    /// year/make alone (`vYearMake`). Same split as
+    /// `RideRequestTrackingContent.rideRow`'s identical fix.
     private var vehicleRow: some View {
         HStack {
             VStack(alignment: .leading, spacing: 5) {
                 RideEyebrowText(text: "Your ride", color: Color.mrtGold.opacity(0.6), size: 9.5)
-                Text("\(fleetMember.model) \(fleetMember.name)")
+                Text("\(fleetMember.colorName) \(fleetMember.name)")
                     .font(.system(size: 15, weight: .semibold))
                     .tracking(-0.3)
                     .foregroundStyle(Color.mrtText)
-                if let passenger, !passenger.name.isEmpty {
-                    Text("for \(passenger.name)").font(.system(size: 12.5)).foregroundStyle(Color.mrtTextSec)
-                }
+                Text(fleetMember.model + (passenger?.name.isEmpty == false ? " \u{00B7} for \(passenger!.name)" : ""))
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Color.mrtTextSec)
             }
             Spacer(minLength: 0)
             RidePlateChip(plate: fleetMember.plate)

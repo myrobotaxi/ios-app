@@ -251,7 +251,7 @@ private struct VirtualKeyCard: View {
                 startPoint: Self.gradientStart155,
                 endPoint: Self.gradientEnd155
             )
-            ShimmerBand()
+            MRTShimmerBand()
             // Centered metallic-etched wordmark. jsx asks for Roboto; per the
             // documented Inter→SF Pro deviation the native app uses SF.
             Text("myrobotaxi")
@@ -283,42 +283,10 @@ private struct VirtualKeyCard: View {
     }
 }
 
-/// `mrtShimmer` (jsx:222, applied at 2.8s ease-in-out infinite, jsx:282):
-/// a 46%-wide highlight band, skewed -12°, sweeping translateX -160%→280%
-/// (arriving at 55%, holding to 100%). Reduce Motion → no sweep.
-private struct ShimmerBand: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var start = Date()
-
-    private static let period = 2.8
-    private static let skew = CGFloat(tan(-12 * Double.pi / 180))
-
-    var body: some View {
-        if !reduceMotion {
-            GeometryReader { proxy in
-                let bandWidth = proxy.size.width * 0.46
-                TimelineView(.animation) { context in
-                    let phase = context.date.timeIntervalSince(start)
-                        .truncatingRemainder(dividingBy: Self.period) / Self.period
-                    let progress = UnitCurve.easeInOut.value(at: min(phase / 0.55, 1))
-                    LinearGradient(
-                        stops: [
-                            .init(color: .white.opacity(0), location: 0),
-                            .init(color: .white.opacity(0.16), location: 0.5),
-                            .init(color: .white.opacity(0), location: 1),
-                        ],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                    .frame(width: bandWidth)
-                    .transformEffect(CGAffineTransform(a: 1, b: 0, c: Self.skew, d: 1, tx: 0, ty: 0))
-                    .offset(x: (-1.6 + 4.4 * progress) * bandWidth)
-                }
-            }
-            .allowsHitTesting(false)
-        }
-    }
-}
+// `mrtShimmer` (jsx:222, applied at 2.8s ease-in-out infinite, jsx:282) —
+// MYR-199 lifted the implementation to `DesignSystem.MRTShimmerBand`
+// (reused by the tracking flow's plate-chip shimmer); `VirtualKeyCard` above
+// just points at it now.
 
 /// `mrtKeyFloat` (jsx:215): the card bobs ±7pt while waiting, 1.8s
 /// ease-in-out. Reduce Motion → static.
