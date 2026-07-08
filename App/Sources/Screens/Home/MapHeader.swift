@@ -37,6 +37,14 @@ struct MapHeader: View {
         // ZStack's intrinsic-height slot (that left it floating mid-screen,
         // review finding #2).
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // Full-bleed geometry (CLAUDE.md "Hard rules"): screens.jsx:302's
+        // `top: 60` is measured from the PHYSICAL screen top on the
+        // 393×852 canvas, which has no safe area. Without this, the
+        // `.frame(..., alignment: .top)` above sizes itself to the
+        // safe-area-inset container, so the 60pt top padding stacks on top
+        // of the ~59pt status-bar inset — landing the chip ~119pt down
+        // instead of 60pt (MYR-196 punch-list #1, "switcher too low").
+        .ignoresSafeArea(edges: .top)
         // Full-screen tap-catcher behind the picker, above the map — closes
         // on outside tap (screens.jsx:322).
         .background {

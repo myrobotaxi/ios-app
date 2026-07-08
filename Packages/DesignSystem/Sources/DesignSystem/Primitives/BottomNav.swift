@@ -117,3 +117,44 @@ public struct BottomNav: View {
         .accessibilityAddTraits(active ? .isSelected : [])
     }
 }
+
+// MARK: - Shared placement (full-bleed geometry — CLAUDE.md "Hard rules")
+//
+// The prototype's `BottomNav` is `position: absolute, bottom: 26` measured
+// from the PHYSICAL screen edge (components.jsx:566) — the 393×852 canvas
+// has no notion of a SwiftUI safe area. Every owner screen renders its own
+// `BottomNav` (see `HomeScreen`'s header comment), so without a shared
+// placement rule each screen independently risks re-deriving `bottom: 26`
+// against the *safe-area-inset* container instead — which stacks the
+// device's ~34pt home-indicator inset on top of the 26pt padding already
+// baked into `BottomNav` itself, floating the capsule ~60pt off the
+// physical bottom instead of 26pt (the MYR-196 punch-list bug).
+//
+// `BottomNav` is intrinsically sized (a fitting capsule, no `maxWidth:
+// .infinity` of its own), so `.ignoresSafeArea()` alone does nothing for
+// it — that modifier only repositions a view when paired with a fill
+// frame that *grows into* the reclaimed region (this is why it does work
+// on `MapHeader`, which already carries `.frame(maxWidth: .infinity,
+// maxHeight: .infinity, alignment: .top)`). So this helper gives
+// `BottomNav` that same fill-frame before ignoring the bottom safe area:
+// the frame expands to the now-reclaimed physical edge, and the nav's
+// `.bottom` alignment (plus its own baked-in 26pt padding) resolves
+// against that true edge instead of the safe-area-inset one.
+public extension View {
+    /// Layers `BottomNav` over this view, bottom-pinned 26pt from the
+    /// PHYSICAL screen edge (not the safe area) — the one place the
+    /// full-bleed nav-placement rule lives; every owner screen
+    /// (`HomeScreen`, `DrivesScreen`, `PlaceholderScreen`) should call this
+    /// instead of placing `BottomNav` itself.
+    func mrtBottomNav(
+        selection: Binding<String>,
+        tabs: [MRTTab] = MRTTab.ownerTabs,
+        hidden: Bool = false
+    ) -> some View {
+        overlay {
+            BottomNav(selection: selection, tabs: tabs, hidden: hidden)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .ignoresSafeArea(edges: .bottom)
+        }
+    }
+}

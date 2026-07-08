@@ -39,19 +39,29 @@ struct HomeScreen: View {
                 vehicle: vehicle,
                 snapshot: snapshot,
                 cameraPosition: $cameraPosition,
-                isFollowing: $isFollowing
+                isFollowing: $isFollowing,
+                // Keeps MapKit's legal attribution label clear of the
+                // (now physically flush) sheet below — see
+                // `VehicleMapView`'s doc comment and MYR-196 punch-list #2.
+                bottomContentInset: peekHeight
             )
             .id(vehicle.id) // fresh camera state per vehicle on switch
             .ignoresSafeArea()
 
             MapHeader(vehicles: VehicleFixtures.vehicles, selectedIndex: $homeState.selectedVehicleIndex)
 
+            // `bottom` is measured against the sheet's physical-edge peek
+            // height (see `MRTDetentSheet`'s `.ignoresSafeArea(edges:
+            // .bottom)`), so this button needs the same physical-edge
+            // coordinate space — full-bleed geometry (CLAUDE.md "Hard
+            // rules").
             FloatingMapButton(
                 bottom: peekHeight + MRTMetrics.mapButtonBottomGap,
                 hidden: isFollowing || homeState.sheetDetent == .half
             ) {
                 isFollowing = true
             }
+            .ignoresSafeArea(edges: .bottom)
 
             MRTDetentSheet(
                 detent: $homeState.sheetDetent,
@@ -72,23 +82,23 @@ struct HomeScreen: View {
                 // this same `homeState.sheetDetent` binding, the Route/
                 // Controls reveal below inherits that transaction for free.
             }
-
-            // components.jsx:566 `position: absolute, ... bottom: 26` — pin to
-            // the screen's bottom edge (review finding #1: was floating
-            // mid-screen at the ZStack's default center alignment). It
-            // layers above the sheet (declared after it here → higher
-            // z-order, matching the jsx's nav zIndex 40 vs. sheet zIndex 30)
-            // and overlaps the sheet's bottom edge exactly like the
-            // prototype (`BottomSheet` is called with `navHeight={0}` at
-            // screens.jsx:429, i.e. the sheet itself already runs flush to
-            // the bottom — see `MRTDetentSheet`'s own bottom-aligned
-            // GeometryReader frame — while its content reserves
-            // `MRTMetrics.homeSheetContentBottomPadding` (100pt) of bottom
-            // padding above so the floating nav capsule never obscures it).
-            BottomNav(selection: $ownerTab, tabs: MRTTab.ownerTabs, hidden: homeState.sheetDetent == .half)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
         .background(Color.mrtBg)
+        // components.jsx:566 `position: absolute, ... bottom: 26` — pin to
+        // the screen's PHYSICAL bottom edge via the shared `mrtBottomNav`
+        // helper (review finding #1 + MYR-196 punch-list #2/#3: was
+        // floating mid-screen, then floating ~60pt off the physical bottom
+        // once safe-area insets were accounted for). Applied as a modifier
+        // on the whole ZStack, it layers above every sheet/map content
+        // declared above (matching the jsx's nav zIndex 40 vs. sheet
+        // zIndex 30) and overlaps the sheet's bottom edge exactly like the
+        // prototype (`BottomSheet` is called with `navHeight={0}` at
+        // screens.jsx:429 — the sheet itself already runs flush to the
+        // physical bottom, see `MRTDetentSheet`'s own
+        // `.ignoresSafeArea(edges: .bottom)` — while its content reserves
+        // `MRTMetrics.homeSheetContentBottomPadding` (100pt) of bottom
+        // padding above so the floating nav capsule never obscures it).
+        .mrtBottomNav(selection: $ownerTab, hidden: homeState.sheetDetent == .half)
         .onAppear { homeState.startTelemetry() }
         .onChange(of: homeState.selectedVehicleIndex) { _, _ in
             isFollowing = true
