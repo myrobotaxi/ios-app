@@ -290,6 +290,9 @@ final class TokenTests: XCTestCase {
         let cases: [(name: String, hex: UInt32, color: Color)] = [
             ("goldRowText", 0xF4EFE2, .mrtGoldRowText), // screens.jsx:758,785
             ("drivingRowText", 0xEAF6EC, .mrtDrivingRowText), // screens.jsx:662
+            ("dsShareCardPanelTop", 0x14120C, .mrtDsShareCardPanelTop), // screens.jsx:1208
+            ("dsShareCardPanelBottom", 0x0F0E0A, .mrtDsShareCardPanelBottom), // screens.jsx:1208
+            ("confettiPale", 0xFFE9A8, .mrtConfettiPale), // screens.jsx:1079 COLORS[4]
         ]
         for (name, hex, color) in cases {
             var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
@@ -330,11 +333,23 @@ final class TokenTests: XCTestCase {
             ("dsFloatingNavFill", 0.5, .mrtDsFloatingNavFill), // screens.jsx:890,893
             ("goldRowChevron", 0.55, .mrtGoldRowChevron), // screens.jsx:794
             ("drivingRowChevron", 0.6, .mrtDrivingRowChevron), // screens.jsx:671
+            ("dsShareCardBorder", 0.3, .mrtDsShareCardBorder), // screens.jsx:1194
+            ("dsShareCardPillFill", 0.14, .mrtDsShareCardPillFill), // screens.jsx:1216
+            ("dsShareCardScrimStart", 0.2, .mrtDsShareCardScrimStart), // screens.jsx:1202
+            ("dsShareCardScrimEnd", 0.7, .mrtDsShareCardScrimEnd), // screens.jsx:1202
+            ("dsShareCardOuterRing", 0.06, .mrtDsShareCardOuterRing), // screens.jsx:1194
         ]
         for (name, alpha, color) in cases {
             var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
             XCTAssertTrue(UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a), name)
             XCTAssertEqual(a, alpha, accuracy: 0.001, "\(name): alpha")
         }
+    }
+
+    /// `DriveShareCard` layout constants (design/app/screens.jsx:1194-1196).
+    func testShareCardMetrics() {
+        XCTAssertEqual(MRTMetrics.shareCardWidth, 362)
+        XCTAssertEqual(MRTMetrics.shareCardMapHeight, 132)
+        XCTAssertEqual(MRTMetrics.shareCardRadius, 20)
     }
 }

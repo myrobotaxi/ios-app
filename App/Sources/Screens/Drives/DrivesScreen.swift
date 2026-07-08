@@ -20,7 +20,6 @@ struct DrivesScreen: View {
     @State private var tab: Tab = .history
     @State private var sort: SortKey = .date
     @State private var confirmCancel: UpcomingRide?
-    @State private var showCancelledToast = false
 
     private var vehicle: Vehicle { homeState.selectedVehicle }
 
@@ -41,6 +40,11 @@ struct DrivesScreen: View {
                     .padding(.bottom, MRTMetrics.drivesContentBottomPadding)
                 }
             }
+            // screens.jsx:631 `padding: '74px 24px 16px'` is measured from
+            // the physical screen edge (full-bleed canvas); ignore the top
+            // safe area so `header`'s `drivesHeaderTop` padding measures
+            // from the true top edge instead of stacking under it.
+            .ignoresSafeArea(.container, edges: .top)
 
             BottomNav(selection: $ownerTab, tabs: MRTTab.ownerTabs)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -52,7 +56,6 @@ struct DrivesScreen: View {
             ),
             config: cancelDialogConfig
         )
-        .mrtSuccessToast(isPresented: $showCancelledToast, message: "Reservation cancelled")
     }
 
     // MARK: Header (screens.jsx:631-634)
@@ -261,6 +264,9 @@ struct DrivesScreen: View {
     }
 
     // MARK: Cancel-reservation dialog (screens.jsx:713-739)
+    //
+    // The prototype's flow is confirm dialog → row removal, no toast.
+    // Handoff §7's toast list only covers revoke/resend/invite-sent.
 
     private var cancelDialogConfig: MRTConfirmDialogConfig {
         let ride = confirmCancel
@@ -276,7 +282,6 @@ struct DrivesScreen: View {
         ) {
             guard let ride else { return }
             drivesState.cancelUpcoming(id: ride.id)
-            showCancelledToast = true
         }
     }
 }

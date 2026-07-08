@@ -1,6 +1,7 @@
 import SwiftUI
 import MapKit
 import Foundation
+import UIKit
 import DesignSystem
 
 // MARK: - DriveSummaryScreen (MYR-169, design/app/screens.jsx:831-962,
@@ -12,28 +13,41 @@ import DesignSystem
 // `MRTEndpointDot`/`VehicleRoute` from MYR-167 — static, non-interactive
 // camera fitted to the drive's route, unlike the Live Map's live-following
 // camera), a stat grid (distance/duration/FSD/battery/speed), and a real
-// `ShareLink` (backs onto `UIActivityViewController`) sharing a plain-text
-// summary.
+// `UIActivityViewController` share (via `ActivityShareSheet`, per Handoff
+// §5.6) of the rendered `DriveShareCard` image alongside a plain-text summary.
 //
-// Scope note: screens.jsx's `DriveSummaryScreen` also has a "100% FSD"
-// celebration (a confetti burst + a warm gold page-wide wash that fades in
-// after the ring sweep completes, screens.jsx:852-886,1030-1136). Handoff
-// §5.6 doesn't list it among this screen's deliverables (only hero map / stat
-// grid / sparkline / FSD stat / share), so it's deliberately out of scope
-// here — the FSD ring itself still renders correctly at 100% (d8, an
-// Embarcadero→Mission drive, hits exactly 100%), just without the bonus
-// animation. Documented in the PR body's drift-gate section.
+// 100% FSD celebration (screens.jsx:852-886,1030-1136): a confetti burst
+// fires once the ring's fill sweep completes — 34 particles launch radially,
+// fall under gravity, spin up to ±600°, and fade over ~1.5-2.1s, alongside a
+// pop/glow/ring-flash on the ring itself (`DSRing`'s `celebrate` state drives
+// all four together). Ported in `FSDRing` below via `KeyframeAnimator`, gated
+// on `!reduceMotion`. The page also eases into a warm gold wash 2.7s after
+// mount (reduce motion: 200ms) — screens.jsx `goldMode`, ported in
+// `goldWash`/`heroGoldTint` below.
+//
+// The Speed sparkline (`DSSparkline`) is deliberately NOT ported: it's
+// defined in screens.jsx but never called from `DriveSummaryScreen`'s render
+// (dead code in the prototype). The `speeds` trace is still computed
+// (screens.jsx:836-844) because Avg/Max speed derive from it, just never
+// rendered as a chart.
 struct DriveSummaryScreen: View {
     let drive: Drive
     let onBack: () -> Void
 
     private let dateLabel: String
     private let heroRegion: MKCoordinateRegion
-    private let speeds: [Double]
     private let avgSpeedMPH: Int
     private let maxSpeedMPH: Int
     private let startBatteryPercent: Int
     private let endBatteryPercent: Int
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var shareItems: [Any] = []
+    @State private var isPreparingShare = false
+    @State private var showShareSheet = false
+    /// screens.jsx:856 `goldMode` — fades in the page-wide warm wash once the
+    /// celebration has settled (852-861: `isFull` gate, 2.7s / 200ms delay).
+    @State private var goldMode = false
 
     init(drive: Drive, onBack: @escaping () -> Void) {
         self.drive = drive
@@ -47,7 +61,6 @@ struct DriveSummaryScreen: View {
         // prototype's own derivation for the same fixture id.
         let seedN = drive.id.unicodeScalars.reduce(0) { $0 + Int($1.value) }
         let computedSpeeds = Self.speedTrace(seed: seedN + 7)
-        self.speeds = computedSpeeds
         self.maxSpeedMPH = Int((computedSpeeds.max() ?? 0).rounded())
         self.avgSpeedMPH = Int((computedSpeeds.reduce(0, +) / Double(computedSpeeds.count) + 6).rounded())
         let startPct = min(97, 76 + seedN % 18)
@@ -55,17 +68,77 @@ struct DriveSummaryScreen: View {
         self.endBatteryPercent = max(6, startPct + drive.batteryDeltaPercent)
     }
 
+    private var isFullFSD: Bool { drive.fsdPercent >= 100 }
+
     var body: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                heroSection
-                headerSection
-                recapGrid
-                Spacer().frame(height: 14)
+        ZStack {
+            Color.mrtBg.ignoresSafeArea()
+            // screens.jsx:866-871 — the warm gold reward wash, a fixed
+            // full-screen layer behind the scrollable content (zIndex 0 vs.
+            // the page's zIndex 1), not part of the scrolling page flow.
+            goldWash.ignoresSafeArea()
+
+            ScrollView {
+                VStack(spacing: 0) {
+                    heroSection
+                    headerSection
+                    recapGrid
+                    Spacer().frame(height: 14)
+                }
+            }
+            // The jsx hero is a full-bleed `position:absolute inset:0` canvas
+            // that renders under the status bar (screens.jsx:864,873); ignore
+            // the top safe area so the hero starts at the physical top edge.
+            .ignoresSafeArea(.container, edges: .top)
+            .scrollBounceBehavior(.basedOnSize)
+        }
+        .sheet(isPresented: $showShareSheet) {
+            ActivityShareSheet(activityItems: shareItems)
+        }
+        .onAppear { scheduleGoldMode() }
+    }
+
+    /// screens.jsx:852-861 `goldMode` scheduling — fires once, 2.7s after
+    /// mount (200ms under Reduce Motion), and only for a flawless drive.
+    private func scheduleGoldMode() {
+        guard isFullFSD else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(reduceMotion ? 200 : 2700))
+            guard !reduceMotion else {
+                goldMode = true
+                return
+            }
+            withAnimation(.timingCurve(0.4, 0, 0.2, 1, duration: 1.4)) {
+                goldMode = true
             }
         }
-        .background(Color.mrtBg.ignoresSafeArea())
-        .scrollBounceBehavior(.basedOnSize)
+    }
+
+    /// screens.jsx:866-871 — page-wide radial + linear gold wash.
+    private var goldWash: some View {
+        ZStack {
+            EllipticalGradient(
+                stops: [
+                    .init(color: Color.mrtGold.opacity(0.22), location: 0),
+                    .init(color: Color.mrtGold.opacity(0.08), location: 0.46),
+                    .init(color: .clear, location: 0.76),
+                ],
+                center: UnitPoint(x: 0.5, y: 0.6),
+                startRadiusFraction: 0,
+                endRadiusFraction: 0.85
+            )
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0.32),
+                    .init(color: Color.mrtGold.opacity(0.05), location: 0.55),
+                    .init(color: Color.mrtGold.opacity(0.12), location: 1),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+        .opacity(goldMode ? 1 : 0)
+        .allowsHitTesting(false)
     }
 
     // MARK: Hero map (screens.jsx:873-897)
@@ -92,6 +165,25 @@ struct DriveSummaryScreen: View {
             }
             .allowsHitTesting(false)
 
+            // screens.jsx:885-886 — gold reward tint over the map itself
+            // (soft-light blend + a soft radial highlight), same `goldMode`
+            // fade as the page wash.
+            LinearGradient(colors: [Color.mrtGold.opacity(0.5), Color.mrtGold.opacity(0.85)], startPoint: .top, endPoint: .bottom)
+                .blendMode(.softLight)
+                .opacity(goldMode ? 1 : 0)
+                .allowsHitTesting(false)
+            EllipticalGradient(
+                stops: [
+                    .init(color: Color.mrtGold.opacity(0.18), location: 0),
+                    .init(color: .clear, location: 0.7),
+                ],
+                center: UnitPoint(x: 0.5, y: 0.3),
+                startRadiusFraction: 0,
+                endRadiusFraction: 0.75
+            )
+            .opacity(goldMode ? 1 : 0)
+            .allowsHitTesting(false)
+
             floatingNav
         }
         .frame(height: MRTMetrics.driveSummaryHeroHeight)
@@ -114,15 +206,25 @@ struct DriveSummaryScreen: View {
 
             Spacer()
 
-            ShareLink(item: shareSummary) {
-                Image(systemName: "square.and.arrow.up")
-                    .font(.system(size: 18))
-                    .foregroundStyle(Color.mrtGold)
-                    .frame(width: MRTMetrics.driveSummaryFloatingButtonSize, height: MRTMetrics.driveSummaryFloatingButtonSize)
-                    .background(Color.mrtDsFloatingNavFill, in: Circle())
-                    .overlay(Circle().strokeBorder(Color.mrtMapChipBorder, lineWidth: MRTMetrics.hairline))
-                    .contentShape(Circle().inset(by: -(MRTMetrics.minTapTarget - MRTMetrics.driveSummaryFloatingButtonSize) / 2))
+            Button {
+                Task { await prepareAndPresentShare() }
+            } label: {
+                ZStack {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 18))
+                        .opacity(isPreparingShare ? 0 : 1)
+                    if isPreparingShare {
+                        ProgressView().tint(Color.mrtGold)
+                    }
+                }
+                .foregroundStyle(Color.mrtGold)
+                .frame(width: MRTMetrics.driveSummaryFloatingButtonSize, height: MRTMetrics.driveSummaryFloatingButtonSize)
+                .background(Color.mrtDsFloatingNavFill, in: Circle())
+                .overlay(Circle().strokeBorder(Color.mrtMapChipBorder, lineWidth: MRTMetrics.hairline))
+                .contentShape(Circle().inset(by: -(MRTMetrics.minTapTarget - MRTMetrics.driveSummaryFloatingButtonSize) / 2))
             }
+            .buttonStyle(.plain)
+            .disabled(isPreparingShare)
             .accessibilityLabel("Share this drive")
         }
         .padding(.horizontal, 16)
@@ -131,14 +233,43 @@ struct DriveSummaryScreen: View {
     }
 
     /// screens.jsx's share button has no `onClick` wired (dead affordance in
-    /// the prototype) — Handoff §5.6 explicitly calls for a real
-    /// `UIActivityViewController` share here, backing a plain-text summary.
+    /// the prototype) — Handoff §5.6 calls for a real `UIActivityViewController`
+    /// share here, sharing the rendered `DSShareCard` (screens.jsx:1192)
+    /// image alongside this plain-text summary, not text alone.
     private var shareSummary: String {
         """
         \(drive.from) → \(drive.to)
         \(dateLabel) · \(drive.start) – \(drive.end)
         \(String(format: "%.1f", drive.miles)) mi · \(drive.mins) min · \(drive.fsdPercent)% FSD
         """
+    }
+
+    /// Snapshots the drive's route into a `UIImage` (`DriveRouteSnapshot`,
+    /// async — must finish before `ImageRenderer` runs so the map tiles are
+    /// actually baked in), composes `DriveShareCard` against it, and rasters
+    /// the card via `ImageRenderer`. The share sheet only opens once both the
+    /// image and text are ready, matching the button's brief progress spinner.
+    @MainActor
+    private func prepareAndPresentShare() async {
+        guard !isPreparingShare else { return }
+        isPreparingShare = true
+        defer { isPreparingShare = false }
+
+        let mapImage = await DriveRouteSnapshot.render(
+            region: heroRegion,
+            route: drive.route,
+            size: CGSize(width: MRTMetrics.shareCardWidth, height: MRTMetrics.shareCardMapHeight)
+        )
+        let card = DriveShareCard(drive: drive, dateLabel: dateLabel, mapImage: mapImage)
+            .frame(width: MRTMetrics.shareCardWidth)
+        let renderer = ImageRenderer(content: card)
+        renderer.scale = 3
+
+        var items: [Any] = []
+        if let cardImage = renderer.uiImage { items.append(cardImage) }
+        items.append(shareSummary)
+        shareItems = items
+        showShareSheet = true
     }
 
     // MARK: Celebratory header (screens.jsx:900-906)
@@ -183,8 +314,6 @@ struct DriveSummaryScreen: View {
                 startPercent: startBatteryPercent,
                 endPercent: endBatteryPercent
             )
-
-            SpeedSparklineTile(speeds: speeds)
 
             HStack(spacing: 14) {
                 DriveStatTile(label: "Avg speed", value: "\(avgSpeedMPH)", unit: "mph")
@@ -251,9 +380,14 @@ private var dsTileGradient: LinearGradient {
 }
 
 private extension View {
-    func dsTileChrome() -> some View {
-        padding(.horizontal, 16)
-            .padding(.vertical, 14)
+    /// jsx's `DS_TILE` base style carries no padding of its own — every call
+    /// site pads independently (screens.jsx:912,917,929 `DSMetric`/FSD tile/
+    /// Battery tile all use different top/bottom insets). Defaults match
+    /// `DSMetric`'s `'14px 16px 16px'`; FSD/Battery override below.
+    func dsTileChrome(horizontal: CGFloat = 16, top: CGFloat = 14, bottom: CGFloat = 16) -> some View {
+        padding(.horizontal, horizontal)
+            .padding(.top, top)
+            .padding(.bottom, bottom)
             .background(dsTileGradient, in: RoundedRectangle(cornerRadius: MRTMetrics.driveSummaryTileRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: MRTMetrics.driveSummaryTileRadius, style: .continuous)
@@ -324,14 +458,19 @@ private struct FSDTile: View {
             }
             Spacer(minLength: 0)
         }
-        .dsTileChrome()
+        // screens.jsx:917 `padding: '20px 18px'`, more generous than the
+        // shared DSMetric default.
+        .dsTileChrome(horizontal: 18, top: 20, bottom: 20)
     }
 }
 
 /// screens.jsx:1050-1136 `DSRing` — two-tone gold activity ring, fills from 0
-/// on appear. The 100%-FSD confetti celebration is out of scope here (see
-/// this file's header comment); the ring itself still sweeps to a full
-/// circle and the center label turns gold at 100%.
+/// on appear. At 100% it celebrates once the sweep lands: a pop bounce + glow
+/// halo + expanding ring flash on the ring itself, plus a 34-particle gold
+/// confetti burst (ported from `ensureCelebrateStyle`'s
+/// `dsConfetti`/`dsPop`/`dsGlow`/`dsRingFlash` keyframes, screens.jsx:1030-1136).
+/// All four are driven by the same `celebrate` flip. Reduce Motion → no sweep
+/// animation and no celebration; the ring renders its final state statically.
 private struct FSDRing: View {
     let percent: Int
     var size: CGFloat = 82
@@ -339,10 +478,57 @@ private struct FSDRing: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var sweep: Double = 0
+    @State private var celebrate = false
+    @State private var showBurst = false
+    @State private var particles: [ConfettiParticle] = []
 
     private var fraction: Double { min(1, Double(percent) / 100) }
+    private var isFull: Bool { percent >= 100 }
+
+    /// cubic-bezier(0.34,1.56,0.64,1) — `dsPop`'s overshoot curve (screens.jsx:1041).
+    private static let popCurve = UnitCurve.bezier(
+        startControlPoint: UnitPoint(x: 0.34, y: 1.56),
+        endControlPoint: UnitPoint(x: 0.64, y: 1)
+    )
 
     var body: some View {
+        ZStack {
+            if celebrate {
+                celebrationGlow
+                celebrationRingFlash
+            }
+            ringCore
+            if showBurst {
+                ForEach(particles) { particle in
+                    ConfettiParticleView(particle: particle)
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        // The `.keyframeAnimator` *modifier* form (vs. the `KeyframeAnimator`
+        // container) applies the pop scale to this already-sized view via a
+        // `PlaceholderContentView` standing in for it, so it can't re-size
+        // the ring off a sibling's larger frame the way the container form
+        // did (it was reading `celebrationGlow`'s `size + 20` instead of
+        // `size`, rendering ~20% too large).
+        .keyframeAnimator(initialValue: 1.0, trigger: celebrate) { content, scale in
+            content.scaleEffect(scale)
+        } keyframes: { _ in
+            // dsPop 0.8s: 0%→1, 24%→1.16, 48%→0.96, 70%→1.05, 100%→1.
+            KeyframeTrack(\.self) {
+                LinearKeyframe(1.0, duration: 0)
+                LinearKeyframe(1.16, duration: 0.192, timingCurve: Self.popCurve)
+                LinearKeyframe(0.96, duration: 0.192, timingCurve: Self.popCurve)
+                LinearKeyframe(1.05, duration: 0.176, timingCurve: Self.popCurve)
+                LinearKeyframe(1.0, duration: 0.24, timingCurve: Self.popCurve)
+            }
+        }
+        .onAppear { scheduleAnimations() }
+    }
+
+    // MARK: Ring (screens.jsx:1111-1117,1128-1133)
+
+    private var ringCore: some View {
         ZStack {
             // Manual remainder — full ring underneath, light shade
             // (screens.jsx:1113 `rgba(201,168,76,0.22)` — same alpha as the
@@ -365,15 +551,205 @@ private struct FSDRing: View {
             .foregroundStyle(percent >= 100 ? Color.mrtGold : Color.mrtText)
         }
         .frame(width: size, height: size)
-        .onAppear {
-            if reduceMotion {
-                sweep = fraction
-            } else {
-                withAnimation(.timingCurve(0.32, 0.72, 0, 1, duration: 1.15).delay(0.12)) {
-                    sweep = fraction
-                }
+    }
+
+    // MARK: Celebration glow + ring flash (screens.jsx:1104-1109)
+
+    /// `dsGlow` 1s ease-out: 0%→opacity 0/scale 0.7, 30%→opacity 0.9, 100%→opacity 0/scale 1.9.
+    private var celebrationGlow: some View {
+        KeyframeAnimator(initialValue: CelebrationFade(), trigger: celebrate) { value in
+            Circle()
+                .fill(RadialGradient(colors: [.mrtGoldGlowSoft, .clear], center: .center, startRadius: 0, endRadius: size * 0.62))
+                .frame(width: size + 20, height: size + 20)
+                .scaleEffect(value.scale)
+                .opacity(value.opacity)
+        } keyframes: { _ in
+            KeyframeTrack(\.opacity) {
+                LinearKeyframe(0, duration: 0)
+                LinearKeyframe(0.9, duration: 0.3, timingCurve: .easeOut)
+                LinearKeyframe(0, duration: 0.7, timingCurve: .easeOut)
+            }
+            KeyframeTrack(\.scale) {
+                LinearKeyframe(0.7, duration: 0)
+                LinearKeyframe(1.9, duration: 1.0, timingCurve: .easeOut)
             }
         }
+        .allowsHitTesting(false)
+    }
+
+    /// `dsRingFlash` 0.85s cubic-bezier(0.22,1,0.36,1): 0%→opacity 0/scale 1,
+    /// 25%→opacity 0.9, 100%→opacity 0/scale 1.45.
+    private var celebrationRingFlash: some View {
+        KeyframeAnimator(initialValue: CelebrationFade(scale: 1), trigger: celebrate) { value in
+            Circle()
+                .strokeBorder(Color.mrtGold, lineWidth: 2)
+                .frame(width: size + 4, height: size + 4)
+                .scaleEffect(value.scale)
+                .opacity(value.opacity)
+        } keyframes: { _ in
+            KeyframeTrack(\.opacity) {
+                LinearKeyframe(0, duration: 0)
+                LinearKeyframe(0.9, duration: 0.2125, timingCurve: Self.flashCurve)
+                LinearKeyframe(0, duration: 0.6375, timingCurve: Self.flashCurve)
+            }
+            KeyframeTrack(\.scale) {
+                LinearKeyframe(1, duration: 0)
+                LinearKeyframe(1.45, duration: 0.85, timingCurve: Self.flashCurve)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// cubic-bezier(0.22,1,0.36,1) (screens.jsx:1109 `dsRingFlash` animation-timing-function).
+    private static let flashCurve = UnitCurve.bezier(
+        startControlPoint: UnitPoint(x: 0.22, y: 1),
+        endControlPoint: UnitPoint(x: 0.36, y: 1)
+    )
+
+    // MARK: Scheduling (screens.jsx:1060-1077)
+
+    private func scheduleAnimations() {
+        guard !reduceMotion else {
+            sweep = fraction
+            return
+        }
+        withAnimation(.timingCurve(0.32, 0.72, 0, 1, duration: 1.15).delay(0.12)) {
+            sweep = fraction
+        }
+        guard isFull else { return }
+        // screens.jsx:1067 — celebrate fires 120ms (sweep start delay) +
+        // 1150ms (sweep duration) after mount, i.e. right as the ring lands.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1270))
+            particles = ConfettiParticle.burst()
+            celebrate = true
+            showBurst = true
+            // screens.jsx:1075 — unmount the burst 2.5s later so its
+            // off-screen particles can't extend the page's scrollable area.
+            try? await Task.sleep(for: .milliseconds(2500))
+            showBurst = false
+        }
+    }
+}
+
+/// Shared 0→opacity/scale keyframe value for the glow halo + ring flash.
+private struct CelebrationFade {
+    var opacity: Double = 0
+    var scale: Double = 0.7
+}
+
+// MARK: - Confetti burst (screens.jsx:1078-1100,1119-1127 `particles`/`dsConfetti`)
+
+/// One confetti particle — `mx`/`my` is the apex of the initial throw (10% of
+/// the animation), `tx`/`ty` is where it lands under gravity (100%), matching
+/// screens.jsx's per-particle generation verbatim (34 particles, radial launch
+/// angle + random distance, gravity pulling `ty` below `my`, random spin up to
+/// ±600°, alternating round/rect shapes, randomized size/delay/duration).
+private struct ConfettiParticle: Identifiable {
+    let id: Int
+    let mx: Double
+    let my: Double
+    let tx: Double
+    let ty: Double
+    let rotation: Double
+    let width: CGFloat
+    let height: CGFloat
+    let round: Bool
+    let color: Color
+    /// Seconds (screens.jsx `delay`, 0-200ms).
+    let delay: Double
+    /// Seconds (screens.jsx `dur`, 1500-2100ms).
+    let duration: Double
+
+    private static let colors: [Color] = [.mrtGold, .mrtGoldLight, .mrtGoldDark, .mrtText, .mrtConfettiPale]
+
+    static func burst(count: Int = 34) -> [ConfettiParticle] {
+        (0..<count).map { i in
+            let angle = (2 * Double.pi / Double(count)) * Double(i) + Double.random(in: -0.3...0.3)
+            let dist = 64 + Double.random(in: 0...70)
+            let mx = cos(angle) * dist * 0.55
+            let my = sin(angle) * dist * 0.55 - 6
+            let tx = cos(angle) * dist
+            let ty = sin(angle) * dist + 46 + Double.random(in: 0...60)
+            let round = i % 3 == 0
+            let width: CGFloat = round ? CGFloat(5 + Int.random(in: 0...2)) : CGFloat(3 + Int.random(in: 0...1))
+            let height: CGFloat = round ? CGFloat(5 + Int.random(in: 0...2)) : CGFloat(8 + Int.random(in: 0...5))
+            return ConfettiParticle(
+                id: i,
+                mx: mx, my: my, tx: tx, ty: ty,
+                rotation: Double.random(in: -1...1) * 600,
+                width: width, height: height, round: round,
+                color: colors[i % colors.count],
+                delay: Double.random(in: 0...0.2),
+                duration: 1.5 + Double.random(in: 0...0.6)
+            )
+        }
+    }
+}
+
+private struct ConfettiKeyframeValue {
+    var x: Double = 0
+    var y: Double = 0
+    var scale: Double = 0.4
+    var rotation: Double = 0
+    var opacity: Double = 0
+}
+
+private struct ConfettiParticleView: View {
+    let particle: ConfettiParticle
+
+    /// cubic-bezier(0.2,0.7,0.3,1) (screens.jsx:1040 `dsConfetti` timing-function).
+    private static let curve = UnitCurve.bezier(
+        startControlPoint: UnitPoint(x: 0.2, y: 0.7),
+        endControlPoint: UnitPoint(x: 0.3, y: 1)
+    )
+
+    var body: some View {
+        KeyframeAnimator(initialValue: ConfettiKeyframeValue()) { value in
+            Group {
+                if particle.round {
+                    Circle().fill(particle.color)
+                } else {
+                    RoundedRectangle(cornerRadius: 1).fill(particle.color)
+                }
+            }
+            .frame(width: particle.width, height: particle.height)
+            .rotationEffect(.degrees(value.rotation))
+            .scaleEffect(value.scale)
+            .offset(x: value.x, y: value.y)
+            .opacity(value.opacity)
+        } keyframes: { _ in
+            // 0%→opacity 0; 10%→opacity 1 (arrival at mx/my); 70%→opacity 1
+            // (hold); 100%→opacity 0 (fall to tx/ty). The leading zero-duration
+            // hold is each particle's random stagger delay.
+            KeyframeTrack(\.opacity) {
+                LinearKeyframe(0, duration: particle.delay)
+                LinearKeyframe(1, duration: particle.duration * 0.10, timingCurve: Self.curve)
+                LinearKeyframe(1, duration: particle.duration * 0.60)
+                LinearKeyframe(0, duration: particle.duration * 0.30, timingCurve: Self.curve)
+            }
+            KeyframeTrack(\.x) {
+                LinearKeyframe(0, duration: particle.delay)
+                LinearKeyframe(particle.mx, duration: particle.duration * 0.10, timingCurve: Self.curve)
+                LinearKeyframe(particle.tx, duration: particle.duration * 0.90, timingCurve: Self.curve)
+            }
+            KeyframeTrack(\.y) {
+                LinearKeyframe(0, duration: particle.delay)
+                LinearKeyframe(particle.my, duration: particle.duration * 0.10, timingCurve: Self.curve)
+                LinearKeyframe(particle.ty, duration: particle.duration * 0.90, timingCurve: Self.curve)
+            }
+            KeyframeTrack(\.scale) {
+                LinearKeyframe(0.4, duration: particle.delay)
+                LinearKeyframe(1.1, duration: particle.duration * 0.10, timingCurve: Self.curve)
+                LinearKeyframe(0.85, duration: particle.duration * 0.90, timingCurve: Self.curve)
+            }
+            KeyframeTrack(\.rotation) {
+                LinearKeyframe(0, duration: particle.delay)
+                LinearKeyframe(particle.rotation * 0.4, duration: particle.duration * 0.10, timingCurve: Self.curve)
+                LinearKeyframe(particle.rotation, duration: particle.duration * 0.90, timingCurve: Self.curve)
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -430,7 +806,8 @@ private struct BatteryTile: View {
             .frame(height: 10)
             .padding(.top, 4)
         }
-        .dsTileChrome()
+        // screens.jsx:929 `padding: '17px 18px 18px'`.
+        .dsTileChrome(horizontal: 18, top: 17, bottom: 18)
     }
 
     private func percentLabel(_ value: Int, color: Color) -> some View {
@@ -444,25 +821,6 @@ private struct BatteryTile: View {
         }
         .foregroundStyle(color)
         .fixedSize()
-    }
-}
-
-// MARK: - Speed sparkline tile (MYR-169 addition — see file header; geometry
-// ported from screens.jsx `DSSparkline`, 1168-1183)
-
-private struct SpeedSparklineTile: View {
-    let speeds: [Double]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Speed")
-                .mrtTextStyle(.label())
-                .foregroundStyle(Color.mrtTextMuted)
-            MRTSparkline(values: speeds)
-                .frame(height: 52)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .dsTileChrome()
     }
 }
 

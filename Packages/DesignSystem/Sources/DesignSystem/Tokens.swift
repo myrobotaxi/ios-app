@@ -132,6 +132,12 @@ enum Hex {
     // text colors are literal off-whites, not alpha compositions of `text`.
     static let goldRowText: UInt32 = 0xF4EFE2 // DriveRow/UpcomingRow title (screens.jsx:758,785)
     static let drivingRowText: UInt32 = 0xEAF6EC // live-trip banner title (screens.jsx:662)
+
+    // DSShareCard (screens.jsx:1192-1224) + DSRing confetti (screens.jsx:1050-1136).
+    static let dsShareCardPanelTop: UInt32 = 0x14120C // stat panel gradient 0% (screens.jsx:1208)
+    static let dsShareCardPanelBottom: UInt32 = 0x0F0E0A // stat panel gradient 100% (screens.jsx:1208)
+    static let dsShareCardScrimEnd: UInt32 = 0x12100C // hero scrim bottom stop, used at 0.7 alpha (screens.jsx:1202)
+    static let confettiPale: UInt32 = 0xFFE9A8 // DSRing confetti `COLORS[4]` (screens.jsx:1079)
 }
 
 // MARK: - Color tokens
@@ -441,6 +447,28 @@ public extension Color {
     static let mrtGoldRowChevron = Color(hex: Hex.gold, alpha: 0.55)
     /// Live-trip banner trailing chevron — rgba(48,209,88,0.6) (screens.jsx:671).
     static let mrtDrivingRowChevron = Color(hex: Hex.driving, alpha: 0.6)
+
+    // DSShareCard (screens.jsx:1192-1224).
+    /// Card outer hairline — rgba(201,168,76,0.3) (screens.jsx:1194).
+    static let mrtDsShareCardBorder = Color(hex: Hex.gold, alpha: 0.3)
+    /// FSD-badge pill fill — rgba(201,168,76,0.14) (screens.jsx:1216).
+    static let mrtDsShareCardPillFill = Color(hex: Hex.gold, alpha: 0.14)
+    /// Stat-panel gradient start — `#14120c` (screens.jsx:1208).
+    static let mrtDsShareCardPanelTop = Color(hex: Hex.dsShareCardPanelTop)
+    /// Stat-panel gradient end — `#0f0e0a` (screens.jsx:1208).
+    static let mrtDsShareCardPanelBottom = Color(hex: Hex.dsShareCardPanelBottom)
+    /// Hero-map scrim, top of the gradient — rgba(10,10,10,0.2) (screens.jsx:1202).
+    static let mrtDsShareCardScrimStart = Color(hex: Hex.bg, alpha: 0.2)
+    /// Hero-map scrim, bottom of the gradient — rgba(18,16,12,0.7) (screens.jsx:1202).
+    static let mrtDsShareCardScrimEnd = Color(hex: Hex.dsShareCardScrimEnd, alpha: 0.7)
+    /// Outer card hairline glow — rgba(201,168,76,0.06), the card's outer
+    /// `0 0 0 1px` shadow ring (screens.jsx:1194).
+    static let mrtDsShareCardOuterRing = Color(hex: Hex.gold, alpha: 0.06)
+
+    // DSRing confetti burst (screens.jsx:1050-1136).
+    /// Confetti particle color `COLORS[4]` — `#FFE9A8` (screens.jsx:1079).
+    /// (The burst's other 4 colors reuse `mrtGold`/`mrtGoldLight`/`mrtGoldDark`/`mrtText`.)
+    static let mrtConfettiPale = Color(hex: Hex.confettiPale)
 }
 
 // MARK: - Hex init

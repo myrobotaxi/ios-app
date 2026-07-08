@@ -150,4 +150,14 @@ public enum MRTMetrics {
     /// Drive-summary `DS_TILE` corner radius — distinct from the generic
     /// `cardRadius` (screens.jsx:995 `borderRadius: 18`).
     public static let driveSummaryTileRadius: CGFloat = 18
+
+    // MARK: DSShareCard (screens.jsx:1192-1224)
+
+    /// Share-card width — the fixed render width for `ImageRenderer`
+    /// (screens.jsx `MapBackground width={362}`, 1196).
+    public static let shareCardWidth: CGFloat = 362
+    /// Share-card hero-map height (screens.jsx:1195 `height: 132`).
+    public static let shareCardMapHeight: CGFloat = 132
+    /// Share-card corner radius (screens.jsx:1194 `borderRadius: 20`).
+    public static let shareCardRadius: CGFloat = 20
 }
