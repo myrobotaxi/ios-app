@@ -24,11 +24,12 @@ enum AppScreen: Hashable {
     /// Post-join walkthrough (tutorials.jsx RiderTutorial), 5 cards.
     case riderTutorial
     /// Owner Live Map + tab shell (MYR-167 — screens.jsx `HomeScreen`; Drives
-    /// shipped in MYR-169, Share/Settings remain placeholders).
+    /// shipped in MYR-169, Share/Settings shipped in MYR-170).
     case ownerHome
-    /// Temporary M1 post-tutorial destination for the rider path — a later
-    /// issue replaces it with the shared map.
-    case signedInPlaceholder
+    /// Rider tab shell (MYR-170/191 — screens.jsx `SHARED_TABS`). Settings
+    /// ships in MYR-170 (`SharedSettingsScreen`); Live Map/Ride History
+    /// remain placeholders until MYR-191.
+    case sharedHome
 }
 
 /// Persona — the prototype's Owner / Shared flow switch
@@ -37,6 +38,17 @@ enum AppScreen: Hashable {
 enum UserRole: String {
     case owner
     case shared
+}
+
+/// Where the "Enter invite code" flow was launched from (app.jsx
+/// `inviteFrom`, MYR-170) — decides both the `returning` variant and where
+/// `onComplete`/`onCancel` route back to.
+enum InviteOrigin {
+    /// From the first-run `EmptyScreen` choice — completes into RiderTutorial.
+    case onboarding
+    /// From `SharedSettingsScreen`'s "Enter invite code" row — returning,
+    /// skips the tutorial and returns straight to Settings.
+    case sharedSettings
 }
 
 struct RootView: View {
@@ -54,6 +66,16 @@ struct RootView: View {
     /// cancelled reservation and an open drive summary both survive
     /// switching to another tab and back.
     @State private var ownerDrivesState = OwnerDrivesState()
+    /// MYR-170 — shared between `InvitesScreen` and `SettingsScreen`; see
+    /// `OwnerShareState`'s header comment for why this is lifted+shared
+    /// rather than forking the prototype's two independent copies.
+    @State private var ownerShareState = OwnerShareState()
+    /// MYR-170 — Settings' linked-vehicle list + primary designation; see
+    /// `OwnerVehiclesState`'s header comment for its scope boundary vs.
+    /// `OwnerHomeState`.
+    @State private var ownerVehiclesState = OwnerVehiclesState()
+    @State private var sharedTab = "shared"
+    @State private var inviteOrigin: InviteOrigin = .onboarding
 
     var body: some View {
         ZStack {
@@ -68,7 +90,10 @@ struct RootView: View {
                 // app.jsx:92 — the two self-describing paths.
                 EmptyScreen(
                     onAdd: { screen = .addTesla },
-                    onInvite: { screen = .inviteCode }
+                    onInvite: {
+                        inviteOrigin = .onboarding
+                        screen = .inviteCode
+                    }
                 )
             case .addTesla:
                 // app.jsx:94 — onComplete → OwnerTutorial, onCancel → back to
@@ -81,28 +106,46 @@ struct RootView: View {
                     onCancel: { screen = .emptyState }
                 )
             case .inviteCode:
-                // app.jsx:98-101 — onComplete → RiderTutorial. The `returning`
-                // variant (from rider Settings) arrives with the Settings
-                // screen's issue and skips the tutorial entirely.
+                // app.jsx:98-101 — onComplete/onCancel route on `inviteOrigin`
+                // (MYR-170): from onboarding, into RiderTutorial / back to the
+                // choice screen; from rider Settings ("returning"), skip the
+                // tutorial entirely and land back on Settings.
                 InviteCodeFlow(
                     onComplete: {
-                        role = .shared
-                        screen = .riderTutorial
+                        switch inviteOrigin {
+                        case .onboarding:
+                            role = .shared
+                            screen = .riderTutorial
+                        case .sharedSettings:
+                            role = .shared
+                            screen = .sharedHome
+                            sharedTab = "sharedSettings"
+                        }
                     },
-                    onCancel: { screen = .emptyState }
+                    onCancel: {
+                        switch inviteOrigin {
+                        case .onboarding:
+                            screen = .emptyState
+                        case .sharedSettings:
+                            screen = .sharedHome
+                            sharedTab = "sharedSettings"
+                        }
+                    },
+                    returning: inviteOrigin == .sharedSettings
                 )
             case .ownerTutorial:
                 // tutorials.jsx:363 — onDone (Continue on the last card, or
                 // Skip) → Live Map (MYR-167).
                 OwnerTutorial(onDone: { screen = .ownerHome })
             case .riderTutorial:
-                // tutorials.jsx:374 — onDone → Shared Live Map (placeholder
-                // until that issue lands).
-                RiderTutorial(onDone: { screen = .signedInPlaceholder })
+                // tutorials.jsx:374 — onDone → Shared Live Map.
+                RiderTutorial(onDone: {
+                    sharedTab = "shared"
+                    screen = .sharedHome
+                })
             case .ownerHome:
-                // app.jsx:110-115 — HomeScreen owns the "home" tab; the
-                // other owner tabs are simple placeholders until their
-                // issues land (Share, Settings).
+                // app.jsx:110-115 — HomeScreen owns the "home" tab; Drives
+                // (MYR-169), Share, and Settings (MYR-170) are the rest.
                 switch ownerTab {
                 case "drives":
                     // app.jsx:112-114 — `drives`/`driveSummary` are two
@@ -118,14 +161,42 @@ struct RootView: View {
                         DrivesScreen(homeState: ownerHomeState, drivesState: ownerDrivesState, ownerTab: $ownerTab)
                     }
                 case "invites":
-                    PlaceholderScreen(icon: "person.2", title: "Share", ownerTab: $ownerTab)
+                    InvitesScreen(shareState: ownerShareState, ownerTab: $ownerTab)
                 case "settings":
-                    PlaceholderScreen(icon: "gearshape", title: "Settings", ownerTab: $ownerTab)
+                    SettingsScreen(
+                        shareState: ownerShareState,
+                        vehiclesState: ownerVehiclesState,
+                        ownerTab: $ownerTab,
+                        onSignOut: {
+                            session.signOut()
+                            screen = .signIn
+                        }
+                    )
                 default:
                     HomeScreen(homeState: ownerHomeState, ownerTab: $ownerTab)
                 }
-            case .signedInPlaceholder:
-                TokenShowcase()
+            case .sharedHome:
+                // app.jsx:110-115 — SharedSettingsScreen owns the
+                // "sharedSettings" tab (MYR-170); Live Map/Ride History are
+                // placeholders until MYR-191.
+                switch sharedTab {
+                case "sharedSettings":
+                    SharedSettingsScreen(
+                        sharedTab: $sharedTab,
+                        onAddCode: {
+                            inviteOrigin = .sharedSettings
+                            screen = .inviteCode
+                        },
+                        onSignOut: {
+                            session.signOut()
+                            screen = .signIn
+                        }
+                    )
+                case "rideHistory":
+                    PlaceholderScreen(icon: "clock", title: "Ride History", tab: $sharedTab, tabs: MRTTab.sharedTabs)
+                default:
+                    PlaceholderScreen(icon: "map", title: "Live Map", tab: $sharedTab, tabs: MRTTab.sharedTabs)
+                }
             }
         }
         .background(Color.mrtBg.ignoresSafeArea())

@@ -160,4 +160,30 @@ public enum MRTMetrics {
     public static let shareCardMapHeight: CGFloat = 132
     /// Share-card corner radius (screens.jsx:1194 `borderRadius: 20`).
     public static let shareCardRadius: CGFloat = 20
+
+    // MARK: Toggle (MYR-170, design/app/components.jsx `Toggle` 254-272)
+
+    /// Track width (components.jsx:255 `width: 51`).
+    public static let toggleTrackWidth: CGFloat = 51
+    /// Track height (components.jsx:255 `height: 31`).
+    public static let toggleTrackHeight: CGFloat = 31
+    /// Track corner radius (components.jsx:256 `borderRadius: 16`).
+    public static let toggleTrackRadius: CGFloat = 16
+    /// Thumb diameter (components.jsx:264 `width: 27, height: 27`).
+    public static let toggleThumbSize: CGFloat = 27
+    /// Thumb inset from the track edge, both rest positions
+    /// (components.jsx:263 `left: value ? 22 : 2`; 22 = 51 - 27 - 2).
+    public static let toggleThumbInset: CGFloat = 2
+
+    // MARK: Owner Share / Settings (MYR-170, design/app/screens.jsx
+    // 1246-1834, shared-screens.jsx 444-557)
+
+    /// Header top inset, shared by Invites/Settings/SharedSettings — same
+    /// physical offset as `drivesHeaderTop` (screens.jsx:97,398;
+    /// shared-screens.jsx:694, all `padding: '74px 24px …'`).
+    public static let shareHeaderTop: CGFloat = drivesHeaderTop
+    /// Scroll-content bottom clearance above the floating tab bar, shared by
+    /// Invites/Settings/SharedSettings — same as `drivesContentBottomPadding`
+    /// (screens.jsx:101,401; shared-screens.jsx:698, all `paddingBottom: 104`).
+    public static let shareContentBottomPadding: CGFloat = drivesContentBottomPadding
 }
