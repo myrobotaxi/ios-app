@@ -45,10 +45,12 @@ struct DrivesScreen: View {
             // safe area so `header`'s `drivesHeaderTop` padding measures
             // from the true top edge instead of stacking under it.
             .ignoresSafeArea(.container, edges: .top)
-
-            BottomNav(selection: $ownerTab, tabs: MRTTab.ownerTabs)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
+        // Full-bleed geometry (CLAUDE.md "Hard rules"): pin `BottomNav` 26pt
+        // from the PHYSICAL bottom edge via the shared `mrtBottomNav` helper
+        // (MYR-196 punch-list #3 — was floating ~34pt too high, stacked on
+        // top of the home-indicator safe-area inset).
+        .mrtBottomNav(selection: $ownerTab)
         .mrtConfirmDialog(
             isPresented: Binding(
                 get: { confirmCancel != nil },

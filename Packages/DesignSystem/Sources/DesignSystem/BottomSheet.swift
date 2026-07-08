@@ -210,6 +210,16 @@ public struct MRTDetentSheet<Content: View>: View {
             .mrtSurface(.sheet, fill: .mrtBgSecondary)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
+        // Full-bleed geometry (CLAUDE.md "Hard rules"): components.jsx
+        // `BottomSheet` is called with `navHeight={0}` (screens.jsx:429) —
+        // the sheet surface itself always runs flush to the screen's
+        // PHYSICAL bottom edge; any floating nav bar is a sibling anchored
+        // independently on top of it (see `mrtBottomNav`), not something
+        // this sheet insets for. Without this, the surrounding
+        // safe-area-inset container stopped the sheet ~34pt short of the
+        // physical bottom, exposing a band of map (and MapKit's legal
+        // attribution label) below it (MYR-196 punch-list #2).
+        .ignoresSafeArea(edges: .bottom)
     }
 
     private func dragGesture(peek: CGFloat, half: CGFloat, base: CGFloat) -> some Gesture {

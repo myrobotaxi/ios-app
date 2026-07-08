@@ -28,8 +28,21 @@ Native SwiftUI port of the MyRoboTaxi design prototype. Two roles (owner / rider
 - **Reuse, don't fork** — `Button(variant:)` (6 variants), ConfirmDialog, SuccessToast, BottomSheet are built once (MYR-162) and consumed everywhere. `outline-draw` is reserved for ride-request CTAs only.
 - **M1 is simulated** — screens ship on fixture data matching the prototype's mocks (`VEHICLES`, `DRIVES`, `VIEWERS`, `PENDING`, `REQUESTED_RIDES`, `SCHEDULED_RIDES`). No network in M1.
 - **Honor Reduce Motion** — traces/pulses/shimmers fall back to static.
+- **Full-bleed geometry** (MYR-196) — the prototype is a full-bleed 393×852
+  canvas; every offset in `screens.jsx`/`components.jsx` (`top: 60`,
+  `padding: '74px …'`, `bottom: 26`, …) is a distance from the **PHYSICAL
+  screen edge**, not from SwiftUI's default safe-area insets. Screens must
+  ignore the relevant safe area and place chrome at the prototype's absolute
+  offsets — e.g. `MapHeader` top **60**, screen headings top **74**,
+  `BottomNav` bottom **26** — measured from the true top/bottom of the
+  device, not from the status-bar/home-indicator-inset container. Building
+  inside the default safe area silently stacks the OS inset on top of the
+  prototype offset (e.g. a "60pt from top" chip landing ~119pt down, or a
+  "26pt from bottom" nav floating ~60pt up) — the MYR-196 punch-list bug.
+  Prefer one shared placement helper per chrome element (e.g. `mrtBottomNav()`
+  in DesignSystem) over re-deriving the offset per screen.
 - **Study the prototype BEFORE writing code** — for any screen/flow work, first run the local prototype (see drift gate below), navigate to your screen in **Flat** mode, and walk every state and animation you're about to build (drag the sheets, trigger the dialogs, run the flow end-to-end). Write down the states you observed; build to that, not to your reading of the jsx alone.
-- **Drift gate (AFTER)** — before a screen PR is done: (1) run the actual prototype locally (`cd design && python3 -m http.server 8722`, open `http://127.0.0.1:8722/prototype.html` via the chrome-devtools MCP tools — see `design/README.md`; **switch Appearance to Flat first, every time**), (2) drive your screen to each of its states there and screenshot, (3) screenshot the same states in your simulator build, (4) compare — layout, spacing, colors, AND motion (sequence/duration/curve per Handoff §8 + the `@keyframes`, including Reduce Motion fallbacks), (5) put the side-by-side comparison + verdict in the PR body. Also cross-check the screen's `Anatomy.html` callouts.
+- **Drift gate (AFTER)** — before a screen PR is done: (1) run the actual prototype locally (`cd design && python3 -m http.server 8722`, open `http://127.0.0.1:8722/prototype.html` via the chrome-devtools MCP tools — see `design/README.md`; **switch Appearance to Flat first, every time**), (2) drive your screen to each of its states there and capture a **FULL-FRAME** screenshot (the entire simulator screen / entire prototype phone frame — never a cropped region: cropping is exactly how the MYR-196 physical-edge-vs-safe-area drift slipped through review), (3) capture the same states as **FULL-FRAME** screenshots in your simulator build, (4) compare full frame vs. full frame — layout, spacing, colors, AND motion (sequence/duration/curve per Handoff §8 + the `@keyframes`, including Reduce Motion fallbacks), (5) put the side-by-side full-frame comparison + verdict in the PR body. Also cross-check the screen's `Anatomy.html` callouts.
 - Min tap target 44pt. Hero numbers use `.monospacedDigit()`. Dark-appearance-only asset catalog.
 
 ## Structure

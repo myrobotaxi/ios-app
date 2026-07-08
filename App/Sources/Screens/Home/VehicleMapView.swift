@@ -16,6 +16,15 @@ struct VehicleMapView: View {
     let snapshot: VehicleTelemetrySnapshot
     @Binding var cameraPosition: MapCameraPosition
     @Binding var isFollowing: Bool
+    /// Reserved height along the bottom edge the sheet now physically
+    /// covers (MYR-196 punch-list #2, `MRTDetentSheet`'s
+    /// `.ignoresSafeArea(edges: .bottom)`). `MKMapView` reads its own
+    /// `safeAreaInsets` to keep the legally-required attribution/legal
+    /// label (and compass) clear of obstructed regions — `.safeAreaPadding`
+    /// grows that inset without shrinking the map's own edge-to-edge
+    /// render, so the label settles just above the sheet's peek edge
+    /// instead of being hidden underneath it.
+    let bottomContentInset: CGFloat
 
     // Cooldown *window*, not a single-consume flag: recenters can overlap
     // (a new one fires every progress-percent tick, ~1/sec, while the
@@ -53,6 +62,7 @@ struct VehicleMapView: View {
                 .annotationTitles(.hidden)
         }
         .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll, showsTraffic: false))
+        .safeAreaPadding(.bottom, bottomContentInset)
         // Force dark so MKMapView doesn't fall back to a light palette
         // independent of the app's own forced-dark Info.plist trait
         // (review finding #4). This measurably darkens urban/street
