@@ -144,6 +144,14 @@ enum Hex {
     // oklch hue system — `#8a6f28` isn't an alpha composition of an existing
     // base, so it's a new raw hex (the gradient's start stop reuses `gold`).
     static let riderAvatarGradientEnd: UInt32 = 0x8A6F28
+
+    // MYR-191 — Rider shell: RequestedRideRow (shared-screens.jsx:124-153)
+    // and the ScheduledRideSheet modal (shared-screens.jsx:218-436,
+    // design/app/design.jsx:74 `modalSheet` flat). Every other MYR-191 token
+    // below composes these two (or an existing base hex) at a new alpha —
+    // see the `Color` extension section.
+    static let requestedRowText: UInt32 = 0xF2F2F2 // RequestedRideRow title (shared-screens.jsx:136)
+    static let rideSheetFill: UInt32 = 0x141416 // modalSheet fill rgb(20,20,22) (design.jsx:74); also the ride map-preview scrim base (shared-screens.jsx:359)
 }
 
 // MARK: - Color tokens
@@ -520,6 +528,66 @@ public extension Color {
     /// Rider Settings profile-avatar radial-gradient end stop — `#8a6f28`
     /// (shared-screens.jsx:468; the start stop reuses `mrtGold`).
     static let mrtRiderAvatarGradientEnd = Color(hex: Hex.riderAvatarGradientEnd)
+
+    // MARK: - MYR-191 — Rider shell: SharedViewerScreen (design/app/
+    // screens.jsx SharedViewerScreen 1855-2242 + ExpandingRequestSheet,
+    // design/app/ride-request.jsx 1071-1261) + RideHistoryScreen /
+    // ScheduledRideSheet (design/app/shared-screens.jsx 1-436). Every value
+    // below is either an alpha composition of an existing base hex or one of
+    // the two new raw hexes above. `ScheduledRideRow` deliberately reuses
+    // `mrtGoldRowTintStart/Mid`, `mrtRowTintFaint`, `mrtGoldRowBorder`,
+    // `mrtUpcomingIconFill/Border`, `mrtGoldRowText`, `mrtGoldRowChevron`
+    // (MYR-169) verbatim — shared-screens.jsx:162-164,168,172 is a
+    // byte-identical gradient/border recipe to UpcomingRow's (screens.jsx
+    // comment: "mirrors the owner's UpcomingRow"). Likewise the segmented
+    // control reuses `mrtDrivesSegmentTrack` + `MRTMetrics.drivesSegment*`
+    // (shared-screens.jsx:73 is byte-identical to screens.jsx:637) and the
+    // empty state reuses `mrtDrivesEmptyIconFill` (shared-screens.jsx:106
+    // matches screens.jsx:703 exactly).
+
+    /// RequestedRideRow card-gradient start — rgba(255,255,255,0.05)
+    /// (shared-screens.jsx:130). The neutral (non-gold) twin of
+    /// `mrtGoldRowTintStart` — completed rides the rider requested aren't
+    /// gold-tinted like the owner's `DriveRow`.
+    static let mrtRequestedRowTintStart = Color(hex: Hex.text, alpha: 0.05)
+    /// RequestedRideRow card-gradient mid stop — rgba(255,255,255,0.022)
+    /// (shared-screens.jsx:130).
+    static let mrtRequestedRowTintMid = Color(hex: Hex.text, alpha: 0.022)
+    /// RequestedRideRow card-gradient end stop — rgba(255,255,255,0.012)
+    /// (shared-screens.jsx:130).
+    static let mrtRequestedRowTintEnd = Color(hex: Hex.text, alpha: 0.012)
+    /// RequestedRideRow border — rgba(255,255,255,0.09) (shared-screens.jsx:131).
+    static let mrtRequestedRowBorder = Color(hex: Hex.text, alpha: 0.09)
+    /// RequestedRideRow route title text — `#F2F2F2` (shared-screens.jsx:136).
+    static let mrtRequestedRowText = Color(hex: Hex.requestedRowText)
+    /// ScheduledRideRow "Confirmed" status chip fill — rgba(48,209,88,0.16)
+    /// (shared-screens.jsx:191).
+    static let mrtRideConfirmedChipFill = Color(hex: Hex.driving, alpha: 0.16)
+    /// ScheduledRideRow "Pending" status chip fill — rgba(255,255,255,0.07)
+    /// (shared-screens.jsx:191).
+    static let mrtRidePendingChipFill = Color(hex: Hex.text, alpha: 0.07)
+    /// `RideForTag` "For {name}" pill fill — `${T.gold}1a` (shared-screens.jsx:28).
+    static let mrtRideForTagFill = Color(hex: Hex.gold, alpha: Double(0x1A) / 255.0)
+    /// ScheduledRideSheet reschedule day/time chip, unselected fill —
+    /// rgba(255,255,255,0.04) (shared-screens.jsx:289,302).
+    static let mrtRideChipFill = Color(hex: Hex.text, alpha: 0.04)
+    /// ScheduledRideSheet details-mode "Cancel ride" quick-action border —
+    /// rgba(255,59,48,0.40) (shared-screens.jsx:271). The button's fill
+    /// reuses `mrtDangerFillSoft` (also 0.14, MYR-162).
+    static let mrtRideCancelButtonBorder = Color(hex: Hex.danger, alpha: 0.40)
+    /// ScheduledRideSheet modal fill — rgba(20,20,22,0.96), the flat
+    /// `S.modalSheet` (design.jsx:74).
+    static let mrtRideSheetFill = Color(hex: Hex.rideSheetFill, alpha: 0.96)
+    /// Ride map-preview bottom legibility scrim — rgba(20,20,22,0.92)
+    /// (shared-screens.jsx:359).
+    static let mrtRideMapScrim = Color(hex: Hex.rideSheetFill, alpha: 0.92)
+    /// SharedViewerScreen idle sheet top hairline — `${T.gold}2e`
+    /// (design/app/ride-request.jsx:1181 `ExpandingRequestSheet`).
+    static let mrtGoldSheetHairline = Color(hex: Hex.gold, alpha: Double(0x2E) / 255.0)
+    /// SharedViewerScreen search bar ambient glow — rgba(201,168,76,0.16)
+    /// (components.jsx:676 `.mrt-search-glow`, the same trace-border recipe
+    /// as `outline-draw`'s `MRTTraceBorder`, applied to the search field).
+    static let mrtSearchGlow = Color(hex: Hex.gold, alpha: 0.16)
 }
 
 // MARK: - Hex init

@@ -261,9 +261,18 @@ private struct MRTGoldPulse: ViewModifier {
 /// riding just outside it (the ::after layer). Reduce Motion → static
 /// #E7C975→gold gradient border at 0.85 opacity, comet hidden (the jsx
 /// `prefers-reduced-motion` fallback).
-struct MRTTraceBorder: View {
+///
+/// Public (MYR-191): `components.jsx`'s `.mrt-search-glow` (the rider live
+/// map's search bar, screens.jsx:2174) is the byte-identical conic-gradient
+/// recipe applied to a search field instead of a button — reused here rather
+/// than forked (CLAUDE.md "Reuse, don't fork").
+public struct MRTTraceBorder: View {
     let shape: RoundedRectangle
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    public init(shape: RoundedRectangle) {
+        self.shape = shape
+    }
 
     /// conic-gradient stops of `.mrt-draw-btn::before` (degrees ÷ 360).
     static let traceStops: [Gradient.Stop] = [
@@ -285,7 +294,7 @@ struct MRTTraceBorder: View {
         .init(color: .clear, location: 1),
     ]
 
-    var body: some View {
+    public var body: some View {
         if reduceMotion {
             shape
                 .strokeBorder(

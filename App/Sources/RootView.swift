@@ -76,6 +76,10 @@ struct RootView: View {
     @State private var ownerVehiclesState = OwnerVehiclesState()
     @State private var sharedTab = "shared"
     @State private var inviteOrigin: InviteOrigin = .onboarding
+    /// MYR-191 — mirrors `ownerHomeState`'s reasoning: lifted above the
+    /// `sharedTab` switch so the rider's watched vehicle keeps ticking
+    /// telemetry across Ride History/Settings and back to Live Map.
+    @State private var sharedViewerState = SharedViewerState()
 
     var body: some View {
         ZStack {
@@ -177,8 +181,9 @@ struct RootView: View {
                 }
             case .sharedHome:
                 // app.jsx:110-115 — SharedSettingsScreen owns the
-                // "sharedSettings" tab (MYR-170); Live Map/Ride History are
-                // placeholders until MYR-191.
+                // "sharedSettings" tab (MYR-170); Live Map (MYR-191
+                // `SharedViewerScreen`) and Ride History (MYR-191
+                // `RideHistoryScreen`) round out the rider shell.
                 switch sharedTab {
                 case "sharedSettings":
                     SharedSettingsScreen(
@@ -193,9 +198,9 @@ struct RootView: View {
                         }
                     )
                 case "rideHistory":
-                    PlaceholderScreen(icon: "clock", title: "Ride History", tab: $sharedTab, tabs: MRTTab.sharedTabs)
+                    RideHistoryScreen(sharedTab: $sharedTab)
                 default:
-                    PlaceholderScreen(icon: "map", title: "Live Map", tab: $sharedTab, tabs: MRTTab.sharedTabs)
+                    SharedViewerScreen(viewerState: sharedViewerState, sharedTab: $sharedTab)
                 }
             }
         }
