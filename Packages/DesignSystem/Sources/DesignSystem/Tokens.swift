@@ -99,6 +99,11 @@ enum Hex {
     static let vigCardBottom: UInt32 = 0x101014 // MiniScreen gradient 100% — rgba(16,16,20,…) (tutorials.jsx:12)
     static let vigStatusPill: UInt32 = 0x141418 // status pill fill — rgba(20,20,24,0.66) (tutorials.jsx:35,192)
 
+    // MYR-167 — Live Map header/switcher chip (design/app/screens.jsx
+    // MapHeader:302-350) + picker menu.
+    static let mapChipFill: UInt32 = 0x141418 // chip bg rgb(20,20,24) (screens.jsx:307)
+    static let mapPickerFill: UInt32 = 0x18181C // picker menu bg rgb(24,24,28) (screens.jsx:324)
+
     // MYR-166 — map backdrop (design/app/components.jsx MapBackground:305-397),
     // ported for the story-deck live-map vignettes (VigLiveMap/VigTrack).
     static let mapLand: UInt32 = 0x1B1D21 // land base fill (components.jsx:359,365)
@@ -288,6 +293,34 @@ public extension Color {
     static let mrtGoldTileFaint = Color(hex: Hex.gold, alpha: 0.12)
     /// Status-pill fill — rgba(20,20,24,0.66) (tutorials.jsx:35,192).
     static let mrtVigStatusPill = Color(hex: Hex.vigStatusPill, alpha: 0.66)
+
+    // MYR-167 — Live Map (design/app/screens.jsx HomeScreen/MapHeader/
+    // FloatingMapButton, real MapKit screen — distinct from the MYR-166
+    // MapBackground vignette tokens below).
+    /// Vehicle-switcher chip fill — rgba(20,20,24,0.72) (screens.jsx:307).
+    static let mrtMapChipFill = Color(hex: Hex.mapChipFill, alpha: 0.72)
+    /// Chip/picker hairline border, resting — rgba(255,255,255,0.14)
+    /// (screens.jsx:308,325).
+    static let mrtMapChipBorder = Color(hex: Hex.text, alpha: 0.14)
+    /// Chip hairline border, picker open — `#C9A84C77` (screens.jsx:308).
+    static let mrtMapChipBorderActive = Color(hex: Hex.gold, alpha: Double(0x77) / 255.0)
+    /// Chip disclosure-chevron circle fill — rgba(255,255,255,0.08) (screens.jsx:313).
+    static let mrtMapChipChevronFill = Color(hex: Hex.text, alpha: 0.08)
+    /// Picker menu fill — rgba(24,24,28,0.92) (screens.jsx:324).
+    static let mrtMapPickerFill = Color(hex: Hex.mapPickerFill, alpha: 0.92)
+    /// Picker row divider — rgba(255,255,255,0.07) (screens.jsx:333).
+    static let mrtMapPickerDivider = Color(hex: Hex.text, alpha: 0.07)
+    /// Active picker row wash — `#C9A84C14` (screens.jsx:332).
+    static let mrtMapPickerRowActive = Color(hex: Hex.gold, alpha: Double(0x14) / 255.0)
+    /// Active picker row icon-tile fill — `#C9A84C22` (screens.jsx:335).
+    static let mrtMapPickerIconActive = Color(hex: Hex.gold, alpha: Double(0x22) / 255.0)
+    /// Inactive picker row icon-tile fill — rgba(255,255,255,0.06) (screens.jsx:335).
+    static let mrtMapPickerIconInactive = Color(hex: Hex.text, alpha: 0.06)
+    /// Floating recenter-button fill — rgba(17,17,17,0.85), the flat
+    /// `floatBtn` surface (design.jsx:95).
+    static let mrtFloatButtonFill = Color(hex: Hex.bgSecondary, alpha: 0.85)
+    /// Compass N/S/E/W labels — rgba(255,255,255,0.25) (components.jsx:407).
+    static let mrtMapCompassLabel = Color(hex: Hex.text, alpha: 0.25)
 
     // MYR-166 — map backdrop (design/app/components.jsx MapBackground),
     // ported for the story-deck live-map vignettes.

@@ -23,8 +23,11 @@ enum AppScreen: Hashable {
     case ownerTutorial
     /// Post-join walkthrough (tutorials.jsx RiderTutorial), 5 cards.
     case riderTutorial
-    /// Temporary M1 post-tutorial destination — a later issue replaces it
-    /// with the home map (owner) / shared map (rider).
+    /// Owner Live Map + tab shell (MYR-167 — screens.jsx `HomeScreen` plus
+    /// the Drives/Share/Settings tab placeholders those issues build next).
+    case ownerHome
+    /// Temporary M1 post-tutorial destination for the rider path — a later
+    /// issue replaces it with the shared map.
     case signedInPlaceholder
 }
 
@@ -40,6 +43,12 @@ struct RootView: View {
     @State private var session = SimulatedAuthSession()
     @State private var screen: AppScreen = .signIn
     @State private var role: UserRole = .owner
+    // Lifted above `.ownerHome`'s tab switch (app.jsx's `vehicleIdx`/`sheet`
+    // are App-level state, not HomeScreen-local — screens.jsx:369) so the
+    // selected vehicle, sheet detent, and each vehicle's ticking telemetry
+    // survive switching to Drives/Share/Settings and back.
+    @State private var ownerHomeState = OwnerHomeState()
+    @State private var ownerTab = "home"
 
     var body: some View {
         ZStack {
@@ -79,12 +88,26 @@ struct RootView: View {
                 )
             case .ownerTutorial:
                 // tutorials.jsx:363 — onDone (Continue on the last card, or
-                // Skip) → Live Map (placeholder until that issue lands).
-                OwnerTutorial(onDone: { screen = .signedInPlaceholder })
+                // Skip) → Live Map (MYR-167).
+                OwnerTutorial(onDone: { screen = .ownerHome })
             case .riderTutorial:
                 // tutorials.jsx:374 — onDone → Shared Live Map (placeholder
                 // until that issue lands).
                 RiderTutorial(onDone: { screen = .signedInPlaceholder })
+            case .ownerHome:
+                // app.jsx:110-115 — HomeScreen owns the "home" tab; the
+                // other owner tabs are simple placeholders until their
+                // issues land (Drives, Share, Settings).
+                switch ownerTab {
+                case "drives":
+                    PlaceholderScreen(icon: "clock", title: "Drives", ownerTab: $ownerTab)
+                case "invites":
+                    PlaceholderScreen(icon: "person.2", title: "Share", ownerTab: $ownerTab)
+                case "settings":
+                    PlaceholderScreen(icon: "gearshape", title: "Settings", ownerTab: $ownerTab)
+                default:
+                    HomeScreen(homeState: ownerHomeState, ownerTab: $ownerTab)
+                }
             case .signedInPlaceholder:
                 TokenShowcase()
             }
