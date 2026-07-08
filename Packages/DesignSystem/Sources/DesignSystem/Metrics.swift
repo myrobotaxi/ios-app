@@ -112,4 +112,16 @@ public enum MRTMetrics {
     /// Sheet scroll-content bottom clearance above the floating tab bar
     /// (screens.jsx:542 `padding: '6px 24px 100px'`).
     public static let homeSheetContentBottomPadding: CGFloat = 100
+
+    // MARK: Vehicle Controls (MYR-168, design/app/vehicle-controls.jsx)
+
+    /// `ControlTile` corner radius (vehicle-controls.jsx:28).
+    public static let vehicleControlTileRadius: CGFloat = 16
+    /// `SectionCard` corner radius — 18, distinct from the generic `.control`
+    /// surface's 12 (vehicle-controls.jsx:51 `borderRadius: 18`).
+    public static let vehicleControlsSectionRadius: CGFloat = 18
+    /// Gap above each `SectionCard` (vehicle-controls.jsx:46 `marginTop: 18`).
+    public static let vehicleControlsSectionGap: CGFloat = 18
+    /// `mrt-range` thumb diameter (components.jsx:769-770).
+    public static let sliderThumbSize: CGFloat = 22
 }

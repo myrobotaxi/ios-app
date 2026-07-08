@@ -50,6 +50,19 @@ public struct Vehicle: Identifiable, Equatable, Sendable {
 public enum VehicleActivity: Equatable, Sendable {
     case driving(DrivingTrip)
     case parked(ParkedLocation)
+
+    /// Whether this activity is the driving case — used to seed
+    /// `SimulatedVehicleCommandExecutor`'s `mediaPlaying` default
+    /// (vehicle-controls.jsx:222 `useState(driving)`).
+    public var isDriving: Bool {
+        if case .driving = self { true } else { false }
+    }
+
+    /// The vehicle's parked location, when parked (nil while driving) — feeds
+    /// `VehicleControls`' Status & location section.
+    public var parkedLocation: ParkedLocation? {
+        if case .parked(let location) = self { location } else { nil }
+    }
 }
 
 /// screens.jsx `DrivingSheetContent` (lines 439-499) hardcodes its

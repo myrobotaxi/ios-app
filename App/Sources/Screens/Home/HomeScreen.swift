@@ -18,9 +18,14 @@ struct HomeScreen: View {
 
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var isFollowing = true
+    /// Drives the plate-edit `mrtConfigSheet` (MYR-168) — applied at this
+    /// screen's root so the scrim covers the whole screen, matching every
+    /// other shared overlay in this codebase (ConfirmDialog, SuccessToast).
+    @State private var isEditingPlate = false
 
     private var vehicle: Vehicle { homeState.selectedVehicle }
     private var snapshot: VehicleTelemetrySnapshot { homeState.selectedTelemetry.snapshot }
+    private var commandExecutor: any VehicleCommandExecutor { homeState.selectedCommandExecutor }
 
     /// screens.jsx:400 — driving always uses the 280pt peek; parked uses the
     /// 'floating' style's 210pt (the only `parkedStyle` this app ships).
@@ -88,6 +93,17 @@ struct HomeScreen: View {
         .onChange(of: homeState.selectedVehicleIndex) { _, _ in
             isFollowing = true
         }
+        .mrtConfigSheet(isPresented: $isEditingPlate, showsCloseButton: false) {
+            PlateEditSheet(
+                initialPlate: commandExecutor.controls.plate,
+                onCancel: { isEditingPlate = false },
+                onSave: { newPlate in
+                    let executor = commandExecutor
+                    Task { try? await executor.setPlate(newPlate) }
+                    isEditingPlate = false
+                }
+            )
+        }
     }
 
     @ViewBuilder
@@ -95,17 +111,21 @@ struct HomeScreen: View {
         switch vehicle.activity {
         case .driving(let trip):
             DrivingHeroContent(
-                vehicleName: vehicle.name,
+                vehicle: vehicle,
                 trip: trip,
                 snapshot: snapshot,
-                expanded: homeState.sheetDetent == .half
+                expanded: homeState.sheetDetent == .half,
+                executor: commandExecutor,
+                isEditingPlate: $isEditingPlate
             )
         case .parked(let location):
             ParkedHeroContent(
-                vehicleName: vehicle.name,
+                vehicle: vehicle,
                 location: location,
                 snapshot: snapshot,
-                expanded: homeState.sheetDetent == .half
+                expanded: homeState.sheetDetent == .half,
+                executor: commandExecutor,
+                isEditingPlate: $isEditingPlate
             )
         }
     }
