@@ -127,6 +127,17 @@ enum Hex {
     static let mediaTrack2End: UInt32 = 0x1A1A2E
     static let mediaTrack3Start: UInt32 = 0x0F3443
     static let mediaTrack3End: UInt32 = 0x34E89E
+
+    // MYR-169 — Drives / Drive Summary (design/app/screens.jsx). Row-title
+    // text colors are literal off-whites, not alpha compositions of `text`.
+    static let goldRowText: UInt32 = 0xF4EFE2 // DriveRow/UpcomingRow title (screens.jsx:758,785)
+    static let drivingRowText: UInt32 = 0xEAF6EC // live-trip banner title (screens.jsx:662)
+
+    // DSShareCard (screens.jsx:1192-1224) + DSRing confetti (screens.jsx:1050-1136).
+    static let dsShareCardPanelTop: UInt32 = 0x14120C // stat panel gradient 0% (screens.jsx:1208)
+    static let dsShareCardPanelBottom: UInt32 = 0x0F0E0A // stat panel gradient 100% (screens.jsx:1208)
+    static let dsShareCardScrimEnd: UInt32 = 0x12100C // hero scrim bottom stop, used at 0.7 alpha (screens.jsx:1202)
+    static let confettiPale: UInt32 = 0xFFE9A8 // DSRing confetti `COLORS[4]` (screens.jsx:1079)
 }
 
 // MARK: - Color tokens
@@ -378,6 +389,86 @@ public extension Color {
     static let mrtMediaTrack2End = Color(hex: Hex.mediaTrack2End)
     static let mrtMediaTrack3Start = Color(hex: Hex.mediaTrack3Start)
     static let mrtMediaTrack3End = Color(hex: Hex.mediaTrack3End)
+
+    // MYR-169 — Drives / Drive Summary (design/app/screens.jsx 604-1183).
+    // Every value below is an alpha composition of an existing base hex —
+    // no new raw hex is introduced.
+
+    /// Segmented-control track fill — rgba(255,255,255,0.05) (screens.jsx:637).
+    static let mrtDrivesSegmentTrack = Color(hex: Hex.text, alpha: 0.05)
+    /// Sort-chip active fill — `#C9A84C22` (screens.jsx:683).
+    static let mrtDrivesSortChipActive = Color(hex: Hex.gold, alpha: Double(0x22) / 255.0)
+    /// DriveRow / UpcomingRow shared card-gradient start — rgba(201,168,76,0.10)
+    /// (screens.jsx:750,778).
+    static let mrtGoldRowTintStart = Color(hex: Hex.gold, alpha: 0.10)
+    /// DriveRow / UpcomingRow shared card-gradient mid stop — rgba(201,168,76,0.03)
+    /// (screens.jsx:750,778).
+    static let mrtGoldRowTintMid = Color(hex: Hex.gold, alpha: 0.03)
+    /// Shared card-gradient end stop (gold rows *and* the driving banner) —
+    /// rgba(255,255,255,0.018) (screens.jsx:654,750,778).
+    static let mrtRowTintFaint = Color(hex: Hex.text, alpha: 0.018)
+    /// DriveRow / UpcomingRow border — rgba(201,168,76,0.20) (screens.jsx:751,779).
+    static let mrtGoldRowBorder = Color(hex: Hex.gold, alpha: 0.20)
+    /// Live-trip banner card-gradient start — rgba(48,209,88,0.14) (screens.jsx:654).
+    static let mrtDrivingRowTintStart = Color(hex: Hex.driving, alpha: 0.14)
+    /// Live-trip banner card-gradient mid stop — rgba(48,209,88,0.04) (screens.jsx:654).
+    static let mrtDrivingRowTintMid = Color(hex: Hex.driving, alpha: 0.04)
+    /// Live-trip banner border — rgba(48,209,88,0.34) (screens.jsx:655).
+    static let mrtDrivingRowBorder = Color(hex: Hex.driving, alpha: 0.34)
+    /// DriveRow start-time text — rgba(201,168,76,0.65) (screens.jsx:788).
+    static let mrtGoldTimeLabel = Color(hex: Hex.gold, alpha: 0.65)
+    /// UpcomingRow icon-tile fill — rgba(201,168,76,0.16) (screens.jsx:754).
+    static let mrtUpcomingIconFill = Color(hex: Hex.gold, alpha: 0.16)
+    /// UpcomingRow icon-tile border — rgba(201,168,76,0.28) (screens.jsx:754).
+    static let mrtUpcomingIconBorder = Color(hex: Hex.gold, alpha: 0.28)
+    /// UpcomingRow cancel (✕) button fill — rgba(255,255,255,0.06) (screens.jsx:764).
+    static let mrtDrivesCancelButtonFill = Color(hex: Hex.text, alpha: 0.06)
+    /// "No upcoming rides" icon-tile fill — rgba(255,255,255,0.04) (screens.jsx:703).
+    static let mrtDrivesEmptyIconFill = Color(hex: Hex.text, alpha: 0.04)
+    /// Drive-summary `DS_TILE` gradient start — rgba(255,255,255,0.06) (screens.jsx:993).
+    static let mrtDsTileTintStart = Color(hex: Hex.text, alpha: 0.06)
+    /// Drive-summary `DS_TILE` gradient end — rgba(255,255,255,0.025) (screens.jsx:993).
+    static let mrtDsTileTintEnd = Color(hex: Hex.text, alpha: 0.025)
+    /// Drive-summary `DS_TILE` border — rgba(255,255,255,0.09) (screens.jsx:994).
+    static let mrtDsTileBorder = Color(hex: Hex.text, alpha: 0.09)
+    /// Hero-map top legibility scrim — rgba(10,10,10,0.62) (screens.jsx:882).
+    static let mrtDsScrimTop = Color(hex: Hex.bg, alpha: 0.62)
+    /// Hero-map bottom legibility scrim mid stop — rgba(10,10,10,0.7)
+    /// (screens.jsx:883; the end stop is opaque `mrtBg`).
+    static let mrtDsScrimBottomMid = Color(hex: Hex.bg, alpha: 0.7)
+    /// Hero-map floating back/share button fill — rgba(10,10,10,0.5)
+    /// (screens.jsx:890,893).
+    static let mrtDsFloatingNavFill = Color(hex: Hex.bg, alpha: 0.5)
+    /// DriveRow / UpcomingRow title text — `#F4EFE2` (screens.jsx:758,785).
+    static let mrtGoldRowText = Color(hex: Hex.goldRowText)
+    /// Live-trip banner title text — `#EAF6EC` (screens.jsx:662).
+    static let mrtDrivingRowText = Color(hex: Hex.drivingRowText)
+    /// DriveRow trailing chevron — rgba(201,168,76,0.55) (screens.jsx:794).
+    static let mrtGoldRowChevron = Color(hex: Hex.gold, alpha: 0.55)
+    /// Live-trip banner trailing chevron — rgba(48,209,88,0.6) (screens.jsx:671).
+    static let mrtDrivingRowChevron = Color(hex: Hex.driving, alpha: 0.6)
+
+    // DSShareCard (screens.jsx:1192-1224).
+    /// Card outer hairline — rgba(201,168,76,0.3) (screens.jsx:1194).
+    static let mrtDsShareCardBorder = Color(hex: Hex.gold, alpha: 0.3)
+    /// FSD-badge pill fill — rgba(201,168,76,0.14) (screens.jsx:1216).
+    static let mrtDsShareCardPillFill = Color(hex: Hex.gold, alpha: 0.14)
+    /// Stat-panel gradient start — `#14120c` (screens.jsx:1208).
+    static let mrtDsShareCardPanelTop = Color(hex: Hex.dsShareCardPanelTop)
+    /// Stat-panel gradient end — `#0f0e0a` (screens.jsx:1208).
+    static let mrtDsShareCardPanelBottom = Color(hex: Hex.dsShareCardPanelBottom)
+    /// Hero-map scrim, top of the gradient — rgba(10,10,10,0.2) (screens.jsx:1202).
+    static let mrtDsShareCardScrimStart = Color(hex: Hex.bg, alpha: 0.2)
+    /// Hero-map scrim, bottom of the gradient — rgba(18,16,12,0.7) (screens.jsx:1202).
+    static let mrtDsShareCardScrimEnd = Color(hex: Hex.dsShareCardScrimEnd, alpha: 0.7)
+    /// Outer card hairline glow — rgba(201,168,76,0.06), the card's outer
+    /// `0 0 0 1px` shadow ring (screens.jsx:1194).
+    static let mrtDsShareCardOuterRing = Color(hex: Hex.gold, alpha: 0.06)
+
+    // DSRing confetti burst (screens.jsx:1050-1136).
+    /// Confetti particle color `COLORS[4]` — `#FFE9A8` (screens.jsx:1079).
+    /// (The burst's other 4 colors reuse `mrtGold`/`mrtGoldLight`/`mrtGoldDark`/`mrtText`.)
+    static let mrtConfettiPale = Color(hex: Hex.confettiPale)
 }
 
 // MARK: - Hex init

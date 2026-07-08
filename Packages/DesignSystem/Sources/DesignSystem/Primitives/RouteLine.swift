@@ -94,3 +94,34 @@ public struct RouteLine: View {
         }
     }
 }
+
+// MARK: - Endpoint dot (components.jsx `EndpointDot`, components.jsx:482-489)
+
+/// Route-endpoint marker — soft outer halo (r = size×0.9, 30% opacity) behind
+/// a solid dot with a light ring. Used for both the real MapKit `Annotation`
+/// on the Live Map (MYR-167) and the static hero-map route on Drive Summary
+/// (MYR-169) — promoted here so both screens share one implementation
+/// (CLAUDE.md "Reuse, don't fork").
+public struct MRTEndpointDot: View {
+    private let color: Color
+    private let size: CGFloat
+
+    public init(color: Color, size: CGFloat) {
+        self.color = color
+        self.size = size
+    }
+
+    public var body: some View {
+        ZStack {
+            Circle()
+                .fill(color)
+                .opacity(0.3)
+                .frame(width: size * 1.8, height: size * 1.8) // r = size * 0.9
+            Circle()
+                .fill(color)
+                .frame(width: size, height: size)
+                .overlay(Circle().strokeBorder(Color.mrtText, lineWidth: 1.5))
+        }
+        .accessibilityHidden(true)
+    }
+}

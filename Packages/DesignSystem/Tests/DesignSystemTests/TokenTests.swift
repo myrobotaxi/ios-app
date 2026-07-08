@@ -269,4 +269,87 @@ final class TokenTests: XCTestCase {
         XCTAssertEqual(MRTTextStyle.screenTitle.tracking, -0.6)
         XCTAssertEqual(MRTTextStyle.label().tracking, 1.2)
     }
+
+    /// MYR-169 — Drives / Drive Summary layout constants (design/app/
+    /// screens.jsx:631,635,637,639,754,764,873,890,893,995).
+    func testDrivesMetrics() {
+        XCTAssertEqual(MRTMetrics.drivesHeaderTop, 74)
+        XCTAssertEqual(MRTMetrics.drivesContentBottomPadding, 104)
+        XCTAssertEqual(MRTMetrics.drivesSegmentRadius, 12)
+        XCTAssertEqual(MRTMetrics.drivesSegmentItemRadius, 9)
+        XCTAssertEqual(MRTMetrics.upcomingIconTileSize, 38)
+        XCTAssertEqual(MRTMetrics.upcomingCancelButtonSize, 28)
+        XCTAssertEqual(MRTMetrics.driveSummaryHeroHeight, 268)
+        XCTAssertEqual(MRTMetrics.driveSummaryFloatingButtonSize, 38)
+        XCTAssertEqual(MRTMetrics.driveSummaryTileRadius, 18)
+    }
+
+    /// MYR-169 — new raw hex colors (literal off-whites, not alpha
+    /// compositions of an existing base — see Tokens.swift `Hex` comment).
+    func testDrivesHexRoundTrip() {
+        let cases: [(name: String, hex: UInt32, color: Color)] = [
+            ("goldRowText", 0xF4EFE2, .mrtGoldRowText), // screens.jsx:758,785
+            ("drivingRowText", 0xEAF6EC, .mrtDrivingRowText), // screens.jsx:662
+            ("dsShareCardPanelTop", 0x14120C, .mrtDsShareCardPanelTop), // screens.jsx:1208
+            ("dsShareCardPanelBottom", 0x0F0E0A, .mrtDsShareCardPanelBottom), // screens.jsx:1208
+            ("confettiPale", 0xFFE9A8, .mrtConfettiPale), // screens.jsx:1079 COLORS[4]
+        ]
+        for (name, hex, color) in cases {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            XCTAssertTrue(
+                UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a),
+                "\(name): not convertible to RGBA"
+            )
+            XCTAssertEqual(UInt32(round(r * 255)), (hex >> 16) & 0xFF, "\(name): red")
+            XCTAssertEqual(UInt32(round(g * 255)), (hex >> 8) & 0xFF, "\(name): green")
+            XCTAssertEqual(UInt32(round(b * 255)), hex & 0xFF, "\(name): blue")
+            XCTAssertEqual(a, 1.0, accuracy: 0.001, "\(name): alpha")
+        }
+    }
+
+    /// MYR-169 — Drives / Drive Summary alpha compositions (design/app/
+    /// screens.jsx 637-1113).
+    func testDrivesTintAlphas() {
+        let cases: [(name: String, alpha: CGFloat, color: Color)] = [
+            ("drivesSegmentTrack", 0.05, .mrtDrivesSegmentTrack), // screens.jsx:637
+            ("drivesSortChipActive", CGFloat(0x22) / 255.0, .mrtDrivesSortChipActive), // screens.jsx:683
+            ("goldRowTintStart", 0.10, .mrtGoldRowTintStart), // screens.jsx:750,778
+            ("goldRowTintMid", 0.03, .mrtGoldRowTintMid), // screens.jsx:750,778
+            ("rowTintFaint", 0.018, .mrtRowTintFaint), // screens.jsx:654,750,778
+            ("goldRowBorder", 0.20, .mrtGoldRowBorder), // screens.jsx:751,779
+            ("drivingRowTintStart", 0.14, .mrtDrivingRowTintStart), // screens.jsx:654
+            ("drivingRowTintMid", 0.04, .mrtDrivingRowTintMid), // screens.jsx:654
+            ("drivingRowBorder", 0.34, .mrtDrivingRowBorder), // screens.jsx:655
+            ("goldTimeLabel", 0.65, .mrtGoldTimeLabel), // screens.jsx:788
+            ("upcomingIconFill", 0.16, .mrtUpcomingIconFill), // screens.jsx:754
+            ("upcomingIconBorder", 0.28, .mrtUpcomingIconBorder), // screens.jsx:754
+            ("drivesCancelButtonFill", 0.06, .mrtDrivesCancelButtonFill), // screens.jsx:764
+            ("drivesEmptyIconFill", 0.04, .mrtDrivesEmptyIconFill), // screens.jsx:703
+            ("dsTileTintStart", 0.06, .mrtDsTileTintStart), // screens.jsx:993
+            ("dsTileTintEnd", 0.025, .mrtDsTileTintEnd), // screens.jsx:993
+            ("dsTileBorder", 0.09, .mrtDsTileBorder), // screens.jsx:994
+            ("dsScrimTop", 0.62, .mrtDsScrimTop), // screens.jsx:882
+            ("dsScrimBottomMid", 0.7, .mrtDsScrimBottomMid), // screens.jsx:883
+            ("dsFloatingNavFill", 0.5, .mrtDsFloatingNavFill), // screens.jsx:890,893
+            ("goldRowChevron", 0.55, .mrtGoldRowChevron), // screens.jsx:794
+            ("drivingRowChevron", 0.6, .mrtDrivingRowChevron), // screens.jsx:671
+            ("dsShareCardBorder", 0.3, .mrtDsShareCardBorder), // screens.jsx:1194
+            ("dsShareCardPillFill", 0.14, .mrtDsShareCardPillFill), // screens.jsx:1216
+            ("dsShareCardScrimStart", 0.2, .mrtDsShareCardScrimStart), // screens.jsx:1202
+            ("dsShareCardScrimEnd", 0.7, .mrtDsShareCardScrimEnd), // screens.jsx:1202
+            ("dsShareCardOuterRing", 0.06, .mrtDsShareCardOuterRing), // screens.jsx:1194
+        ]
+        for (name, alpha, color) in cases {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            XCTAssertTrue(UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a), name)
+            XCTAssertEqual(a, alpha, accuracy: 0.001, "\(name): alpha")
+        }
+    }
+
+    /// `DriveShareCard` layout constants (design/app/screens.jsx:1194-1196).
+    func testShareCardMetrics() {
+        XCTAssertEqual(MRTMetrics.shareCardWidth, 362)
+        XCTAssertEqual(MRTMetrics.shareCardMapHeight, 132)
+        XCTAssertEqual(MRTMetrics.shareCardRadius, 20)
+    }
 }

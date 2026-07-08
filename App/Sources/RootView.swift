@@ -23,8 +23,8 @@ enum AppScreen: Hashable {
     case ownerTutorial
     /// Post-join walkthrough (tutorials.jsx RiderTutorial), 5 cards.
     case riderTutorial
-    /// Owner Live Map + tab shell (MYR-167 — screens.jsx `HomeScreen` plus
-    /// the Drives/Share/Settings tab placeholders those issues build next).
+    /// Owner Live Map + tab shell (MYR-167 — screens.jsx `HomeScreen`; Drives
+    /// shipped in MYR-169, Share/Settings remain placeholders).
     case ownerHome
     /// Temporary M1 post-tutorial destination for the rider path — a later
     /// issue replaces it with the shared map.
@@ -49,6 +49,11 @@ struct RootView: View {
     // survive switching to Drives/Share/Settings and back.
     @State private var ownerHomeState = OwnerHomeState()
     @State private var ownerTab = "home"
+    /// MYR-169 — mirrors `ownerHomeState`'s reasoning: app.jsx keeps
+    /// `ownerUpcoming` App-level, not local to `DrivesScreen`, so a
+    /// cancelled reservation and an open drive summary both survive
+    /// switching to another tab and back.
+    @State private var ownerDrivesState = OwnerDrivesState()
 
     var body: some View {
         ZStack {
@@ -97,10 +102,21 @@ struct RootView: View {
             case .ownerHome:
                 // app.jsx:110-115 — HomeScreen owns the "home" tab; the
                 // other owner tabs are simple placeholders until their
-                // issues land (Drives, Share, Settings).
+                // issues land (Share, Settings).
                 switch ownerTab {
                 case "drives":
-                    PlaceholderScreen(icon: "clock", title: "Drives", ownerTab: $ownerTab)
+                    // app.jsx:112-114 — `drives`/`driveSummary` are two
+                    // distinct top-level `screen` values sharing the "drives"
+                    // nav tab; this mirrors that with an in-tab push rather
+                    // than a second `AppScreen` case (screens never see the
+                    // router — DrivesScreen just reports which id opened).
+                    if let openID = ownerDrivesState.openDriveID, let drive = DriveFixtures.drive(id: openID) {
+                        DriveSummaryScreen(drive: drive) {
+                            ownerDrivesState.openDriveID = nil
+                        }
+                    } else {
+                        DrivesScreen(homeState: ownerHomeState, drivesState: ownerDrivesState, ownerTab: $ownerTab)
+                    }
                 case "invites":
                     PlaceholderScreen(icon: "person.2", title: "Share", ownerTab: $ownerTab)
                 case "settings":
