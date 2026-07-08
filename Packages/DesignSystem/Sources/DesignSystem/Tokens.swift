@@ -117,6 +117,16 @@ enum Hex {
     static let mapCoast: UInt32 = 0x16273A // coastline stroke (components.jsx:386)
     static let mapLabelOcean: UInt32 = 0x96B4D2 // "Pacific Ocean" label — rgba(150,180,210,…) (components.jsx:389)
     static let mapLabelPark: UInt32 = 0x96C896 // park-name label — rgba(150,200,150,…) (components.jsx:390)
+
+    // MYR-168 — Vehicle Controls (design/app/vehicle-controls.jsx)
+    static let seatCool: UInt32 = 0x5AC8FA // cool/ventilation seat accent `SEAT_COOL` (vehicle-controls.jsx:73)
+    // Fake album-art gradients, `TRACKS` (vehicle-controls.jsx:199-203). Track
+    // 1's end stop (`T.gold`, #C9A84C) reuses the existing gold token.
+    static let mediaTrack1Start: UInt32 = 0x2B3A67
+    static let mediaTrack2Start: UInt32 = 0x7B1E3B
+    static let mediaTrack2End: UInt32 = 0x1A1A2E
+    static let mediaTrack3Start: UInt32 = 0x0F3443
+    static let mediaTrack3End: UInt32 = 0x34E89E
 }
 
 // MARK: - Color tokens
@@ -339,6 +349,35 @@ public extension Color {
     static let mrtMapLabelPark = Color(hex: Hex.mapLabelPark, alpha: 0.4)
     /// Street-name label — rgba(255,255,255,0.26) (components.jsx:391).
     static let mrtMapLabelStreet = Color(hex: Hex.text, alpha: 0.26)
+
+    // MYR-168 — Vehicle Controls (design/app/vehicle-controls.jsx). The half
+    // reveal below the Live Map's Route section — lock/climate/media/charge
+    // tiles + status/tire/lifetime/details sections.
+    /// Cool/ventilation seat accent — `#5AC8FA` (vehicle-controls.jsx:73 `SEAT_COOL`).
+    static let mrtSeatCool = Color(hex: Hex.seatCool)
+    /// `ControlTile` resting fill — rgba(255,255,255,0.035) (vehicle-controls.jsx:30).
+    static let mrtControlTileFill = Color(hex: Hex.text, alpha: 0.035)
+    /// Segmented mode track / seat-mode toggle pill / climate-off icon circle
+    /// fill — rgba(255,255,255,0.05) (vehicle-controls.jsx:88,276,313).
+    static let mrtControlSegmentTrack = Color(hex: Hex.text, alpha: 0.05)
+    /// `HeatLevel` / `FanBar` off-segment fill — rgba(255,255,255,0.07)
+    /// (vehicle-controls.jsx:64,115).
+    static let mrtControlSegmentOff = Color(hex: Hex.text, alpha: 0.07)
+    /// Temp stepper button / plate pencil-circle fill — rgba(255,255,255,0.06)
+    /// (vehicle-controls.jsx `stepBtn` :441, `PlateRow` icon :136).
+    static let mrtStepButtonFill = Color(hex: Hex.text, alpha: 0.06)
+    /// Range-slider thumb drop shadow — rgba(0,0,0,0.45) (components.jsx:769-770
+    /// `input.mrt-range::-webkit-slider-thumb`).
+    static let mrtSliderThumbShadow = Color(hex: Hex.black, alpha: 0.45)
+    /// Media cover-art drop shadow — rgba(0,0,0,0.35) (vehicle-controls.jsx:350).
+    static let mrtMediaCoverShadow = Color(hex: Hex.black, alpha: 0.35)
+    // Fake album-art gradients (vehicle-controls.jsx:199-203 `TRACKS`), decorative
+    // only. Track 1's end stop reuses `.mrtGold` (== `#C9A84C` exactly).
+    static let mrtMediaTrack1Start = Color(hex: Hex.mediaTrack1Start)
+    static let mrtMediaTrack2Start = Color(hex: Hex.mediaTrack2Start)
+    static let mrtMediaTrack2End = Color(hex: Hex.mediaTrack2End)
+    static let mrtMediaTrack3Start = Color(hex: Hex.mediaTrack3Start)
+    static let mrtMediaTrack3End = Color(hex: Hex.mediaTrack3End)
 }
 
 // MARK: - Hex init

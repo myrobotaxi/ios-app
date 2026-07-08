@@ -1,19 +1,21 @@
 import SwiftUI
 import DesignSystem
 
-// MARK: - Bottom-sheet hero content (MYR-167 deliverable 3,
+// MARK: - Bottom-sheet hero content (MYR-167 deliverable 3, MYR-168,
 // design/app/screens.jsx:439-599)
 //
 // Two hero states, matching `HomeScreen`'s `driving ? DrivingSheetContent :
 // ParkedSheetContent`. Both take `expanded` (true at the `.half` detent) and
-// append a `VehicleControlsPlaceholder` there — the real tiles are MYR-168.
+// append the real `VehicleControls` tile stack there (MYR-168).
 
 /// screens.jsx:439-499 `DrivingSheetContent`.
 struct DrivingHeroContent: View {
-    let vehicleName: String
+    let vehicle: Vehicle
     let trip: DrivingTrip
     let snapshot: VehicleTelemetrySnapshot
     let expanded: Bool
+    let executor: any VehicleCommandExecutor
+    @Binding var isEditingPlate: Bool
 
     private var rangeMi: Int { Int(((snapshot.batteryPercent / 100) * 272).rounded()) }
 
@@ -36,7 +38,7 @@ struct DrivingHeroContent: View {
                         Text("Driving")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Color.mrtText)
-                        Text("· \(vehicleName)")
+                        Text("· \(vehicle.name)")
                             .font(.system(size: 13))
                             .foregroundStyle(Color.mrtTextMuted)
                     }
@@ -102,7 +104,14 @@ struct DrivingHeroContent: View {
                         isFirst: false,
                         isLast: true
                     )
-                    VehicleControlsPlaceholder()
+                    VehicleControls(
+                        vehicle: vehicle,
+                        driving: true,
+                        batteryPercent: snapshot.batteryPercent,
+                        parkedLocation: nil,
+                        executor: executor,
+                        isEditingPlate: $isEditingPlate
+                    )
                 }
                 .transition(.opacity)
             }
@@ -114,10 +123,12 @@ struct DrivingHeroContent: View {
 /// — the app's single shipped `parkedStyle` (see `VehicleFixtures.swift`
 /// header comment and Metrics.swift `homePeekHeightParked`).
 struct ParkedHeroContent: View {
-    let vehicleName: String
+    let vehicle: Vehicle
     let location: ParkedLocation
     let snapshot: VehicleTelemetrySnapshot
     let expanded: Bool
+    let executor: any VehicleCommandExecutor
+    @Binding var isEditingPlate: Bool
 
     private var parkedDuration: String {
         let seconds = max(0, Date().timeIntervalSince(location.parkedSince))
@@ -131,7 +142,7 @@ struct ParkedHeroContent: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     HStack(spacing: 10) {
-                        Text(vehicleName)
+                        Text(vehicle.name)
                             .font(.system(size: 18, weight: .semibold))
                             .tracking(-0.3)
                             .foregroundStyle(Color.mrtText)
@@ -166,8 +177,15 @@ struct ParkedHeroContent: View {
             }
 
             if expanded {
-                VehicleControlsPlaceholder()
-                    .transition(.opacity)
+                VehicleControls(
+                    vehicle: vehicle,
+                    driving: false,
+                    batteryPercent: snapshot.batteryPercent,
+                    parkedLocation: location,
+                    executor: executor,
+                    isEditingPlate: $isEditingPlate
+                )
+                .transition(.opacity)
             }
         }
     }
@@ -207,30 +225,5 @@ private struct RouteLeg: View {
             .padding(.bottom, 6)
         }
         .padding(.vertical, 6)
-    }
-}
-
-/// The half-detent `VehicleControls` reservation MYR-168 fills in
-/// (Handoff §5.5 "half reveals `VehicleControls`"). M1 ships layout only —
-/// a section label and a reserved, empty tile-row-height card.
-struct VehicleControlsPlaceholder: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Divider().overlay(Color.mrtBorder).padding(.vertical, 8)
-            Text("Controls").mrtTextStyle(.label()).foregroundStyle(Color.mrtTextMuted)
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.mrtText.opacity(0.035))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline)
-                )
-                .frame(height: MRTMetrics.homeControlsPlaceholderHeight)
-                .overlay {
-                    Text("Controls")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Color.mrtTextMuted)
-                }
-                .accessibilityLabel("Vehicle controls — coming soon")
-        }
     }
 }

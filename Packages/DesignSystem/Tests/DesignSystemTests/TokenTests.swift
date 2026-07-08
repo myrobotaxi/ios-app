@@ -76,6 +76,13 @@ final class TokenTests: XCTestCase {
             ("mapFreewayFill", 0x4C4330, .mrtMapFreewayFill), // components.jsx:382
             ("mapWater", 0x0E1A26, .mrtMapWater), // components.jsx:385
             ("mapCoast", 0x16273A, .mrtMapCoast), // components.jsx:386
+            // MYR-168 — Vehicle Controls (design/app/vehicle-controls.jsx)
+            ("seatCool", 0x5AC8FA, .mrtSeatCool), // vehicle-controls.jsx:73 `SEAT_COOL`
+            ("mediaTrack1Start", 0x2B3A67, .mrtMediaTrack1Start), // vehicle-controls.jsx:200
+            ("mediaTrack2Start", 0x7B1E3B, .mrtMediaTrack2Start), // vehicle-controls.jsx:201
+            ("mediaTrack2End", 0x1A1A2E, .mrtMediaTrack2End), // vehicle-controls.jsx:201
+            ("mediaTrack3Start", 0x0F3443, .mrtMediaTrack3Start), // vehicle-controls.jsx:202
+            ("mediaTrack3End", 0x34E89E, .mrtMediaTrack3End), // vehicle-controls.jsx:202
         ]
 
         for (name, hex, color) in cases {
@@ -146,6 +153,13 @@ final class TokenTests: XCTestCase {
             ("mapPickerIconActive", CGFloat(0x22) / 255.0, .mrtMapPickerIconActive), // screens.jsx:335
             ("mapPickerIconInactive", 0.06, .mrtMapPickerIconInactive), // screens.jsx:335
             ("mapCompassLabel", 0.25, .mrtMapCompassLabel), // components.jsx:407
+            // MYR-168 — Vehicle Controls (design/app/vehicle-controls.jsx)
+            ("controlTileFill", 0.035, .mrtControlTileFill), // vehicle-controls.jsx:30
+            ("controlSegmentTrack", 0.05, .mrtControlSegmentTrack), // vehicle-controls.jsx:88,276,313
+            ("controlSegmentOff", 0.07, .mrtControlSegmentOff), // vehicle-controls.jsx:64,115
+            ("stepButtonFill", 0.06, .mrtStepButtonFill), // vehicle-controls.jsx:136,441
+            ("sliderThumbShadow", 0.45, .mrtSliderThumbShadow), // components.jsx:769-770
+            ("mediaCoverShadow", 0.35, .mrtMediaCoverShadow), // vehicle-controls.jsx:350
         ]
         for (name, alpha, color) in cases {
             var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
@@ -237,6 +251,15 @@ final class TokenTests: XCTestCase {
         XCTAssertEqual(MRTMetrics.mapButtonBottomGap, 80)
         XCTAssertEqual(MRTMetrics.homeControlsPlaceholderHeight, 84)
         XCTAssertEqual(MRTMetrics.homeSheetContentBottomPadding, 100)
+    }
+
+    /// MYR-168 — Vehicle Controls layout constants (design/app/
+    /// vehicle-controls.jsx:28,46,51; components.jsx:769-770).
+    func testVehicleControlsMetrics() {
+        XCTAssertEqual(MRTMetrics.vehicleControlTileRadius, 16)
+        XCTAssertEqual(MRTMetrics.vehicleControlsSectionRadius, 18)
+        XCTAssertEqual(MRTMetrics.vehicleControlsSectionGap, 18)
+        XCTAssertEqual(MRTMetrics.sliderThumbSize, 22)
     }
 
     func testTypeScaleClamps() {
