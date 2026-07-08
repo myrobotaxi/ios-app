@@ -135,6 +135,7 @@ struct SharedViewerScreen: View {
                 snapshot: viewerState.snapshot,
                 cameraPosition: $cameraPosition,
                 isFollowing: $isFollowing,
+                showRoute: false, // MYR-197: no route/trip line on the rider's idle map before a ride is booked — see VehicleMapView.showRoute's header comment
                 bottomContentInset: mapBottomInset
             )
         case .review, .booking:
@@ -173,13 +174,28 @@ struct SharedViewerScreen: View {
     // `SimulatedRideRequestService`'s own auto-accept timer. This is where
     // the rider's `sheetPhase` reacts, not inside the service itself (see
     // `RideRequestService`'s header comment: it only ever exposes the
-    // snapshot).
+    // snapshot). Mirrors ride-request.jsx's own reactive effect: accept
+    // jumps straight into the to-pickup tracking sheet — "no intermediate
+    // accepted banner" is the jsx's own comment (ride-request.jsx:1109-1111)
+    // — and decline drops back to `.search` with the small `DeclinedNotice`
+    // overlay (ride-request.jsx:1254-1258). `OutcomeContent`
+    // (ride-request.jsx:670-717) is defined in the design source but never
+    // mounted anywhere in it (`grep -c "<OutcomeContent"` is 0) — it does not
+    // belong in either transition.
 
     private func handleStatusChange(_ status: RideRequestStatus?) {
-        guard let status else { return }
+        guard let status, let request = rideRequestService.activeRequest else { return }
         switch status {
         case .accepted:
-            if viewerState.sheetPhase == .booking || viewerState.sheetPhase == .idle {
+            // Scheduled acceptances are reservations for later, not a live
+            // trip to narrate right now — `SimulatedRideRequestService
+            // .accept()` never seeds `trackProgress` for these, and
+            // ride-request.jsx's own scheduled path never shows
+            // `TrackingContent` either (`ReviewContent.onConfirm` calls
+            // `onSchedule()` and returns straight to idle, ported at
+            // `RideRequestReviewContent.confirm()`). Only a "now" acceptance
+            // jumps into the live tracking sheet.
+            if request.input.schedule == nil, viewerState.sheetPhase == .booking || viewerState.sheetPhase == .idle {
                 viewerState.sheetPhase = .tracking
             }
         case .declined:

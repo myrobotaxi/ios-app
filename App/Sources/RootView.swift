@@ -213,7 +213,22 @@ struct RootView: View {
                         }
                     )
                 case "rideHistory":
-                    RideHistoryScreen(sharedTab: $sharedTab, historyStore: rideHistoryStore)
+                    // app.jsx:127-129 `screen==='rideSummary'` — an in-tab
+                    // push mirroring `.ownerHome`'s `drives`/`driveSummary`
+                    // handling above (MYR-169): `RideHistoryScreen` reports
+                    // which completed ride opened via `RideHistoryStore
+                    // .openRideID` (MYR-197) rather than a second `AppScreen`
+                    // case, reusing the SAME `DriveSummaryScreen` the owner's
+                    // `DrivesScreen` pushes (`RequestedRide.asDrive` adapts
+                    // the shape).
+                    if let openID = rideHistoryStore.openRideID,
+                       let ride = rideHistoryStore.completedRides.first(where: { $0.id == openID }) {
+                        DriveSummaryScreen(drive: ride.asDrive) {
+                            rideHistoryStore.openRideID = nil
+                        }
+                    } else {
+                        RideHistoryScreen(sharedTab: $sharedTab, historyStore: rideHistoryStore)
+                    }
                 default:
                     SharedViewerScreen(
                         viewerState: sharedViewerState,

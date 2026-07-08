@@ -20,6 +20,12 @@ import DesignSystem
 // .completeAndReset()`) shows up here even if this screen wasn't the one on
 // screen when it completed. Scheduled-ride mutations stay screen-local, per
 // this file's own header comment above.
+// MYR-197 — a tapped `RequestedRideRow` sets `historyStore.openRideID`
+// (app.jsx:127 `onOpenRide`); `RootView` reads it the same way it already
+// reads `OwnerDrivesState.openDriveID` for `DrivesScreen`, pushing
+// `DriveSummaryScreen` on top of this screen. Fixes a bug where tapping a
+// completed ride row did nothing — MYR-191 shipped the row without a tap
+// handler (see `RequestedRideRow`'s previous header comment, now stale).
 struct RideHistoryScreen: View {
     @Binding var sharedTab: String
     @Bindable var historyStore: RideHistoryStore
@@ -158,7 +164,7 @@ struct RideHistoryScreen: View {
                     .padding(.horizontal, MRTMetrics.pageGutter)
                     .padding(.bottom, 10)
                 ForEach(group.rides) { ride in
-                    RequestedRideRow(ride: ride)
+                    RequestedRideRow(ride: ride) { historyStore.openRideID = ride.id }
                 }
             }
             .padding(.bottom, 16)
@@ -253,70 +259,78 @@ struct RideForTag: View {
 // MARK: - RequestedRideRow (shared-screens.jsx:125-153)
 
 /// Completed ride — elevated neutral card (not gold-tinted, unlike the
-/// owner's `DriveRow`/the rider's own `ScheduledRideRow`). No tap
-/// destination in M1 — MYR-191's deliverables don't include a ride-detail
-/// screen for completed rides (unlike `DrivesScreen`, which already had
-/// `DriveSummaryScreen` from MYR-169 to push into).
+/// owner's `DriveRow`/the rider's own `ScheduledRideRow`). MYR-197 — tapping
+/// it opens the ride's summary via `DriveSummaryScreen` (shared-screens.jsx
+/// `onClick={() => onOpenRide && onOpenRide(r)}`, app.jsx:127-129 routes that
+/// into the SAME `DriveSummaryScreen` the owner's `DrivesScreen` pushes for a
+/// `DRIVES` row — see `RequestedRide.asDrive`); `RootView` reads
+/// `RideHistoryStore.openRideID` to decide whether to push it, mirroring
+/// `OwnerDrivesState.openDriveID`'s pattern for `DrivesScreen`.
 struct RequestedRideRow: View {
     let ride: RequestedRide
+    let onTap: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .lastTextBaseline, spacing: 10) {
-                (Text("\(ride.from) ").foregroundStyle(Color.mrtRequestedRowText)
-                    + Text("\u{2192} ").foregroundStyle(Color.mrtTextMuted).fontWeight(.regular)
-                    + Text(ride.to).foregroundStyle(Color.mrtRequestedRowText))
-                    .font(.system(size: 15, weight: .semibold))
-                    .tracking(-0.2)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: 10)
-                Text(ride.start)
-                    .font(.system(size: 12))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.mrtTextMuted)
-                    .fixedSize()
-            }
-            HStack(spacing: 10) {
-                Circle().fill(Color.mrtElevated).frame(width: 26, height: 26)
-                    .overlay(Text(ride.driver.prefix(1)).font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.mrtText))
-                (Text("\(ride.driver)\u{2019}s ").foregroundStyle(Color.mrtText).fontWeight(.medium)
-                    + Text(ride.vehicle).foregroundStyle(Color.mrtTextSec))
-                    .font(.system(size: 12.5))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    // shared-screens.jsx:145 `flex:1, minWidth:0` — this run
-                    // is the one flexible element that shrinks/truncates;
-                    // the passenger pill + trailing stats keep their
-                    // intrinsic size (jsx `flexShrink:0` on both).
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if let passenger = ride.passenger {
-                    RideForTag(passenger: passenger)
+        Button(action: onTap) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .lastTextBaseline, spacing: 10) {
+                    (Text("\(ride.from) ").foregroundStyle(Color.mrtRequestedRowText)
+                        + Text("\u{2192} ").foregroundStyle(Color.mrtTextMuted).fontWeight(.regular)
+                        + Text(ride.to).foregroundStyle(Color.mrtRequestedRowText))
+                        .font(.system(size: 15, weight: .semibold))
+                        .tracking(-0.2)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 10)
+                    Text(ride.start)
+                        .font(.system(size: 12))
+                        .monospacedDigit()
+                        .foregroundStyle(Color.mrtTextMuted)
+                        .fixedSize()
                 }
-                Text("\(String(format: "%.1f", ride.miles)) mi \u{00B7} \(ride.mins) min")
-                    .font(.system(size: 12))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.mrtTextMuted)
-                    .fixedSize()
+                HStack(spacing: 10) {
+                    Circle().fill(Color.mrtElevated).frame(width: 26, height: 26)
+                        .overlay(Text(ride.driver.prefix(1)).font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.mrtText))
+                    (Text("\(ride.driver)\u{2019}s ").foregroundStyle(Color.mrtText).fontWeight(.medium)
+                        + Text(ride.vehicle).foregroundStyle(Color.mrtTextSec))
+                        .font(.system(size: 12.5))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        // shared-screens.jsx:145 `flex:1, minWidth:0` — this run
+                        // is the one flexible element that shrinks/truncates;
+                        // the passenger pill + trailing stats keep their
+                        // intrinsic size (jsx `flexShrink:0` on both).
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if let passenger = ride.passenger {
+                        RideForTag(passenger: passenger)
+                    }
+                    Text("\(String(format: "%.1f", ride.miles)) mi \u{00B7} \(ride.mins) min")
+                        .font(.system(size: 12))
+                        .monospacedDigit()
+                        .foregroundStyle(Color.mrtTextMuted)
+                        .fixedSize()
+                }
             }
+            .padding(15)
+            .background(
+                LinearGradient(
+                    stops: [
+                        .init(color: .mrtRequestedRowTintStart, location: 0),
+                        .init(color: .mrtRequestedRowTintMid, location: 0.38),
+                        .init(color: .mrtRequestedRowTintEnd, location: 1),
+                    ],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: MRTMetrics.cardRadius, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: MRTMetrics.cardRadius, style: .continuous)
+                    .strokeBorder(Color.mrtRequestedRowBorder, lineWidth: MRTMetrics.hairline)
+            )
+            .shadow(color: .black.opacity(0.28), radius: 10, y: 6)
+            .contentShape(Rectangle())
         }
-        .padding(15)
-        .background(
-            LinearGradient(
-                stops: [
-                    .init(color: .mrtRequestedRowTintStart, location: 0),
-                    .init(color: .mrtRequestedRowTintMid, location: 0.38),
-                    .init(color: .mrtRequestedRowTintEnd, location: 1),
-                ],
-                startPoint: .topLeading, endPoint: .bottomTrailing
-            ),
-            in: RoundedRectangle(cornerRadius: MRTMetrics.cardRadius, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: MRTMetrics.cardRadius, style: .continuous)
-                .strokeBorder(Color.mrtRequestedRowBorder, lineWidth: MRTMetrics.hairline)
-        )
-        .shadow(color: .black.opacity(0.28), radius: 10, y: 6)
+        .buttonStyle(.plain)
         .padding(.horizontal, MRTMetrics.pageGutter)
         .padding(.bottom, 11)
     }

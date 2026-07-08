@@ -16,6 +16,21 @@ struct VehicleMapView: View {
     let snapshot: VehicleTelemetrySnapshot
     @Binding var cameraPosition: MapCameraPosition
     @Binding var isFollowing: Bool
+    /// MYR-197 fix: `SharedViewerScreen`'s rider idle/search/pinDrop map
+    /// reuses this same view (MYR-191) — but client QA found it was also
+    /// drawing the owner's current-trip route polyline + origin/destination
+    /// dots on the rider's idle map before any ride is booked, because
+    /// `VEHICLES[0]`'s default fixture activity is `.driving` (matches the
+    /// owner Home screen's own default tweaks, `VehicleTelemetry.swift`'s
+    /// `SimulatedVehicleTelemetrySource.init` comment). The prototype's rider
+    /// live map never shows a route pre-booking (confirmed via the MYR-197
+    /// prototype walk) — a route only belongs once an actual request exists,
+    /// which is already correctly handled by `RideRequestRouteMap` for
+    /// `.review`/`.booking`/`.tracking` (`SharedViewerScreen
+    /// .backgroundMap`). Defaults `true` (unchanged behavior for
+    /// `HomeScreen`'s owner map, which legitimately shows its own vehicle's
+    /// live trip) — the rider call site below opts out.
+    var showRoute: Bool = true
     /// Reserved height along the bottom edge the sheet now physically
     /// covers (MYR-196 punch-list #2, `MRTDetentSheet`'s
     /// `.ignoresSafeArea(edges: .bottom)`). `MKMapView` reads its own
@@ -94,26 +109,28 @@ struct VehicleMapView: View {
     private var mapContent: some MapContent {
         switch vehicle.activity {
         case .driving(let trip):
-            let travelled = VehicleRoute.travelledCoordinates(along: trip.route, progress: snapshot.progress)
-            // Full path, dim (RouteLine.swift: alpha 0.30).
-            MapPolyline(coordinates: trip.route)
-                .stroke(Color.mrtGold.opacity(0.3), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
-            // Glow underlay beneath the travelled segment (RouteLine.swift
-            // doc: "draw a third, wider underlay polyline").
-            MapPolyline(coordinates: travelled)
-                .stroke(Color.mrtGoldGlowSoft, style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round))
-            // Travelled portion, bright (RouteLine.swift: alpha 0.95).
-            MapPolyline(coordinates: travelled)
-                .stroke(Color.mrtGold.opacity(0.95), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+            if showRoute {
+                let travelled = VehicleRoute.travelledCoordinates(along: trip.route, progress: snapshot.progress)
+                // Full path, dim (RouteLine.swift: alpha 0.30).
+                MapPolyline(coordinates: trip.route)
+                    .stroke(Color.mrtGold.opacity(0.3), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                // Glow underlay beneath the travelled segment (RouteLine.swift
+                // doc: "draw a third, wider underlay polyline").
+                MapPolyline(coordinates: travelled)
+                    .stroke(Color.mrtGoldGlowSoft, style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round))
+                // Travelled portion, bright (RouteLine.swift: alpha 0.95).
+                MapPolyline(coordinates: travelled)
+                    .stroke(Color.mrtGold.opacity(0.95), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
 
-            if let origin = trip.route.first {
-                Annotation("Origin", coordinate: origin) {
-                    MRTEndpointDot(color: .mrtDriving, size: 10)
+                if let origin = trip.route.first {
+                    Annotation("Origin", coordinate: origin) {
+                        MRTEndpointDot(color: .mrtDriving, size: 10)
+                    }
                 }
-            }
-            if let destination = trip.route.last {
-                Annotation("Destination", coordinate: destination) {
-                    MRTEndpointDot(color: .mrtGold, size: 11)
+                if let destination = trip.route.last {
+                    Annotation("Destination", coordinate: destination) {
+                        MRTEndpointDot(color: .mrtGold, size: 11)
+                    }
                 }
             }
             Annotation(vehicle.name, coordinate: vehiclePosition.coordinate) {

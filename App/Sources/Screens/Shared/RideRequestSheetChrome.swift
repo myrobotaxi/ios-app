@@ -277,6 +277,15 @@ enum RideRequestClock {
 // — see `SharedViewerState.showDeclinedNotice`'s doc comment) after
 // `RideRequestService.decline()`. Deliberately its own small card rather than
 // `mrtConfirmDialog` (not a full-screen dialog in the source).
+//
+// MYR-197 briefly replaced this with a resurrected `OutcomeContent`
+// (ride-request.jsx:670-717), reasoning it was the "one canonical" surface.
+// That was wrong: `OutcomeContent` is defined in the design source but is
+// **never mounted** anywhere in ride-request.jsx (`grep -c "<OutcomeContent"`
+// is 0) — dead code, same category as the sparkline this codebase already
+// declined to port. `DeclinedNotice` *is* mounted (ride-request.jsx:1254-1258,
+// `requestState === 'rejected' && phase === 'search'`), so it's restored here
+// verbatim as the canonical declined surface.
 struct DeclinedNoticeCard: View {
     let requesterName: String
     let onDismiss: () -> Void

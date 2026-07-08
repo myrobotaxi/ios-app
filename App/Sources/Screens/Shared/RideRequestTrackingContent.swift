@@ -153,8 +153,31 @@ struct RideRequestTrackingContent: View {
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.mrtGold.opacity(Double(0x24) / 255.0), lineWidth: MRTMetrics.hairline))
     }
 
+    /// MYR-197 fix: the connector line used to be a `flex:1`
+    /// `Rectangle().frame(maxHeight: .infinity)` HStack sibling — with no
+    /// fixed-height frame between this itinerary and the screen-height
+    /// `GeometryReader`/`ZStack` in `SharedViewerScreen`, that request
+    /// propagated all the way up and stretched the whole Tracking sheet
+    /// full-screen (client QA, MYR-197). Fix: paint the dot/line rail as a
+    /// `.background` behind the content column instead — see
+    /// `RideRequestSearchContent.routeCard`'s identical fix for the full
+    /// explanation.
     private func stopRow(isDropoff: Bool, place: String, clock: String, filled: Bool, note: String, last: Bool) -> some View {
-        HStack(alignment: .top, spacing: 13) {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline) {
+                RideEyebrowText(text: isDropoff ? "Drop-off" : "Pickup", color: .mrtGold, size: 10)
+                Spacer(minLength: 8)
+                Text(clock).font(.system(size: 13, weight: .medium)).monospacedDigit().foregroundStyle(Color.mrtTextSec)
+            }
+            HStack(alignment: .firstTextBaseline) {
+                Text(place).font(.system(size: 15, weight: .semibold)).foregroundStyle(Color.mrtText).lineLimit(1)
+                Spacer(minLength: 8)
+                Text(note).font(.system(size: 12)).foregroundStyle(Color.mrtTextMuted).lineLimit(1)
+            }
+        }
+        .padding(.leading, 25) // 12pt dot + 13pt gap
+        .padding(.bottom, last ? 0 : 16)
+        .background(alignment: .topLeading) {
             VStack(spacing: 4) {
                 Group {
                     if isDropoff {
@@ -171,19 +194,6 @@ struct RideRequestTrackingContent: View {
                 }
             }
             .padding(.top, 3)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline) {
-                    RideEyebrowText(text: isDropoff ? "Drop-off" : "Pickup", color: .mrtGold, size: 10)
-                    Spacer(minLength: 8)
-                    Text(clock).font(.system(size: 13, weight: .medium)).monospacedDigit().foregroundStyle(Color.mrtTextSec)
-                }
-                HStack(alignment: .firstTextBaseline) {
-                    Text(place).font(.system(size: 15, weight: .semibold)).foregroundStyle(Color.mrtText).lineLimit(1)
-                    Spacer(minLength: 8)
-                    Text(note).font(.system(size: 12)).foregroundStyle(Color.mrtTextMuted).lineLimit(1)
-                }
-            }
-            .padding(.bottom, last ? 0 : 16)
         }
     }
 

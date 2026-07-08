@@ -51,8 +51,23 @@ struct RideRequestSummaryContent: View {
         "Custom": "There\u{2019}s no driver back there. Just vibes and 4,000 TOPS of compute.",
     ]
 
+    // MYR-197 fix: the jsx wraps this whole screen in `display:flex,
+    // flexDirection:'column', flex:1, minHeight:'100%'` with the map card
+    // itself `flex:1, minHeight:150` (ride-request.jsx:945,956) — the map
+    // grows to absorb whatever vertical space the rest of the content
+    // doesn't need, so the page always reaches the true bottom edge exactly
+    // once, no scrolling. The Swift port previously used a `ScrollView` +
+    // a fixed `mapCard.frame(height: 220)`, which left a dead gap below
+    // "See you soon" on any device taller than the fixed content (client
+    // QA, MYR-197: "not filling the page — visible gap at the bottom").
+    // `GeometryReader` here reports the true full-bleed height (this phase
+    // ignores the bottom safe area via `rideRequestSheetChrome(isSummary:
+    // true)`, and `ScrollView`'s absence is intentional — same as the jsx,
+    // this never needs to scroll because the map absorbs the remainder);
+    // `mapCard`'s own `.frame(minHeight:150, maxHeight:.infinity)` (see
+    // below) is what actually grows, matching the jsx's `flex:1` 1:1.
     var body: some View {
-        ScrollView {
+        GeometryReader { geo in
             VStack(alignment: .leading, spacing: 0) {
                 RideEyebrowText(text: "Arrived \u{00B7} \(endedClock)", color: Color.mrtGold.opacity(0.6), size: 10)
                     .padding(.bottom, 12)
@@ -95,6 +110,7 @@ struct RideRequestSummaryContent: View {
             .padding(.horizontal, 22)
             .padding(.top, 76)
             .padding(.bottom, 30)
+            .frame(minHeight: geo.size.height, alignment: .top)
         }
         .rideRequestSheetChrome(isSummary: true)
         .overlay {
@@ -132,7 +148,13 @@ struct RideRequestSummaryContent: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 15)
         }
-        .frame(height: 220)
+        // `flex:1, minHeight:150` (ride-request.jsx:956) — grows to fill
+        // whatever space the rest of the (now non-scrolling) column doesn't
+        // need; safe to be greedy here since this is the ONLY flexible
+        // element in the column and the ancestor chain up to `body`'s
+        // `GeometryReader` is height-bounded (unlike the connector-rail bug
+        // this file's sibling phases fixed — see their header comments).
+        .frame(minHeight: 150, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: MRTMetrics.cardRadiusFlat, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: MRTMetrics.cardRadiusFlat, style: .continuous)
