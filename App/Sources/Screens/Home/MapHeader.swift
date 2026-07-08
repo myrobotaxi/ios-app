@@ -32,7 +32,11 @@ struct MapHeader: View {
             }
         }
         .padding(.top, MRTMetrics.mapHeaderTop)
-        .frame(maxWidth: .infinity, alignment: .top)
+        // screens.jsx:302 `position: absolute, top: 60` — pin to the
+        // screen's top edge, not just center horizontally within the
+        // ZStack's intrinsic-height slot (that left it floating mid-screen,
+        // review finding #2).
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         // Full-screen tap-catcher behind the picker, above the map — closes
         // on outside tap (screens.jsx:322).
         .background {

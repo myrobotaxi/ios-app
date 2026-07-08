@@ -43,8 +43,27 @@ struct VehicleMapView: View {
     var body: some View {
         Map(position: $cameraPosition) {
             mapContent
+                // Suppress MapKit's own auto-drawn title labels for every
+                // `Annotation` below — `VehicleMarker`'s `label` chip is the
+                // only vehicle-name label the design wants
+                // (components.jsx:443); leaving titles on doubled it up next
+                // to the marker (review finding #3). The `Origin`/
+                // `Destination`/vehicle-name strings passed to `Annotation`
+                // are accessibility labels only.
+                .annotationTitles(.hidden)
         }
-        .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll, showsTraffic: false))
+        .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll, showsTraffic: false))
+        // Force dark so MKMapView doesn't fall back to a light palette
+        // independent of the app's own forced-dark Info.plist trait
+        // (review finding #4). This measurably darkens urban/street
+        // contexts (deep navy water, muted gray streets) but — verified in
+        // the Simulator — does NOT reach near-black for natural
+        // landcover/terrain (forests, coastal scrub): MapKit's `.standard`
+        // style keeps a saturated teal-green there regardless of
+        // `emphasis`. See the PR body for the documented limitation and
+        // side-by-side evidence; there is no more aggressive terrain color
+        // knob on the public SwiftUI `Map` style API.
+        .preferredColorScheme(.dark)
         .onMapCameraChange(frequency: .onEnd) { _ in
             guard Date() >= programmaticCameraUntil else { return }
             // A real drag/pinch settled — the prototype's FloatingMapButton

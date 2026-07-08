@@ -68,7 +68,20 @@ struct HomeScreen: View {
                 // Controls reveal below inherits that transaction for free.
             }
 
+            // components.jsx:566 `position: absolute, ... bottom: 26` — pin to
+            // the screen's bottom edge (review finding #1: was floating
+            // mid-screen at the ZStack's default center alignment). It
+            // layers above the sheet (declared after it here → higher
+            // z-order, matching the jsx's nav zIndex 40 vs. sheet zIndex 30)
+            // and overlaps the sheet's bottom edge exactly like the
+            // prototype (`BottomSheet` is called with `navHeight={0}` at
+            // screens.jsx:429, i.e. the sheet itself already runs flush to
+            // the bottom — see `MRTDetentSheet`'s own bottom-aligned
+            // GeometryReader frame — while its content reserves
+            // `MRTMetrics.homeSheetContentBottomPadding` (100pt) of bottom
+            // padding above so the floating nav capsule never obscures it).
             BottomNav(selection: $ownerTab, tabs: MRTTab.ownerTabs, hidden: homeState.sheetDetent == .half)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
         .background(Color.mrtBg)
         .onAppear { homeState.startTelemetry() }

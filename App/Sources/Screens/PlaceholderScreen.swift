@@ -31,7 +31,12 @@ struct PlaceholderScreen: View {
                     .foregroundStyle(Color.mrtTextSec)
             }
 
+            // Pin to the bottom edge — see HomeScreen.swift's BottomNav
+            // comment (review finding #1); same ZStack-center bug applies
+            // here since this screen shares the same fullscreen-overlay
+            // layout shape.
             BottomNav(selection: $ownerTab, tabs: MRTTab.ownerTabs)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
     }
 }
