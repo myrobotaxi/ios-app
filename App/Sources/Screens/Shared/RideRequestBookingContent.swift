@@ -139,28 +139,38 @@ struct RideRequestBookingContent: View {
         let destinationLabel = request?.input.destination.label ?? "Destination"
         let destinationSub = request?.input.destination.subtitle
 
+        // MYR-197 fix: the pickup connector used to be a `flex:1`
+        // `Rectangle().frame(maxHeight: .infinity)` HStack sibling — with no
+        // fixed-height frame between this itinerary and the screen-height
+        // `GeometryReader`/`ZStack` in `SharedViewerScreen`, that request
+        // propagated all the way up and stretched the whole Booking sheet
+        // full-screen (client QA, MYR-197). Fix: paint the dot/line rail as
+        // a `.background` behind the pickup content column instead — see
+        // `RideRequestSearchContent.routeCard`'s identical fix for the full
+        // explanation.
         return VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 13) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline) {
+                    RideEyebrowText(text: "Pickup", color: .mrtGold, size: 10)
+                    Spacer(minLength: 8)
+                    Text(RideRequestClock.fromNow(minutes: pickupEtaMinutes))
+                        .font(.system(size: 13, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(Color.mrtTextSec)
+                }
+                HStack(alignment: .firstTextBaseline) {
+                    Text(pickupLabel).font(.system(size: 15, weight: .semibold)).foregroundStyle(Color.mrtText).lineLimit(1)
+                    Spacer(minLength: 8)
+                    Text("\(pickupEtaMinutes) min away").font(.system(size: 12)).foregroundStyle(Color.mrtTextMuted).lineLimit(1)
+                }
+            }
+            .padding(.leading, 25) // 12pt dot + 13pt gap
+            .background(alignment: .topLeading) {
                 VStack(spacing: 4) {
                     Circle().fill(Color.mrtGoldTrace).frame(width: 12, height: 12)
                     Rectangle().fill(Color.mrtBorder).frame(width: 2).frame(maxHeight: .infinity)
                 }
                 .padding(.top, 3)
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(alignment: .firstTextBaseline) {
-                        RideEyebrowText(text: "Pickup", color: .mrtGold, size: 10)
-                        Spacer(minLength: 8)
-                        Text(RideRequestClock.fromNow(minutes: pickupEtaMinutes))
-                            .font(.system(size: 13, weight: .medium))
-                            .monospacedDigit()
-                            .foregroundStyle(Color.mrtTextSec)
-                    }
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(pickupLabel).font(.system(size: 15, weight: .semibold)).foregroundStyle(Color.mrtText).lineLimit(1)
-                        Spacer(minLength: 8)
-                        Text("\(pickupEtaMinutes) min away").font(.system(size: 12)).foregroundStyle(Color.mrtTextMuted).lineLimit(1)
-                    }
-                }
             }
             .padding(.bottom, 12)
 

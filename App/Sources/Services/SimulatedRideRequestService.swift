@@ -89,7 +89,6 @@ public final class SimulatedRideRequestService: RideRequestService {
         return ride
     }
 
-
     // MARK: Private
 
     private func autoAccept(requestID: String?) {

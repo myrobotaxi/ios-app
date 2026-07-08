@@ -84,12 +84,8 @@ struct RideRequestReviewContent: View {
                 }
                 .padding(.bottom, 20)
 
-                HStack(alignment: .top, spacing: 0) {
-                    statPair(label: "Pick-up", value: pickupAt, sub: pickupSub)
-                    Rectangle().fill(Color.mrtBorder).frame(width: 1).padding(.vertical, 2).padding(.horizontal, 20)
-                    statPair(label: "Arrive", value: arriveAt, sub: arriveSub)
-                }
-                .padding(.bottom, 22)
+                statsRow
+                    .padding(.bottom, 22)
 
                 if let passenger {
                     passengerCard(passenger).padding(.bottom, 14)
@@ -127,6 +123,30 @@ struct RideRequestReviewContent: View {
         .padding(.vertical, 5)
         .background(Color.mrtGoldTileFaint, in: Capsule())
         .overlay(Capsule().strokeBorder(Color.mrtGold.opacity(Double(0x40) / 255.0), lineWidth: MRTMetrics.hairline))
+    }
+
+    /// MYR-197 fix: the divider used to be a bare `Rectangle()` (no height
+    /// modifier at all) as a third HStack sibling — a `Shape` with no frame
+    /// fills whatever height it's proposed by default, which, with no
+    /// fixed-height frame between this row and the screen-height
+    /// `GeometryReader`/`ZStack` in `SharedViewerScreen`, meant the whole
+    /// screen's height. That stretched the entire Review sheet full-screen
+    /// with a giant gap around the divider (client QA, MYR-197). Fix: paint
+    /// the divider as a `.background` behind the Pick-up column instead of
+    /// an HStack sibling — see `RideRequestSearchContent.routeCard`'s
+    /// identical fix for the full explanation; `alignment: .trailing` + the
+    /// 20pt trailing padding below lands it in the same gap the jsx's
+    /// `margin: '2px 20px'` describes (ride-request.jsx:404).
+    private var statsRow: some View {
+        HStack(alignment: .top, spacing: 0) {
+            statPair(label: "Pick-up", value: pickupAt, sub: pickupSub)
+                .padding(.trailing, 20)
+                .background(alignment: .trailing) {
+                    Rectangle().fill(Color.mrtBorder).frame(width: 1).frame(maxHeight: .infinity).padding(.vertical, 2)
+                }
+            statPair(label: "Arrive", value: arriveAt, sub: arriveSub)
+                .padding(.leading, 20)
+        }
     }
 
     private func statPair(label: String, value: String, sub: String) -> some View {

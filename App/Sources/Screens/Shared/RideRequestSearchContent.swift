@@ -233,67 +233,88 @@ struct RideRequestSearchContent: View {
     }
 
     // MARK: Route card (pickup / destination)
-
+    //
+    // MYR-197 fix: the pickup→destination connector used to be a `flex:1`
+    // `Rectangle().frame(maxHeight: .infinity)` sitting as an HStack sibling
+    // next to the content column. With no fixed-height frame between this
+    // card and the screen-height `GeometryReader`/`ZStack` in
+    // `SharedViewerScreen`, that "give me infinity" request propagated all
+    // the way up — this card (and the whole Search sheet's internal layout)
+    // rendered with a huge dead gap instead of hugging its content (client
+    // QA, MYR-197). Fix: paint the dot/line rail as a `.background` behind
+    // the content column instead of a flexible HStack sibling — a
+    // `.background` is always proposed a size equal to the *already
+    // resolved* size of the view it's attached to, so the connector's own
+    // `maxHeight: .infinity` correctly fills exactly the content column's
+    // natural height (pickup row top → destination row bottom) and nothing
+    // more, matching the jsx's CSS `align-items: stretch` behavior. Ported
+    // to `RideRequestBookingContent`/`RideRequestTrackingContent`'s
+    // itinerary rails identically.
     private var routeCard: some View {
-        HStack(alignment: .top, spacing: 13) {
-            VStack(spacing: 4) {
-                Circle().fill(Color.mrtDriving).frame(width: 9, height: 9).shadow(color: .mrtDriving.opacity(0.67), radius: 4)
-                Rectangle().fill(Color.mrtBorder).frame(width: 2).frame(maxHeight: .infinity)
-                RoundedRectangle(cornerRadius: 2.5).fill(Color.mrtGold).frame(width: 9, height: 9).shadow(color: .mrtGoldGlow, radius: 4)
-            }
-            .padding(.vertical, 19)
-
-            VStack(spacing: 0) {
-                HStack(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        RideEyebrowText(text: "Pickup")
-                        Text(viewerState.draftPickup?.label ?? "Current location")
-                            .font(.system(size: 14.5, weight: .medium))
-                            .foregroundStyle(Color.mrtText)
-                            .lineLimit(1)
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    RideEyebrowText(text: "Pickup")
+                    Text(viewerState.draftPickup?.label ?? "Current location")
+                        .font(.system(size: 14.5, weight: .medium))
+                        .foregroundStyle(Color.mrtText)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Button {
+                    viewerState.pinReturn = .search
+                    viewerState.sheetPhase = .pinDrop(returnTo: .search)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "mappin").font(.system(size: 11))
+                        Text(viewerState.draftPickup != nil ? "On map" : "Set on map")
+                            .font(.system(size: 11.5, weight: .semibold))
                     }
-                    Spacer(minLength: 0)
-                    Button {
-                        viewerState.pinReturn = .search
-                        viewerState.sheetPhase = .pinDrop(returnTo: .search)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "mappin").font(.system(size: 11))
-                            Text(viewerState.draftPickup != nil ? "On map" : "Set on map")
-                                .font(.system(size: 11.5, weight: .semibold))
-                        }
-                        .foregroundStyle(Color.mrtGold)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(viewerState.draftPickup != nil ? Color.mrtGold.opacity(0.16) : Color.clear, in: Capsule())
-                        .overlay(Capsule().strokeBorder(viewerState.draftPickup != nil ? Color.mrtGold.opacity(Double(0x66) / 255.0) : Color.mrtBorder, lineWidth: MRTMetrics.hairline))
+                    .foregroundStyle(Color.mrtGold)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(viewerState.draftPickup != nil ? Color.mrtGold.opacity(0.16) : Color.clear, in: Capsule())
+                    .overlay(Capsule().strokeBorder(viewerState.draftPickup != nil ? Color.mrtGold.opacity(Double(0x66) / 255.0) : Color.mrtBorder, lineWidth: MRTMetrics.hairline))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.vertical, 11)
+
+            Rectangle().fill(Color.mrtBorder).frame(height: MRTMetrics.hairline)
+
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    RideEyebrowText(text: "Destination")
+                    TextField("Where to?", text: $query)
+                        .font(.system(size: 14.5, weight: .medium))
+                        .foregroundStyle(Color.mrtText)
+                }
+                if !query.isEmpty {
+                    Button { query = "" } label: {
+                        Image(systemName: "xmark").font(.system(size: 13)).foregroundStyle(Color.mrtTextMuted)
                     }
                     .buttonStyle(.plain)
                 }
-                .padding(.vertical, 11)
-
-                Rectangle().fill(Color.mrtBorder).frame(height: MRTMetrics.hairline)
-
-                HStack(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        RideEyebrowText(text: "Destination")
-                        TextField("Where to?", text: $query)
-                            .font(.system(size: 14.5, weight: .medium))
-                            .foregroundStyle(Color.mrtText)
-                    }
-                    if !query.isEmpty {
-                        Button { query = "" } label: {
-                            Image(systemName: "xmark").font(.system(size: 13)).foregroundStyle(Color.mrtTextMuted)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.vertical, 11)
             }
+            .padding(.vertical, 11)
         }
+        .padding(.leading, 22) // room for the dot/line rail painted behind
+        .background(alignment: .topLeading) { routeRail }
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
         .mrtSurface(.control, fill: .mrtElevated, radius: 16)
+    }
+
+    /// The pickup (driving-green dot) → destination (gold square) connector
+    /// — see this file's `routeCard` header comment for why it's a
+    /// `.background` rather than an HStack sibling.
+    private var routeRail: some View {
+        VStack(spacing: 4) {
+            Circle().fill(Color.mrtDriving).frame(width: 9, height: 9).shadow(color: .mrtDriving.opacity(0.67), radius: 4)
+            Rectangle().fill(Color.mrtBorder).frame(width: 2).frame(maxHeight: .infinity)
+            RoundedRectangle(cornerRadius: 2.5).fill(Color.mrtGold).frame(width: 9, height: 9).shadow(color: .mrtGoldGlow, radius: 4)
+        }
+        .padding(.vertical, 19)
     }
 
     // MARK: Results

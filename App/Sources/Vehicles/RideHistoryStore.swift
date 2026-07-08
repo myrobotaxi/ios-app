@@ -17,6 +17,13 @@ import Observation
 @MainActor
 public final class RideHistoryStore {
     public var completedRides: [RequestedRide]
+    /// MYR-197 — app.jsx `sharedDrive`/`screen==='rideSummary'`: which
+    /// completed ride (if any) is pushed on top of the list when a
+    /// `RequestedRideRow` is tapped (shared-screens.jsx:89 `onOpenRide`).
+    /// Lifted here, not screen-local, for the same reason `OwnerDrivesState
+    /// .openDriveID` is lifted above `DrivesScreen` — see that property's
+    /// header comment.
+    public var openRideID: String?
 
     public init(seed: [RequestedRide] = RideHistoryFixtures.requestedRides) {
         completedRides = seed

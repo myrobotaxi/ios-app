@@ -167,6 +167,10 @@ enum Hex {
     // composed from an existing base hex.
     static let requesterAvatarStart: UInt32 = 0x6D8EFF
     static let requesterAvatarEnd: UInt32 = 0x9D7CFF
+    /// `OutcomeContent`'s accepted checkmark-circle radial gradient's dark
+    /// stop — `radial-gradient(circle at 30% 30%, ${T.driving} 0%, #1a8a3f
+    /// 100%)` (ride-request.jsx:678, MYR-197).
+    static let drivingDeep: UInt32 = 0x1A8A3F
 }
 
 // MARK: - Color tokens
@@ -197,6 +201,9 @@ public extension Color {
 
     // Vehicle status
     static let mrtDriving = Color(hex: Hex.driving)
+    /// Dark stop of `OutcomeContent`'s accepted checkmark-circle radial
+    /// gradient — see `Hex.drivingDeep`.
+    static let mrtDrivingDeep = Color(hex: Hex.drivingDeep)
     static let mrtParked = Color(hex: Hex.parked)
     static let mrtCharging = Color(hex: Hex.charging)
     static let mrtOffline = Color(hex: Hex.offline)

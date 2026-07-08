@@ -163,7 +163,12 @@ struct ScheduledRideSheet: View {
                 .frame(maxWidth: .infinity)
                 .multilineTextAlignment(.center)
         }
-        .padding(.top, 14)
+        // shared-screens.jsx:341 details `<div>` carries no top padding of
+        // its own (only `confirmCancel`/`requested` do, jsx:262/317) — the
+        // sheet's own 14px top inset is already spent on `grabHandle`'s
+        // padding above. An extra `.padding(.top, 14)` here (MYR-197 audit
+        // finding) added a stray 14pt gap before `statusRow` not present in
+        // the design source.
     }
 
     private func statusRow(_ ride: ScheduledRide) -> some View {
@@ -210,9 +215,31 @@ struct ScheduledRideSheet: View {
         )
     }
 
+    /// shared-screens.jsx:368-373 lays the pickup/destination column and the
+    /// dot+connector column out as `display: 'flex', alignItems: 'stretch'`
+    /// siblings — CSS stretch sizes the connector to the (already-known)
+    /// row-column height. SwiftUI's `HStack` has no equivalent: pairing a
+    /// `.frame(maxHeight: .infinity)` connector with a content `VStack` as
+    /// plain HStack siblings left the connector's "infinite" request
+    /// unbounded, which propagated up through this view's parent `VStack`
+    /// (no fixed-height frame anywhere above it) all the way to the
+    /// `GeometryReader`-sized sheet — the whole `ScheduledRideSheet` stretched
+    /// to fill the screen instead of hugging its content (MYR-197 QA
+    /// screenshot: large blank dead zone below the sheet's real content).
+    /// Fix: make the row column the foreground view and paint the dot+
+    /// connector as its `.background(alignment: .leading)` — SwiftUI proposes
+    /// a background exactly the foreground's *resolved* size, so the
+    /// connector's `maxHeight: .infinity` now resolves against the row
+    /// column's natural height instead of the ambient screen height.
     private func routeBlock(_ ride: ScheduledRide) -> some View {
         VStack(spacing: 0) {
-            HStack(alignment: .top, spacing: 13) {
+            VStack(spacing: 0) {
+                routeRow(label: "PICKUP", value: ride.from)
+                Rectangle().fill(Color.mrtBorder).frame(height: MRTMetrics.hairline)
+                routeRow(label: "DESTINATION", value: ride.to)
+            }
+            .padding(.leading, 22)
+            .background(alignment: .leading) {
                 VStack(spacing: 4) {
                     Circle().fill(Color.mrtDriving).frame(width: 9, height: 9)
                         .shadow(color: .mrtDriving.opacity(0.67), radius: 4)
@@ -221,11 +248,6 @@ struct ScheduledRideSheet: View {
                         .shadow(color: .mrtGoldGlow, radius: 4)
                 }
                 .padding(.vertical, 18)
-                VStack(spacing: 0) {
-                    routeRow(label: "PICKUP", value: ride.from)
-                    Rectangle().fill(Color.mrtBorder).frame(height: MRTMetrics.hairline)
-                    routeRow(label: "DESTINATION", value: ride.to)
-                }
             }
             HStack(spacing: 18) {
                 statPair(label: "DISTANCE", value: "\(String(format: "%.1f", ride.miles)) mi")
@@ -400,7 +422,9 @@ struct ScheduledRideSheet: View {
                 .frame(maxWidth: .infinity)
                 .multilineTextAlignment(.center)
         }
-        .padding(.top, 14)
+        // shared-screens.jsx:276 reschedule `<div>` also carries no top
+        // padding of its own — same stray-14pt finding as `detailsContent`
+        // above (MYR-197 audit).
     }
 
     private func chipLabel(_ text: String) -> some View {

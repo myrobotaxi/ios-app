@@ -478,6 +478,18 @@ final class TokenTests: XCTestCase {
         }
     }
 
+    /// MYR-197 — `OutcomeContent`'s accepted checkmark-circle radial
+    /// gradient's dark stop, the one new raw hex introduced
+    /// (ride-request.jsx:678 `#1a8a3f`).
+    func testOutcomeCardHexRoundTrip() {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        XCTAssertTrue(UIColor(Color.mrtDrivingDeep).getRed(&r, green: &g, blue: &b, alpha: &a))
+        XCTAssertEqual(UInt32(round(r * 255)), 0x1A)
+        XCTAssertEqual(UInt32(round(g * 255)), 0x8A)
+        XCTAssertEqual(UInt32(round(b * 255)), 0x3F)
+        XCTAssertEqual(a, 1.0, accuracy: 0.001)
+    }
+
     /// MYR-171 — new alpha-composed tokens (design/app/ride-request.jsx
     /// ExpandingRequestSheet/IncomingRequestSheet/RouteSentToast).
     func testRideRequestTintAlphas() {
