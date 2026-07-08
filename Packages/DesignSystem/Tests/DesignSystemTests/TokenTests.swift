@@ -401,4 +401,53 @@ final class TokenTests: XCTestCase {
             XCTAssertEqual(a, alpha, accuracy: 0.001, "\(name): alpha")
         }
     }
+
+    /// MYR-191 — SharedViewerScreen idle sheet + ScheduledRideSheet map
+    /// preview (design/app/screens.jsx:2078; shared-screens.jsx:352).
+    func testRiderShellMetrics() {
+        XCTAssertEqual(MRTMetrics.sharedIdleSheetHeight, 286)
+        XCTAssertEqual(MRTMetrics.rideMapPreviewHeight, 104)
+        XCTAssertEqual(MRTMetrics.modalRadius, 28)
+    }
+
+    /// MYR-191 — the two new raw hexes introduced (shared-screens.jsx:136;
+    /// design/app/design.jsx:74).
+    func testRiderShellHexRoundTrip() {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        XCTAssertTrue(UIColor(Color.mrtRequestedRowText).getRed(&r, green: &g, blue: &b, alpha: &a))
+        XCTAssertEqual(UInt32(round(r * 255)), 0xF2)
+        XCTAssertEqual(UInt32(round(g * 255)), 0xF2)
+        XCTAssertEqual(UInt32(round(b * 255)), 0xF2)
+        XCTAssertEqual(a, 1.0, accuracy: 0.001)
+
+        XCTAssertTrue(UIColor(Color.mrtRideSheetFill).getRed(&r, green: &g, blue: &b, alpha: &a))
+        XCTAssertEqual(UInt32(round(r * 255)), 0x14)
+        XCTAssertEqual(UInt32(round(g * 255)), 0x14)
+        XCTAssertEqual(UInt32(round(b * 255)), 0x16)
+        XCTAssertEqual(a, 0.96, accuracy: 0.001)
+    }
+
+    /// MYR-191 — new alpha-composed tokens (design/app/shared-screens.jsx
+    /// 1-436, ride-request.jsx ExpandingRequestSheet 1071-1261).
+    func testRiderShellTintAlphas() {
+        let cases: [(name: String, alpha: CGFloat, color: Color)] = [
+            ("requestedRowTintStart", 0.05, .mrtRequestedRowTintStart), // shared-screens.jsx:130
+            ("requestedRowTintMid", 0.022, .mrtRequestedRowTintMid), // shared-screens.jsx:130
+            ("requestedRowTintEnd", 0.012, .mrtRequestedRowTintEnd), // shared-screens.jsx:130
+            ("requestedRowBorder", 0.09, .mrtRequestedRowBorder), // shared-screens.jsx:131
+            ("rideConfirmedChipFill", 0.16, .mrtRideConfirmedChipFill), // shared-screens.jsx:191
+            ("ridePendingChipFill", 0.07, .mrtRidePendingChipFill), // shared-screens.jsx:191
+            ("rideForTagFill", CGFloat(0x1A) / 255.0, .mrtRideForTagFill), // shared-screens.jsx:28
+            ("rideChipFill", 0.04, .mrtRideChipFill), // shared-screens.jsx:289,302
+            ("rideCancelButtonBorder", 0.40, .mrtRideCancelButtonBorder), // shared-screens.jsx:271
+            ("rideMapScrim", 0.92, .mrtRideMapScrim), // shared-screens.jsx:359
+            ("goldSheetHairline", CGFloat(0x2E) / 255.0, .mrtGoldSheetHairline), // ride-request.jsx:1181
+            ("searchGlow", 0.16, .mrtSearchGlow), // components.jsx:676
+        ]
+        for (name, alpha, color) in cases {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            XCTAssertTrue(UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a), name)
+            XCTAssertEqual(a, alpha, accuracy: 0.001, "\(name): alpha")
+        }
+    }
 }

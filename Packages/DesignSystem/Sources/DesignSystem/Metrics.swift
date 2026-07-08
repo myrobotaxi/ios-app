@@ -186,4 +186,28 @@ public enum MRTMetrics {
     /// Invites/Settings/SharedSettings — same as `drivesContentBottomPadding`
     /// (screens.jsx:101,401; shared-screens.jsx:698, all `paddingBottom: 104`).
     public static let shareContentBottomPadding: CGFloat = drivesContentBottomPadding
+
+    // MARK: Rider shell (MYR-191, design/app/screens.jsx SharedViewerScreen
+    // 1855-2242 + ride-request.jsx ExpandingRequestSheet, design/app/
+    // shared-screens.jsx RideHistoryScreen/ScheduledRideSheet 1-436).
+    //
+    // RideHistoryScreen's header/content-clearance offsets are physically
+    // identical to Drives/Share/Settings (shared-screens.jsx:62,71, both
+    // `74px …` / `paddingBottom: 104`) — reuse `shareHeaderTop` /
+    // `shareContentBottomPadding` directly rather than aliasing them again.
+
+    /// SharedViewerScreen idle sheet height when no request is active and no
+    /// ride is scheduled — `idleHeight={(reqActive ? 246 : 286) + …}` reduces
+    /// to 286 in M1, which never has an active/scheduled ride (screens.jsx:2078).
+    public static let sharedIdleSheetHeight: CGFloat = 286
+    /// ScheduledRideSheet map-preview panel height (shared-screens.jsx:352 `height: 104`).
+    public static let rideMapPreviewHeight: CGFloat = 104
+    /// `S.modalSheet`'s top-corner radius in the flat look (design/app/
+    /// design.jsx:68 `modalRadius: liquid ? 32 : 28`) — distinct from the
+    /// home detent sheet's `sheetRadius` (24) and the generic
+    /// `mrtConfigSheet`'s `configSheetRadius` (26, Handoff §7 send-invite/
+    /// vehicle-detail sheets). `ScheduledRideSheet` is the first surface to
+    /// use it; MYR-171's `IncomingRequestSheet` (also `S.modalSheet`) reuses
+    /// the same constant.
+    public static let modalRadius: CGFloat = 28
 }

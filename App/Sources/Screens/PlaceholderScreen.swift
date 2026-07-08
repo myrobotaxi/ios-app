@@ -6,11 +6,11 @@ import DesignSystem
 //
 // Owner Share/Settings shipped in MYR-170 (`InvitesScreen`/`SettingsScreen`);
 // Drives shipped in MYR-169 (`DrivesScreen`). The rider shell's Live Map /
-// Ride History tabs (MYR-191) reuse this same placeholder with
-// `MRTTab.sharedTabs` until they're built — screens.jsx gives every tab
-// screen its own `<BottomNav current={nav} onChange={setNav}/>` render
-// (app.jsx:110-115) rather than a shared wrapper, which is why this takes a
-// generic `tab` binding + `tabs` table instead of assuming the owner shell.
+// Ride History tabs shipped in MYR-191 (`SharedViewerScreen`/
+// `RideHistoryScreen`) — no `RootView` call site uses this placeholder
+// anymore, but it's kept as the generic fallback for any future tab screen
+// that isn't built yet, and its `tab`/`tabs` API (rather than assuming the
+// owner shell) is what MYR-191's screens followed.
 struct PlaceholderScreen: View {
     let icon: String
     let title: String
