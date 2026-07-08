@@ -241,7 +241,6 @@ struct RootView: View {
         }
         .background(Color.mrtBg.ignoresSafeArea())
     }
-
 }
 
 #Preview {

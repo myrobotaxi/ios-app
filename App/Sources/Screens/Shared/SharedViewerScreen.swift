@@ -106,14 +106,17 @@ struct SharedViewerScreen: View {
         return false
     }
 
-    /// Every "task" sheet past idle/tracking covers the floating tab bar
-    /// entirely (ride-request.jsx:1166's z-index split: idle/tracking sit
-    /// under other chrome, every other phase sits above it).
+    /// MYR-198 client ruling (overrides screens.jsx:2239's idle/tracking
+    /// z-index split — the design jsx keeps `BottomNav` visible under both
+    /// `.idle` and `.tracking`): within the rider flow `BottomNav` shows on
+    /// **idle only**. Client QA round 3 screenshots showed the nav painting
+    /// OVER tracking-sheet content (including the "arriving" takeover) —
+    /// the design's own two-phase visibility wasn't reliably clearing the
+    /// sheet's content underneath, so the ruling collapses it to a single
+    /// rule: hidden everywhere except idle. See the MYR-198 PR body for the
+    /// before/after evidence.
     private var hideBottomNav: Bool {
-        switch viewerState.sheetPhase {
-        case .idle, .tracking: false
-        default: true
-        }
+        viewerState.sheetPhase != .idle
     }
 
     // MARK: Background map (MYR-171)
@@ -136,6 +139,7 @@ struct SharedViewerScreen: View {
                 cameraPosition: $cameraPosition,
                 isFollowing: $isFollowing,
                 showRoute: false, // MYR-197: no route/trip line on the rider's idle map before a ride is booked — see VehicleMapView.showRoute's header comment
+                showVehicle: false, // MYR-198 client ruling: no vehicle marker/label pre-acceptance — see VehicleMapView.showVehicle's header comment
                 bottomContentInset: mapBottomInset
             )
         case .review, .booking:

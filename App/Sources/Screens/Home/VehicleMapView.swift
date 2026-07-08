@@ -31,6 +31,18 @@ struct VehicleMapView: View {
     /// `HomeScreen`'s owner map, which legitimately shows its own vehicle's
     /// live trip) — the rider call site below opts out.
     var showRoute: Bool = true
+    /// MYR-198 client ruling (overrides the design jsx's idle vehicle
+    /// marker): the rider's idle/search/pinDrop/review map — including the
+    /// "request sent, not yet accepted" pending state, which still renders
+    /// this same `.idle`-phase call site — shows NO vehicle location at all,
+    /// no marker and no label, until a ride is actually accepted (tracking).
+    /// Client QA round 3 screenshots are the spec (privacy: don't broadcast
+    /// a fleet vehicle's live position to a rider who hasn't been matched to
+    /// it yet). Defaults `true` (unchanged for `HomeScreen`'s owner map,
+    /// which legitimately shows its own vehicle) — the rider call site in
+    /// `SharedViewerScreen.backgroundMap` opts out, mirroring `showRoute`'s
+    /// identical default/opt-out shape immediately above.
+    var showVehicle: Bool = true
     /// Reserved height along the bottom edge the sheet now physically
     /// covers (MYR-196 punch-list #2, `MRTDetentSheet`'s
     /// `.ignoresSafeArea(edges: .bottom)`). `MKMapView` reads its own
@@ -133,12 +145,16 @@ struct VehicleMapView: View {
                     }
                 }
             }
-            Annotation(vehicle.name, coordinate: vehiclePosition.coordinate) {
-                VehicleMarker(heading: vehiclePosition.headingDegrees, label: vehicle.name)
+            if showVehicle {
+                Annotation(vehicle.name, coordinate: vehiclePosition.coordinate) {
+                    VehicleMarker(heading: vehiclePosition.headingDegrees, label: vehicle.name)
+                }
             }
         case .parked:
-            Annotation(vehicle.name, coordinate: vehiclePosition.coordinate) {
-                VehicleMarker(heading: 0, label: vehicle.name)
+            if showVehicle {
+                Annotation(vehicle.name, coordinate: vehiclePosition.coordinate) {
+                    VehicleMarker(heading: 0, label: vehicle.name)
+                }
             }
         }
     }

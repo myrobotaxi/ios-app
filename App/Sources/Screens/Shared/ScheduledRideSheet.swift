@@ -80,22 +80,29 @@ struct ScheduledRideSheet: View {
         }
     }
 
+    // MYR-198 fix 5 (client QA round 3 — the PR #17 fix for this DIDN'T
+    // hold, verified empirically on device): a bare `ScrollView` always
+    // claims its full PROPOSED height along the scroll axis regardless of
+    // how tall its content actually is — it has no notion of "hug my
+    // content up to a cap." `.frame(maxHeight: screenHeight * 0.88)` only
+    // caps that proposal; every mode's content is comfortably shorter than
+    // 88% of the screen (this file's own header comment), so the ScrollView
+    // still rendered at the full 88% height with a large blank area of its
+    // own `mrtRideSheetFill` background below the real content in all four
+    // modes (details/reschedule/requested/confirmCancel) — the "huge dead
+    // gap" the client screenshot shows below "Changes notify Mom to
+    // re-confirm." `ViewThatFits(in: .vertical)` fixes this the idiomatic
+    // way: it's proposed the same `88%`-capped height (via the `.frame`
+    // below, which still wraps the whole `ViewThatFits`), and it picks the
+    // FIRST candidate whose ideal height fits that proposal — the plain,
+    // non-scrolling `sheetBody` hugs its own content and wins on every
+    // normal device/mode; the `ScrollView` candidate only takes over (and
+    // only then fills the 88% cap) on the rare case content actually
+    // overflows it (huge Dynamic Type, the smallest devices).
     private func sheet(for ride: ScheduledRide) -> some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                grabHandle
-                Group {
-                    switch mode {
-                    case .confirmCancel: confirmCancelContent(ride)
-                    case .reschedule: rescheduleContent(ride)
-                    case .requested: requestedContent(ride)
-                    case .details: detailsContent(ride)
-                    }
-                }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 30)
-            }
-            .frame(maxWidth: .infinity)
+        ViewThatFits(in: .vertical) {
+            sheetBody(for: ride)
+            ScrollView { sheetBody(for: ride) }
         }
         // shared-screens.jsx:247 `maxHeight: '88%'`.
         .frame(maxHeight: screenHeight.map { $0 * 0.88 })
@@ -110,6 +117,26 @@ struct ScheduledRideSheet: View {
         )
         .overlay(alignment: .topTrailing) { closeButton }
         .accessibilityAddTraits(.isModal)
+    }
+
+    /// The actual mode content, shared by both `ViewThatFits` candidates in
+    /// `sheet(for:)` above — identical VStack either way, the only
+    /// difference is whether a `ScrollView` wraps it.
+    private func sheetBody(for ride: ScheduledRide) -> some View {
+        VStack(spacing: 0) {
+            grabHandle
+            Group {
+                switch mode {
+                case .confirmCancel: confirmCancelContent(ride)
+                case .reschedule: rescheduleContent(ride)
+                case .requested: requestedContent(ride)
+                case .details: detailsContent(ride)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 30)
+        }
+        .frame(maxWidth: .infinity)
     }
 
     /// 36×4 rounded handle (shared-screens.jsx:251) — `DesignSystem`'s

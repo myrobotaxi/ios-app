@@ -34,7 +34,21 @@ struct RideRequestSheetChrome: ViewModifier {
             }
             .shadow(color: .black.opacity(0.5), radius: 20, y: -8) // '0 -16px 40px rgba(0,0,0,0.5)' (ride-request.jsx:1180)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-            .ignoresSafeArea(edges: .bottom)
+            // MYR-198 fix 3: the Summary takeover (`isSummary: true`) is the
+            // one phase that owns the FULL screen, not a partial bottom
+            // sheet — its gold-tinted background must reach the physical
+            // TOP edge too (`RideRequestSummaryContent`'s own `GeometryReader`
+            // already sizes its content to whatever height this chrome
+            // reports, so extending the reported proposal up here is what
+            // lets that content's existing `padding(.top, 76)` land 76pt
+            // from the true top instead of the status-bar-inset top —
+            // "content keeping its current offset per the prototype," only
+            // the surface moves). Every other phase stays bottom-only: they
+            // deliberately leave the map visible above the sheet, and this
+            // view's fixed/content-hugging sizing means a taller top-side
+            // proposal has no visual effect on them anyway (they don't
+            // stretch to fill it).
+            .ignoresSafeArea(edges: isSummary ? .all : .bottom)
     }
 }
 
@@ -201,6 +215,21 @@ struct RideSlideUpCard<Content: View>: View {
                                 .strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline)
                         )
                 )
+                // MYR-198 fix 1: every ride-flow sheet shown while the nav is
+                // hidden must be bottom-flush to the PHYSICAL screen edge —
+                // this card (Search's Schedule picker, Review's "Available
+                // rides" fleet picker, Summary's tip quip) previously had no
+                // `.ignoresSafeArea`, so its 26pt bottom content padding
+                // landed on top of the ~34pt home-indicator inset instead of
+                // the true edge, leaving a dead gap below the rounded card.
+                // Same `.frame(maxWidth:.infinity, maxHeight:.infinity,
+                // alignment:.bottom).ignoresSafeArea(edges:.bottom)` technique
+                // `RideRequestSheetChrome`/`mrtBottomNav` already use — see
+                // `RideRequestSheetChrome`'s header comment: it only
+                // repositions this already content-sized card within a
+                // larger invisible frame, it does not stretch the content.
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .ignoresSafeArea(edges: .bottom)
                 .transition(reduceMotion ? AnyTransition.opacity : AnyTransition.move(edge: .bottom))
         }
         .transition(.opacity)
