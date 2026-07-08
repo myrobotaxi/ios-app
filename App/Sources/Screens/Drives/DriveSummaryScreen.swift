@@ -697,6 +697,9 @@ private struct ConfettiKeyframeValue {
 
 private struct ConfettiParticleView: View {
     let particle: ConfettiParticle
+    /// One-shot burst trigger — a trigger-less `KeyframeAnimator` repeats
+    /// forever; the jsx `dsConfetti` runs once (`forwards`) per celebration.
+    @State private var burst = false
 
     /// cubic-bezier(0.2,0.7,0.3,1) (screens.jsx:1040 `dsConfetti` timing-function).
     private static let curve = UnitCurve.bezier(
@@ -705,7 +708,7 @@ private struct ConfettiParticleView: View {
     )
 
     var body: some View {
-        KeyframeAnimator(initialValue: ConfettiKeyframeValue()) { value in
+        KeyframeAnimator(initialValue: ConfettiKeyframeValue(), trigger: burst) { value in
             Group {
                 if particle.round {
                     Circle().fill(particle.color)
@@ -750,6 +753,7 @@ private struct ConfettiParticleView: View {
             }
         }
         .allowsHitTesting(false)
+        .onAppear { burst = true }
     }
 }
 

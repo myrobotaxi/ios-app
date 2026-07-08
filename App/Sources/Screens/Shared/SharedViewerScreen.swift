@@ -375,6 +375,11 @@ struct SharedViewerScreen: View {
 private struct GreetingHero: View {
     let riderName: String
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// One-shot reveal trigger. A trigger-less `KeyframeAnimator` repeats
+    /// forever — the greeting flashed in a loop and its subtree churn also
+    /// swallowed sheet taps. The jsx runs `mrt-greet-in` once (fill `both`),
+    /// so: animate once on appear, rest at the final keyframe values.
+    @State private var revealed = false
 
     /// Both `mrt-greet-in` (opacity/offsetY/blur/tracking, 0.85s) and
     /// `mrt-greet-glow` (glowRadius/glowIntensity, 1.4s, 0.12s delay) driven
@@ -412,7 +417,7 @@ private struct GreetingHero: View {
         if reduceMotion {
             line(Self.restingReveal)
         } else {
-            KeyframeAnimator(initialValue: RevealValue()) { value in
+            KeyframeAnimator(initialValue: RevealValue(), trigger: revealed) { value in
                 line(value)
             } keyframes: { _ in
                 KeyframeTrack(\.opacity) {
@@ -444,6 +449,7 @@ private struct GreetingHero: View {
                     LinearKeyframe(0, duration: 0.72, timingCurve: .easeOut)
                 }
             }
+            .onAppear { revealed = true }
         }
     }
 
