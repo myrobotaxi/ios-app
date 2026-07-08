@@ -138,6 +138,12 @@ enum Hex {
     static let dsShareCardPanelBottom: UInt32 = 0x0F0E0A // stat panel gradient 100% (screens.jsx:1208)
     static let dsShareCardScrimEnd: UInt32 = 0x12100C // hero scrim bottom stop, used at 0.7 alpha (screens.jsx:1202)
     static let confettiPale: UInt32 = 0xFFE9A8 // DSRing confetti `COLORS[4]` (screens.jsx:1079)
+
+    // MYR-170 — Rider Settings profile avatar (shared-screens.jsx:468). A
+    // bespoke radial-gradient circle, distinct from the `Avatar` primitive's
+    // oklch hue system — `#8a6f28` isn't an alpha composition of an existing
+    // base, so it's a new raw hex (the gradient's start stop reuses `gold`).
+    static let riderAvatarGradientEnd: UInt32 = 0x8A6F28
 }
 
 // MARK: - Color tokens
@@ -469,6 +475,51 @@ public extension Color {
     /// Confetti particle color `COLORS[4]` — `#FFE9A8` (screens.jsx:1079).
     /// (The burst's other 4 colors reuse `mrtGold`/`mrtGoldLight`/`mrtGoldDark`/`mrtText`.)
     static let mrtConfettiPale = Color(hex: Hex.confettiPale)
+
+    // MARK: - MYR-170 — Owner Share/Settings (design/app/screens.jsx
+    // 1246-1834) + Rider Settings (shared-screens.jsx 444-557) + Toggle
+    // (components.jsx 254-272). Every value below is an alpha composition of
+    // an existing base hex — no new raw hex is introduced. The dialog/toast
+    // reds and surfaces these screens use (`#FF6B6B`, `rgba(255,59,48,…)`,
+    // `#1a1a1c`, `#22221f`) already have tokens from MYR-162
+    // (`mrtDialogRed`/`mrtDangerFill`/`mrtDialogCard`/`mrtToastSurface`) —
+    // the shared `mrtConfirmDialog`/`mrtSuccessToast` render those, so no
+    // screen-local reds are needed here.
+
+    /// Toggle thumb drop shadow — rgba(0,0,0,0.3) (components.jsx Toggle,
+    /// ~line 264). Distinct from the range-slider thumb's 0.45-alpha
+    /// `mrtSliderThumbShadow`.
+    static let mrtToggleThumbShadow = Color(hex: Hex.black, alpha: 0.3)
+
+    /// Send-invite sheet vehicle-select card, selected fill — `#C9A84C1a`
+    /// (screens.jsx:1363).
+    static let mrtInviteVehicleTint = Color(hex: Hex.gold, alpha: Double(0x1A) / 255.0)
+    /// Send-invite sheet vehicle-select card, selected border — `#C9A84C88`
+    /// (screens.jsx:1363).
+    static let mrtInviteVehicleBorder = Color(hex: Hex.gold, alpha: Double(0x88) / 255.0)
+    /// Send-invite sheet access-tier row, selected fill — `#C9A84C14`
+    /// (screens.jsx:1385). Also the Settings vehicle-detail sheet's
+    /// "Set as primary" button fill (screens.jsx:1748) — identical suffix.
+    static let mrtInviteAccessTintLight = Color(hex: Hex.gold, alpha: Double(0x14) / 255.0)
+    /// Send-invite sheet access-tier row, selected border — `#C9A84C77`
+    /// (screens.jsx:1385).
+    static let mrtInviteAccessBorder = Color(hex: Hex.gold, alpha: Double(0x77) / 255.0)
+    /// Send-invite sheet access-tier row, selected icon-tile fill —
+    /// `#C9A84C22` (screens.jsx:1386).
+    static let mrtInviteAccessIconFill = Color(hex: Hex.gold, alpha: Double(0x22) / 255.0)
+    /// Send-invite sheet "sending" spinner track — `#C9A84C33`
+    /// (screens.jsx:1423).
+    static let mrtInviteSpinnerTrack = Color(hex: Hex.gold, alpha: Double(0x33) / 255.0)
+    /// "Primary" badge pill (Settings vehicle row + detail sheet) / "Guest"
+    /// badge (SharedSettingsScreen) / "Enter invite code" icon-circle fill —
+    /// `#C9A84C1f` (screens.jsx:1610,1727; shared-screens.jsx:473,491).
+    static let mrtGoldBadgeFill = Color(hex: Hex.gold, alpha: Double(0x1F) / 255.0)
+    /// Settings vehicle-detail sheet, "Set as primary" button border —
+    /// `#C9A84C66` (screens.jsx:1748).
+    static let mrtPrimaryButtonBorder = Color(hex: Hex.gold, alpha: Double(0x66) / 255.0)
+    /// Rider Settings profile-avatar radial-gradient end stop — `#8a6f28`
+    /// (shared-screens.jsx:468; the start stop reuses `mrtGold`).
+    static let mrtRiderAvatarGradientEnd = Color(hex: Hex.riderAvatarGradientEnd)
 }
 
 // MARK: - Hex init

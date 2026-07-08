@@ -352,4 +352,53 @@ final class TokenTests: XCTestCase {
         XCTAssertEqual(MRTMetrics.shareCardMapHeight, 132)
         XCTAssertEqual(MRTMetrics.shareCardRadius, 20)
     }
+
+    /// MYR-170 — `MRTToggle` layout constants (design/app/components.jsx
+    /// `Toggle` 254-272).
+    func testToggleMetrics() {
+        XCTAssertEqual(MRTMetrics.toggleTrackWidth, 51)
+        XCTAssertEqual(MRTMetrics.toggleTrackHeight, 31)
+        XCTAssertEqual(MRTMetrics.toggleTrackRadius, 16)
+        XCTAssertEqual(MRTMetrics.toggleThumbSize, 27)
+        XCTAssertEqual(MRTMetrics.toggleThumbInset, 2)
+    }
+
+    /// MYR-170 — Owner Share/Settings + Rider Settings share the same
+    /// physical header/content-clearance offsets as Drives (design/app/
+    /// screens.jsx:97,398; shared-screens.jsx:694, all `74px …`).
+    func testShareSettingsMetrics() {
+        XCTAssertEqual(MRTMetrics.shareHeaderTop, 74)
+        XCTAssertEqual(MRTMetrics.shareContentBottomPadding, 104)
+    }
+
+    /// MYR-170 — the one new raw hex introduced (shared-screens.jsx:468).
+    func testShareSettingsHexRoundTrip() {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        XCTAssertTrue(UIColor(Color.mrtRiderAvatarGradientEnd).getRed(&r, green: &g, blue: &b, alpha: &a))
+        XCTAssertEqual(UInt32(round(r * 255)), 0x8A)
+        XCTAssertEqual(UInt32(round(g * 255)), 0x6F)
+        XCTAssertEqual(UInt32(round(b * 255)), 0x28)
+        XCTAssertEqual(a, 1.0, accuracy: 0.001)
+    }
+
+    /// MYR-170 — new alpha-composed tokens (design/app/screens.jsx
+    /// 1246-1834, shared-screens.jsx 444-557, components.jsx Toggle).
+    func testShareSettingsTintAlphas() {
+        let cases: [(name: String, alpha: CGFloat, color: Color)] = [
+            ("toggleThumbShadow", 0.3, .mrtToggleThumbShadow), // components.jsx ~264
+            ("inviteVehicleTint", CGFloat(0x1A) / 255.0, .mrtInviteVehicleTint), // screens.jsx:1363
+            ("inviteVehicleBorder", CGFloat(0x88) / 255.0, .mrtInviteVehicleBorder), // screens.jsx:1363
+            ("inviteAccessTintLight", CGFloat(0x14) / 255.0, .mrtInviteAccessTintLight), // screens.jsx:1385
+            ("inviteAccessBorder", CGFloat(0x77) / 255.0, .mrtInviteAccessBorder), // screens.jsx:1385
+            ("inviteAccessIconFill", CGFloat(0x22) / 255.0, .mrtInviteAccessIconFill), // screens.jsx:1386
+            ("inviteSpinnerTrack", CGFloat(0x33) / 255.0, .mrtInviteSpinnerTrack), // screens.jsx:1423
+            ("goldBadgeFill", CGFloat(0x1F) / 255.0, .mrtGoldBadgeFill), // screens.jsx:1610,1727
+            ("primaryButtonBorder", CGFloat(0x66) / 255.0, .mrtPrimaryButtonBorder), // screens.jsx:1748
+        ]
+        for (name, alpha, color) in cases {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            XCTAssertTrue(UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a), name)
+            XCTAssertEqual(a, alpha, accuracy: 0.001, "\(name): alpha")
+        }
+    }
 }

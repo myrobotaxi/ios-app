@@ -1,18 +1,21 @@
 import SwiftUI
 import DesignSystem
 
-// MARK: - Owner tab placeholder (MYR-167 deliverable 6)
+// MARK: - Tab placeholder (MYR-167 deliverable 6; generalized in MYR-170 for
+// the rider tab shell)
 //
-// Share/Settings each get their own build issue next (Drives shipped in
-// MYR-169 — see `DrivesScreen`); screens.jsx gives every owner screen
-// (`DrivesScreen`, `InvitesScreen`, `SettingsScreen`) its own
-// `<BottomNav current={nav} onChange={setNav}/>` render (app.jsx:110-115)
-// rather than a shared wrapper — this mirrors that so `HomeScreen` isn't a
-// special case.
+// Owner Share/Settings shipped in MYR-170 (`InvitesScreen`/`SettingsScreen`);
+// Drives shipped in MYR-169 (`DrivesScreen`). The rider shell's Live Map /
+// Ride History tabs (MYR-191) reuse this same placeholder with
+// `MRTTab.sharedTabs` until they're built — screens.jsx gives every tab
+// screen its own `<BottomNav current={nav} onChange={setNav}/>` render
+// (app.jsx:110-115) rather than a shared wrapper, which is why this takes a
+// generic `tab` binding + `tabs` table instead of assuming the owner shell.
 struct PlaceholderScreen: View {
     let icon: String
     let title: String
-    @Binding var ownerTab: String
+    @Binding var tab: String
+    var tabs: [MRTTab] = MRTTab.ownerTabs
 
     var body: some View {
         ZStack {
@@ -36,6 +39,6 @@ struct PlaceholderScreen: View {
         // from the PHYSICAL bottom edge via the shared `mrtBottomNav` helper
         // — see `HomeScreen.swift`'s header comment (review finding #1 +
         // MYR-196 punch-list #3).
-        .mrtBottomNav(selection: $ownerTab)
+        .mrtBottomNav(selection: $tab, tabs: tabs)
     }
 }

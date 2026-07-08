@@ -103,10 +103,14 @@ public struct MRTButton: View {
 
 // MARK: - Press scale
 
-/// Press → scale 0.98 (Handoff §3). Shared by MRTButton and the dialog's
-/// destructive button.
-struct MRTPressScaleButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
+/// Press → scale 0.98 (Handoff §3). Shared by MRTButton, the dialog's
+/// destructive button, and any screen-local bespoke button that isn't one of
+/// the 6 shared variants (e.g. Settings' "Set as primary" / "Unlink this
+/// Tesla" — screens.jsx:1747-1751, MYR-170) but should still press the same way.
+public struct MRTPressScaleButtonStyle: ButtonStyle {
+    public init() {}
+
+    public func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
             .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
