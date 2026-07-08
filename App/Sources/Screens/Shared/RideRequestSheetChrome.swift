@@ -271,15 +271,60 @@ enum RideRequestClock {
     }
 }
 
-// MARK: - Declined notice — superseded by `RideRequestOutcomeContent` (MYR-197)
+// MARK: - Declined notice (ride-request.jsx:1042-1066 `DeclinedNotice`)
 //
-// Used to be a compact bottom card overlaid on `.search`, ported from
-// ride-request.jsx's `DeclinedNotice` (1042-1066). MYR-197's prototype walk
-// found `OutcomeContent` (ride-request.jsx:670-717) — a richer accepted/
-// declined card — defined in the same source file but never actually wired
-// up anywhere, and Thomas's QA flagged the missing outcome moment as a real
-// gap. Rather than ship two competing "you got declined" surfaces (this card
-// AND the new outcome phase — CLAUDE.md "reuse, don't fork"), decline now
-// routes through the same `.outcome(accepted: false)` phase as accept; see
-// `RideRequestOutcomeContent`'s header comment. `DeclinedNoticeCard` is
-// removed rather than left dead.
+// A compact bottom card overlaid on `.search` (not its own `RiderSheetPhase`
+// — see `SharedViewerState.showDeclinedNotice`'s doc comment) after
+// `RideRequestService.decline()`. Deliberately its own small card rather than
+// `mrtConfirmDialog` (not a full-screen dialog in the source).
+//
+// MYR-197 briefly replaced this with a resurrected `OutcomeContent`
+// (ride-request.jsx:670-717), reasoning it was the "one canonical" surface.
+// That was wrong: `OutcomeContent` is defined in the design source but is
+// **never mounted** anywhere in ride-request.jsx (`grep -c "<OutcomeContent"`
+// is 0) — dead code, same category as the sparkline this codebase already
+// declined to port. `DeclinedNotice` *is* mounted (ride-request.jsx:1254-1258,
+// `requestState === 'rejected' && phase === 'search'`), so it's restored here
+// verbatim as the canonical declined surface.
+struct DeclinedNoticeCard: View {
+    let requesterName: String
+    let onDismiss: () -> Void
+    let onRebook: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                Circle()
+                    .fill(Color.mrtDangerFillSoft)
+                    .frame(width: 36, height: 36)
+                    .overlay(
+                        Image(systemName: "xmark")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(Color.mrtDialogRed)
+                    )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Ride declined")
+                        .font(.system(size: 14.5, weight: .semibold))
+                        .tracking(-0.2)
+                        .foregroundStyle(Color.mrtText)
+                    Text("\(requesterName) can\u{2019}t take this ride right now.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.mrtTextSec)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.bottom, 13)
+            HStack(spacing: 9) {
+                MRTButton("Dismiss", variant: .outlineMuted, size: .sm, action: onDismiss)
+                MRTButton("Rebook", variant: .gold, size: .sm, action: onRebook)
+            }
+        }
+        .padding(15)
+        .background(Color.mrtDialogCard, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline))
+        .padding(.horizontal, 14)
+        .padding(.bottom, 14)
+        .shadow(color: .black.opacity(0.4), radius: 20, y: -6)
+    }
+}

@@ -26,7 +26,7 @@ struct VehicleMapView: View {
     /// live map never shows a route pre-booking (confirmed via the MYR-197
     /// prototype walk) — a route only belongs once an actual request exists,
     /// which is already correctly handled by `RideRequestRouteMap` for
-    /// `.review`/`.booking`/`.outcome`/`.tracking` (`SharedViewerScreen
+    /// `.review`/`.booking`/`.tracking` (`SharedViewerScreen
     /// .backgroundMap`). Defaults `true` (unchanged behavior for
     /// `HomeScreen`'s owner map, which legitimately shows its own vehicle's
     /// live trip) — the rider call site below opts out.

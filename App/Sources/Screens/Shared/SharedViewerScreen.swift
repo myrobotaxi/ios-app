@@ -50,6 +50,20 @@ struct SharedViewerScreen: View {
             }
         }
         .background(Color.mrtBg)
+        .overlay(alignment: .bottom) {
+            if isSearch, viewerState.showDeclinedNotice {
+                DeclinedNoticeCard(
+                    requesterName: declinedRequesterName,
+                    onDismiss: { viewerState.resetDraftToIdle() },
+                    onRebook: { viewerState.showDeclinedNotice = false }
+                )
+                .transition(reduceMotion ? AnyTransition.opacity : AnyTransition.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(
+            reduceMotion ? .easeOut(duration: 0.2) : .timingCurve(0.32, 0.72, 0, 1, duration: 0.3), // ride-request.jsx:1053 `mrt-sched-up`
+            value: viewerState.showDeclinedNotice
+        )
         .mrtBottomNav(selection: $sharedTab, tabs: MRTTab.sharedTabs, hidden: hideBottomNav)
         .onAppear { viewerState.startTelemetry() }
         .onChange(of: rideRequestService.activeRequest?.status) { _, newStatus in
@@ -75,8 +89,6 @@ struct SharedViewerScreen: View {
             RideRequestReviewContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
         case .booking:
             RideRequestBookingContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
-        case .outcome(let accepted):
-            RideRequestOutcomeContent(viewerState: viewerState, rideRequestService: rideRequestService, accepted: accepted)
         case .tracking:
             RideRequestTrackingContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
         case .summary:
@@ -86,6 +98,11 @@ struct SharedViewerScreen: View {
 
     private var isPinDrop: Bool {
         if case .pinDrop = viewerState.sheetPhase { return true }
+        return false
+    }
+
+    private var isSearch: Bool {
+        if case .search = viewerState.sheetPhase { return true }
         return false
     }
 
@@ -121,7 +138,7 @@ struct SharedViewerScreen: View {
                 showRoute: false, // MYR-197: no route/trip line on the rider's idle map before a ride is booked — see VehicleMapView.showRoute's header comment
                 bottomContentInset: mapBottomInset
             )
-        case .review, .booking, .outcome:
+        case .review, .booking:
             RideRequestRouteMap(route: requestRoute)
         case .tracking:
             RideRequestRouteMap(route: requestRoute, progress: rideRequestService.activeRequest?.trackProgress ?? 0, showVehicle: true)
@@ -150,35 +167,40 @@ struct SharedViewerScreen: View {
         return [pickup, destination]
     }
 
-    // MARK: Reactive sync (ride-request.jsx:1098-1117, extended MYR-197)
+    // MARK: Reactive sync (ride-request.jsx:1098-1117)
     //
     // `RideRequestService`'s `activeRequest` can change out from under the
     // rider — the owner accepting/declining, or (M1's solo-rider fallback)
     // `SimulatedRideRequestService`'s own auto-accept timer. This is where
     // the rider's `sheetPhase` reacts, not inside the service itself (see
     // `RideRequestService`'s header comment: it only ever exposes the
-    // snapshot).
+    // snapshot). Mirrors ride-request.jsx's own reactive effect: accept
+    // jumps straight into the to-pickup tracking sheet — "no intermediate
+    // accepted banner" is the jsx's own comment (ride-request.jsx:1109-1111)
+    // — and decline drops back to `.search` with the small `DeclinedNotice`
+    // overlay (ride-request.jsx:1254-1258). `OutcomeContent`
+    // (ride-request.jsx:670-717) is defined in the design source but never
+    // mounted anywhere in it (`grep -c "<OutcomeContent"` is 0) — it does not
+    // belong in either transition.
 
     private func handleStatusChange(_ status: RideRequestStatus?) {
         guard let status, let request = rideRequestService.activeRequest else { return }
-        let onTaskSheet = viewerState.sheetPhase == .booking || viewerState.sheetPhase == .idle
         switch status {
         case .accepted:
             // Scheduled acceptances are reservations for later, not a live
             // trip to narrate right now — `SimulatedRideRequestService
             // .accept()` never seeds `trackProgress` for these, and
             // ride-request.jsx's own scheduled path never shows
-            // `OutcomeContent`/`TrackingContent` either (`ReviewContent
-            // .onConfirm` calls `onSchedule()` and returns straight to idle,
-            // ported at `RideRequestReviewContent.confirm()`). Only a "now"
-            // acceptance gets the "on the way" outcome card.
-            if request.input.schedule == nil, onTaskSheet {
-                viewerState.sheetPhase = .outcome(accepted: true)
+            // `TrackingContent` either (`ReviewContent.onConfirm` calls
+            // `onSchedule()` and returns straight to idle, ported at
+            // `RideRequestReviewContent.confirm()`). Only a "now" acceptance
+            // jumps into the live tracking sheet.
+            if request.input.schedule == nil, viewerState.sheetPhase == .booking || viewerState.sheetPhase == .idle {
+                viewerState.sheetPhase = .tracking
             }
         case .declined:
-            if onTaskSheet {
-                viewerState.sheetPhase = .outcome(accepted: false)
-            }
+            viewerState.showDeclinedNotice = true
+            viewerState.sheetPhase = .search
         case .pending:
             break
         }
@@ -187,6 +209,11 @@ struct SharedViewerScreen: View {
     private func handleProgressChange(_ progress: Double?) {
         guard let progress, progress >= 0.999, viewerState.sheetPhase == .tracking else { return }
         viewerState.sheetPhase = .summary
+    }
+
+    private var declinedRequesterName: String {
+        RideRequestFixtures.fleet.first { $0.id == viewerState.draftFleetMemberID }?.owner
+            ?? RideRequestFixtures.fleet[0].owner
     }
 
     // MARK: Idle sheet (screens.jsx:2064-2207, ride-request.jsx:1165-1218)

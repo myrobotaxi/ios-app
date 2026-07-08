@@ -18,28 +18,12 @@ import Observation
 // ("search, pinDrop, review, booking, tracking, summary") — same phase,
 // friendlier name for a case that's rendering a "Booking ride with {owner}"
 // title.
-//
-// MYR-197 adds `.outcome` for `OutcomeContent` (ride-request.jsx:670-717).
-// That component is defined in the source but **never actually mounted** —
-// `ExpandingRequestSheet`'s own phase switch (ride-request.jsx:1218-1249)
-// jumps straight from `.booking`/`.idle` to `.tracking` on accept and to
-// `.search` (+ the separate small `DeclinedNotice` overlay) on decline; the
-// MYR-197 prototype walk confirmed this live (owner-accept and the
-// solo-rider auto-accept fallback both skip straight to the tracking sheet,
-// no intermediate card). QA (Thomas, MYR-197) flagged the missing
-// accepted/declined outcome moment as a real product gap regardless — this
-// case resurrects `OutcomeContent`'s content as new, intentional UX rather
-// than a literal port of already-reachable jsx behavior. It replaces the old
-// `DeclinedNoticeCard`-on-`.search` overlay entirely (one canonical
-// accepted/declined surface instead of two — CLAUDE.md "reuse, don't fork");
-// see `RideRequestOutcomeContent`'s header comment for the full reasoning.
 public enum RiderSheetPhase: Equatable, Sendable {
     case idle
     case search
     case pinDrop(returnTo: PinDropReturn)
     case review
     case booking
-    case outcome(accepted: Bool)
     case tracking
     case summary
 }
@@ -92,6 +76,11 @@ public final class SharedViewerState {
     /// Set by the idle sheet's Home/Work chips or Search's "Set on map" —
     /// where `.pinDrop` should write its confirmed pin back into.
     public var pinReturn: PinDropReturn = .search
+    /// Drives `DeclinedNotice`'s overlay on `.search` (ride-request.jsx:
+    /// 1254-1258) — a rejected request shows this once, then the rider
+    /// dismisses or rebooks; it isn't a `RiderSheetPhase` case of its own
+    /// (the jsx overlays it on top of `search`, not a separate screen).
+    public var showDeclinedNotice = false
 
     public init(vehicle: Vehicle = VehicleFixtures.vehicles[0]) {
         self.vehicle = vehicle
@@ -111,5 +100,6 @@ public final class SharedViewerState {
         draftFleetMemberID = RideRequestFixtures.fleet[0].id
         draftPassenger = nil
         draftSchedule = nil
+        showDeclinedNotice = false
     }
 }
