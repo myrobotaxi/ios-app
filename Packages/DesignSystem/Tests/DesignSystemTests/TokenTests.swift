@@ -450,4 +450,54 @@ final class TokenTests: XCTestCase {
             XCTAssertEqual(a, alpha, accuracy: 0.001, "\(name): alpha")
         }
     }
+
+    /// MYR-171 — the one new raw hex introduced (ride-request.jsx:647).
+    func testRideRequestHexRoundTrip() {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        XCTAssertTrue(UIColor(Color.mrtSendFillTrack).getRed(&r, green: &g, blue: &b, alpha: &a))
+        XCTAssertEqual(UInt32(round(r * 255)), 0x3A)
+        XCTAssertEqual(UInt32(round(g * 255)), 0x2F)
+        XCTAssertEqual(UInt32(round(b * 255)), 0x12)
+        XCTAssertEqual(a, 1.0, accuracy: 0.001)
+    }
+
+    /// MYR-171 — `IncomingRequestSheet`'s requester-avatar gradient, the
+    /// other new raw hex pair introduced (ride-request.jsx:1307).
+    func testRideRequestAvatarGradientHexRoundTrip() {
+        let cases: [(name: String, hex: UInt32, color: Color)] = [
+            ("requesterAvatarStart", 0x6D8EFF, .mrtRequesterAvatarStart),
+            ("requesterAvatarEnd", 0x9D7CFF, .mrtRequesterAvatarEnd),
+        ]
+        for (name, hex, color) in cases {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            XCTAssertTrue(UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a), name)
+            XCTAssertEqual(UInt32(round(r * 255)), (hex >> 16) & 0xFF, "\(name): red")
+            XCTAssertEqual(UInt32(round(g * 255)), (hex >> 8) & 0xFF, "\(name): green")
+            XCTAssertEqual(UInt32(round(b * 255)), hex & 0xFF, "\(name): blue")
+            XCTAssertEqual(a, 1.0, accuracy: 0.001, "\(name): alpha")
+        }
+    }
+
+    /// MYR-171 — new alpha-composed tokens (design/app/ride-request.jsx
+    /// ExpandingRequestSheet/IncomingRequestSheet/RouteSentToast).
+    func testRideRequestTintAlphas() {
+        let cases: [(name: String, alpha: CGFloat, color: Color)] = [
+            ("requestCardFill", 0.035, .mrtRequestCardFill),
+            ("plateChipFill", CGFloat(0x1F) / 255.0, .mrtPlateChipFill),
+            ("tripLegTrack", 0.10, .mrtTripLegTrack),
+        ]
+        for (name, alpha, color) in cases {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            XCTAssertTrue(UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a), name)
+            XCTAssertEqual(a, alpha, accuracy: 0.001, "\(name): alpha")
+        }
+    }
+
+    /// MYR-171 — `IncomingRequestSheet`/`RouteSentToast` layout constants.
+    func testRideRequestMetrics() {
+        XCTAssertEqual(MRTMetrics.incomingRequestMapHeight, 132)
+        XCTAssertEqual(MRTMetrics.routeSentToastTop, 56)
+        XCTAssertEqual(MRTMetrics.rideRequestSearchSheetHeight, 712)
+        XCTAssertEqual(MRTMetrics.rideRequestPinDropMapInset, 280)
+    }
 }

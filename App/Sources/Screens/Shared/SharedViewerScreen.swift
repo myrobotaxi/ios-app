@@ -1,55 +1,220 @@
 import SwiftUI
 import MapKit
+import CoreLocation
 import DesignSystem
 
 // MARK: - SharedViewerScreen (MYR-191, design/app/screens.jsx
 // SharedViewerScreen 1855-2242 idle path + ride-request.jsx
-// ExpandingRequestSheet 1071-1261 idle path, Handoff §5.10 intro)
+// ExpandingRequestSheet 1071-1261, Handoff §5.10 intro; extended MYR-171)
 //
 // The rider's live map: reuses MYR-167's MapKit stack (`VehicleMapView`) +
 // simulated telemetry (`SimulatedVehicleTelemetrySource`) to show the one
-// shared vehicle the rider is watching, under a resting "idle" sheet — a
-// time-of-day greeting with a premium glow reveal, plus the search bar /
-// quick-place "ready" affordances (visually present, not yet wired — see
-// `RiderSheetPhase`). The request→booking→tracking→summary phases are
-// MYR-171's scope; `viewerState.sheetPhase` is the seam that story extends.
+// shared vehicle the rider is watching, under an expanding request sheet
+// that switches content per `viewerState.sheetPhase` (`RiderSheetPhase`).
+// MYR-171 fills in every phase past `.idle`: Search/PinDrop/Review/Booking/
+// Tracking/Summary each live in their own file (see the phase content
+// structs below), and this file is the seam that (1) picks which phase
+// content + background map to render, (2) reacts to `rideRequestService
+// .activeRequest`'s status/progress changing "out from under" the rider
+// (owner accept/decline, the tracking progress ticker) per ride-request.jsx:
+// 1098-1117, and (3) shows/hides the floating bottom nav per phase (every
+// "task" sheet past idle/tracking covers it, ride-request.jsx z-index
+// comment at 1166).
 struct SharedViewerScreen: View {
     @Bindable var viewerState: SharedViewerState
     @Binding var sharedTab: String
+    var rideRequestService: SimulatedRideRequestService
+    var historyStore: RideHistoryStore
     var riderName: String = "Sam" // screens.jsx:1857 `riderName = 'Sam'`; M1 has no tweaks panel.
 
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var isFollowing = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ZStack {
+        GeometryReader { geo in
+            ZStack {
+                backgroundMap
+                    .ignoresSafeArea()
+
+                sheetContent(totalHeight: geo.size.height)
+                    .animation(
+                        reduceMotion ? .easeOut(duration: 0.2) : .timingCurve(0.32, 0.72, 0, 1, duration: 0.42), // ride-request.jsx:1185
+                        value: viewerState.sheetPhase
+                    )
+
+                if isPinDrop {
+                    RidePinDropMapOverlay(label: RideRequestPinDropContent.pinAddress)
+                        .position(x: geo.size.width / 2, y: geo.size.height * 0.36)
+                }
+            }
+        }
+        .background(Color.mrtBg)
+        .overlay(alignment: .bottom) {
+            if isSearch, viewerState.showDeclinedNotice {
+                DeclinedNoticeCard(
+                    requesterName: declinedRequesterName,
+                    onDismiss: { viewerState.resetDraftToIdle() },
+                    onRebook: { viewerState.showDeclinedNotice = false }
+                )
+                .transition(reduceMotion ? AnyTransition.opacity : AnyTransition.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(
+            reduceMotion ? .easeOut(duration: 0.2) : .timingCurve(0.32, 0.72, 0, 1, duration: 0.3), // ride-request.jsx:1053 `mrt-sched-up`
+            value: viewerState.showDeclinedNotice
+        )
+        .mrtBottomNav(selection: $sharedTab, tabs: MRTTab.sharedTabs, hidden: hideBottomNav)
+        .onAppear { viewerState.startTelemetry() }
+        .onChange(of: rideRequestService.activeRequest?.status) { _, newStatus in
+            handleStatusChange(newStatus)
+        }
+        .onChange(of: rideRequestService.activeRequest?.trackProgress) { _, progress in
+            handleProgressChange(progress)
+        }
+    }
+
+    // MARK: Phase content (MYR-171)
+
+    @ViewBuilder
+    private func sheetContent(totalHeight: CGFloat) -> some View {
+        switch viewerState.sheetPhase {
+        case .idle:
+            idleSheet
+        case .search:
+            RideRequestSearchContent(viewerState: viewerState)
+        case .pinDrop(let returnTo):
+            RideRequestPinDropContent(viewerState: viewerState, returnTo: returnTo, totalHeight: totalHeight)
+        case .review:
+            RideRequestReviewContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
+        case .booking:
+            RideRequestBookingContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
+        case .tracking:
+            RideRequestTrackingContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
+        case .summary:
+            RideRequestSummaryContent(viewerState: viewerState, rideRequestService: rideRequestService, historyStore: historyStore, riderName: riderName)
+        }
+    }
+
+    private var isPinDrop: Bool {
+        if case .pinDrop = viewerState.sheetPhase { return true }
+        return false
+    }
+
+    private var isSearch: Bool {
+        if case .search = viewerState.sheetPhase { return true }
+        return false
+    }
+
+    /// Every "task" sheet past idle/tracking covers the floating tab bar
+    /// entirely (ride-request.jsx:1166's z-index split: idle/tracking sit
+    /// under other chrome, every other phase sits above it).
+    private var hideBottomNav: Bool {
+        switch viewerState.sheetPhase {
+        case .idle, .tracking: false
+        default: true
+        }
+    }
+
+    // MARK: Background map (MYR-171)
+    //
+    // `.idle`/`.search`/`.pinDrop` keep showing the rider's live map
+    // (`VehicleMapView`, MYR-167) — the same vehicle they're watching stays
+    // visible while they search. Once a trip exists (`.review` onward), the
+    // background switches to a route-fitted map between the actual pickup/
+    // destination pair (`RideRequestRouteMap`) — `VehicleMapView` has no
+    // content-injection seam and is scoped to a different vehicle/telemetry
+    // pairing (see that file's own header comment).
+
+    @ViewBuilder
+    private var backgroundMap: some View {
+        switch viewerState.sheetPhase {
+        case .idle, .search, .pinDrop:
             VehicleMapView(
                 vehicle: viewerState.vehicle,
                 snapshot: viewerState.snapshot,
                 cameraPosition: $cameraPosition,
                 isFollowing: $isFollowing,
-                bottomContentInset: MRTMetrics.sharedIdleSheetHeight
+                bottomContentInset: mapBottomInset
             )
-            .ignoresSafeArea()
-
-            idleSheet
+        case .review, .booking:
+            RideRequestRouteMap(route: requestRoute)
+        case .tracking:
+            RideRequestRouteMap(route: requestRoute, progress: rideRequestService.activeRequest?.trackProgress ?? 0, showVehicle: true)
+        case .summary:
+            RideRequestRouteMap(route: requestRoute)
         }
-        .background(Color.mrtBg)
-        .mrtBottomNav(selection: $sharedTab, tabs: MRTTab.sharedTabs)
-        .onAppear { viewerState.startTelemetry() }
+    }
+
+    private var mapBottomInset: CGFloat {
+        switch viewerState.sheetPhase {
+        case .search: MRTMetrics.rideRequestSearchSheetHeight
+        case .pinDrop: MRTMetrics.rideRequestPinDropMapInset
+        default: MRTMetrics.sharedIdleSheetHeight
+        }
+    }
+
+    /// Pickup → destination pair for the route-fitted phases — from the
+    /// submitted `activeRequest` once it exists, else the still-in-progress
+    /// draft (Review is reached before `submit(_:)` is ever called).
+    private var requestRoute: [CLLocationCoordinate2D] {
+        let pickup = rideRequestService.activeRequest?.input.pickup.coordinate ?? viewerState.draftPickup?.coordinate
+        let destination = rideRequestService.activeRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate
+        guard let pickup, let destination else {
+            return [DriveFixtures.financialDistrict, DriveFixtures.embarcaderoCenter]
+        }
+        return [pickup, destination]
+    }
+
+    // MARK: Reactive sync (ride-request.jsx:1098-1117)
+    //
+    // `RideRequestService`'s `activeRequest` can change out from under the
+    // rider — the owner accepting/declining, or (M1's solo-rider fallback)
+    // `SimulatedRideRequestService`'s own auto-accept timer. This is where
+    // the rider's `sheetPhase` reacts, not inside the service itself (see
+    // `RideRequestService`'s header comment: it only ever exposes the
+    // snapshot).
+
+    private func handleStatusChange(_ status: RideRequestStatus?) {
+        guard let status else { return }
+        switch status {
+        case .accepted:
+            if viewerState.sheetPhase == .booking || viewerState.sheetPhase == .idle {
+                viewerState.sheetPhase = .tracking
+            }
+        case .declined:
+            viewerState.showDeclinedNotice = true
+            viewerState.sheetPhase = .search
+        case .pending:
+            break
+        }
+    }
+
+    private func handleProgressChange(_ progress: Double?) {
+        guard let progress, progress >= 0.999, viewerState.sheetPhase == .tracking else { return }
+        viewerState.sheetPhase = .summary
+    }
+
+    private var declinedRequesterName: String {
+        RideRequestFixtures.fleet.first { $0.id == viewerState.draftFleetMemberID }?.owner
+            ?? RideRequestFixtures.fleet[0].owner
     }
 
     // MARK: Idle sheet (screens.jsx:2064-2207, ride-request.jsx:1165-1218)
     //
     // Fixed height, no drag handle — the jsx only shows a grab handle on the
     // interactive sheet phases ("not the static idle / tracking pages",
-    // ride-request.jsx:1190); dragging up from idle to open Search is
-    // MYR-171 scope.
+    // ride-request.jsx:1190); dragging up from idle to open Search is out of
+    // M1's scope (tap-to-open only). While a request is pending, the
+    // greeting/search/quick-places give way to a status pill
+    // (ride-request.jsx's minimized-map "booked" state,
+    // `.shots/prototype/07_idle_pending_pill.png`).
 
     private var idleSheet: some View {
         VStack(alignment: .leading, spacing: 0) {
-            switch viewerState.sheetPhase {
-            case .idle:
+            if let active = rideRequestService.activeRequest, active.status == .pending {
+                pendingPill(active)
+            } else {
                 GreetingHero(riderName: riderName)
                     .padding(.bottom, 16)
                 searchBar
@@ -90,13 +255,42 @@ struct SharedViewerScreen: View {
         .allowsHitTesting(false)
     }
 
-    // MARK: "Ready" affordances (screens.jsx:2174-2205) — visually present,
-    // not wired: tapping either opens Search (MYR-171's `.search` phase),
-    // which doesn't exist yet on `RiderSheetPhase`.
+    // MARK: Pending pill (ride-request.jsx's minimized "booked" state)
+
+    private func pendingPill(_ request: RideRequestRecord) -> some View {
+        Button {
+            viewerState.sheetPhase = .booking
+        } label: {
+            HStack(spacing: 12) {
+                Circle().fill(Color.mrtGold).frame(width: 9, height: 9).shadow(color: .mrtGoldGlow, radius: 5)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Request sent")
+                        .font(.system(size: 15, weight: .semibold))
+                        .tracking(-0.2)
+                        .foregroundStyle(Color.mrtText)
+                    Text("Waiting for \(request.input.fleetMember.owner) \u{00B7} \(request.input.destination.label)")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Color.mrtTextSec)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.system(size: 13)).foregroundStyle(Color.mrtTextMuted)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background(Color.mrtGoldTileFaint, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.mrtGold.opacity(Double(0x40) / 255.0), lineWidth: MRTMetrics.hairline))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .frame(minHeight: MRTMetrics.minTapTarget)
+    }
+
+    // MARK: "Ready" affordances (screens.jsx:2174-2205) — MYR-171 wires both.
 
     private var searchBar: some View {
         Button {
-            // MYR-171 sets `viewerState.sheetPhase = .search` here.
+            viewerState.sheetPhase = .search
         } label: {
             HStack(spacing: 11) {
                 Image(systemName: "magnifyingglass").font(.system(size: 16)).foregroundStyle(Color.mrtGold)
@@ -124,15 +318,23 @@ struct SharedViewerScreen: View {
 
     private var quickPlaces: some View {
         HStack(spacing: 8) {
-            quickPlaceButton(label: "Home", icon: "house.fill")
-            quickPlaceButton(label: "Work", icon: "briefcase.fill")
+            quickPlaceButton(label: "Home", icon: "house.fill", place: RideRequestFixtures.savedPlaces[0])
+            quickPlaceButton(label: "Work", icon: "briefcase.fill", place: RideRequestFixtures.savedPlaces[1])
         }
     }
 
-    private func quickPlaceButton(label: String, icon: String) -> some View {
+    /// Destination-first shortcut (screens.jsx:2195 `setPinReturn('review');
+    /// setPhase('pinDrop')`) — surprising at first read (why does tapping
+    /// "Home" open the *pickup* pin drop?) but intentional: Home/Work are
+    /// quick *destinations*, and since the rider hasn't set a pickup yet,
+    /// the flow routes through PinDrop to capture one before landing on
+    /// Review, exactly like picking Home/Work from Search's destination list
+    /// with no pickup set (`RideRequestSearchContent.selectDestination`).
+    private func quickPlaceButton(label: String, icon: String, place: RidePlace) -> some View {
         Button {
-            // MYR-171 sets pickup + `viewerState.sheetPhase = .pinDrop` here
-            // (screens.jsx:2195 `setPinReturn('review'); setPhase('pinDrop')`).
+            viewerState.draftDestination = place
+            viewerState.pinReturn = .review
+            viewerState.sheetPhase = .pinDrop(returnTo: .review)
         } label: {
             HStack(spacing: 9) {
                 Image(systemName: icon).font(.system(size: 14)).foregroundStyle(Color.mrtGold)
@@ -157,9 +359,7 @@ struct SharedViewerScreen: View {
     }
 
     /// screens.jsx:15-19 `FLEET[0].etaMin` (Alex's shared Model Y) — the
-    /// rotating placeholder's second string. Decorative-only in M1 (no
-    /// request flow yet); MYR-171 replaces this with the real selected
-    /// vehicle's live ETA.
+    /// rotating placeholder's second string.
     private static let watchedVehicleETAMinutes = 3
 }
 
@@ -304,7 +504,12 @@ private struct RotatingPlaceholder: View {
 }
 
 #Preview {
-    SharedViewerScreen(viewerState: SharedViewerState(), sharedTab: .constant("shared"))
-        .mrtSurfaceLook(.flat)
-        .preferredColorScheme(.dark)
+    SharedViewerScreen(
+        viewerState: SharedViewerState(),
+        sharedTab: .constant("shared"),
+        rideRequestService: SimulatedRideRequestService(),
+        historyStore: RideHistoryStore()
+    )
+    .mrtSurfaceLook(.flat)
+    .preferredColorScheme(.dark)
 }

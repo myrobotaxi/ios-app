@@ -14,8 +14,15 @@ import DesignSystem
 // so — like the jsx — they reset if the rider navigates away from this tab
 // and back (`RootView`'s `sharedTab` switch remounts this screen the same
 // way app.jsx's `screen` routing remounts `RideHistoryScreen`).
+// MYR-171 — `completedRides` now reads from `RideHistoryStore` (lifted at
+// `RootView`, not screen-local) instead of the static fixture directly, so a
+// ride the rider just finished on Live Map (`RideRequestService
+// .completeAndReset()`) shows up here even if this screen wasn't the one on
+// screen when it completed. Scheduled-ride mutations stay screen-local, per
+// this file's own header comment above.
 struct RideHistoryScreen: View {
     @Binding var sharedTab: String
+    @Bindable var historyStore: RideHistoryStore
 
     private enum Tab: String { case completed, scheduled }
 
@@ -23,7 +30,7 @@ struct RideHistoryScreen: View {
     @State private var scheduled: [ScheduledRide] = RideHistoryFixtures.scheduledRides
     @State private var activeRideID: String?
 
-    private var completedRides: [RequestedRide] { RideHistoryFixtures.requestedRides }
+    private var completedRides: [RequestedRide] { historyStore.completedRides }
     private var completedCount: Int { completedRides.count }
     private var totalMiles: Double { completedRides.reduce(0) { $0 + $1.miles } }
     private var scheduledCount: Int { scheduled.count }
@@ -415,7 +422,7 @@ struct ScheduledRideRow: View {
 }
 
 #Preview {
-    RideHistoryScreen(sharedTab: .constant("rideHistory"))
+    RideHistoryScreen(sharedTab: .constant("rideHistory"), historyStore: RideHistoryStore())
         .mrtSurfaceLook(.flat)
         .preferredColorScheme(.dark)
 }

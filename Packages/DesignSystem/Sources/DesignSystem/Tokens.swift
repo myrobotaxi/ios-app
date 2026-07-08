@@ -152,6 +152,21 @@ enum Hex {
     // see the `Color` extension section.
     static let requestedRowText: UInt32 = 0xF2F2F2 // RequestedRideRow title (shared-screens.jsx:136)
     static let rideSheetFill: UInt32 = 0x141416 // modalSheet fill rgb(20,20,22) (design.jsx:74); also the ride map-preview scrim base (shared-screens.jsx:359)
+
+    // MYR-171 — Rider ride-request flow (design/app/ride-request.jsx) +
+    // owner IncomingRequestSheet. Every color this flow needs beyond this one
+    // new raw hex is an alpha composition of an existing base — the danger
+    // red (`#FF6B6B`, Cancel/Decline text) and its soft icon tint already
+    // exist as `mrtDialogRed`/`mrtDangerFillSoft` (MYR-162), and the
+    // plate/badge chips reuse `mrtGoldTileFaint`/`mrtGoldBadgeFill` (MYR-166/170).
+    static let sendFillTrack: UInt32 = 0x3A2F12 // booking CTA "sending" fill background (ride-request.jsx:647)
+    // `IncomingRequestSheet`'s requester-avatar gradient — `linear-gradient(135deg,
+    // #6d8eff 0%, #9D7CFF 100%)` (ride-request.jsx:1307). A blue-violet pair
+    // distinct from the gold-only palette elsewhere in the app — this is the
+    // rider's own identity color, not a brand/status tint, so it isn't
+    // composed from an existing base hex.
+    static let requesterAvatarStart: UInt32 = 0x6D8EFF
+    static let requesterAvatarEnd: UInt32 = 0x9D7CFF
 }
 
 // MARK: - Color tokens
@@ -588,6 +603,32 @@ public extension Color {
     /// (components.jsx:676 `.mrt-search-glow`, the same trace-border recipe
     /// as `outline-draw`'s `MRTTraceBorder`, applied to the search field).
     static let mrtSearchGlow = Color(hex: Hex.gold, alpha: 0.16)
+
+    // MARK: - MYR-171 — Rider ride-request flow (design/app/ride-request.jsx)
+    // + owner IncomingRequestSheet/RouteSentToast. See the `Hex` section
+    // header above this issue's entries for what's reused vs. new.
+
+    /// Booking CTA "sending" fill track — `#3a2f12`, the base the gold sweep
+    /// animates over (ride-request.jsx:647).
+    static let mrtSendFillTrack = Color(hex: Hex.sendFillTrack)
+    /// Booking/tracking itinerary card fill — rgba(255,255,255,0.035), one
+    /// step lighter than `mrtControlTileFill` (0.035 is that exact value —
+    /// deliberately reused rather than adding a near-duplicate token).
+    static let mrtRequestCardFill = Color(hex: Hex.text, alpha: 0.035)
+    /// Plate hero chip fill — `#C9A84C1f`, reuses `mrtGoldBadgeFill`'s exact
+    /// alpha (screens.jsx "Primary" badge recipe, MYR-170) for the tracking
+    /// plate/"LOOK FOR" chip (ride-request.jsx `RideRow`).
+    static let mrtPlateChipFill = Color(hex: Hex.gold, alpha: Double(0x1F) / 255.0)
+    /// Trip-leg progress track (untravelled) — rgba(255,255,255,0.10),
+    /// distinct from the map `RouteLine`'s 0.3-alpha resting stroke (this is
+    /// a UI progress bar, not a map polyline).
+    static let mrtTripLegTrack = Color(hex: Hex.text, alpha: 0.10)
+    /// `IncomingRequestSheet` requester-avatar gradient start — `#6d8eff`
+    /// (ride-request.jsx:1307).
+    static let mrtRequesterAvatarStart = Color(hex: Hex.requesterAvatarStart)
+    /// `IncomingRequestSheet` requester-avatar gradient end — `#9D7CFF`
+    /// (ride-request.jsx:1307).
+    static let mrtRequesterAvatarEnd = Color(hex: Hex.requesterAvatarEnd)
 }
 
 // MARK: - Hex init

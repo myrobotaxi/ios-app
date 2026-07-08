@@ -210,4 +210,33 @@ public enum MRTMetrics {
     /// use it; MYR-171's `IncomingRequestSheet` (also `S.modalSheet`) reuses
     /// the same constant.
     public static let modalRadius: CGFloat = 28
+
+    // MARK: Ride request flow (MYR-171, design/app/ride-request.jsx
+    // ExpandingRequestSheet/IncomingRequestSheet)
+    //
+    // `ExpandingRequestSheet`'s `SHEET_HEIGHTS` constants (ride-request.jsx:
+    // 43-52) turn out to be legacy/reference numbers for every phase except
+    // idle/search/pinDrop — review/pending/tracking size to content ('auto'
+    // in the jsx, ride-request.jsx:1119-1131) and this port does the same
+    // (no fixed-height metric needed for those phases).
+
+    /// `IncomingRequestSheet`'s small route-preview map card (owner Home) —
+    /// visually shorter than `rideMapPreviewHeight` (104, `ScheduledRideSheet`'s
+    /// wider detail-mode preview); the incoming-request card sits above a
+    /// denser stat row so it reads closer to ~132pt in the prototype capture.
+    public static let incomingRequestMapHeight: CGFloat = 132
+    /// `RouteSentToast` distance from the top of the screen — full-bleed
+    /// physical-edge offset (ride-request.jsx:1429 `top: 56`).
+    public static let routeSentToastTop: CGFloat = 56
+    /// `ExpandingRequestSheet`'s Search phase fixed height — the one other
+    /// `SHEET_HEIGHTS` entry (besides idle) actually used; every phase after
+    /// it sizes to content (ride-request.jsx:47 `SHEET_HEIGHTS.search`, 1128).
+    public static let rideRequestSearchSheetHeight: CGFloat = 712
+    /// `ExpandingRequestSheet`'s legacy `SHEET_HEIGHTS.pinDrop` reference
+    /// value — the live sheet sizes pinDrop to content (ride-request.jsx:
+    /// 1129 `h = 'auto'`), but this app's `VehicleMapView` needs a concrete
+    /// `bottomContentInset` while the pin-drop sheet is up, and 280 (the
+    /// jsx's own retired constant) is a reasonable stand-in for that sheet's
+    /// actual auto-height (ride-request.jsx:51 `SHEET_HEIGHTS.pinDrop`).
+    public static let rideRequestPinDropMapInset: CGFloat = 280
 }
