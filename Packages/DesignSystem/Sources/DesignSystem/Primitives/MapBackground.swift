@@ -91,10 +91,14 @@ public struct MapBackground: View {
 
 /// Port of `seedRand` (components.jsx:302): a tiny linear congruential
 /// generator, `s = (s*9301 + 49297) % 233280`, `next = s / 233280`.
-struct SeededMapRandom {
+/// The prototype's shared LCG (`seedRand`, used throughout screens.jsx —
+/// `MapBackground`'s street jitter, `DriveSummaryScreen`'s speed trace, …).
+/// `public` so app-target screens can reuse the exact same generator instead
+/// of reimplementing it (CLAUDE.md "Reuse, don't fork").
+public struct SeededMapRandom {
     private var s: Double
-    init(seed: Int) { s = Double(seed) }
-    mutating func next() -> Double {
+    public init(seed: Int) { s = Double(seed) }
+    public mutating func next() -> Double {
         s = (s * 9301 + 49297).truncatingRemainder(dividingBy: 233280)
         return s / 233280
     }

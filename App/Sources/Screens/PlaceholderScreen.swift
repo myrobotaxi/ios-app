@@ -3,11 +3,12 @@ import DesignSystem
 
 // MARK: - Owner tab placeholder (MYR-167 deliverable 6)
 //
-// Drives/Share/Settings each get their own build issue next; screens.jsx
-// gives every owner screen (`DrivesScreen`, `InvitesScreen`,
-// `SettingsScreen`) its own `<BottomNav current={nav} onChange={setNav}/>`
-// render (app.jsx:110-115) rather than a shared wrapper — this mirrors that
-// so `HomeScreen` isn't a special case.
+// Share/Settings each get their own build issue next (Drives shipped in
+// MYR-169 — see `DrivesScreen`); screens.jsx gives every owner screen
+// (`DrivesScreen`, `InvitesScreen`, `SettingsScreen`) its own
+// `<BottomNav current={nav} onChange={setNav}/>` render (app.jsx:110-115)
+// rather than a shared wrapper — this mirrors that so `HomeScreen` isn't a
+// special case.
 struct PlaceholderScreen: View {
     let icon: String
     let title: String

@@ -98,12 +98,12 @@ struct VehicleMapView: View {
 
             if let origin = trip.route.first {
                 Annotation("Origin", coordinate: origin) {
-                    EndpointDot(color: .mrtDriving, size: 10)
+                    MRTEndpointDot(color: .mrtDriving, size: 10)
                 }
             }
             if let destination = trip.route.last {
                 Annotation("Destination", coordinate: destination) {
-                    EndpointDot(color: .mrtGold, size: 11)
+                    MRTEndpointDot(color: .mrtGold, size: 11)
                 }
             }
             Annotation(vehicle.name, coordinate: vehiclePosition.coordinate) {
@@ -131,26 +131,5 @@ struct VehicleMapView: View {
         } else {
             cameraPosition = .region(region)
         }
-    }
-}
-
-/// screens.jsx `EndpointDot` (components.jsx:482-489) — soft outer halo +
-/// solid inner dot with a light ring.
-private struct EndpointDot: View {
-    let color: Color
-    let size: CGFloat
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(color)
-                .opacity(0.3)
-                .frame(width: size * 1.8, height: size * 1.8) // r = size * 0.9
-            Circle()
-                .fill(color)
-                .frame(width: size, height: size)
-                .overlay(Circle().strokeBorder(Color.mrtText, lineWidth: 1.5))
-        }
-        .accessibilityHidden(true)
     }
 }

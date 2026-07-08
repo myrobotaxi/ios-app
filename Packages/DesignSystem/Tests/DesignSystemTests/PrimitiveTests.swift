@@ -185,4 +185,50 @@ final class PrimitiveTests: XCTestCase {
         var b = SeededMapRandom(seed: 7)
         XCTAssertNotEqual(a.next(), b.next())
     }
+
+    // MARK: MYR-169 — MRTSparkline geometry (screens.jsx `DSSparkline`, 1168-1183)
+
+    /// `norm(v) = height - ((v - min) / (max - min || 1)) * (height - 14) - 8`
+    /// — the min value should land near the bottom (height - 8) and the max
+    /// value near the top (14 - 8 = 6), matching the jsx's 8pt/14pt insets.
+    func testSparklineNormalizationBounds() {
+        let values = [10.0, 20.0, 30.0, 40.0, 50.0]
+        let points = MRTSparkline.normalizedPoints(values: values, width: 100, height: 60)
+        XCTAssertEqual(points.count, values.count)
+        guard let first = points.first, let last = points.last else {
+            return XCTFail("expected normalized points")
+        }
+        XCTAssertEqual(Double(first.x), 0, accuracy: 0.001)
+        XCTAssertEqual(Double(last.x), 100, accuracy: 0.001)
+        // min value (10) → y = 60 - 0*(46) - 8 = 52
+        XCTAssertEqual(Double(first.y), 52, accuracy: 0.001)
+        // max value (50) → y = 60 - 1*(46) - 8 = 6
+        XCTAssertEqual(Double(last.y), 6, accuracy: 0.001)
+    }
+
+    /// A flat series (`max - min == 0`) must not divide by zero — the jsx
+    /// guards with `|| 1`.
+    func testSparklineNormalizationFlatSeries() {
+        let points = MRTSparkline.normalizedPoints(values: [5, 5, 5], width: 90, height: 40)
+        for point in points {
+            XCTAssertEqual(point.y, 40 - 8, accuracy: 0.001)
+        }
+    }
+
+    func testSparklinePeakIndex() {
+        XCTAssertEqual(MRTSparkline.peakIndex(values: [1, 5, 3, 9, 2]), 3)
+        XCTAssertEqual(MRTSparkline.peakIndex(values: [4, 4, 4]), 0) // first-wins tie, matches jsx `v > values[peakI]`
+    }
+
+    func testSparklineFillPathClosesToBaseline() {
+        let points = [CGPoint(x: 0, y: 10), CGPoint(x: 50, y: 5), CGPoint(x: 100, y: 20)]
+        guard let path = MRTSparkline.fillPath(points: points, width: 100, height: 30) else {
+            return XCTFail("expected a fill path")
+        }
+        // Closed fill area spans the full width/height (line points + the two
+        // baseline-closing corners at (100,30) and (0,30)).
+        let rect = path.boundingRect
+        XCTAssertEqual(Double(rect.maxX), 100, accuracy: 0.001)
+        XCTAssertEqual(Double(rect.maxY), 30, accuracy: 0.001)
+    }
 }

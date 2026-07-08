@@ -124,4 +124,30 @@ public enum MRTMetrics {
     public static let vehicleControlsSectionGap: CGFloat = 18
     /// `mrt-range` thumb diameter (components.jsx:769-770).
     public static let sliderThumbSize: CGFloat = 22
+
+    // MARK: Drives / Drive Summary (MYR-169, design/app/screens.jsx 604-1183)
+
+    /// Drives header top inset — clears the status bar (screens.jsx:631
+    /// `padding: '74px 24px 16px'`).
+    public static let drivesHeaderTop: CGFloat = 74
+    /// Drives scroll-content bottom clearance above the floating tab bar
+    /// (screens.jsx:635 `paddingBottom: 104`).
+    public static let drivesContentBottomPadding: CGFloat = 104
+    /// Segmented-control track corner radius (screens.jsx:637).
+    public static let drivesSegmentRadius: CGFloat = 12
+    /// Segmented-control active-pill corner radius (screens.jsx:639).
+    public static let drivesSegmentItemRadius: CGFloat = 9
+    /// UpcomingRow icon tile / cancel-button hit area (screens.jsx:754 `width:38`).
+    public static let upcomingIconTileSize: CGFloat = 38
+    /// UpcomingRow cancel (✕) button visual size — expanded to `minTapTarget`
+    /// for the hit target (screens.jsx:764 `width:28`).
+    public static let upcomingCancelButtonSize: CGFloat = 28
+    /// Drive-summary hero map height (screens.jsx:873 `height: 268`).
+    public static let driveSummaryHeroHeight: CGFloat = 268
+    /// Drive-summary floating back/share button diameter (screens.jsx:890,893
+    /// `width:38, height:38`).
+    public static let driveSummaryFloatingButtonSize: CGFloat = 38
+    /// Drive-summary `DS_TILE` corner radius — distinct from the generic
+    /// `cardRadius` (screens.jsx:995 `borderRadius: 18`).
+    public static let driveSummaryTileRadius: CGFloat = 18
 }

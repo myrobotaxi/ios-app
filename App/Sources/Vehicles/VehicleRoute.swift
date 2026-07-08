@@ -88,4 +88,42 @@ public enum VehicleRoute {
         }
         return result
     }
+
+    /// Total route length in miles — used by the Drives live-trip banner
+    /// (MYR-169, screens.jsx:668 "28.4 mi") to derive "miles remaining" as
+    /// `totalDistanceMiles * (1 - progress)` instead of hardcoding the jsx's
+    /// static demo figure.
+    static func totalDistanceMiles(along route: [CLLocationCoordinate2D]) -> Double {
+        guard route.count > 1 else { return 0 }
+        let points = route.map(MKMapPoint.init)
+        let meters = zip(points, points.dropFirst()).reduce(0) { $0 + $1.0.distance(to: $1.1) }
+        return meters * 0.000621371
+    }
+
+    /// A `MKCoordinateRegion` fitted to `route`'s bounding box with padding —
+    /// the static camera for Drive Summary's hero map (MYR-169, Handoff
+    /// §5.6 "static camera fitted to route"), distinct from `HomeScreen`'s
+    /// live-following camera (`VehicleMapView.recenter`).
+    static func fittedRegion(for route: [CLLocationCoordinate2D], paddingFactor: Double = 1.6) -> MKCoordinateRegion {
+        guard let first = route.first else {
+            return MKCoordinateRegion(
+                center: CLLocationCoordinate2D(latitude: 0, longitude: 0),
+                span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+            )
+        }
+        var minLat = first.latitude, maxLat = first.latitude
+        var minLon = first.longitude, maxLon = first.longitude
+        for coordinate in route {
+            minLat = min(minLat, coordinate.latitude)
+            maxLat = max(maxLat, coordinate.latitude)
+            minLon = min(minLon, coordinate.longitude)
+            maxLon = max(maxLon, coordinate.longitude)
+        }
+        let center = CLLocationCoordinate2D(latitude: (minLat + maxLat) / 2, longitude: (minLon + maxLon) / 2)
+        let span = MKCoordinateSpan(
+            latitudeDelta: max(0.02, (maxLat - minLat) * paddingFactor),
+            longitudeDelta: max(0.02, (maxLon - minLon) * paddingFactor)
+        )
+        return MKCoordinateRegion(center: center, span: span)
+    }
 }
