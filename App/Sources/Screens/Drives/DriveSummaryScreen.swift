@@ -165,16 +165,22 @@ struct DriveSummaryScreen: View {
     }
 
     /// Resolve the "A → B" endpoints through the labeling ladder (saved place →
-    /// POI/locality → address). Each degrades to the existing address on a
-    /// geocode timeout, so the header never blocks.
+    /// POI/neighborhood → city-only-when-cities-differ → address). Resolved as
+    /// a PAIR (MYR-208): the city renders only when it distinguishes the two
+    /// endpoints, so an intra-city drive never shows "Dallas → Dallas". Each
+    /// side degrades to the existing address on a geocode timeout, so the
+    /// header never blocks.
     @MainActor
     private func resolvePlaceLabels(start: CLLocationCoordinate2D?, end: CLLocationCoordinate2D?) async {
         guard let placeLabeler, let start, let end else { return }
-        async let resolvedStart = placeLabeler.label(for: start, fallback: drive.from, cacheKey: "\(drive.id)|start")
-        async let resolvedEnd = placeLabeler.label(for: end, fallback: drive.to, cacheKey: "\(drive.id)|end")
-        let (resolvedFrom, resolvedTo) = await (resolvedStart, resolvedEnd)
-        startLabel = resolvedFrom
-        endLabel = resolvedTo
+        let labels = await placeLabeler.labels(
+            start: start,
+            end: end,
+            fallbacks: (drive.from, drive.to),
+            driveID: drive.id
+        )
+        startLabel = labels.start
+        endLabel = labels.end
     }
 
     /// screens.jsx:852-861 `goldMode` scheduling — fires once, 2.7s after

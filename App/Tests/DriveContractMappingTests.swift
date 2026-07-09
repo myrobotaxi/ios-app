@@ -80,12 +80,13 @@ final class DriveContractMappingTests: XCTestCase {
     // MARK: Absent-location degrade
 
     func testAbsentNameDegradesToAddressThenNeutral() {
-        // Name nil but address present → address.
+        // Name nil but address present → address, trimmed to street + city
+        // (MYR-208) so the row's one-line "A → B" fits both endpoints.
         let addressOnly = DriveContractMapping.appDrive(
             from: summary(startLocation: nil, endLocation: nil), now: now
         )
-        XCTAssertEqual(addressOnly.from, "742 Evergreen Terrace, San Francisco, CA 94107")
-        XCTAssertEqual(addressOnly.to, "399 4th Street, San Francisco, CA 94107")
+        XCTAssertEqual(addressOnly.from, "742 Evergreen Terrace, San Francisco")
+        XCTAssertEqual(addressOnly.to, "399 4th Street, San Francisco")
 
         // Both name and address nil → neutral fallback.
         let ungeocoded = DriveContractMapping.appDrive(
@@ -94,6 +95,26 @@ final class DriveContractMappingTests: XCTestCase {
         )
         XCTAssertEqual(ungeocoded.from, DriveContractMapping.unnamedLocation)
         XCTAssertEqual(ungeocoded.to, DriveContractMapping.unnamedLocation)
+    }
+
+    func testShortAddressKeepsStreetAndCityOnly() {
+        // The live-data shape that motivated MYR-208.
+        XCTAssertEqual(
+            DriveContractMapping.shortAddress("4222 Stratus Way, Frisco, Texas 75034, United States"),
+            "4222 Stratus Way, Frisco"
+        )
+        // Fewer than three components → not a raw postal address; verbatim.
+        XCTAssertEqual(DriveContractMapping.shortAddress("Ferry Building"), "Ferry Building")
+        XCTAssertEqual(DriveContractMapping.shortAddress("Katy Trail, Dallas"), "Katy Trail, Dallas")
+    }
+
+    func testServerPlaceNameBypassesTrim() {
+        // A server-provided place name (MYR-206) with commas is a NAME, not an
+        // address — it must pass through label() untouched.
+        XCTAssertEqual(
+            DriveContractMapping.label(name: "Whole Foods Market, Preston Rd, Frisco", address: nil),
+            "Whole Foods Market, Preston Rd, Frisco"
+        )
     }
 
     // MARK: Day grouping
