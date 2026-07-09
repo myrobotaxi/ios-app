@@ -91,9 +91,13 @@ struct RootView: View {
     /// MYR-171 — the M1↔M2 ride-request seam (`RideRequestService`'s header
     /// comment). Lifted here, alongside every other role-scoped state above,
     /// so the SAME instance is visible from both `SharedViewerScreen` (rider)
-    /// and `HomeScreen` (owner) — the mechanism that lets one simulated
-    /// request bridge across a role switch within a single app session.
-    @State private var rideRequestService = SimulatedRideRequestService()
+    /// and `HomeScreen` (owner) — the mechanism that lets one request bridge
+    /// across a role switch within a single app session. MYR-209 — now the
+    /// `any RideRequestService` seam: `SimulatedRideRequestService` by default
+    /// (M1 offline demo, and every DEBUG scene, which are sim-only), or
+    /// `LiveRideRequestService` when the launch env selects live
+    /// (`MRT_TELEMETRY=live`) via `RideRequestComposition`.
+    @State private var rideRequestService: any RideRequestService = SimulatedRideRequestService()
     /// MYR-171 — see `RideHistoryStore`'s header comment: lifted the same way
     /// so a ride that finishes while the rider is on Live Map still lands in
     /// Ride History.
@@ -115,10 +119,15 @@ struct RootView: View {
         var startSharedTab = "shared"
         var startOwnerTab = "home"
         let viewer = SharedViewerState()
-        let service = SimulatedRideRequestService()
+        // Default to the composed service (sim, or live when the launch env
+        // selects it). A DEBUG scene overrides with a concrete simulated service
+        // it can `debugSeed` — scenes are sim-only, mutually exclusive with live.
+        var service: any RideRequestService = RideRequestComposition.makeService()
         #if DEBUG
         if let scene = DebugScene.current {
-            scene.apply(viewer: viewer, service: service)
+            let simulated = SimulatedRideRequestService()
+            scene.apply(viewer: viewer, service: simulated)
+            service = simulated
             startScreen = DebugScene.initialScreen
             startRole = DebugScene.initialRole
             startSharedTab = DebugScene.initialSharedTab

@@ -1,0 +1,147 @@
+import CoreLocation
+import Foundation
+import MyRoboTaxiKit
+import MyRobotaxiContracts
+
+// MARK: - Ride-request backend seam (MYR-209)
+//
+// The two Kit capabilities `LiveRideRequestService` needs, expressed as narrow
+// protocols so the service can be unit-tested against stubs with no network
+// (mirrors how `LiveVehicleFleet` injects `HTTPPerforming` / `WebSocketChannelFactory`):
+//
+//  • `RideRequestAPI`   — the REST calls (rest-api.md §7.8). `RestClient` conforms
+//                         as-is; its method signatures already match.
+//  • `RideEventStreaming` — the account-wide ride-frame stream + connect lifecycle
+//                         (`TelemetrySocket.rideEvents()`, MYR-209 Kit deliverable).
+//
+// Both are `Sendable` and their requirements are `async`, so an actor
+// (`TelemetrySocket`) and a `Sendable` struct (`RestClient`) satisfy them without
+// bridging.
+
+protocol RideRequestAPI: Sendable {
+    /// The caller's vehicle catalog — used to resolve the create target vehicle
+    /// in live mode (see `LiveRideRequestService.resolveVehicleID`).
+    func vehicles() async throws -> [VehicleSummary]
+    func createRideRequest(_ body: RideRequestCreateRequest) async throws -> RideRequest
+    func rideRequest(id: String) async throws -> RideRequest
+    func cancelRideRequest(id: String) async throws -> RideRequest
+    func acceptRideRequest(id: String) async throws -> RideRequest
+    func declineRideRequest(id: String) async throws -> RideRequest
+    func incomingRideRequests(cursor: String?, limit: Int) async throws -> RideRequestsListResponse
+}
+
+extension RestClient: RideRequestAPI {}
+
+protocol RideEventStreaming: Sendable {
+    func rideEvents() async -> AsyncStream<RideRequestEvent>
+    func connect() async
+    func disconnect() async
+}
+
+extension TelemetrySocket: RideEventStreaming {}
+
+// MARK: - Contract → app mapping (MYR-209)
+//
+// Folds a wire `MyRobotaxiContracts.RideRequest` onto the app's fixture-shaped
+// `RideRequestRecord` so the EXISTING rider/owner sheets render a live ride with
+// no UI change. Deliberately lossy — documented v1 gaps:
+//
+//  • Fleet-member identity: the wire record carries only `vehicleId`, not the
+//    rich `FleetMember` card fields (owner name, colorName, battery, plate) the
+//    fixture picker supplies. Until a live fleet-picker join lands (needs the
+//    MYR-91 shared-viewer access set + a live Review picker — out of scope here),
+//    a live record reuses `RideRequestFixtures.fleet[0]` for those display-only
+//    fields. Names/plates in a live capture are therefore fixture stand-ins.
+//  • Distance / duration: the wire `RidePlace` has no miles/minutes (those are a
+//    routing concern, MYR-176/177). They map to 0; the sheets show "0 mi / ~0 min"
+//    for a live ride. No crash — `pickupCut` clamps the divisor to ≥1.
+enum RideRequestContractMapping {
+
+    static func place(_ wire: MyRobotaxiContracts.RidePlace) -> RidePlace {
+        RidePlace(
+            id: wire.label,
+            label: wire.label,
+            subtitle: wire.address,
+            miles: 0,
+            minutes: 0,
+            icon: "mappin",
+            coordinate: CLLocationCoordinate2D(latitude: wire.lat, longitude: wire.lng)
+        )
+    }
+
+    static func passenger(_ ride: RideRequest) -> RidePassenger? {
+        guard let name = ride.passengerName, !name.isEmpty else { return nil }
+        return RidePassenger(name: name, phone: ride.passengerPhone ?? "")
+    }
+
+    static func schedule(from scheduledFor: String?) -> RideSchedule? {
+        guard let scheduledFor, let date = parseISO(scheduledFor) else { return nil }
+        let dayFormatter = DateFormatter()
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "h:mm a"
+        let calendar = Calendar.current
+        let day: String
+        if calendar.isDateInToday(date) { day = "Today" }
+        else if calendar.isDateInTomorrow(date) { day = "Tomorrow" }
+        else { dayFormatter.dateFormat = "EEE"; day = dayFormatter.string(from: date) }
+        return RideSchedule(day: day, time: timeFormatter.string(from: date))
+    }
+
+    /// Map the wire lifecycle onto the app's 3-state sheet status. `requested →
+    /// pending`; `accepted / enroute / arrived / completed → accepted` (v1 has no
+    /// distinct enroute/arrived/completed UI — MYR-176/177); `declined → declined`.
+    /// `cancelled` (and anything unrecognized) returns `nil`: the caller drops the
+    /// active request rather than showing a dead card.
+    static func status(_ wire: MyRobotaxiContracts.RideRequestStatus) -> RideRequestStatus? {
+        switch wire {
+        case .requested: return .pending
+        case .accepted, .enroute, .arrived, .completed: return .accepted
+        case .declined: return .declined
+        case .cancelled, .unrecognized: return nil
+        }
+    }
+
+    /// Build a full `RideRequestRecord` from a wire record — used on the OWNER
+    /// side when a `ride_request_created` frame surfaces a request this device has
+    /// no local draft for. Returns `nil` for a terminal/cancelled wire status.
+    static func record(from ride: RideRequest) -> RideRequestRecord? {
+        guard let appStatus = status(ride.status) else { return nil }
+        let input = RideRequestInput(
+            pickup: place(ride.pickup),
+            destination: place(ride.dropoff),
+            fleetMemberID: RideRequestFixtures.fleet[0].id, // display-only fallback — see enum header
+            passenger: passenger(ride),
+            schedule: schedule(from: ride.scheduledFor)
+        )
+        var record = RideRequestRecord(
+            id: ride.id,
+            input: input,
+            status: appStatus,
+            requestedAt: parseISO(ride.createdAt) ?? Date()
+        )
+        record.acceptedAt = ride.acceptedAt.flatMap(parseISO)
+        // v1 has no live-tracking progress (MYR-176/177). An accepted ride mounts
+        // the tracking sheet at the static seed so it shows "heading to pickup"
+        // without inventing a progress ticker.
+        if appStatus == .accepted {
+            record.trackProgress = RideRequestTiming.autoAcceptInitialProgress
+        }
+        return record
+    }
+
+    private static let isoFractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static let isoPlain: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    static func parseISO(_ string: String) -> Date? {
+        isoFractional.date(from: string) ?? isoPlain.date(from: string)
+    }
+}

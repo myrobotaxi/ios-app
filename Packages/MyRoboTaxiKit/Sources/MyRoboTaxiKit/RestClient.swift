@@ -100,16 +100,97 @@ public struct RestClient: Sendable, SnapshotFetching {
         try await get(["drives", id, "route"])
     }
 
+    // MARK: - Ride requests (rest-api.md §7.8, P10 ride-hailing — MYR-174 rider
+    // surface + MYR-175 owner surface)
+    //
+    // Every method decodes a generated `MyRobotaxiContracts` ride type — the Kit
+    // owns no ride shapes of its own. The single-resource paths return a bare
+    // `RideRequest`; the list paths return the `RideRequestsListResponse`
+    // envelope whole (the envelope IS the contract, same as `drives`). An illegal
+    // lifecycle mutation surfaces as `RestError.http(status: 409, code: .conflict …)`
+    // (§7.8 transition matrix) — callers MUST NOT auto-retry the same mutation.
+
+    /// `POST /api/ride-requests` (rest-api.md §7.8) — the rider's Review-sheet
+    /// submit. Body is the strict `RideRequestCreateRequest` (unknown keys →
+    /// `400 invalid_request` server-side). Responds `201 Created` with the full
+    /// server-assigned `RideRequest` and unicasts `ride_request_created` to the
+    /// rider + owner over the WS.
+    public func createRideRequest(_ body: RideRequestCreateRequest) async throws -> RideRequest {
+        try await post(["ride-requests"], body: body)
+    }
+
+    /// `GET /api/ride-requests` (rest-api.md §7.8) — the authenticated rider's
+    /// own requests, newest first (`createdAt DESC, id DESC`), cursor-paginated
+    /// per §4.2. Returns the envelope whole (`items` always present — `[]` never
+    /// null; `nextCursor` null on the final page).
+    public func rideRequests(cursor: String? = nil, limit: Int = 20) async throws -> RideRequestsListResponse {
+        var query: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(min(100, max(1, limit))))]
+        if let cursor, !cursor.isEmpty { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+        return try await get(["ride-requests"], query: query)
+    }
+
+    /// `GET /api/ride-requests/incoming` (rest-api.md §7.8, MYR-175) — the
+    /// OWNER's feed of open (`requested`-only) requests across their vehicles,
+    /// on-demand + scheduled variants both. Same envelope + `(createdAt, id)`
+    /// cursor as `rideRequests`. Decided rows leave the feed by construction.
+    public func incomingRideRequests(cursor: String? = nil, limit: Int = 20) async throws -> RideRequestsListResponse {
+        var query: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(min(100, max(1, limit))))]
+        if let cursor, !cursor.isEmpty { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+        return try await get(["ride-requests", "incoming"], query: query)
+    }
+
+    /// `GET /api/ride-requests/{id}` (rest-api.md §7.8) — the full `RideRequest`
+    /// behind a `ride_request_created` / `ride_status_changed` summary frame
+    /// (the frames are summary-only; pickup/dropoff/passenger live here). Party-
+    /// only server-side: a non-party gets `404` (existence is never leaked).
+    public func rideRequest(id: String) async throws -> RideRequest {
+        try await get(["ride-requests", id])
+    }
+
+    /// `POST /api/ride-requests/{id}/cancel` (rest-api.md §7.8) — RIDER-only.
+    /// Legal from `requested`/`accepted` → `cancelled`; any other state is
+    /// `409 conflict`. Responds `200 OK` with the updated `RideRequest`.
+    public func cancelRideRequest(id: String) async throws -> RideRequest {
+        try await post(["ride-requests", id, "cancel"], body: Optional<Empty>.none)
+    }
+
+    /// `POST /api/ride-requests/{id}/accept` (rest-api.md §7.8, MYR-175) —
+    /// OWNER-only. Legal only from `requested` → `accepted`; else `409 conflict`.
+    /// Responds `200 OK` with the updated `RideRequest` (now carrying
+    /// `acceptedAt`) and unicasts `ride_status_changed` to both parties.
+    public func acceptRideRequest(id: String) async throws -> RideRequest {
+        try await post(["ride-requests", id, "accept"], body: Optional<Empty>.none)
+    }
+
+    /// `POST /api/ride-requests/{id}/decline` (rest-api.md §7.8, MYR-175) —
+    /// OWNER-only. Legal only from `requested` → `declined`; else `409 conflict`.
+    public func declineRideRequest(id: String) async throws -> RideRequest {
+        try await post(["ride-requests", id, "decline"], body: Optional<Empty>.none)
+    }
+
+    /// Empty JSON body sentinel for the action POSTs that take no payload
+    /// (`/cancel`, `/accept`, `/decline`). Encodes to `{}`.
+    private struct Empty: Encodable {}
+
     // MARK: - Request pipeline
 
     private func get<T: Decodable>(_ segments: [String], query: [URLQueryItem] = []) async throws -> T {
-        try await perform(segments, query: query, method: "GET", allowTokenRefresh: true)
+        try await perform(segments, query: query, method: "GET", body: nil, allowTokenRefresh: true)
+    }
+
+    /// `POST` with an optional JSON body (nil for the no-payload action
+    /// endpoints). The body is encoded once and reused across the single 401
+    /// refresh-retry so the provider's fresh token rides the same payload.
+    private func post<T: Decodable>(_ segments: [String], body: (some Encodable)?) async throws -> T {
+        let data = try body.map { try JSONEncoder().encode($0) }
+        return try await perform(segments, query: [], method: "POST", body: data, allowTokenRefresh: true)
     }
 
     private func perform<T: Decodable>(
         _ segments: [String],
         query: [URLQueryItem] = [],
         method: String,
+        body: Data?,
         allowTokenRefresh: Bool
     ) async throws -> T {
         let url = try Self.buildURL(base: environment.restBaseURL, segments: segments, query: query)
@@ -122,6 +203,10 @@ public struct RestClient: Sendable, SnapshotFetching {
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let body {
+            request.httpBody = body
+            request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        }
 
         let data: Data
         let response: URLResponse
@@ -141,7 +226,7 @@ public struct RestClient: Sendable, SnapshotFetching {
         case 401 where allowTokenRefresh:
             // FR-6.2: do NOT retry with the same token — refresh once, retry
             // exactly once, then surface the typed error.
-            return try await perform(segments, query: query, method: method, allowTokenRefresh: false)
+            return try await perform(segments, query: query, method: method, body: body, allowTokenRefresh: false)
         default:
             throw Self.mapError(status: httpResponse.statusCode, data: data)
         }

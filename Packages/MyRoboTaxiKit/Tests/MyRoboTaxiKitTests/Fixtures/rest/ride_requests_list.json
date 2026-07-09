@@ -1,0 +1,35 @@
+{
+  "_meta": {
+    "description": "RideRequestsListResponse envelope from GET /api/ride-requests (rest-api.md §7.8) — the rider's own requests, newest first (createdAt DESC, id DESC). Page 1: non-null nextCursor + hasMore true. Mixes a declined on-demand ride and an accepted scheduled ride to exercise tolerant status + optional scheduledFor.",
+    "anchoredFRs": ["FR-9.1"],
+    "scenario": "ride-request"
+  },
+  "items": [
+    {
+      "id": "clride0000000000000010",
+      "riderId": "cluser0000000000rider0",
+      "ownerId": "cluser0000000000rider0",
+      "vehicleId": "clxyz1234567890abcdef",
+      "pickup": { "lat": 37.7749, "lng": -122.4194, "label": "Home" },
+      "dropoff": { "lat": 37.7596, "lng": -122.4269, "label": "Dolores Park" },
+      "status": "declined",
+      "createdAt": "2026-07-09T17:40:00.000Z",
+      "updatedAt": "2026-07-09T17:41:03.000Z"
+    },
+    {
+      "id": "clride0000000000000009",
+      "riderId": "cluser0000000000rider0",
+      "ownerId": "cluser0000000000rider0",
+      "vehicleId": "clxyz1234567890abcdef",
+      "pickup": { "lat": 37.7749, "lng": -122.4194, "label": "Home" },
+      "dropoff": { "lat": 37.6156, "lng": -122.3900, "label": "SFO · Terminal 2" },
+      "status": "accepted",
+      "scheduledFor": "2026-07-11T06:30:00.000Z",
+      "createdAt": "2026-07-09T17:10:00.000Z",
+      "updatedAt": "2026-07-09T17:12:00.000Z",
+      "acceptedAt": "2026-07-09T17:12:00.000Z"
+    }
+  ],
+  "nextCursor": "eyJjcmVhdGVkQXQiOiIyMDI2LTA3LTA5VDE3OjEwOjAwLjAwMFoiLCJpZCI6ImNscmlkZTAwMDkifQ==",
+  "hasMore": true
+}

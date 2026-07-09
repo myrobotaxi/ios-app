@@ -5,7 +5,7 @@ import DesignSystem
 // ReviewContent 347-500)
 struct RideRequestReviewContent: View {
     @Bindable var viewerState: SharedViewerState
-    var rideRequestService: SimulatedRideRequestService
+    var rideRequestService: any RideRequestService
     var totalHeight: CGFloat?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var fleetPickerOpen = false

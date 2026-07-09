@@ -1,0 +1,14 @@
+{
+  "_meta": {
+    "description": "ride_status_changed WS frame (websocket-protocol.md §4.8, MYR-175). SUMMARY-ONLY: the status AFTER the mutation (here an owner accept => 'accepted') + optional rescheduleStatus. Consumers key on (status, rescheduleStatus) and refetch GET /api/ride-requests/{id} for the full record.",
+    "anchoredFRs": ["FR-9.3"],
+    "scenario": "ride-request"
+  },
+  "type": "ride_status_changed",
+  "payload": {
+    "rideRequestId": "clride0000000000000002",
+    "vehicleId": "clxyz1234567890abcdef",
+    "status": "accepted",
+    "timestamp": "2026-07-09T18:05:22.114Z"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "_meta": {
+    "description": "200 OK response from POST /api/ride-requests/{id}/accept (rest-api.md §7.8, MYR-175). Owner accepted a 'requested' ride => status 'accepted', acceptedAt now stamped (first-entry-only). Carries a booked-for passenger + a scheduledFor reservation to exercise the optional-field decode paths.",
+    "anchoredFRs": ["FR-9.3"],
+    "scenario": "ride-request"
+  },
+  "id": "clride0000000000000002",
+  "riderId": "cluser0000000000rider0",
+  "ownerId": "cluser0000000000rider0",
+  "vehicleId": "clxyz1234567890abcdef",
+  "pickup": {
+    "lat": 37.7749,
+    "lng": -122.4194,
+    "label": "Home",
+    "address": "221 Folsom St, San Francisco"
+  },
+  "dropoff": {
+    "lat": 37.7955,
+    "lng": -122.3937,
+    "label": "Ferry Building",
+    "address": "1 Ferry Building · Embarcadero"
+  },
+  "status": "accepted",
+  "passengerName": "Maya Chen",
+  "passengerPhone": "(415) 555-0142",
+  "scheduledFor": "2026-07-10T13:30:00.000Z",
+  "createdAt": "2026-07-09T18:00:00.000Z",
+  "updatedAt": "2026-07-09T18:05:22.114Z",
+  "acceptedAt": "2026-07-09T18:05:22.114Z"
+}

@@ -1,0 +1,11 @@
+{
+  "_meta": {
+    "description": "REST 409 conflict envelope (rest-api.md §7.8, MYR-174). Emitted when a ride-request lifecycle mutation is illegal from the row's current state (e.g. accepting a cancelled ride, cancelling a completed one — §7.8 transition matrix). REST-only: never emitted over the WS. Consumers surface it and MUST NOT auto-retry the same mutation.",
+    "anchoredFRs": ["FR-7.1", "FR-9.3"],
+    "scenario": "error"
+  },
+  "error": {
+    "code": "conflict",
+    "message": "ride request is not in a state that permits this transition"
+  }
+}

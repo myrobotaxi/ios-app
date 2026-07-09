@@ -25,7 +25,7 @@ let package = Package(
         .library(name: "MyRoboTaxiKit", targets: ["MyRoboTaxiKit"])
     ],
     dependencies: [
-        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.7.0")
+        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.9.0")
     ],
     targets: [
         .target(

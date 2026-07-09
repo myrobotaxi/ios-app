@@ -9,7 +9,7 @@ import DesignSystem
 // comment (ride-request.jsx:1119).
 struct RideRequestSummaryContent: View {
     @Bindable var viewerState: SharedViewerState
-    var rideRequestService: SimulatedRideRequestService
+    var rideRequestService: any RideRequestService
     var historyStore: RideHistoryStore
     var riderName: String
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

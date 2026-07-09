@@ -63,6 +63,11 @@ public actor TelemetrySocket {
     private var subscribers: [String: [UUID: AsyncStream<VehicleTelemetryEvent>.Continuation]] = [:]
     private var connectionObservers: [UUID: AsyncStream<ConnectionState>.Continuation] = [:]
     private var dataStates: [String: [AtomicGroup: DataState]] = [:]
+    /// Account-wide ride-request observers (P10, MYR-174). Not keyed by vehicle:
+    /// `ride_request_created` / `ride_status_changed` are unicast to a ride's two
+    /// parties, so they fan out to every ride observer regardless of the selected
+    /// vehicle — see ``rideEvents()`` and ``RideRequestEvent``.
+    private var rideObservers: [UUID: AsyncStream<RideRequestEvent>.Continuation] = [:]
 
     // MARK: Init
 
@@ -100,6 +105,22 @@ public actor TelemetrySocket {
         continuation.yield(connectionState)
         continuation.onTermination = { [weak self] _ in
             Task { await self?.removeConnectionObserver(id) }
+        }
+        return stream
+    }
+
+    /// A stream of ride-request lifecycle events (`ride_request_created` /
+    /// `ride_status_changed`, P10 ride-hailing — MYR-174). Account-wide, not
+    /// per-vehicle: the server unicasts these to a ride's two parties, so every
+    /// caller sees every ride frame this connection receives. Frames are summary-
+    /// only — refetch `RestClient.rideRequest(id:)` for the full record. Mirrors
+    /// ``connectionStates()``'s multi-observer fan-out pattern.
+    public func rideEvents() -> AsyncStream<RideRequestEvent> {
+        let (stream, continuation) = AsyncStream<RideRequestEvent>.makeStream()
+        let id = UUID()
+        rideObservers[id] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { await self?.removeRideObserver(id) }
         }
         return stream
     }
@@ -274,6 +295,14 @@ public actor TelemetrySocket {
             guard let payload = try? WireCodec.decodePayload(ConnectivityPayload.self, from: envelope) else { return }
             emit(.connectivity(payload), to: payload.vehicleId)
 
+        case .rideRequestCreated:
+            guard let payload = try? WireCodec.decodePayload(RideRequestCreatedPayload.self, from: envelope) else { return }
+            emitRide(.created(payload))
+
+        case .rideStatusChanged:
+            guard let payload = try? WireCodec.decodePayload(RideStatusChangedPayload.self, from: envelope) else { return }
+            emitRide(.statusChanged(payload))
+
         case .heartbeat:
             break // liveness already reset above
 
@@ -355,6 +384,12 @@ public actor TelemetrySocket {
         for continuation in continuations.values { continuation.yield(event) }
     }
 
+    /// Fan a ride-request frame out to every ride observer (account-wide, not
+    /// per-vehicle — see ``rideEvents()``).
+    private func emitRide(_ event: RideRequestEvent) {
+        for continuation in rideObservers.values { continuation.yield(event) }
+    }
+
     private func setConnectionState(_ new: ConnectionState) {
         guard new != connectionState else { return }
         connectionState = new
@@ -371,6 +406,10 @@ public actor TelemetrySocket {
 
     private func removeConnectionObserver(_ id: UUID) {
         connectionObservers.removeValue(forKey: id)
+    }
+
+    private func removeRideObserver(_ id: UUID) {
+        rideObservers.removeValue(forKey: id)
     }
 
     // MARK: - Timers (all reconnect the socket by closing the channel)

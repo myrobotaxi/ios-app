@@ -1,0 +1,36 @@
+{
+  "_meta": {
+    "description": "RideRequestsListResponse envelope from GET /api/ride-requests/incoming (rest-api.md §7.8, MYR-175) — the owner's open feed, status 'requested' ONLY, on-demand + scheduled variants both. Final page: null nextCursor + hasMore false.",
+    "anchoredFRs": ["FR-9.1", "FR-9.3"],
+    "scenario": "ride-request"
+  },
+  "items": [
+    {
+      "id": "clride0000000000000021",
+      "riderId": "cluser0000000000rider0",
+      "ownerId": "cluser0000000000rider0",
+      "vehicleId": "clxyz1234567890abcdef",
+      "pickup": { "lat": 37.7793, "lng": -122.3937, "label": "Current location" },
+      "dropoff": { "lat": 37.6156, "lng": -122.3900, "label": "SFO · Terminal 2", "address": "San Francisco International" },
+      "status": "requested",
+      "createdAt": "2026-07-09T18:04:11.482Z",
+      "updatedAt": "2026-07-09T18:04:11.482Z"
+    },
+    {
+      "id": "clride0000000000000020",
+      "riderId": "cluser0000000000rider0",
+      "ownerId": "cluser0000000000rider0",
+      "vehicleId": "clxyz1234567890abcdef",
+      "pickup": { "lat": 37.7749, "lng": -122.4194, "label": "Home" },
+      "dropoff": { "lat": 37.7955, "lng": -122.3937, "label": "Ferry Building" },
+      "status": "requested",
+      "passengerName": "Dad",
+      "passengerPhone": "(415) 555-0193",
+      "scheduledFor": "2026-07-10T09:00:00.000Z",
+      "createdAt": "2026-07-09T17:55:00.000Z",
+      "updatedAt": "2026-07-09T17:55:00.000Z"
+    }
+  ],
+  "nextCursor": null,
+  "hasMore": false
+}
