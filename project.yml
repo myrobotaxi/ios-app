@@ -12,6 +12,8 @@ options:
 packages:
   DesignSystem:
     path: Packages/DesignSystem
+  MyRoboTaxiKit:
+    path: Packages/MyRoboTaxiKit
 
 settings:
   base:
@@ -26,6 +28,7 @@ targets:
       - App/Sources
     dependencies:
       - package: DesignSystem
+      - package: MyRoboTaxiKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.myrobotaxi.ios
