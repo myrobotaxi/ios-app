@@ -65,6 +65,14 @@ public final class OwnerHomeState {
         hasSelection ? fleet.commandExecutor(at: selectedVehicleIndex) : nil
     }
 
+    /// The drive-history feed for the selected vehicle (MYR-203) — fixtures for
+    /// the simulated fleet, the live cursor-paginated feed for the live fleet.
+    /// The fleet guards an out-of-range index (live fleet mid-connect) with a
+    /// detached empty feed, so this is safe before a selection exists.
+    var selectedDrivesFeed: any DrivesFeed {
+        fleet.drivesFeed(at: hasSelection ? selectedVehicleIndex : 0)
+    }
+
     /// The design badge state (driving/parked/charging/offline) for the selected
     /// vehicle — `parked` neutral when there's no selection yet.
     public var selectedBadgeStatus: MRTVehicleStatus {

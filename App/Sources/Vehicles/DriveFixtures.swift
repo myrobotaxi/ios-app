@@ -31,8 +31,28 @@ public struct Drive: Identifiable, Sendable {
     /// Negative percent-points of battery consumed on this drive (jsx `chg`).
     public let batteryDeltaPercent: Int
     /// Real-world route standing in for the jsx's shared decorative SVG path
-    /// — see file header.
+    /// — see file header. Empty for a live drive: contracts v0.6.0 Drive detail
+    /// carries no coordinates (the route polyline is the separate §7.4 endpoint,
+    /// which has no generated type yet), so `DriveSummaryScreen` renders a
+    /// routeless hero for these.
     public let route: [CLLocationCoordinate2D]
+
+    // MARK: Real stats (MYR-203) — non-nil ONLY for a live drive mapped from a
+    // `DriveSummary`/`Drive` contract. `DriveSummaryScreen` prefers these over
+    // its seeded fixture derivations when present; the M1 fixtures leave them nil
+    // so the simulated Drive Summary is byte-for-byte unchanged.
+
+    /// Server `avgSpeedMph`, rounded — else nil (fixtures seed their own).
+    public let avgSpeedMPH: Int?
+    /// Server `maxSpeedMph`, rounded — else nil.
+    public let maxSpeedMPH: Int?
+    /// Server `startChargeLevel` (0–100) — else nil.
+    public let startChargePercent: Int?
+    /// Server `endChargeLevel` (0–100) — else nil.
+    public let endChargePercent: Int?
+    /// Server `fsdPercentage`, rounded — else nil (fixtures derive fsd% from
+    /// `fsdMiles/miles`). Prefer the authoritative wire value when present.
+    public let fsdPercentOverride: Int?
 
     public init(
         id: String,
@@ -45,7 +65,12 @@ public struct Drive: Identifiable, Sendable {
         mins: Int,
         fsdMiles: Double,
         batteryDeltaPercent: Int,
-        route: [CLLocationCoordinate2D]
+        route: [CLLocationCoordinate2D],
+        avgSpeedMPH: Int? = nil,
+        maxSpeedMPH: Int? = nil,
+        startChargePercent: Int? = nil,
+        endChargePercent: Int? = nil,
+        fsdPercentOverride: Int? = nil
     ) {
         self.id = id
         self.dateGroup = dateGroup
@@ -58,11 +83,20 @@ public struct Drive: Identifiable, Sendable {
         self.fsdMiles = fsdMiles
         self.batteryDeltaPercent = batteryDeltaPercent
         self.route = route
+        self.avgSpeedMPH = avgSpeedMPH
+        self.maxSpeedMPH = maxSpeedMPH
+        self.startChargePercent = startChargePercent
+        self.endChargePercent = endChargePercent
+        self.fsdPercentOverride = fsdPercentOverride
     }
 
-    /// screens.jsx:773 `((d.fsd / d.miles) * 100).toFixed(0)`.
+    /// screens.jsx:773 `((d.fsd / d.miles) * 100).toFixed(0)`. Prefers the
+    /// authoritative wire `fsdPercentage` (`fsdPercentOverride`) for a live drive;
+    /// guards the fixture derivation against a zero-mile drive.
     public var fsdPercent: Int {
-        Int(((fsdMiles / miles) * 100).rounded())
+        if let fsdPercentOverride { return fsdPercentOverride }
+        guard miles > 0 else { return 0 }
+        return Int(((fsdMiles / miles) * 100).rounded())
     }
 
     /// screens.jsx:627 `groupLabel` — 'today'/'yesterday' get display copy,
