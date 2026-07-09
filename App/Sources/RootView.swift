@@ -98,6 +98,10 @@ struct RootView: View {
     /// so a ride that finishes while the rider is on Live Map still lands in
     /// Ride History.
     @State private var rideHistoryStore = RideHistoryStore()
+    /// MYR-204 — one session-lived place labeler (saved-place → POI/locality →
+    /// address) for the owner Drive Summary header. Holds the per-drive label
+    /// cache; sim summaries never invoke it (they keep their fixture labels).
+    @State private var placeLabeler = PlaceLabeler(savedPlaces: RideRequestFixtures.savedPlaces)
 
     // MYR-200 — seed the debug scene (if any) in `init` so the very first
     // render already shows the requested phase. Applying it later (onAppear/
@@ -210,7 +214,16 @@ struct RootView: View {
                         // MYR-203 — resolve the opened drive from the fleet's
                         // drive feed (fixtures for sim, the live pages for live)
                         // rather than the fixture array directly.
-                        DriveSummaryScreen(drive: drive) {
+                        DriveSummaryScreen(
+                            drive: drive,
+                            // MYR-204 — a live drive lazily fetches its §7.4 route
+                            // polyline + resolves header place labels; a sim drive
+                            // (non-empty baked `route`) ignores both, unchanged.
+                            routeProvider: { id in
+                                await ownerHomeState.selectedDrivesFeed.routeCoordinates(driveID: id)
+                            },
+                            placeLabeler: placeLabeler
+                        ) {
                             ownerDrivesState.openDriveID = nil
                         }
                     } else {

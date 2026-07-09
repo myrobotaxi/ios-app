@@ -1,4 +1,5 @@
 import Observation
+import CoreLocation
 import MyRoboTaxiKit
 import MyRobotaxiContracts
 
@@ -37,6 +38,13 @@ protocol DrivesFeed: AnyObject, Observable {
     func refresh()
     /// The row for `id` (the tap-through target for Drive Summary), or nil.
     func drive(id: String) -> Drive?
+
+    /// The drive's GPS polyline for the Drive Summary hero, fetched LAZILY on
+    /// summary open (rest-api.md §7.4, `DriveRoute`). `[]` when there is no
+    /// geometry (a `[]` route, an unreachable/failed fetch, or a sim row without
+    /// a baked route) — the caller keeps the routeless placeholder. Cached per
+    /// drive id, so reopening the same summary does not refetch.
+    func routeCoordinates(driveID: String) async -> [CLLocationCoordinate2D]
 }
 
 // MARK: - SimulatedDrivesFeed (M1 default)
@@ -53,6 +61,12 @@ final class SimulatedDrivesFeed: DrivesFeed {
     func loadMore() {}
     func refresh() {}
     func drive(id: String) -> Drive? { DriveFixtures.drive(id: id) }
+
+    /// Sim rows already carry their route in `Drive.route`; the Summary renders
+    /// that directly and never calls this. Returned for protocol completeness.
+    func routeCoordinates(driveID: String) async -> [CLLocationCoordinate2D] {
+        DriveFixtures.drive(id: driveID)?.route ?? []
+    }
 }
 
 // MARK: - LiveDrivesFeed (M2 live)
@@ -74,6 +88,9 @@ final class LiveDrivesFeed: DrivesFeed {
     /// Fast id→row lookup for the Drive Summary tap-through (the summary carries
     /// everything the detail screen renders, so no per-tap detail fetch).
     private var index: [String: Drive] = [:]
+    /// Session cache of the lazily-fetched hero polyline, keyed by drive id, so
+    /// reopening a Drive Summary does not refetch the (heavy, ~250 KB) route.
+    private var routeCache: [String: [CLLocationCoordinate2D]] = [:]
 
     init(rest: RestClient, vehicleID: String) {
         self.rest = rest
@@ -101,6 +118,23 @@ final class LiveDrivesFeed: DrivesFeed {
     }
 
     func drive(id: String) -> Drive? { index[id] }
+
+    /// FR-3.3 / §7.4 — fetch the drive's GPS polyline on summary open, mapped
+    /// through `DriveContractMapping.coordinates(from:)` (RoutePoint → coordinate,
+    /// thinned). A failure/empty route degrades to `[]` (routeless placeholder)
+    /// and is NOT cached, so a transient error retries on reopen; a successful
+    /// (possibly empty-because-short) fetch is cached for the session.
+    func routeCoordinates(driveID: String) async -> [CLLocationCoordinate2D] {
+        if let cached = routeCache[driveID] { return cached }
+        do {
+            let route = try await rest.driveRoute(id: driveID)
+            let coordinates = DriveContractMapping.coordinates(from: route)
+            routeCache[driveID] = coordinates
+            return coordinates
+        } catch {
+            return []
+        }
+    }
 
     private func load(reset: Bool) {
         if reset { task?.cancel() } else if isLoading { return }

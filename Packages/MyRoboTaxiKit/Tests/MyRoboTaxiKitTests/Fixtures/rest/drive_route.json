@@ -1,0 +1,16 @@
+{
+  "_meta": {
+    "description": "Full GPS polyline from GET /api/drives/{driveId}/route (rest-api.md §7.4), aligned to contracts DriveRoute (v0.7.0). routePoints is a non-empty ordered breadcrumb trail (oldest first); every RoutePoint carries all five fields (lat/lng/speed/heading/timestamp), none omitempty. Coordinates are a real trimmed live drive (Frisco -> Dallas, TX) so lat/lng exercise negative longitudes and whole-degree speed/heading values.",
+    "anchoredFRs": ["FR-3.3"],
+    "scenario": "happy-path"
+  },
+  "driveId": "clmno9876543210zyxw0001",
+  "routePoints": [
+    { "lat": 33.086114, "lng": -96.851844, "speed": 0, "heading": 0, "timestamp": "2026-07-06T13:23:54Z" },
+    { "lat": 33.078586, "lng": -96.850951, "speed": 0, "heading": 179.01947972755147, "timestamp": "2026-07-06T13:29:31Z" },
+    { "lat": 33.064657, "lng": -96.814943, "speed": 0, "heading": 0, "timestamp": "2026-07-06T13:34:29Z" },
+    { "lat": 33.043874, "lng": -96.794544, "speed": 43, "heading": 0, "timestamp": "2026-07-06T13:37:51Z" },
+    { "lat": 33.014345, "lng": -96.795477, "speed": 0, "heading": 181.79747828962422, "timestamp": "2026-07-06T13:42:09Z" },
+    { "lat": 32.992545, "lng": -96.794208, "speed": 12, "heading": 0, "timestamp": "2026-07-06T13:46:04Z" }
+  ]
+}
