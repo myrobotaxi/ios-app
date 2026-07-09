@@ -48,6 +48,7 @@ enum DebugScene: String, CaseIterable {
     case scheduledConfirmCancel
 
     // Owner side (HomeScreen → IncomingRequestSheet)
+    case ownerHome         // plain owner Live Map, nothing seeded (live-telemetry captures)
     case ownerIncoming
     case ownerScheduled
 
@@ -88,7 +89,7 @@ enum DebugScene: String, CaseIterable {
 
     static var initialOwnerTab: String { "home" }
 
-    private var isOwner: Bool { self == .ownerIncoming || self == .ownerScheduled }
+    private var isOwner: Bool { self == .ownerHome || self == .ownerIncoming || self == .ownerScheduled }
 
     private var isScheduled: Bool {
         switch self {
@@ -213,7 +214,7 @@ enum DebugScene: String, CaseIterable {
             viewer.draftDestination = DebugScene.sampleDestination
             viewer.sheetPhase = .summary
         case .scheduledDetails, .scheduledReschedule, .scheduledRequested, .scheduledConfirmCancel,
-             .ownerIncoming, .ownerScheduled:
+             .ownerHome, .ownerIncoming, .ownerScheduled:
             break // rider live-map / owner scenes don't drive the viewer sheet
         }
     }

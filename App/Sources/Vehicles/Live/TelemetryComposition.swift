@@ -11,7 +11,9 @@ import MyRoboTaxiKit
 // always compile to the simulated fleet (identical to the shipped M1 demo):
 //
 //   MRT_TELEMETRY = live | sim         (default: sim)
-//   MRT_BACKEND_URL = https://telemetry.myrobotaxi.app   (default)
+//   MRT_BACKEND_URL = https://telemetry.myrobotaxi.app:4443   (default)
+// NOTE: port 4443 is the Fly-managed API listener; :443 serves Tesla vehicle
+// mTLS with a pinned cert and rejects plain API clients (split-TLS host).
 //   MRT_BACKEND_TOKEN = <bearer JWT>   (supplied by the orchestrator/human;
 //                                        NEVER hardcoded or committed)
 //
@@ -65,7 +67,7 @@ enum TelemetryComposition {
     /// mounts at `/api/ws` with the scheme upgraded to `wss`/`ws`.
     static func backendEnvironment(from urlString: String?) -> BackendEnvironment? {
         let base = urlString?.trimmingCharacters(in: .whitespaces)
-        let resolved = (base?.isEmpty == false ? base! : "https://telemetry.myrobotaxi.app")
+        let resolved = (base?.isEmpty == false ? base! : "https://telemetry.myrobotaxi.app:4443")
         guard var components = URLComponents(string: resolved), let scheme = components.scheme?.lowercased() else {
             return nil
         }
