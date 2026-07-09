@@ -46,6 +46,9 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIUserInterfaceStyle: Dark
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+        # MYR-211 — when-in-use location for the rider's live map + "Current
+        # location" pickup (live mode only; sim never requests it).
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Shows where you are and sets your pickup point."
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
 

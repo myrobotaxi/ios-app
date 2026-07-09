@@ -1,3 +1,4 @@
+import CoreLocation
 import DesignSystem
 import Observation
 
@@ -56,6 +57,23 @@ public final class SharedViewerState {
     public let vehicle: Vehicle
     public let telemetrySource: any VehicleTelemetrySource
 
+    // MARK: MYR-211 — real place search + location seams
+    //
+    // Injected by `PlaceSearchComposition` (sim fixtures by default, live
+    // MapKit/CoreLocation when the launch env selects it). The search sheet
+    // reads `placeSearch.results`; the map/pin-drop read `mapRegionCenter` +
+    // `userLocation`. See each seam's header for the sim↔live contract.
+    let placeSearch: any PlaceSearching
+    let userLocation: any UserLocationProviding
+    let liveVehicleLocator: RiderLiveVehicleLocator?
+    /// True only when the live seams are composed — gates the live-only
+    /// current-location pickup + real pin-drop coordinate below.
+    let isLiveLocation: Bool
+
+    /// Sentinel id marking a "Current location" pickup whose coordinate is
+    /// resolved from the live device fix at request time (`resolvedPickup`).
+    public static let currentLocationPickupID = "current-location"
+
     /// MYR-191 extension point — see `RiderSheetPhase`.
     public var sheetPhase: RiderSheetPhase = .idle
 
@@ -82,15 +100,97 @@ public final class SharedViewerState {
     /// (the jsx overlays it on top of `search`, not a separate screen).
     public var showDeclinedNotice = false
 
-    public init(vehicle: Vehicle = VehicleFixtures.vehicles[0]) {
+    /// Public convenience: the simulated seams (fixtures) — the default for
+    /// previews / tests / the sim demo. Delegates to the designated init.
+    public convenience init(vehicle: Vehicle = VehicleFixtures.vehicles[0]) {
+        self.init(vehicle: vehicle, seams: .simulated)
+    }
+
+    /// Designated init taking the composed seams (`PlaceSearchComposition.make()`
+    /// wires live vs. sim in `RootView`). Internal — `Seams` is a module type.
+    init(vehicle: Vehicle = VehicleFixtures.vehicles[0], seams: PlaceSearchComposition.Seams) {
         self.vehicle = vehicle
         telemetrySource = SimulatedVehicleTelemetrySource(activity: vehicle.activity)
+        placeSearch = seams.placeSearch
+        userLocation = seams.userLocation
+        liveVehicleLocator = seams.liveVehicleLocator
+        isLiveLocation = seams.isLive
     }
 
     public var snapshot: VehicleTelemetrySnapshot { telemetrySource.snapshot }
 
-    public func startTelemetry() { telemetrySource.start() }
-    public func stopTelemetry() { telemetrySource.stop() }
+    public func startTelemetry() {
+        telemetrySource.start()
+        userLocation.start()
+        liveVehicleLocator?.start()
+    }
+
+    public func stopTelemetry() {
+        telemetrySource.stop()
+        userLocation.stop()
+        liveVehicleLocator?.stop()
+    }
+
+    // MARK: MYR-211 — region biasing + current-location pickup
+
+    /// The coordinate to bias search + center the rider map/pin-drop on:
+    /// device location first, live-vehicle region as fallback, fixture region
+    /// only in sim (MYR-211 addendum #4). In sim both live sources report
+    /// nothing, so this is `DriveFixtures.home` — byte-identical to the
+    /// pre-MYR-211 `centerOverride`.
+    public var mapRegionCenter: CLLocationCoordinate2D {
+        userLocation.coordinate ?? liveVehicleLocator?.coordinate ?? DriveFixtures.home
+    }
+
+    /// Push the current query + region bias into the search backend.
+    public func updateSearch(query: String) {
+        placeSearch.update(query: query, regionCenter: mapRegionCenter)
+    }
+
+    /// A "Current location" pickup, or `nil` when it can't be offered (sim, or
+    /// live-denied/no-fix) — the caller then routes through Set-on-map, exactly
+    /// the pre-MYR-211 flow (MYR-211 addendum #3/#5).
+    public func currentLocationPickup() -> RidePlace? {
+        guard let coordinate = userLocation.currentPickupCoordinate else { return nil }
+        return RidePlace(
+            id: Self.currentLocationPickupID,
+            label: userLocation.currentLocationLabel,
+            subtitle: nil,
+            miles: 0,
+            minutes: 0,
+            icon: "location.fill",
+            coordinate: coordinate
+        )
+    }
+
+    /// Re-resolve a current-location pickup to the freshest device fix at
+    /// request time (MYR-211 addendum #3 — the created ride carries the real
+    /// coordinate). A non-sentinel pickup passes through unchanged.
+    public func resolvedPickup(_ pickup: RidePlace) -> RidePlace {
+        guard pickup.id == Self.currentLocationPickupID,
+              let coordinate = userLocation.currentPickupCoordinate else { return pickup }
+        return RidePlace(
+            id: pickup.id,
+            label: userLocation.currentLocationLabel,
+            subtitle: pickup.subtitle,
+            miles: pickup.miles,
+            minutes: pickup.minutes,
+            icon: pickup.icon,
+            coordinate: coordinate
+        )
+    }
+
+    /// Pin-drop pickup coordinate: the real map-center (device/vehicle region)
+    /// in live mode, the fixture point in sim (byte-identical).
+    public var pinDropCoordinate: CLLocationCoordinate2D {
+        isLiveLocation ? mapRegionCenter : DriveFixtures.financialDistrict
+    }
+
+    /// Pin-drop pickup label: the reverse-geocoded device label in live mode,
+    /// the fixture "Folsom & 2nd St" in sim (byte-identical).
+    public var pinDropLabel: String {
+        isLiveLocation ? userLocation.currentLocationLabel : RideRequestFixtures.pinSpots[0]
+    }
 
     /// Resets the draft + returns to `.idle` — ride-request.jsx `closeToIdle`.
     public func resetDraftToIdle() {
