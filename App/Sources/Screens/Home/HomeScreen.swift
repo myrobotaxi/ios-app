@@ -3,15 +3,22 @@ import MapKit
 import DesignSystem
 
 // MARK: - HomeScreen — Owner Live Map (MYR-167,
-// design/app/screens.jsx:369-437, Handoff §5.5)
+// design/app/screens.jsx:369-437, Handoff §5.5; live telemetry MYR-201)
 //
 // The app's primary screen: real MapKit + route + vehicle marker, a
 // peek↔half draggable bottom sheet (`MRTDetentSheet`, MYR-162) whose hero
-// switches on the selected vehicle's fixed M1 activity, the `MapHeader`
-// vehicle switcher, a `FloatingMapButton` recenter affordance, and the owner
+// switches on the selected vehicle's activity, the `MapHeader` vehicle
+// switcher, a `FloatingMapButton` recenter affordance, and the owner
 // `BottomNav` (screens.jsx renders its own `BottomNav` inside `HomeScreen`
 // rather than a shared wrapper — every owner screen does the same, see
 // `PlaceholderScreen.swift`).
+//
+// MYR-201 makes the vehicle data live-or-simulated behind `OwnerHomeState`'s
+// fleet seam. When the live fleet is still connecting (or can't be reached),
+// there's no selected vehicle yet, so the screen shows a subtle connecting /
+// status placeholder in place of the map+sheet; the switcher + BottomNav are
+// unchanged. In simulated mode a vehicle is always selected, so this screen
+// renders exactly as it did in M1.
 struct HomeScreen: View {
     @Bindable var homeState: OwnerHomeState
     @Binding var ownerTab: String
@@ -43,96 +50,47 @@ struct HomeScreen: View {
         rideRequestService.activeRequest?.status == .pending ? rideRequestService.activeRequest : nil
     }
 
-    private var vehicle: Vehicle { homeState.selectedVehicle }
-    private var snapshot: VehicleTelemetrySnapshot { homeState.selectedTelemetry.snapshot }
-    private var commandExecutor: any VehicleCommandExecutor { homeState.selectedCommandExecutor }
-
-    /// screens.jsx:400 — driving always uses the 280pt peek; parked uses the
-    /// 'floating' style's 210pt (the only `parkedStyle` this app ships).
-    private var peekHeight: CGFloat {
-        snapshot.status == .driving ? MRTMetrics.homePeekHeightDriving : MRTMetrics.homePeekHeightParked
-    }
-
     var body: some View {
         ZStack {
-            VehicleMapView(
-                vehicle: vehicle,
-                snapshot: snapshot,
-                cameraPosition: $cameraPosition,
-                isFollowing: $isFollowing,
-                // Keeps MapKit's legal attribution label clear of the
-                // (now physically flush) sheet below — see
-                // `VehicleMapView`'s doc comment and MYR-196 punch-list #2.
-                bottomContentInset: peekHeight
-            )
-            .id(vehicle.id) // fresh camera state per vehicle on switch
-            .ignoresSafeArea()
-
-            MapHeader(vehicles: VehicleFixtures.vehicles, selectedIndex: $homeState.selectedVehicleIndex)
-
-            // `bottom` is measured against the sheet's physical-edge peek
-            // height (see `MRTDetentSheet`'s `.ignoresSafeArea(edges:
-            // .bottom)`), so this button needs the same physical-edge
-            // coordinate space — full-bleed geometry (CLAUDE.md "Hard
-            // rules").
-            FloatingMapButton(
-                bottom: peekHeight + MRTMetrics.mapButtonBottomGap,
-                hidden: isFollowing || homeState.sheetDetent == .half
-            ) {
-                isFollowing = true
-            }
-            .ignoresSafeArea(edges: .bottom)
-
-            MRTDetentSheet(
-                detent: $homeState.sheetDetent,
-                peekHeight: peekHeight,
-                halfHeightFraction: MRTMetrics.homeHalfHeightFraction
-            ) {
-                ScrollView {
-                    sheetContent
-                        .padding(.horizontal, MRTMetrics.pageGutter)
-                        .padding(.top, 6) // screens.jsx:542 `padding: '6px 24px 100px'`
-                        .padding(.bottom, MRTMetrics.homeSheetContentBottomPadding)
-                }
-                .scrollDisabled(homeState.sheetDetent == .peek)
-                // No extra `.animation` here: `detent` only ever changes via
-                // `MRTDetentSheet`'s own drag gesture, which already wraps
-                // the mutation in `.spring(response:0.42, dampingFraction:
-                // 0.86)` (Handoff §8 sheet snap) — since it writes through
-                // this same `homeState.sheetDetent` binding, the Route/
-                // Controls reveal below inherits that transaction for free.
+            if let vehicle = homeState.selectedVehicle,
+               let telemetry = homeState.selectedTelemetry,
+               !homeState.isConnecting {
+                vehicleContent(vehicle: vehicle, telemetry: telemetry)
+            } else {
+                // Live fleet mid-connect or unavailable (deliverable 3) — subtle,
+                // never dramatic (design minimalism).
+                FleetConnectingView(
+                    isConnecting: homeState.isConnecting,
+                    message: homeState.statusMessage
+                )
             }
         }
         .background(Color.mrtBg)
         // components.jsx:566 `position: absolute, ... bottom: 26` — pin to
         // the screen's PHYSICAL bottom edge via the shared `mrtBottomNav`
-        // helper (review finding #1 + MYR-196 punch-list #2/#3: was
-        // floating mid-screen, then floating ~60pt off the physical bottom
-        // once safe-area insets were accounted for). Applied as a modifier
-        // on the whole ZStack, it layers above every sheet/map content
-        // declared above (matching the jsx's nav zIndex 40 vs. sheet
+        // helper. Applied on the whole ZStack, it layers above every sheet/map
+        // content declared above (matching the jsx's nav zIndex 40 vs. sheet
         // zIndex 30) and overlaps the sheet's bottom edge exactly like the
-        // prototype (`BottomSheet` is called with `navHeight={0}` at
-        // screens.jsx:429 — the sheet itself already runs flush to the
-        // physical bottom, see `MRTDetentSheet`'s own
-        // `.ignoresSafeArea(edges: .bottom)` — while its content reserves
-        // `MRTMetrics.homeSheetContentBottomPadding` (100pt) of bottom
-        // padding above so the floating nav capsule never obscures it).
+        // prototype.
         .mrtBottomNav(selection: $ownerTab, hidden: homeState.sheetDetent == .half)
         .onAppear { homeState.startTelemetry() }
         .onChange(of: homeState.selectedVehicleIndex) { _, _ in
             isFollowing = true
+            // Live fleet: narrow the socket subscription to the newly selected
+            // vehicle (no-op for the simulated fleet).
+            homeState.setActiveVehicle()
         }
         .mrtConfigSheet(isPresented: $isEditingPlate, showsCloseButton: false) {
-            PlateEditSheet(
-                initialPlate: commandExecutor.controls.plate,
-                onCancel: { isEditingPlate = false },
-                onSave: { newPlate in
-                    let executor = commandExecutor
-                    Task { try? await executor.setPlate(newPlate) }
-                    isEditingPlate = false
-                }
-            )
+            if let executor = homeState.selectedCommandExecutor {
+                PlateEditSheet(
+                    initialPlate: executor.controls.plate,
+                    onCancel: { isEditingPlate = false },
+                    onSave: { newPlate in
+                        Task { try? await executor.setPlate(newPlate) }
+                        isEditingPlate = false
+                    }
+                )
+            }
         }
         // MYR-171 — both applied as `.overlay`s AFTER `.mrtBottomNav` (itself
         // an `.overlay`, BottomNav.swift) so the request sheet/toast render
@@ -148,6 +106,59 @@ struct HomeScreen: View {
         }
         .overlay {
             RouteSentToast(content: $routeSentToast)
+        }
+    }
+
+    // MARK: - Vehicle content (map + switcher + sheet)
+
+    @ViewBuilder
+    private func vehicleContent(vehicle: Vehicle, telemetry: any VehicleTelemetrySource) -> some View {
+        let snapshot = telemetry.snapshot
+        // screens.jsx:400 — driving always uses the 280pt peek; parked uses the
+        // 'floating' style's 210pt (the only `parkedStyle` this app ships).
+        let peekHeight = snapshot.status == .driving
+            ? MRTMetrics.homePeekHeightDriving
+            : MRTMetrics.homePeekHeightParked
+
+        VehicleMapView(
+            vehicle: vehicle,
+            snapshot: snapshot,
+            cameraPosition: $cameraPosition,
+            isFollowing: $isFollowing,
+            // Keeps MapKit's legal attribution label clear of the
+            // (now physically flush) sheet below — see `VehicleMapView`'s
+            // doc comment and MYR-196 punch-list #2.
+            bottomContentInset: peekHeight
+        )
+        .id(vehicle.id) // fresh camera state per vehicle on switch
+        .ignoresSafeArea()
+
+        MapHeader(vehicles: homeState.vehicles, selectedIndex: $homeState.selectedVehicleIndex)
+
+        // `bottom` is measured against the sheet's physical-edge peek
+        // height (see `MRTDetentSheet`'s `.ignoresSafeArea(edges: .bottom)`),
+        // so this button needs the same physical-edge coordinate space —
+        // full-bleed geometry (CLAUDE.md "Hard rules").
+        FloatingMapButton(
+            bottom: peekHeight + MRTMetrics.mapButtonBottomGap,
+            hidden: isFollowing || homeState.sheetDetent == .half
+        ) {
+            isFollowing = true
+        }
+        .ignoresSafeArea(edges: .bottom)
+
+        MRTDetentSheet(
+            detent: $homeState.sheetDetent,
+            peekHeight: peekHeight,
+            halfHeightFraction: MRTMetrics.homeHalfHeightFraction
+        ) {
+            ScrollView {
+                sheetContent(vehicle: vehicle, snapshot: snapshot)
+                    .padding(.horizontal, MRTMetrics.pageGutter)
+                    .padding(.top, 6) // screens.jsx:542 `padding: '6px 24px 100px'`
+                    .padding(.bottom, MRTMetrics.homeSheetContentBottomPadding)
+            }
+            .scrollDisabled(homeState.sheetDetent == .peek)
         }
     }
 
@@ -201,7 +212,12 @@ struct HomeScreen: View {
     }
 
     @ViewBuilder
-    private var sheetContent: some View {
+    private func sheetContent(vehicle: Vehicle, snapshot: VehicleTelemetrySnapshot) -> some View {
+        // A live command executor is always present alongside a selected
+        // vehicle; fall back to a throwaway simulated one only to keep the type
+        // total (never rendered without a selection).
+        let executor = homeState.selectedCommandExecutor
+            ?? SimulatedVehicleCommandExecutor(driving: false, plate: vehicle.plate)
         switch vehicle.activity {
         case .driving(let trip):
             DrivingHeroContent(
@@ -209,7 +225,7 @@ struct HomeScreen: View {
                 trip: trip,
                 snapshot: snapshot,
                 expanded: homeState.sheetDetent == .half,
-                executor: commandExecutor,
+                executor: executor,
                 isEditingPlate: $isEditingPlate
             )
         case .parked(let location):
@@ -217,11 +233,50 @@ struct HomeScreen: View {
                 vehicle: vehicle,
                 location: location,
                 snapshot: snapshot,
+                // Live: reflect the real wire status (parked/charging/offline/
+                // in_service→neutral) in the design badge. Simulated: `.parked`.
+                status: homeState.selectedBadgeStatus,
                 expanded: homeState.sheetDetent == .half,
-                executor: commandExecutor,
+                executor: executor,
                 isEditingPlate: $isEditingPlate
             )
         }
+    }
+}
+
+// MARK: - Fleet connecting / unavailable placeholder (MYR-201 deliverable 3)
+
+/// Subtle stand-in shown while the live fleet is connecting or can't be
+/// reached — no dramatic error UI (design minimalism). The Kit's auto-reconnect
+/// handles transient drops; this only surfaces the cold connect + a quiet
+/// status line (e.g. the auth-required case when no token is supplied).
+private struct FleetConnectingView: View {
+    let isConnecting: Bool
+    let message: String?
+
+    var body: some View {
+        ZStack {
+            Color.mrtBg.ignoresSafeArea()
+            VStack(spacing: 12) {
+                if isConnecting {
+                    ProgressView()
+                        .tint(Color.mrtTextMuted)
+                    Text("Connecting to your vehicles…")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Color.mrtTextSec)
+                } else if let message {
+                    Image(systemName: "car.fill")
+                        .font(.system(size: 22))
+                        .foregroundStyle(Color.mrtTextMuted)
+                    Text(message)
+                        .font(.system(size: 14))
+                        .foregroundStyle(Color.mrtTextSec)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .padding(.horizontal, 40)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

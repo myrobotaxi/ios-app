@@ -21,7 +21,7 @@ struct DrivesScreen: View {
     @State private var sort: SortKey = .date
     @State private var confirmCancel: UpcomingRide?
 
-    private var vehicle: Vehicle { homeState.selectedVehicle }
+    private var vehicle: Vehicle? { homeState.selectedVehicle }
 
     var body: some View {
         ZStack {
@@ -69,7 +69,7 @@ struct DrivesScreen: View {
                 .foregroundStyle(Color.mrtText)
             // screens.jsx:633 `${VEHICLES[0].name} · 42,184 mi total` —
             // odometer figure is fixture-only, ported verbatim.
-            Text("\(vehicle.name) · 42,184 mi total")
+            Text("\(vehicle?.name ?? "Fleet") · 42,184 mi total")
                 .font(.system(size: 13))
                 .foregroundStyle(Color.mrtTextSec)
         }
@@ -126,8 +126,9 @@ struct DrivesScreen: View {
         // fixed activity rather than an app-wide toggle (see
         // `VehicleFixtures.swift` header comment), so "driving" here means
         // "the selected vehicle's fixed activity is driving".
-        if case .driving(let trip) = vehicle.activity {
-            LiveTripBanner(trip: trip, snapshot: homeState.selectedTelemetry.snapshot) {
+        if case .driving(let trip)? = vehicle?.activity,
+           let telemetry = homeState.selectedTelemetry {
+            LiveTripBanner(trip: trip, snapshot: telemetry.snapshot) {
                 ownerTab = "home"
             }
             .padding(.horizontal, MRTMetrics.pageGutter)

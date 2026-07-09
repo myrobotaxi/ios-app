@@ -21,11 +21,15 @@ struct MapHeader: View {
     @State private var isOpen = false
 
     private var single: Bool { vehicles.count <= 1 }
-    private var selected: Vehicle { vehicles[selectedIndex] }
+    private var selected: Vehicle? {
+        vehicles.indices.contains(selectedIndex) ? vehicles[selectedIndex] : nil
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            chip
+            if let selected {
+                chip(selected)
+            }
             if isOpen, !single {
                 picker
                     .padding(.top, 8) // screens.jsx:323 marginTop: 8
@@ -56,7 +60,7 @@ struct MapHeader: View {
         }
     }
 
-    private var chip: some View {
+    private func chip(_ selected: Vehicle) -> some View {
         Button {
             guard !single else { return }
             withAnimation(.easeOut(duration: 0.18)) { isOpen.toggle() }

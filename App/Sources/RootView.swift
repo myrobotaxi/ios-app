@@ -52,6 +52,10 @@ enum InviteOrigin {
 }
 
 struct RootView: View {
+    // MYR-201 — forward app foreground/background to the owner fleet so the
+    // live `TelemetrySocket` reconnects on resume and settles on suspend via the
+    // Kit's transition hooks (no-op for the simulated fleet).
+    @Environment(\.scenePhase) private var scenePhase
     @State private var session = SimulatedAuthSession()
     @State private var screen: AppScreen = .signIn
     @State private var role: UserRole = .owner
@@ -59,7 +63,11 @@ struct RootView: View {
     // are App-level state, not HomeScreen-local — screens.jsx:369) so the
     // selected vehicle, sheet detent, and each vehicle's ticking telemetry
     // survive switching to Drives/Share/Settings and back.
-    @State private var ownerHomeState = OwnerHomeState()
+    // MYR-201 — the ONE telemetry composition point: simulated fixtures by
+    // default (M1 offline demo), or the live Kit-backed fleet when the DEBUG
+    // launch env selects it (`MRT_TELEMETRY=live`). No other site branches on
+    // sim-vs-live.
+    @State private var ownerHomeState = TelemetryComposition.makeOwnerHomeState()
     @State private var ownerTab = "home"
     /// MYR-169 — mirrors `ownerHomeState`'s reasoning: app.jsx keeps
     /// `ownerUpcoming` App-level, not local to `DrivesScreen`, so a
@@ -212,6 +220,9 @@ struct RootView: View {
                         vehiclesState: ownerVehiclesState,
                         ownerTab: $ownerTab,
                         onSignOut: {
+                            // MYR-201 — release the live socket + streams before
+                            // dropping the session (no-op for the simulated fleet).
+                            ownerHomeState.stopTelemetry()
                             session.signOut()
                             screen = .signIn
                         }
@@ -270,6 +281,13 @@ struct RootView: View {
             }
         }
         .background(Color.mrtBg.ignoresSafeArea())
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active: ownerHomeState.handleForeground()
+            case .background: ownerHomeState.handleBackground()
+            default: break
+            }
+        }
     }
 }
 
