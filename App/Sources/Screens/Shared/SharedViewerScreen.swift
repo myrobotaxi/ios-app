@@ -427,20 +427,12 @@ struct SharedViewerScreen: View {
     /// quick *destinations*, and since the rider hasn't set a pickup yet,
     /// the flow routes through PinDrop to capture one before landing on
     /// Review, exactly like picking Home/Work from Search's destination list
-    /// with no pickup set (`RideRequestSearchContent.selectDestination`).
+    /// with no pickup set (`SharedViewerState.selectDestination`).
     private func quickPlaceButton(label: String, icon: String, place: RidePlace) -> some View {
         Button {
-            viewerState.draftDestination = place
-            // MYR-211: live + authorized → "Current location" pickup, straight
-            // to Review (no pin drop). Sim / denied → the pre-MYR-211 pin-drop
-            // flow (byte-identical), same shortcut as `selectDestination`.
-            if let currentPickup = viewerState.currentLocationPickup() {
-                viewerState.draftPickup = currentPickup
-                viewerState.sheetPhase = .review
-            } else {
-                viewerState.pinReturn = .review
-                viewerState.sheetPhase = .pinDrop(returnTo: .review)
-            }
+            // MYR-211 defect B: route through pin-drop to capture the pickup
+            // (same shortcut as Search's destination list) — never bypass it.
+            viewerState.selectDestination(place)
         } label: {
             HStack(spacing: 9) {
                 Image(systemName: icon).font(.system(size: 14)).foregroundStyle(Color.mrtGold)

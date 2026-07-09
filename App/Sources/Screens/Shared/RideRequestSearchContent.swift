@@ -136,6 +136,18 @@ struct RideRequestSearchContent: View {
         .onChange(of: query) { _, newValue in
             viewerState.updateSearch(query: newValue)
         }
+        // MYR-211 region-bias fix (live-audit defect): a search issued BEFORE
+        // the first location fix (the permission prompt is still up on first
+        // launch; the `searchFiltered` scene seeds its query on appear)
+        // captured the fixture-fallback center and produced globally-unbiased,
+        // SF-distanced results. Re-run the active query whenever the region
+        // center changes (first fix / device movement / live-vehicle fallback
+        // arriving) so results re-bias + re-distance. Sim: the center is a
+        // constant, this never fires — pixel-identical.
+        .onChange(of: viewerState.mapRegionCenterKey) { _, _ in
+            guard !query.isEmpty else { return }
+            viewerState.updateSearch(query: query)
+        }
         .onAppear {
             forSomeoneElse = viewerState.draftPassenger != nil
             if let schedule = viewerState.draftSchedule {
@@ -507,19 +519,10 @@ struct RideRequestSearchContent: View {
     }
 
     private func selectDestination(_ place: RidePlace) {
-        viewerState.draftDestination = place
-        if viewerState.draftPickup != nil {
-            viewerState.sheetPhase = .review
-        } else if let currentPickup = viewerState.currentLocationPickup() {
-            // Live + authorized: "Current location" is a real pickup — no pin
-            // drop needed (MYR-211 addendum #3). Sim / denied returns nil → the
-            // pre-MYR-211 Set-on-map flow below (byte-identical).
-            viewerState.draftPickup = currentPickup
-            viewerState.sheetPhase = .review
-        } else {
-            viewerState.pinReturn = .review
-            viewerState.sheetPhase = .pinDrop(returnTo: .review)
-        }
+        // MYR-211 defect B: destination select routes through the pin-drop step
+        // (unless a pickup is already set), in live AND sim — the pin-drop map
+        // starts on the rider's live coordinate. See `selectDestination`.
+        viewerState.selectDestination(place)
     }
 
     // MARK: Schedule slide-up card (ride-request.jsx:296-346)
