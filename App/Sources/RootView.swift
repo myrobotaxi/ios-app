@@ -118,7 +118,9 @@ struct RootView: View {
         var startRole: UserRole = .owner
         var startSharedTab = "shared"
         var startOwnerTab = "home"
-        let viewer = SharedViewerState()
+        // MYR-211 — compose the rider's place-search + location seams (sim
+        // fixtures by default, live MapKit/CoreLocation when MRT_TELEMETRY=live).
+        let viewer = SharedViewerState(seams: PlaceSearchComposition.make())
         // Default to the composed service (sim, or live when the launch env
         // selects it). A DEBUG scene overrides with a concrete simulated service
         // it can `debugSeed` — UNLESS the env composed the live service: the

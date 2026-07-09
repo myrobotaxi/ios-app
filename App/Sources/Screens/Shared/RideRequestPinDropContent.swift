@@ -12,12 +12,12 @@ struct RideRequestPinDropContent: View {
     let returnTo: PinDropReturn
     var totalHeight: CGFloat?
 
-    /// M1 scope simplification (explicitly allowed by the story spec): the
-    /// jsx picks one of `PIN_SPOTS` deterministically off drag distance —
-    /// this app has no drag-to-move-the-pin gesture yet, so the pin always
-    /// resolves to `pinSpots[0]`, matching the prototype capture's own
-    /// default (`.shots/prototype/03_after_dest_select.png` → "Folsom & 2nd St").
-    static let pinAddress = RideRequestFixtures.pinSpots[0]
+    // Pin label + coordinate come from `SharedViewerState.pinDropLabel`/
+    // `pinDropCoordinate`: the reverse-geocoded real map-center in live mode,
+    // and in sim the fixture `pinSpots[0]` ("Folsom & 2nd St") — an M1 scope
+    // simplification (the jsx picks a `PIN_SPOTS` entry off drag distance;
+    // this app has no drag-to-move-the-pin gesture, matching the prototype
+    // capture default `.shots/prototype/03_after_dest_select.png`).
 
     var body: some View {
         // MYR-171 fix: this phase's content is short and fixed (no list to
@@ -40,7 +40,9 @@ struct RideRequestPinDropContent: View {
                     .overlay(Image(systemName: "mappin").font(.system(size: 16)).foregroundStyle(Color.mrtGold))
                 VStack(alignment: .leading, spacing: 2) {
                     RideEyebrowText(text: "Pickup location", size: 10)
-                    Text(Self.pinAddress)
+                    // MYR-211: reverse-geocoded device label in live mode; the
+                    // fixture "Folsom & 2nd St" in sim (`pinDropLabel`).
+                    Text(viewerState.pinDropLabel)
                         .font(.system(size: 16, weight: .semibold))
                         .tracking(-0.2)
                         .foregroundStyle(Color.mrtText)
@@ -78,14 +80,17 @@ struct RideRequestPinDropContent: View {
     }
 
     private func confirm() {
+        // MYR-211: the confirmed pickup is the real map-center coordinate in
+        // live mode (device/vehicle region) and the fixture point in sim — see
+        // `SharedViewerState.pinDropCoordinate`/`pinDropLabel`.
         viewerState.draftPickup = RidePlace(
             id: "pin",
-            label: Self.pinAddress,
+            label: viewerState.pinDropLabel,
             subtitle: nil,
             miles: 0,
             minutes: 0,
             icon: "mappin.circle.fill",
-            coordinate: DriveFixtures.financialDistrict
+            coordinate: viewerState.pinDropCoordinate
         )
         switch returnTo {
         case .search: viewerState.sheetPhase = .search

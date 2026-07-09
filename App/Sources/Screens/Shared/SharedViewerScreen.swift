@@ -44,7 +44,9 @@ struct SharedViewerScreen: View {
                     )
 
                 if isPinDrop {
-                    RidePinDropMapOverlay(label: RideRequestPinDropContent.pinAddress)
+                    // MYR-211: live pin label is the reverse-geocoded device
+                    // location; sim keeps the fixture "Folsom & 2nd St".
+                    RidePinDropMapOverlay(label: viewerState.pinDropLabel)
                         .position(x: geo.size.width / 2, y: geo.size.height * 0.36)
                 }
             }
@@ -140,13 +142,16 @@ struct SharedViewerScreen: View {
                 isFollowing: $isFollowing,
                 showRoute: false, // MYR-197: no route/trip line on the rider's idle map before a ride is booked — see VehicleMapView.showRoute's header comment
                 showVehicle: false, // MYR-198 client ruling: no vehicle marker/label pre-acceptance — see VehicleMapView.showVehicle's header comment
-                // MYR-199 fix: pin the camera on the rider's own current
-                // location (M1 fixture stand-in — no real GPS in this milestone,
-                // reuses the same SF coordinate `RideRequestFixtures
-                // .savedPlaces[0]` ("Home") already points at) instead of
-                // silently following the watched vehicle's simulated driving
-                // route — see VehicleMapView.centerOverride's header comment.
-                centerOverride: DriveFixtures.home,
+                // MYR-199/211: pin the camera on the rider's region — the live
+                // device location first, live-vehicle region as fallback,
+                // fixture `DriveFixtures.home` only in sim (see
+                // `SharedViewerState.mapRegionCenter`). Not the watched
+                // vehicle's simulated driving route — see
+                // VehicleMapView.centerOverride's header comment.
+                centerOverride: viewerState.mapRegionCenter,
+                // MYR-211 addendum: standard user-location dot in live mode
+                // (authorized only); off in sim so screenshots stay identical.
+                showsUserLocation: viewerState.userLocation.showsUserLocationDot,
                 bottomContentInset: mapBottomInset
             )
         case .review, .booking:
@@ -426,8 +431,16 @@ struct SharedViewerScreen: View {
     private func quickPlaceButton(label: String, icon: String, place: RidePlace) -> some View {
         Button {
             viewerState.draftDestination = place
-            viewerState.pinReturn = .review
-            viewerState.sheetPhase = .pinDrop(returnTo: .review)
+            // MYR-211: live + authorized → "Current location" pickup, straight
+            // to Review (no pin drop). Sim / denied → the pre-MYR-211 pin-drop
+            // flow (byte-identical), same shortcut as `selectDestination`.
+            if let currentPickup = viewerState.currentLocationPickup() {
+                viewerState.draftPickup = currentPickup
+                viewerState.sheetPhase = .review
+            } else {
+                viewerState.pinReturn = .review
+                viewerState.sheetPhase = .pinDrop(returnTo: .review)
+            }
         } label: {
             HStack(spacing: 9) {
                 Image(systemName: icon).font(.system(size: 14)).foregroundStyle(Color.mrtGold)

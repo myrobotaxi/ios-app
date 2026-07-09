@@ -282,7 +282,10 @@ struct RideRequestReviewContent: View {
     private func confirm() {
         guard let pickup = viewerState.draftPickup, let destination = viewerState.draftDestination else { return }
         let input = RideRequestInput(
-            pickup: pickup,
+            // MYR-211: re-resolve a "Current location" pickup to the freshest
+            // device fix at request time so the created ride carries the real
+            // coordinate (a pin/saved pickup passes through unchanged).
+            pickup: viewerState.resolvedPickup(pickup),
             destination: destination,
             fleetMemberID: fleetMember.id,
             passenger: viewerState.draftPassenger,

@@ -56,6 +56,12 @@ struct VehicleMapView: View {
     /// vehicle telemetry; when `nil` (the owner's `HomeScreen` call site,
     /// unchanged), legacy vehicle-follow behavior.
     var centerOverride: CLLocationCoordinate2D?
+    /// MYR-211: draw the standard MapKit user-location dot (the rider's live
+    /// map in live mode, when location is authorized). The prototype defines no
+    /// bespoke user marker (`grep` "current location" in `design/` is only the
+    /// pickup-label fallback), so the standard blue dot is the accepted
+    /// deviation. Defaults `false` — the owner `HomeScreen` map is unaffected.
+    var showsUserLocation: Bool = false
     /// Reserved height along the bottom edge the sheet now physically
     /// covers (MYR-196 punch-list #2, `MRTDetentSheet`'s
     /// `.ignoresSafeArea(edges: .bottom)`). `MKMapView` reads its own
@@ -88,6 +94,13 @@ struct VehicleMapView: View {
     /// Rounds the 30Hz simulated progress to whole percent so the follow
     /// camera re-centers roughly once a second instead of on every tick.
     private var progressBucket: Double { (snapshot.progress * 100).rounded() }
+
+    /// MYR-211: a change key for `centerOverride` so the camera re-centers when
+    /// the live location fix arrives / moves (the first fix commonly lands after
+    /// `onAppear`). `nil` for the owner map (no override) — never fires.
+    private var centerOverrideKey: String? {
+        centerOverride.map { "\($0.latitude),\($0.longitude)" }
+    }
 
     var body: some View {
         Map(position: $cameraPosition) {
@@ -131,10 +144,19 @@ struct VehicleMapView: View {
         .onChange(of: isFollowing) { _, following in
             if following { recenter(animated: true) }
         }
+        // MYR-211: re-center when the live location override changes (first fix
+        // / device movement) — but never fight a user who has panned away.
+        .onChange(of: centerOverrideKey) { _, _ in
+            guard centerOverride != nil, isFollowing else { return }
+            recenter(animated: true)
+        }
     }
 
     @MapContentBuilder
     private var mapContent: some MapContent {
+        if showsUserLocation {
+            UserAnnotation()
+        }
         switch vehicle.activity {
         case .driving(let trip):
             if showRoute {

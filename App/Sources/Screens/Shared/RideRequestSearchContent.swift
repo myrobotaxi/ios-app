@@ -71,13 +71,12 @@ struct RideRequestSearchContent: View {
             ?? RideRequestFixtures.fleet[0].owner
     }
 
-    private var filteredResults: [RidePlace]? {
-        guard !query.isEmpty else { return nil }
-        let q = query.lowercased()
-        return RideRequestFixtures.recentPlaces.filter {
-            $0.label.lowercased().contains(q) || ($0.subtitle?.lowercased().contains(q) ?? false)
-        }
-    }
+    // MYR-211: results now come from the `PlaceSearching` seam
+    // (`viewerState.placeSearch`) — `SimulatedPlaceSearch` runs the identical
+    // fixture filter this computed property used to, `LivePlaceSearch` runs
+    // region-biased MapKit autocomplete. Same tri-state contract: `nil` → show
+    // Saved/Recent/Nearby, `[]` → "No results", `[…]` → the Results list.
+    private var searchResults: [RidePlace]? { viewerState.placeSearch.results }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -134,6 +133,9 @@ struct RideRequestSearchContent: View {
             }
         }
         .animation(reduceMotion ? .easeOut(duration: 0.2) : .timingCurve(0.32, 0.72, 0, 1, duration: 0.34), value: scheduleSheetOpen)
+        .onChange(of: query) { _, newValue in
+            viewerState.updateSearch(query: newValue)
+        }
         .onAppear {
             forSomeoneElse = viewerState.draftPassenger != nil
             if let schedule = viewerState.draftSchedule {
@@ -143,6 +145,9 @@ struct RideRequestSearchContent: View {
             #if DEBUG
             if let debugQuery = DebugScene.current?.searchQuery { query = debugQuery } // MYR-200 searchFiltered scene
             #endif
+            // MYR-211 — seed the search backend with the (possibly debug-set)
+            // query so the seam's `results` match the field on first render.
+            viewerState.updateSearch(query: query)
         }
     }
 
@@ -390,7 +395,7 @@ struct RideRequestSearchContent: View {
 
     @ViewBuilder
     private var resultsList: some View {
-        if let filteredResults {
+        if let filteredResults = searchResults {
             if filteredResults.isEmpty {
                 Text("No results for \u{201C}\(query)\u{201D}")
                     .font(.system(size: 13))
@@ -451,15 +456,24 @@ struct RideRequestSearchContent: View {
                     }
                 }
                 Spacer(minLength: 0)
+                // MYR-211: live results carry straight-line miles + 0 minutes
+                // (no per-result routing). Hide each line when 0 so a live row
+                // reads "X.X mi" alone rather than "0.0 mi / 0 min". Every
+                // fixture row has miles>0 AND minutes>0, so sim rows are
+                // unchanged (pixel-identical).
                 VStack(alignment: .trailing, spacing: 1) {
-                    Text(String(format: "%.1f mi", place.miles))
-                        .font(.system(size: 13, weight: .medium))
-                        .monospacedDigit()
-                        .foregroundStyle(Color.mrtText)
-                    Text("\(place.minutes) min")
-                        .font(.system(size: 11.5))
-                        .monospacedDigit()
-                        .foregroundStyle(Color.mrtTextMuted)
+                    if place.miles > 0 {
+                        Text(String(format: "%.1f mi", place.miles))
+                            .font(.system(size: 13, weight: .medium))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.mrtText)
+                    }
+                    if place.minutes > 0 {
+                        Text("\(place.minutes) min")
+                            .font(.system(size: 11.5))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.mrtTextMuted)
+                    }
                 }
             }
             .padding(.vertical, 9)
@@ -494,11 +508,17 @@ struct RideRequestSearchContent: View {
 
     private func selectDestination(_ place: RidePlace) {
         viewerState.draftDestination = place
-        if viewerState.draftPickup == nil {
+        if viewerState.draftPickup != nil {
+            viewerState.sheetPhase = .review
+        } else if let currentPickup = viewerState.currentLocationPickup() {
+            // Live + authorized: "Current location" is a real pickup — no pin
+            // drop needed (MYR-211 addendum #3). Sim / denied returns nil → the
+            // pre-MYR-211 Set-on-map flow below (byte-identical).
+            viewerState.draftPickup = currentPickup
+            viewerState.sheetPhase = .review
+        } else {
             viewerState.pinReturn = .review
             viewerState.sheetPhase = .pinDrop(returnTo: .review)
-        } else {
-            viewerState.sheetPhase = .review
         }
     }
 
