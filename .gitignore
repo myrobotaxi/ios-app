@@ -24,3 +24,6 @@ Package.resolved
 
 # Verification screenshots (drift gate)
 .shots/
+
+# local dev credentials (never commit)
+.mrt-backend-token*
