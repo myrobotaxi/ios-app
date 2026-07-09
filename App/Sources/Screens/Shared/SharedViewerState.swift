@@ -66,13 +66,9 @@ public final class SharedViewerState {
     let placeSearch: any PlaceSearching
     let userLocation: any UserLocationProviding
     let liveVehicleLocator: RiderLiveVehicleLocator?
-    /// True only when the live seams are composed — gates the live-only
-    /// current-location pickup + real pin-drop coordinate below.
+    /// True only when the live seams are composed — gates the real pin-drop
+    /// coordinate (device/vehicle region) below.
     let isLiveLocation: Bool
-
-    /// Sentinel id marking a "Current location" pickup whose coordinate is
-    /// resolved from the live device fix at request time (`resolvedPickup`).
-    public static let currentLocationPickupID = "current-location"
 
     /// MYR-191 extension point — see `RiderSheetPhase`.
     public var sheetPhase: RiderSheetPhase = .idle
@@ -142,42 +138,36 @@ public final class SharedViewerState {
         userLocation.coordinate ?? liveVehicleLocator?.coordinate ?? DriveFixtures.home
     }
 
+    /// Equatable change-key for `mapRegionCenter` (`CLLocationCoordinate2D`
+    /// isn't `Equatable`) — the search sheet re-runs its active query when
+    /// this changes (MYR-211 region-bias fix: a search issued before the first
+    /// location fix must re-bias once the fix lands). Constant in sim (the
+    /// fixture center never moves), so sim never re-runs — pixel-identical.
+    public var mapRegionCenterKey: String {
+        let center = mapRegionCenter
+        return "\(center.latitude),\(center.longitude)"
+    }
+
     /// Push the current query + region bias into the search backend.
     public func updateSearch(query: String) {
         placeSearch.update(query: query, regionCenter: mapRegionCenter)
     }
 
-    /// A "Current location" pickup, or `nil` when it can't be offered (sim, or
-    /// live-denied/no-fix) — the caller then routes through Set-on-map, exactly
-    /// the pre-MYR-211 flow (MYR-211 addendum #3/#5).
-    public func currentLocationPickup() -> RidePlace? {
-        guard let coordinate = userLocation.currentPickupCoordinate else { return nil }
-        return RidePlace(
-            id: Self.currentLocationPickupID,
-            label: userLocation.currentLocationLabel,
-            subtitle: nil,
-            miles: 0,
-            minutes: 0,
-            icon: "location.fill",
-            coordinate: coordinate
-        )
-    }
-
-    /// Re-resolve a current-location pickup to the freshest device fix at
-    /// request time (MYR-211 addendum #3 — the created ride carries the real
-    /// coordinate). A non-sentinel pickup passes through unchanged.
-    public func resolvedPickup(_ pickup: RidePlace) -> RidePlace {
-        guard pickup.id == Self.currentLocationPickupID,
-              let coordinate = userLocation.currentPickupCoordinate else { return pickup }
-        return RidePlace(
-            id: pickup.id,
-            label: userLocation.currentLocationLabel,
-            subtitle: pickup.subtitle,
-            miles: pickup.miles,
-            minutes: pickup.minutes,
-            icon: pickup.icon,
-            coordinate: coordinate
-        )
+    /// Select a destination and advance the flow (MYR-171 / MYR-211 defect B).
+    /// If a pickup is already set, straight to Review; otherwise route through
+    /// the pin-drop step so the rider confirms their exact pickup spot on the
+    /// map — the design flow (`screens.jsx:2195`). The pin-drop map is centered
+    /// on the rider's LIVE coordinate in live mode (`pinDropCoordinate`), so
+    /// "Current location" is the pin's STARTING point, never a bypass. Sim is
+    /// unchanged (no fix ⇒ pin-drop over the fixture region, as before).
+    public func selectDestination(_ place: RidePlace) {
+        draftDestination = place
+        if draftPickup != nil {
+            sheetPhase = .review
+        } else {
+            pinReturn = .review
+            sheetPhase = .pinDrop(returnTo: .review)
+        }
     }
 
     /// Pin-drop pickup coordinate: the real map-center (device/vehicle region)

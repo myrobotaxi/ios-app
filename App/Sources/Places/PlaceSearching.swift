@@ -120,6 +120,28 @@ enum RidePlaceMapper {
         )
     }
 
+    /// A suggestion whose coordinate couldn't be resolved (failed/slow
+    /// `MKLocalSearch`) — kept as a row from the completer's title/subtitle so a
+    /// batch never collapses to the empty state (MYR-211 defect A3). Distance is
+    /// hidden (`miles == 0`, matching `destRow`'s `miles > 0` guard); the
+    /// coordinate is the region center as a placeholder until the real
+    /// coordinate is resolved on selection.
+    static func unresolvedPlace(
+        title: String,
+        subtitle: String?,
+        regionCenter: CLLocationCoordinate2D
+    ) -> RidePlace {
+        RidePlace(
+            id: "live-unresolved|\(title)|\(subtitle ?? "")",
+            label: title,
+            subtitle: (subtitle?.isEmpty == false) ? subtitle : nil,
+            miles: 0,
+            minutes: 0,
+            icon: "mappin",
+            coordinate: regionCenter
+        )
+    }
+
     /// Saved places whose label/subtitle contain the query — ranked FIRST in the
     /// live results (MYR-211 deliverable 2, "saved places rank first, always").
     static func matchingSavedPlaces(query: String) -> [RidePlace] {

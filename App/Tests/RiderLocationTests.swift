@@ -25,7 +25,6 @@ private final class FakeUserLocation: UserLocationProviding {
         self.label = label
     }
 
-    var currentPickupCoordinate: CLLocationCoordinate2D? { authorized ? coordinate : nil }
     var currentLocationLabel: String { label }
     var showsUserLocationDot: Bool { authorized }
     func start() {}
@@ -47,54 +46,27 @@ final class RiderLocationTests: XCTestCase {
         return SharedViewerState(seams: seams)
     }
 
-    // MARK: currentLocationPickup availability
+    // MARK: destination select routes through pin-drop (MYR-211 defect B)
 
-    func testAuthorizedWithFixOffersCurrentLocationPickup() {
+    func testSelectDestinationRoutesThroughPinDropInLive() {
+        // Live + authorized with a real fix: selecting a destination must NOT
+        // bypass pin-drop (the merged-PR defect) — it lands on the pin-drop
+        // phase, returning to Review, with no pickup pre-set.
         let state = makeState(userLocation: FakeUserLocation(coordinate: dallas, authorized: true, label: "Main St"))
-        let pickup = state.currentLocationPickup()
-        XCTAssertEqual(pickup?.id, SharedViewerState.currentLocationPickupID)
-        XCTAssertEqual(pickup?.label, "Main St")
-        XCTAssertEqual(pickup?.coordinate.latitude ?? 0, dallas.latitude, accuracy: 0.0001)
+        state.selectDestination(RideRequestFixtures.recentPlaces[0])
+        XCTAssertEqual(state.sheetPhase, .pinDrop(returnTo: .review))
+        XCTAssertEqual(state.pinReturn, .review)
+        XCTAssertNil(state.draftPickup) // pin-drop confirm sets it, not selection
+        XCTAssertEqual(state.draftDestination?.id, RideRequestFixtures.recentPlaces[0].id)
     }
 
-    func testDeniedOffersNoCurrentLocationPickup() {
-        let state = makeState(userLocation: FakeUserLocation(coordinate: dallas, authorized: false))
-        XCTAssertNil(state.currentLocationPickup()) // ⇒ caller routes to Set-on-map
-    }
-
-    func testLateFixTransitionsFromNoPickupToPickup() {
-        let fake = FakeUserLocation(coordinate: nil, authorized: true) // authorized, no fix yet
-        let state = makeState(userLocation: fake)
-        XCTAssertNil(state.currentLocationPickup())
-        fake.coordinate = dallas // fix arrives
-        XCTAssertEqual(state.currentLocationPickup()?.coordinate.latitude ?? 0, dallas.latitude, accuracy: 0.0001)
-    }
-
-    // MARK: pickup resolves to the provider coordinate at request time
-
-    func testResolvedPickupCarriesFreshProviderCoordinate() {
-        let fake = FakeUserLocation(coordinate: dallas, authorized: true, label: "5th & Main")
-        let state = makeState(userLocation: fake)
-        // A sentinel pickup captured earlier with a stale coordinate…
-        let stale = RidePlace(
-            id: SharedViewerState.currentLocationPickupID,
-            label: "Current location", subtitle: nil, miles: 0, minutes: 0,
-            icon: "location.fill", coordinate: DriveFixtures.financialDistrict
-        )
-        // …re-resolves to the freshest device fix (the created ride's pickup).
-        let moved = CLLocationCoordinate2D(latitude: 33.10, longitude: -96.80)
-        fake.coordinate = moved
-        let resolved = state.resolvedPickup(stale)
-        XCTAssertEqual(resolved.coordinate.latitude, moved.latitude, accuracy: 0.0001)
-        XCTAssertEqual(resolved.coordinate.longitude, moved.longitude, accuracy: 0.0001)
-        XCTAssertEqual(resolved.label, "5th & Main")
-    }
-
-    func testResolvedPickupPassesThroughNonSentinelUnchanged() {
+    func testSelectDestinationSkipsPinDropOnlyWhenPickupAlreadySet() {
+        // The one shortcut that stays: a pickup already confirmed → straight to
+        // Review (the rider set it via an earlier pin-drop).
         let state = makeState(userLocation: FakeUserLocation(coordinate: dallas, authorized: true))
-        let saved = RideRequestFixtures.savedPlaces[0] // "Home", a real saved place
-        let resolved = state.resolvedPickup(saved)
-        XCTAssertEqual(resolved, saved) // untouched — not a current-location sentinel
+        state.draftPickup = RideRequestFixtures.savedPlaces[0]
+        state.selectDestination(RideRequestFixtures.recentPlaces[0])
+        XCTAssertEqual(state.sheetPhase, .review)
     }
 
     // MARK: region biasing priority (user → vehicle → fixture)
