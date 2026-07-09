@@ -110,9 +110,11 @@ final class LiveVehicleFleetTests: XCTestCase {
 final class TelemetryCompositionTests: XCTestCase {
 
     func testDefaultBackendIsProductionTelemetryHost() {
+        // Default is the Fly-managed API listener on :4443 (PR #24) — :443 serves
+        // Tesla vehicle mTLS and rejects plain API clients (split-TLS host).
         let env = TelemetryComposition.backendEnvironment(from: nil)
-        XCTAssertEqual(env?.restBaseURL.absoluteString, "https://telemetry.myrobotaxi.app/api")
-        XCTAssertEqual(env?.webSocketURL.absoluteString, "wss://telemetry.myrobotaxi.app/api/ws")
+        XCTAssertEqual(env?.restBaseURL.absoluteString, "https://telemetry.myrobotaxi.app:4443/api")
+        XCTAssertEqual(env?.webSocketURL.absoluteString, "wss://telemetry.myrobotaxi.app:4443/api/ws")
         XCTAssertEqual(env?.allowsInsecureLoopback, false)
     }
 
