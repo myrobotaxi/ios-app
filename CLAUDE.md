@@ -76,6 +76,6 @@ A `-MRT_SCENE <name>` launch **argument** is accepted as a fallback for tooling 
 
 - Rider request flow: `idle`, `search`, `searchFiltered`, `pinDrop`, `review`, `reviewPicker`, `booking`, `pending` (minimized "Request sent" pill), `trackingLeg1` (to pickup), `trackingLeg2` (in-ride), `trackingArriving`, `summary`, `declined`.
 - Rider scheduled-ride sheet: `scheduledDetails`, `scheduledReschedule`, `scheduledRequested`, `scheduledConfirmCancel`.
-- Owner side: `ownerIncoming`, `ownerScheduled`.
+- Owner side: `ownerHome`, `ownerDrives` (Drives tab, `initialOwnerTab` "drives"), `ownerIncoming`, `ownerScheduled`.
 
 Booking/pending/tracking scenes are seeded WITHOUT arming any timers, so they hold still for a screenshot instead of auto-advancing.

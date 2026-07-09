@@ -23,6 +23,21 @@ struct DrivesScreen: View {
 
     private var vehicle: Vehicle? { homeState.selectedVehicle }
 
+    // MYR-203 — the drive-history source behind the fleet seam: `DriveFixtures`
+    // for the simulated fleet, the live cursor-paginated feed for the live fleet.
+    // The screen reads it identically for both.
+    private var feed: any DrivesFeed { homeState.selectedDrivesFeed }
+
+    #if DEBUG
+    /// Verification hook — see the `.onChange`/`.onAppear` call sites.
+    private func autoOpenFirstDriveIfRequested() {
+        guard DebugScene.autoOpenFirstDrive,
+              drivesState.openDriveID == nil,
+              let first = feed.drives.first else { return }
+        drivesState.openDriveID = first.id
+    }
+    #endif
+
     var body: some View {
         ZStack {
             Color.mrtBg.ignoresSafeArea()
@@ -46,6 +61,30 @@ struct DrivesScreen: View {
             // from the true top edge instead of stacking under it.
             .ignoresSafeArea(.container, edges: .top)
         }
+        // Live fleet: ensure the fleet list is loading (idempotent — normally
+        // HomeScreen started it, but the Drives tab can be entered/booted first),
+        // then fetch page 1. Reloading when the selected vehicle resolves covers
+        // the boot-straight-to-Drives path, where the fleet list arrives AFTER
+        // this screen appears (the feed is a detached empty one until then). All
+        // idempotent no-ops for the simulated fixture feed.
+        .onAppear {
+            homeState.startTelemetry()
+            feed.loadInitial()
+            #if DEBUG
+            autoOpenFirstDriveIfRequested()
+            #endif
+        }
+        .onChange(of: homeState.selectedVehicleIndex) { _, _ in feed.loadInitial() }
+        .onChange(of: homeState.selectedVehicle?.id) { _, _ in feed.loadInitial() }
+        #if DEBUG
+        // Verification-only (MRT_OPEN_FIRST_DRIVE=1): open the first loaded drive
+        // so a Drive Summary can be captured full-frame headlessly (the Drives
+        // tab has no tap automation). The count change covers the live path
+        // (0 → N after the async fetch); the onAppear call covers the sim path
+        // (fixtures are present immediately, so count never changes). Never fires
+        // without the launch flag, so normal runs / Release are unaffected.
+        .onChange(of: feed.drives.count) { _, _ in autoOpenFirstDriveIfRequested() }
+        #endif
         // Full-bleed geometry (CLAUDE.md "Hard rules"): pin `BottomNav` 26pt
         // from the PHYSICAL bottom edge via the shared `mrtBottomNav` helper
         // (MYR-196 punch-list #3 — was floating ~34pt too high, stacked on
@@ -135,21 +174,101 @@ struct DrivesScreen: View {
             .padding(.bottom, 16)
         }
 
-        sortMenu
+        if feed.drives.isEmpty {
+            emptyHistoryContent
+        } else {
+            sortMenu
 
-        ForEach(groupedDrives, id: \.key) { group in
-            VStack(alignment: .leading, spacing: 0) {
-                Text(group.key)
-                    .mrtTextStyle(.label())
-                    .foregroundStyle(Color.mrtTextMuted)
-                    .padding(.horizontal, MRTMetrics.pageGutter)
-                    .padding(.bottom, 10)
-                ForEach(group.drives) { drive in
-                    DriveRow(drive: drive) { drivesState.openDriveID = drive.id }
+            ForEach(groupedDrives, id: \.key) { group in
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(group.key)
+                        .mrtTextStyle(.label())
+                        .foregroundStyle(Color.mrtTextMuted)
+                        .padding(.horizontal, MRTMetrics.pageGutter)
+                        .padding(.bottom, 10)
+                    ForEach(group.drives) { drive in
+                        DriveRow(drive: drive) { drivesState.openDriveID = drive.id }
+                    }
                 }
+                .padding(.bottom, 16)
             }
-            .padding(.bottom, 16)
+
+            // Cursor pagination (rest-api.md §7.2): while more pages exist, a
+            // footer requests the next one as it scrolls into view. `hasMore` is
+            // always false for the fixture feed, so this never shows in sim.
+            if feed.hasMore {
+                pagingFooter
+            }
         }
+    }
+
+    /// The empty-history branch: a calm loading pass, then either the quiet
+    /// status line (auth/unreachable) or the designed "no drives yet" state.
+    @ViewBuilder
+    private var emptyHistoryContent: some View {
+        if feed.isLoading {
+            connectingRow
+        } else if let message = feed.statusMessage {
+            statusRow(message)
+        } else {
+            emptyHistoryState
+        }
+    }
+
+    /// Designed empty state for a vehicle with no completed drives — mirrors the
+    /// Upcoming empty state's composition (icon tile · title · subtitle).
+    private var emptyHistoryState: some View {
+        VStack(spacing: 0) {
+            Image(systemName: "car.side")
+                .font(.system(size: 22))
+                .foregroundStyle(Color.mrtTextMuted)
+                .frame(width: 52, height: 52)
+                .background(Color.mrtDrivesEmptyIconFill, in: Circle())
+                .padding(.bottom, 14)
+            Text("No drives yet")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Color.mrtTextSec)
+                .padding(.bottom, 4)
+            Text("Completed drives for this vehicle will appear here.")
+                .font(.system(size: 12.5))
+                .foregroundStyle(Color.mrtTextMuted)
+                .multilineTextAlignment(.center)
+                .lineSpacing(3)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 32)
+        .padding(.vertical, 48)
+    }
+
+    private var connectingRow: some View {
+        HStack(spacing: 10) {
+            ProgressView().tint(Color.mrtTextMuted)
+            Text("Loading drives…")
+                .font(.system(size: 13))
+                .foregroundStyle(Color.mrtTextMuted)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 40)
+    }
+
+    private func statusRow(_ message: String) -> some View {
+        Text(message)
+            .font(.system(size: 13))
+            .foregroundStyle(Color.mrtTextMuted)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 32)
+            .padding(.vertical, 44)
+    }
+
+    /// Bottom-of-list paging trigger: fetches the next page as it appears.
+    private var pagingFooter: some View {
+        HStack {
+            ProgressView().tint(Color.mrtTextMuted)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 20)
+        .onAppear { feed.loadMore() }
     }
 
     private var sortMenu: some View {
@@ -191,19 +310,20 @@ struct DrivesScreen: View {
     /// by day) or flatten into a single "All drives" group sorted by
     /// distance/duration descending.
     private var groupedDrives: [(key: String, drives: [Drive])] {
+        let source = feed.drives
         switch sort {
         case .date:
             var order: [String] = []
             var buckets: [String: [Drive]] = [:]
-            for drive in DriveFixtures.drives {
+            for drive in source {
                 if buckets[drive.dateGroup] == nil { order.append(drive.dateGroup) }
                 buckets[drive.dateGroup, default: []].append(drive)
             }
             return order.map { (Drive.groupLabel(for: $0), buckets[$0] ?? []) }
         case .distance:
-            return [("All drives", DriveFixtures.drives.sorted { $0.miles > $1.miles })]
+            return [("All drives", source.sorted { $0.miles > $1.miles })]
         case .duration:
-            return [("All drives", DriveFixtures.drives.sorted { $0.mins > $1.mins })]
+            return [("All drives", source.sorted { $0.mins > $1.mins })]
         }
     }
 
