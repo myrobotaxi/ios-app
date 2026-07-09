@@ -84,6 +84,11 @@ struct RideHistoryScreen: View {
                     screenHeight: geo.size.height
                 )
             }
+            #if DEBUG
+            .onAppear { // MYR-200 scheduled* scenes: auto-open the sheet
+                if activeRideID == nil, let id = DebugScene.current?.scheduledRideID { activeRideID = id }
+            }
+            #endif
         }
     }
 

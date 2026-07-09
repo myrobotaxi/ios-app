@@ -77,6 +77,14 @@ struct ScheduledRideSheet: View {
             mode = .details
             day = ride.day
             time = ride.time
+            #if DEBUG
+            switch DebugScene.current { // MYR-200 scheduled* scenes
+            case .scheduledReschedule: mode = .reschedule
+            case .scheduledRequested: mode = .requested
+            case .scheduledConfirmCancel: mode = .confirmCancel
+            default: break
+            }
+            #endif
         }
     }
 
