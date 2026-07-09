@@ -84,7 +84,21 @@ enum DriveContractMapping {
     /// treats an all-blank value as absent (belt-and-suspenders — the wire omits
     /// the key entirely rather than sending "").
     static func label(name: String?, address: String?) -> String {
-        nonEmpty(name) ?? nonEmpty(address) ?? unnamedLocation
+        nonEmpty(name) ?? nonEmpty(address).map(shortAddress) ?? unnamedLocation
+    }
+
+    /// MYR-208 — interim tidy until the backend populates real place names
+    /// (MYR-206): a raw reverse-geocoded postal address ("4222 Stratus Way,
+    /// Frisco, Texas 75034, United States") keeps only street + city
+    /// ("4222 Stratus Way, Frisco"), so the Drives row's one-line "A → B" no
+    /// longer truncates before the destination. House numbers are kept — live
+    /// history distinguishes 4222 vs 4206 Stratus Way. Anything with fewer than
+    /// three comma components (a curated fixture label or a server-provided
+    /// place name) passes through verbatim.
+    static func shortAddress(_ raw: String) -> String {
+        let parts = raw.components(separatedBy: ", ")
+        guard parts.count >= 3 else { return raw }
+        return parts.prefix(2).joined(separator: ", ")
     }
 
     static func minutes(fromSeconds seconds: Int) -> Int {
