@@ -59,21 +59,18 @@ struct RideRequestPinDropContent: View {
             MRTButton("Confirm pickup here", variant: .outlineDraw, action: confirm)
                 .padding(.bottom, 10)
 
-            // MYR-200 fix: the jsx's Cancel (ride-request.jsx:736) is a
-            // full-width, CENTER-aligned plain-text button — a `<button>`
-            // stretches to the flex column's full width (align-items:stretch)
-            // and its label is browser-default centered. The app rendered it
-            // left-aligned (hugging its text inside the leading-aligned
-            // VStack). Note on color: the jsx uses `T.textSec` (muted) here,
-            // NOT the red destructive treatment `PendingContent`'s "Cancel
-            // request" uses (ride-request.jsx:628,661 `#FF6B6B`) — matched to
-            // the jsx exactly per the issue's "match the jsx" instruction.
+            // MYR-200 CLIENT RULING (Thomas, overrides ride-request.jsx:736):
+            // the jsx renders Cancel as muted textSec plain text; the client
+            // ruled it uses the app's red destructive cancel treatment,
+            // centered (same fill/label pair as the confirm-dialog
+            // destructive button, Handoff §7).
             Button("Cancel", action: cancel)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Color.mrtTextSec)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(Color.mrtDialogRed)
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity)
-                .frame(minHeight: MRTMetrics.minTapTarget - 20)
+                .frame(minHeight: MRTMetrics.minTapTarget)
+                .background(Color.mrtDangerFill, in: RoundedRectangle(cornerRadius: MRTMetrics.controlRadius, style: .continuous))
         }
         .padding(.horizontal, 22)
         .padding(.bottom, 16)
