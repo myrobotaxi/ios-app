@@ -1,6 +1,17 @@
 import SwiftUI
 import DesignSystem
 
+// MYR-200 search-gap fix — height probes so the sheet can hug its content up
+// to the 712pt cap (see `RideRequestSearchContent.scrollRegionHeight`).
+private struct SearchHeaderHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+private struct SearchResultsHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 // MARK: - RideRequestSearchContent (MYR-171, design/app/ride-request.jsx
 // SearchContent 150-346 + PassengerPicker 94-143)
 //
@@ -18,6 +29,38 @@ struct RideRequestSearchContent: View {
     @State private var scheduleSheetOpen = false
     @State private var schedDay = "Today"
     @State private var schedTime = "5:30 PM"
+
+    // MYR-200 search-gap fix — measured heights that let the sheet size to its
+    // content up to the 712pt cap (see `scrollRegionHeight`).
+    @State private var headerHeight: CGFloat = 0
+    @State private var resultsHeight: CGFloat = 0
+
+    /// TRUE root cause of the "dead zone below the last list row" (3 prior
+    /// rounds missed it): the sheet was pinned to a FIXED
+    /// `rideRequestSearchSheetHeight` (712) regardless of how many rows the
+    /// list held, and the inner `ScrollView` — always greedy along its axis —
+    /// stretched to fill it. Whenever the list was shorter than the sheet
+    /// (any filtered result set, and the prototype's own default list once
+    /// scrolled), everything below the last row was empty black sheet. The
+    /// prototype has the identical void (measured in the browser: a single
+    /// filtered result leaves ~437pt of empty sheet below it), so matching
+    /// the jsx verbatim reproduced the bug rather than fixing it.
+    ///
+    /// Fix: cap the scroll region at exactly the space left inside the 712pt
+    /// envelope (`712 − topPad − bottomPad − header`), then let the SHEET hug
+    /// `min(list content, that cap)`. A full list still fills to 712 and
+    /// scrolls (identical to before, faithful to the prototype's default);
+    /// a short list produces a short sheet whose last row sits the SAME 100pt
+    /// above the physical bottom the prototype's list bottom inset measures —
+    /// no void, in every case.
+    private var scrollRegionHeight: CGFloat {
+        let available = MRTMetrics.rideRequestSearchSheetHeight
+            - 6 // .padding(.top, 6)
+            - MRTMetrics.homeSheetContentBottomPadding
+            - headerHeight
+        guard available > 0 else { return 0 }
+        return min(resultsHeight, available)
+    }
 
     /// The fleet owner the search phase is provisionally requesting from —
     /// not yet chosen by the rider (that's Review's fleet picker), so this
@@ -38,46 +81,52 @@ struct RideRequestSearchContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // MYR-199 fix: drag-down-to-dismiss — ride-request.jsx:1150
-            // `d > 36 && phase === 'search'` → `closeToIdle()` (full draft
-            // reset back to the greeting sheet).
-            RideGrabHandle(onDragDismiss: { viewerState.resetDraftToIdle() })
-            chipRow
-                .padding(.bottom, viewerState.draftSchedule != nil ? 8 : 12)
-            if let schedule = viewerState.draftSchedule {
-                scheduleRow(schedule)
-                    .padding(.bottom, 12)
+            // Header (handle + chips + route) — measured so the scroll region
+            // below can be capped to the remaining space inside the 712pt
+            // envelope (MYR-200 search-gap fix, see `scrollRegionHeight`).
+            VStack(alignment: .leading, spacing: 0) {
+                // MYR-199 fix: drag-down-to-dismiss — ride-request.jsx:1150
+                // `d > 36 && phase === 'search'` → `closeToIdle()` (full draft
+                // reset back to the greeting sheet).
+                RideGrabHandle(onDragDismiss: { viewerState.resetDraftToIdle() })
+                chipRow
+                    .padding(.bottom, viewerState.draftSchedule != nil ? 8 : 12)
+                if let schedule = viewerState.draftSchedule {
+                    scheduleRow(schedule)
+                        .padding(.bottom, 12)
+                }
+                if forSomeoneElse {
+                    passengerPicker
+                        .padding(.bottom, 12)
+                }
+                routeCard
+                    .padding(.bottom, 10)
             }
-            if forSomeoneElse {
-                passengerPicker
-                    .padding(.bottom, 12)
-            }
-            routeCard
-                .padding(.bottom, 10)
-            // MYR-199 fix: client QA reported the results list "stopping
-            // short" with dead sheet surface below and a clipped last row.
-            // This `ScrollView` itself already sized/scrolled correctly —
-            // the actual cause was `VehicleMapView`'s camera continuously
-            // re-centering on the watched vehicle's ticking
-            // simulated-driving position on every telemetry tick (~30Hz),
-            // even though this idle/search map never draws that vehicle at
-            // all (see `VehicleMapView.centerOverride`'s header comment).
-            // That drove a ~30Hz re-render of the whole `SharedViewerScreen`
-            // tree underneath this sheet, which is what made the list feel
-            // stuck instead of scrolling smoothly to reveal Nearby. Fixed at
-            // the source — the map now holds a static "current location"
-            // camera while idle/searching, so this list scrolls its full
-            // content height exactly like the prototype.
+            .background(GeometryReader { geo in
+                Color.clear.preference(key: SearchHeaderHeightKey.self, value: geo.size.height)
+            })
+
+            // Results list — capped to the space the header leaves inside the
+            // 712pt envelope so the SHEET hugs `min(content, cap)`: a full
+            // list fills 712 and scrolls (faithful to the prototype default);
+            // a short list produces a short sheet with no black void below
+            // the last row (MYR-200 — see `scrollRegionHeight`'s doc comment
+            // for why the fixed 712 height was the real dead-zone cause).
             ScrollView {
                 resultsList
                     .padding(.bottom, 16)
+                    .background(GeometryReader { geo in
+                        Color.clear.preference(key: SearchResultsHeightKey.self, value: geo.size.height)
+                    })
             }
+            .frame(height: scrollRegionHeight)
         }
         .padding(.horizontal, 22)
         .padding(.top, 6)
         .padding(.bottom, MRTMetrics.homeSheetContentBottomPadding)
-        .frame(height: MRTMetrics.rideRequestSearchSheetHeight)
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        .onPreferenceChange(SearchHeaderHeightKey.self) { headerHeight = $0 }
+        .onPreferenceChange(SearchResultsHeightKey.self) { resultsHeight = $0 }
         .rideRequestSheetChrome()
         .overlay {
             if scheduleSheetOpen {
@@ -91,6 +140,9 @@ struct RideRequestSearchContent: View {
                 schedDay = schedule.day
                 schedTime = schedule.time
             }
+            #if DEBUG
+            if let debugQuery = DebugScene.current?.searchQuery { query = debugQuery } // MYR-200 searchFiltered scene
+            #endif
         }
     }
 

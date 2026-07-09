@@ -110,6 +110,9 @@ struct RideRequestReviewContent: View {
             if fleetPickerOpen { fleetSlideUpCard }
         }
         .animation(reduceMotion ? .easeOut(duration: 0.2) : .timingCurve(0.32, 0.72, 0, 1, duration: 0.34), value: fleetPickerOpen)
+        #if DEBUG
+        .onAppear { if DebugScene.current?.opensFleetPicker == true { fleetPickerOpen = true } } // MYR-200 reviewPicker scene
+        #endif
     }
 
     private func scheduledBadge(_ schedule: RideSchedule) -> some View {

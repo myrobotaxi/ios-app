@@ -91,6 +91,36 @@ struct RootView: View {
     /// Ride History.
     @State private var rideHistoryStore = RideHistoryStore()
 
+    // MYR-200 — seed the debug scene (if any) in `init` so the very first
+    // render already shows the requested phase. Applying it later (onAppear/
+    // task) proved unreliable at the WindowGroup root and left a Sign-In
+    // flash. See `DebugScenes.swift`. Release builds compile only the plain
+    // default initializers below.
+    @MainActor
+    init() {
+        var startScreen: AppScreen = .signIn
+        var startRole: UserRole = .owner
+        var startSharedTab = "shared"
+        var startOwnerTab = "home"
+        let viewer = SharedViewerState()
+        let service = SimulatedRideRequestService()
+        #if DEBUG
+        if let scene = DebugScene.current {
+            scene.apply(viewer: viewer, service: service)
+            startScreen = DebugScene.initialScreen
+            startRole = DebugScene.initialRole
+            startSharedTab = DebugScene.initialSharedTab
+            startOwnerTab = DebugScene.initialOwnerTab
+        }
+        #endif
+        _sharedViewerState = State(initialValue: viewer)
+        _rideRequestService = State(initialValue: service)
+        _screen = State(initialValue: startScreen)
+        _role = State(initialValue: startRole)
+        _sharedTab = State(initialValue: startSharedTab)
+        _ownerTab = State(initialValue: startOwnerTab)
+    }
+
     var body: some View {
         ZStack {
             switch screen {

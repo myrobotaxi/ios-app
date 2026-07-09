@@ -327,33 +327,56 @@ struct SharedViewerScreen: View {
 
     // MARK: Pending pill (ride-request.jsx's minimized "booked" state)
 
+    // MYR-200 fix (client QA finding #3): the minimized "Request sent" pill
+    // was a single reopen button with a plain 9pt gold dot + a chevron. The
+    // prototype's pill (screens.jsx:2093-2128, `reqMeta.pending`) is richer
+    // and split: a 30pt PULSING gold ring around an 18pt gold circle bearing a
+    // dark paperplane, `Request sent` / `Waiting for {owner} · {dest}` (14/12),
+    // and — for the pending state specifically — a RED circular ✕ that CANCELS
+    // the request (not a chevron; the chevron is only the accepted/declined
+    // affordance). Container: gold@10% fill, gold@33% hairline, radius 14,
+    // 13×11 padding. Tapping the label region still reopens the booking sheet.
     private func pendingPill(_ request: RideRequestRecord) -> some View {
-        Button {
-            viewerState.sheetPhase = .booking
-        } label: {
-            HStack(spacing: 12) {
-                Circle().fill(Color.mrtGold).frame(width: 9, height: 9).shadow(color: .mrtGoldGlow, radius: 5)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Request sent")
-                        .font(.system(size: 15, weight: .semibold))
-                        .tracking(-0.2)
-                        .foregroundStyle(Color.mrtText)
-                    Text("Waiting for \(request.input.fleetMember.owner) \u{00B7} \(request.input.destination.label)")
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(Color.mrtTextSec)
-                        .lineLimit(1)
+        HStack(spacing: 8) {
+            Button {
+                viewerState.sheetPhase = .booking
+            } label: {
+                HStack(spacing: 12) {
+                    PendingPulseIcon()
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Request sent")
+                            .font(.system(size: 14, weight: .semibold))
+                            .tracking(-0.2)
+                            .foregroundStyle(Color.mrtText)
+                        Text("Waiting for \(request.input.fleetMember.owner) \u{00B7} \(request.input.destination.label)")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.mrtTextSec)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right").font(.system(size: 13)).foregroundStyle(Color.mrtTextMuted)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            .background(Color.mrtGoldTileFaint, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.mrtGold.opacity(Double(0x40) / 255.0), lineWidth: MRTMetrics.hairline))
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+
+            Button {
+                rideRequestService.cancel()
+                viewerState.resetDraftToIdle()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Color.mrtDialogRed)
+                    .frame(width: 28, height: 28)
+                    .background(Color.mrtDialogRed.opacity(0.14), in: Circle())
+                    .contentShape(Circle().inset(by: -6))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Cancel request")
         }
-        .buttonStyle(.plain)
-        .frame(minHeight: MRTMetrics.minTapTarget)
+        .padding(.horizontal, 13)
+        .padding(.vertical, 11)
+        .background(Color.mrtGold.opacity(Double(0x1A) / 255.0), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.mrtGold.opacity(Double(0x55) / 255.0), lineWidth: MRTMetrics.hairline))
     }
 
     // MARK: "Ready" affordances (screens.jsx:2174-2205) — MYR-171 wires both.
@@ -576,6 +599,47 @@ private struct RotatingPlaceholder: View {
                     }
                 }
             }
+    }
+}
+
+// MARK: - Pending pill pulse icon (screens.jsx:2104-2109 + `mrt-ready-dot`)
+//
+// 30pt gold ring around an 18pt gold circle with a dark paperplane. The ring
+// carries `mrt-ready-dot`'s pulse (components.jsx:722-729): a gold glow that
+// spreads out and fades over 2s, ease-out, forever. Reduce Motion → the ring
+// rests with a static gold glow instead (the jsx's own reduced fallback,
+// `box-shadow: 0 0 8px rgba(gold,0.6)`).
+private struct PendingPulseIcon: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var animating = false
+
+    var body: some View {
+        ZStack {
+            if !reduceMotion {
+                Circle()
+                    .stroke(Color.mrtGold.opacity(0.55), lineWidth: 1.5)
+                    .frame(width: 30, height: 30)
+                    .scaleEffect(animating ? 1.5 : 1)
+                    .opacity(animating ? 0 : 0.55)
+            }
+            Circle()
+                .stroke(Color.mrtGold, lineWidth: 1.5)
+                .frame(width: 30, height: 30)
+                .shadow(color: reduceMotion ? Color.mrtGold.opacity(0.6) : .clear, radius: reduceMotion ? 4 : 0)
+            Circle()
+                .fill(Color.mrtGold)
+                .frame(width: 18, height: 18)
+                .overlay(
+                    Image(systemName: "paperplane.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Color.mrtGoldButtonLabel)
+                )
+        }
+        .frame(width: 30, height: 30)
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeOut(duration: 2).repeatForever(autoreverses: false)) { animating = true }
+        }
     }
 }
 

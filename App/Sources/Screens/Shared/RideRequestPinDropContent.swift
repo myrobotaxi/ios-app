@@ -59,11 +59,18 @@ struct RideRequestPinDropContent: View {
             MRTButton("Confirm pickup here", variant: .outlineDraw, action: confirm)
                 .padding(.bottom, 10)
 
+            // MYR-200 CLIENT RULING (Thomas, overrides ride-request.jsx:736):
+            // the jsx renders Cancel as muted textSec plain text; the client
+            // ruled it uses the app's red destructive cancel treatment,
+            // centered (same fill/label pair as the confirm-dialog
+            // destructive button, Handoff §7).
             Button("Cancel", action: cancel)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Color.mrtTextSec)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(Color.mrtDialogRed)
                 .buttonStyle(.plain)
-                .frame(minHeight: MRTMetrics.minTapTarget - 20)
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: MRTMetrics.minTapTarget)
+                .background(Color.mrtDangerFill, in: RoundedRectangle(cornerRadius: MRTMetrics.controlRadius, style: .continuous))
         }
         .padding(.horizontal, 22)
         .padding(.bottom, 16)

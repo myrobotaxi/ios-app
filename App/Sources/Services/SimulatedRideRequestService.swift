@@ -44,6 +44,16 @@ public final class SimulatedRideRequestService: RideRequestService {
         autoAcceptTimer = timer
     }
 
+    #if DEBUG
+    /// MYR-200 debug-scene seam (`DebugScenes.swift`): installs a fully-formed
+    /// `activeRequest` WITHOUT arming any timers, so a seeded booking/pending/
+    /// tracking scene holds still for a screenshot instead of auto-advancing.
+    /// Same-file so it can reach the `private(set) activeRequest` setter.
+    func debugSeed(_ record: RideRequestRecord) {
+        activeRequest = record
+    }
+    #endif
+
     public func accept() {
         autoAcceptTimer?.invalidate()
         autoAcceptTimer = nil
