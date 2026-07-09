@@ -59,18 +59,18 @@ struct RideRequestPinDropContent: View {
             MRTButton("Confirm pickup here", variant: .outlineDraw, action: confirm)
                 .padding(.bottom, 10)
 
-            // MYR-200 CLIENT RULING (Thomas, overrides ride-request.jsx:736):
-            // the jsx renders Cancel as muted textSec plain text; the client
-            // ruled it uses the app's red destructive cancel treatment,
-            // centered (same fill/label pair as the confirm-dialog
-            // destructive button, Handoff §7).
+            // MYR-200 CLIENT RULING (Thomas, follow-up 2026-07-09, overrides
+            // ride-request.jsx:736 AND the interim destructive-fill version):
+            // Cancel here matches the Booking sheet's "Cancel request" —
+            // plain centered red TEXT, no fill (ride-request.jsx:661 recipe:
+            // `color '#FF6B6B'`, 13/500, centered). Same exact treatment as
+            // `RideRequestBookingContent`'s cancel rows.
             Button("Cancel", action: cancel)
-                .font(.system(size: 15, weight: .medium))
+                .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(Color.mrtDialogRed)
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity)
-                .frame(minHeight: MRTMetrics.minTapTarget)
-                .background(Color.mrtDangerFill, in: RoundedRectangle(cornerRadius: MRTMetrics.controlRadius, style: .continuous))
+                .frame(minHeight: MRTMetrics.minTapTarget - 14)
         }
         .padding(.horizontal, 22)
         .padding(.bottom, 16)
