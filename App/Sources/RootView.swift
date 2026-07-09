@@ -121,13 +121,23 @@ struct RootView: View {
         let viewer = SharedViewerState()
         // Default to the composed service (sim, or live when the launch env
         // selects it). A DEBUG scene overrides with a concrete simulated service
-        // it can `debugSeed` — scenes are sim-only, mutually exclusive with live.
+        // it can `debugSeed` — UNLESS the env composed the live service: the
+        // documented live launch recipe combines a scene (ownerHome/ownerDrives,
+        // pure navigation) with MRT_TELEMETRY=live, and replacing the live
+        // service there silently reverted ride requests to fixtures while the
+        // fleet stayed live (found in the MYR-209 live audit). Seeded ride-flow
+        // scenes remain sim-only: in live mode the scene still routes and seeds
+        // the viewer, but its fixture ride record goes to a throwaway service.
         var service: any RideRequestService = RideRequestComposition.makeService()
         #if DEBUG
         if let scene = DebugScene.current {
-            let simulated = SimulatedRideRequestService()
-            scene.apply(viewer: viewer, service: simulated)
-            service = simulated
+            if service is SimulatedRideRequestService {
+                let simulated = SimulatedRideRequestService()
+                scene.apply(viewer: viewer, service: simulated)
+                service = simulated
+            } else {
+                scene.apply(viewer: viewer, service: SimulatedRideRequestService())
+            }
             startScreen = DebugScene.initialScreen
             startRole = DebugScene.initialRole
             startSharedTab = DebugScene.initialSharedTab
