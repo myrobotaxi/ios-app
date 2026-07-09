@@ -61,27 +61,46 @@ public struct RestClient: Sendable, SnapshotFetching {
         try await get(["vehicles", vehicleId, "snapshot"])
     }
 
-    // NOTE ON DRIVES: rest-api.md §7.2/§7.3 (`/vehicles/{id}/drives`,
-    // `/drives/{id}`) return REST-only shapes that are declared inline in the
-    // OpenAPI document and have NO generated `MyRobotaxiContracts` type in
-    // v0.5.0. Because the Kit's hard rule is "contracts types only — no
-    // hand-written wire shapes", the drives read-path is intentionally NOT
-    // implemented here; it unblocks the moment a `Drive` / `DriveSummary`
-    // contracts type is generated. `vehicles` + `snapshot` are the typed
-    // read-path the app needs first.
+    /// `GET /api/vehicles/{vehicleId}/drives` — one page of the vehicle's
+    /// completed-drive history, newest first (rest-api.md §7.2). Cursor-based
+    /// pagination (§4.2): pass a prior response's `nextCursor` to fetch the next
+    /// page; `nil` on the first page. Use `hasMore` (or `nextCursor != nil`) as
+    /// the paging predicate — `null nextCursor` means the last page. `limit` is
+    /// clamped to the contract's 1…100 range. Returns the `DrivesListResponse`
+    /// envelope (items + nextCursor + hasMore) — the envelope IS the contract,
+    /// so it is surfaced whole rather than unwrapped.
+    public func drives(
+        vehicleID: String,
+        cursor: String? = nil,
+        limit: Int = 20
+    ) async throws -> DrivesListResponse {
+        var query: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(min(100, max(1, limit))))]
+        if let cursor, !cursor.isEmpty { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+        return try await get(["vehicles", vehicleID, "drives"], query: query)
+    }
+
+    /// `GET /api/drives/{driveId}` — the full FR-3.4 record for one completed
+    /// drive (rest-api.md §7.3): the detail-only `energyUsedKwh` / `interventions`
+    /// on top of the `DriveSummary` stats. The tap-through target behind a
+    /// `DriveSummary` row / a `drive_ended` frame (the SDK's `fetchDrive`).
+    /// Returned as a bare object (no envelope).
+    public func drive(id: String) async throws -> Drive {
+        try await get(["drives", id])
+    }
 
     // MARK: - Request pipeline
 
-    private func get<T: Decodable>(_ segments: [String]) async throws -> T {
-        try await perform(segments, method: "GET", allowTokenRefresh: true)
+    private func get<T: Decodable>(_ segments: [String], query: [URLQueryItem] = []) async throws -> T {
+        try await perform(segments, query: query, method: "GET", allowTokenRefresh: true)
     }
 
     private func perform<T: Decodable>(
         _ segments: [String],
+        query: [URLQueryItem] = [],
         method: String,
         allowTokenRefresh: Bool
     ) async throws -> T {
-        let url = segments.reduce(environment.restBaseURL) { $0.appendingPathComponent($1) }
+        let url = try Self.buildURL(base: environment.restBaseURL, segments: segments, query: query)
         try validateTransport(url)
 
         // FR-6.1/6.2: fetch the token per request; on the 401 retry the provider
@@ -110,10 +129,26 @@ public struct RestClient: Sendable, SnapshotFetching {
         case 401 where allowTokenRefresh:
             // FR-6.2: do NOT retry with the same token — refresh once, retry
             // exactly once, then surface the typed error.
-            return try await perform(segments, method: method, allowTokenRefresh: false)
+            return try await perform(segments, query: query, method: method, allowTokenRefresh: false)
         default:
             throw Self.mapError(status: httpResponse.statusCode, data: data)
         }
+    }
+
+    /// Compose the request URL by appending each path segment to the REST base
+    /// and folding in query items. Path segments are percent-encoded by
+    /// `appendingPathComponent`; query items by `URLComponents`. Throws
+    /// `invalidResponse` if the composed URL is malformed (unreachable in
+    /// practice — the segments are contract-fixed identifiers).
+    private static func buildURL(base: URL, segments: [String], query: [URLQueryItem]) throws -> URL {
+        let path = segments.reduce(base) { $0.appendingPathComponent($1) }
+        guard !query.isEmpty else { return path }
+        guard var components = URLComponents(url: path, resolvingAgainstBaseURL: false) else {
+            throw RestError.invalidResponse
+        }
+        components.queryItems = query
+        guard let url = components.url else { throw RestError.invalidResponse }
+        return url
     }
 
     private func validateTransport(_ url: URL) throws {
