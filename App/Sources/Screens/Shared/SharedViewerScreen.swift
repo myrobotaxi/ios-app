@@ -23,7 +23,7 @@ import DesignSystem
 struct SharedViewerScreen: View {
     @Bindable var viewerState: SharedViewerState
     @Binding var sharedTab: String
-    var rideRequestService: SimulatedRideRequestService
+    var rideRequestService: any RideRequestService
     var historyStore: RideHistoryStore
     var riderName: String = "Sam" // screens.jsx:1857 `riderName = 'Sam'`; M1 has no tweaks panel.
 

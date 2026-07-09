@@ -1,0 +1,15 @@
+{
+  "_meta": {
+    "description": "ride_request_created WS frame (websocket-protocol.md §4.7, MYR-174). SUMMARY-ONLY like drive_ended (DV-11): ids + status + optional scheduledFor, NOT the pickup/dropoff/passenger (those are P1, refetched via GET /api/ride-requests/{id}). Unicast to the ride's two parties.",
+    "anchoredFRs": ["FR-9.3"],
+    "scenario": "ride-request"
+  },
+  "type": "ride_request_created",
+  "payload": {
+    "rideRequestId": "clride0000000000000001",
+    "vehicleId": "clxyz1234567890abcdef",
+    "riderId": "cluser0000000000rider0",
+    "status": "requested",
+    "timestamp": "2026-07-09T18:04:11.482Z"
+  }
+}

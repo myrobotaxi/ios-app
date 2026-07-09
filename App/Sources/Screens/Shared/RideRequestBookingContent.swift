@@ -14,7 +14,7 @@ import DesignSystem
 // so a stale reopen (well past the fill+hold window) never re-triggers it.
 struct RideRequestBookingContent: View {
     @Bindable var viewerState: SharedViewerState
-    var rideRequestService: SimulatedRideRequestService
+    var rideRequestService: any RideRequestService
     var totalHeight: CGFloat?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 

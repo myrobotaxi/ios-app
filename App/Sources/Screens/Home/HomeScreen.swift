@@ -22,11 +22,13 @@ import DesignSystem
 struct HomeScreen: View {
     @Bindable var homeState: OwnerHomeState
     @Binding var ownerTab: String
-    /// MYR-171 — the M1↔M2 ride-request seam; `@Bindable` so SwiftUI tracks
-    /// reads of `.activeRequest` reliably inside this view's body (see
-    /// `RideRequestService`'s header comment for why one instance is shared
-    /// with the rider's `SharedViewerScreen`).
-    @Bindable var rideRequestService: SimulatedRideRequestService
+    /// MYR-171 — the M1↔M2 ride-request seam; one instance is shared with the
+    /// rider's `SharedViewerScreen` (see `RideRequestService`'s header comment).
+    /// MYR-209 — the `any RideRequestService` seam (simulated or live). SwiftUI
+    /// still tracks `.activeRequest` reads inside `body`: the property witness on
+    /// the `@Observable` conformer drives the registrar through the existential,
+    /// so no `@Bindable` is needed (this view never makes a `$` binding from it).
+    var rideRequestService: any RideRequestService
     /// MYR-171 — accepting a *scheduled* request reserves it into Drives →
     /// Upcoming (`addUpcoming`) instead of dispatching now.
     @Bindable var drivesState: OwnerDrivesState

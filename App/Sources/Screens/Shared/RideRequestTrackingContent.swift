@@ -11,7 +11,7 @@ import DesignSystem
 // 'tracking' phase) — this view only ever renders the two live legs.
 struct RideRequestTrackingContent: View {
     @Bindable var viewerState: SharedViewerState
-    var rideRequestService: SimulatedRideRequestService
+    var rideRequestService: any RideRequestService
     var totalHeight: CGFloat?
 
     private var request: RideRequestRecord? { rideRequestService.activeRequest }
