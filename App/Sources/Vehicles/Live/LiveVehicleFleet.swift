@@ -55,6 +55,9 @@ final class LiveVehicleFleet: VehicleFleet {
     private var sources: [LiveVehicleTelemetrySource] = []
     /// Parallel to `summaries` — command executors stay simulated (P11 pending).
     private var executors: [any VehicleCommandExecutor] = []
+    /// Parallel to `summaries` — one cursor-paginated live drive feed per vehicle
+    /// (MYR-203), so pagination + loaded pages survive a tab switch.
+    private var feeds: [LiveDrivesFeed] = []
 
     private var started = false
     private var hasLoaded = false
@@ -107,6 +110,16 @@ final class LiveVehicleFleet: VehicleFleet {
             return SimulatedVehicleCommandExecutor(driving: false, plate: "")
         }
         return executors[index]
+    }
+
+    func drivesFeed(at index: Int) -> any DrivesFeed {
+        guard feeds.indices.contains(index) else {
+            // Out of range (fleet still loading / empty): a detached live feed
+            // bound to no vehicle — never fetches, shows nothing. Keeps the API
+            // total without vending a fixture feed in live mode.
+            return LiveDrivesFeed(rest: rest, vehicleID: "")
+        }
+        return feeds[index]
     }
 
     func badgeStatus(at index: Int) -> MRTVehicleStatus {
@@ -183,6 +196,15 @@ final class LiveVehicleFleet: VehicleFleet {
                 driving: summary.status == .driving,
                 plate: VehicleContractMapping.plateDisplay(vinLast4: summary.vinLast4)
             )
+        }
+        feeds = items.map { summary in
+            LiveDrivesFeed(rest: rest, vehicleID: summary.vehicleId)
+        }
+        // FR-9.2 — a completed drive on a vehicle refreshes its own drive feed
+        // (first page) so it appears without a manual re-fetch. Only the active
+        // vehicle's socket delivers frames, so only its feed refreshes.
+        for (source, feed) in zip(sources, feeds) {
+            source.liveState.onDriveEnded = { [weak feed] _ in feed?.refresh() }
         }
         if items.isEmpty {
             statusMessage = "No vehicles linked to this account"

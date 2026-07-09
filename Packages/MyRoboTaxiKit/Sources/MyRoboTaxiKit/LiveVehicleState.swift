@@ -34,6 +34,12 @@ public final class LiveVehicleState {
     /// Vehicle↔server connectivity, once a `connectivity` frame has arrived.
     public private(set) var vehicleOnline: Bool?
 
+    /// Optional hook fired when a `drive_ended` frame arrives for this vehicle
+    /// (FR-9.2). The app's live Drives list wires this to a first-page refresh so
+    /// a completed drive appears without re-deriving anything from telemetry.
+    /// `@MainActor` because the whole bridge is main-actor isolated.
+    public var onDriveEnded: (@MainActor (DriveEndedPayload) -> Void)?
+
     private let socket: TelemetrySocket
     private var eventTask: Task<Void, Never>?
     private var connectionTask: Task<Void, Never>?
@@ -89,6 +95,7 @@ public final class LiveVehicleState {
         case .driveEnded(let summary):
             isDriving = false
             lastDriveSummary = summary
+            onDriveEnded?(summary)
         case .connectivity(let payload):
             vehicleOnline = payload.online
         case .dataState(let group, let value):

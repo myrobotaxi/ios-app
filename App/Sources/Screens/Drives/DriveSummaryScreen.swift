@@ -61,14 +61,24 @@ struct DriveSummaryScreen: View {
         // prototype's own derivation for the same fixture id.
         let seedN = drive.id.unicodeScalars.reduce(0) { $0 + Int($1.value) }
         let computedSpeeds = Self.speedTrace(seed: seedN + 7)
-        self.maxSpeedMPH = Int((computedSpeeds.max() ?? 0).rounded())
-        self.avgSpeedMPH = Int((computedSpeeds.reduce(0, +) / Double(computedSpeeds.count) + 6).rounded())
-        let startPct = min(97, 76 + seedN % 18)
+        // MYR-203 — a live drive carries real avg/max speed + start/end charge
+        // (mapped from the DriveSummary/Drive contract); prefer them. The M1
+        // fixtures leave these nil, so the simulated Summary keeps its exact
+        // seeded derivation.
+        self.maxSpeedMPH = drive.maxSpeedMPH ?? Int((computedSpeeds.max() ?? 0).rounded())
+        self.avgSpeedMPH = drive.avgSpeedMPH ?? Int((computedSpeeds.reduce(0, +) / Double(computedSpeeds.count) + 6).rounded())
+        let startPct = drive.startChargePercent ?? min(97, 76 + seedN % 18)
         self.startBatteryPercent = startPct
-        self.endBatteryPercent = max(6, startPct + drive.batteryDeltaPercent)
+        self.endBatteryPercent = drive.endChargePercent ?? max(6, startPct + drive.batteryDeltaPercent)
     }
 
     private var isFullFSD: Bool { drive.fsdPercent >= 100 }
+
+    /// A live drive has no route polyline: contracts v0.6.0 Drive detail carries
+    /// no coordinates (the polyline is the separate §7.4 route endpoint, which
+    /// has no generated type yet), so `route` is empty and the hero renders a
+    /// calm routeless panel instead of the fitted map. M1 fixtures always route.
+    private var hasRoute: Bool { drive.route.count > 1 }
 
     var body: some View {
         ZStack {
@@ -145,7 +155,11 @@ struct DriveSummaryScreen: View {
 
     private var heroSection: some View {
         ZStack {
-            DriveHeroMap(route: drive.route, region: heroRegion)
+            if hasRoute {
+                DriveHeroMap(route: drive.route, region: heroRegion)
+            } else {
+                DriveHeroPlaceholder()
+            }
 
             // Top/bottom legibility scrims (screens.jsx:882-883).
             VStack(spacing: 0) {
@@ -369,6 +383,28 @@ private struct DriveHeroMap: View {
         }
         .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll, showsTraffic: false))
         .preferredColorScheme(.dark)
+        .allowsHitTesting(false)
+    }
+}
+
+// MARK: - Routeless hero (MYR-203)
+//
+// The Drive Summary hero for a live drive with no route polyline (contracts
+// v0.6.0 has no coordinates — see `hasRoute`). A calm muted panel keyed to the
+// same tokens as the map's dark ground, so the header/stats below still read as
+// a finished, intentional screen rather than a broken/empty map.
+private struct DriveHeroPlaceholder: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [.mrtElevated, .mrtBg],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            Image(systemName: "map")
+                .font(.system(size: 34, weight: .regular))
+                .foregroundStyle(Color.mrtTextMuted.opacity(0.55))
+        }
         .allowsHitTesting(false)
     }
 }

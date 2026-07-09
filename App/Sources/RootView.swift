@@ -205,7 +205,11 @@ struct RootView: View {
                     // nav tab; this mirrors that with an in-tab push rather
                     // than a second `AppScreen` case (screens never see the
                     // router — DrivesScreen just reports which id opened).
-                    if let openID = ownerDrivesState.openDriveID, let drive = DriveFixtures.drive(id: openID) {
+                    if let openID = ownerDrivesState.openDriveID,
+                       let drive = ownerHomeState.selectedDrivesFeed.drive(id: openID) {
+                        // MYR-203 — resolve the opened drive from the fleet's
+                        // drive feed (fixtures for sim, the live pages for live)
+                        // rather than the fixture array directly.
                         DriveSummaryScreen(drive: drive) {
                             ownerDrivesState.openDriveID = nil
                         }

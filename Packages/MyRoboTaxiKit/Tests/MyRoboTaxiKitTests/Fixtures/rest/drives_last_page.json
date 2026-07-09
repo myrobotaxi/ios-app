@@ -1,0 +1,31 @@
+{
+  "_meta": {
+    "description": "Final page of GET /api/vehicles/{vehicleId}/drives (rest-api.md §7.2): nextCursor is JSON null (the Go server emits null, not an omitted key) and hasMore is false. `hasMore` is the paging predicate; null nextCursor is the redundant confirmation of the last page.",
+    "anchoredFRs": ["FR-3.2", "FR-9.1"],
+    "scenario": "last-page"
+  },
+  "items": [
+    {
+      "id": "clmno9876543210zyxw0005",
+      "vehicleId": "clxyz1234567890abcdef",
+      "startTime": "2026-05-04T06:48:00Z",
+      "endTime": "2026-05-04T10:23:00Z",
+      "date": "2026-05-04",
+      "startLocation": "Home",
+      "startAddress": "742 Evergreen Terrace, San Francisco, CA 94107",
+      "endLocation": "Tahoe Donner",
+      "endAddress": "11509 Northwoods Blvd, Truckee, CA 96161",
+      "distanceMiles": 184.2,
+      "durationSeconds": 12900,
+      "avgSpeedMph": 51.4,
+      "maxSpeedMph": 74.0,
+      "startChargeLevel": 98,
+      "endChargeLevel": 41,
+      "fsdMiles": 178.0,
+      "fsdPercentage": 96.6,
+      "createdAt": "2026-05-04T10:23:01Z"
+    }
+  ],
+  "nextCursor": null,
+  "hasMore": false
+}

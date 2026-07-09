@@ -49,6 +49,7 @@ enum DebugScene: String, CaseIterable {
 
     // Owner side (HomeScreen → IncomingRequestSheet)
     case ownerHome         // plain owner Live Map, nothing seeded (live-telemetry captures)
+    case ownerDrives       // owner Drives tab, nothing seeded (live-drives captures)
     case ownerIncoming
     case ownerScheduled
 
@@ -59,6 +60,17 @@ enum DebugScene: String, CaseIterable {
     static var current: DebugScene? {
         guard let scene = DebugScene(rawValue: rawSceneName ?? "") else { return nil }
         return scene
+    }
+
+    /// Verification flag for the `ownerDrives` scene: when `MRT_OPEN_FIRST_DRIVE=1`
+    /// is set (env or `-MRT_OPEN_FIRST_DRIVE 1` arg), `DrivesScreen` auto-opens the
+    /// first loaded drive once its feed populates — the headless way to capture a
+    /// Drive Summary full-frame (the tab has no tap automation). DEBUG-only.
+    static var autoOpenFirstDrive: Bool {
+        if ProcessInfo.processInfo.environment["MRT_OPEN_FIRST_DRIVE"] == "1" { return true }
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-MRT_OPEN_FIRST_DRIVE"), i + 1 < args.count { return args[i + 1] == "1" }
+        return false
     }
 
     private static var rawSceneName: String? {
@@ -87,9 +99,9 @@ enum DebugScene: String, CaseIterable {
         return current.isScheduled ? "rideHistory" : "shared"
     }
 
-    static var initialOwnerTab: String { "home" }
+    static var initialOwnerTab: String { current == .ownerDrives ? "drives" : "home" }
 
-    private var isOwner: Bool { self == .ownerHome || self == .ownerIncoming || self == .ownerScheduled }
+    private var isOwner: Bool { self == .ownerHome || self == .ownerDrives || self == .ownerIncoming || self == .ownerScheduled }
 
     private var isScheduled: Bool {
         switch self {
@@ -214,7 +226,7 @@ enum DebugScene: String, CaseIterable {
             viewer.draftDestination = DebugScene.sampleDestination
             viewer.sheetPhase = .summary
         case .scheduledDetails, .scheduledReschedule, .scheduledRequested, .scheduledConfirmCancel,
-             .ownerHome, .ownerIncoming, .ownerScheduled:
+             .ownerHome, .ownerDrives, .ownerIncoming, .ownerScheduled:
             break // rider live-map / owner scenes don't drive the viewer sheet
         }
     }

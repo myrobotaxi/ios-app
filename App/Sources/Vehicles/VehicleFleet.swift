@@ -37,6 +37,11 @@ protocol VehicleFleet: AnyObject, Observable {
     func telemetry(at index: Int) -> any VehicleTelemetrySource
     func commandExecutor(at index: Int) -> any VehicleCommandExecutor
 
+    /// The drive-history feed for a vehicle (MYR-203): fixtures for the
+    /// simulated fleet, a cursor-paginated live feed for the live fleet. Held by
+    /// the fleet (not the screen) so pagination survives a tab switch.
+    func drivesFeed(at index: Int) -> any DrivesFeed
+
     /// The design badge state for a row (driving/parked/charging/offline).
     func badgeStatus(at index: Int) -> MRTVehicleStatus
 
@@ -68,6 +73,9 @@ final class SimulatedVehicleFleet: VehicleFleet {
 
     private let sources: [any VehicleTelemetrySource]
     private let executors: [any VehicleCommandExecutor]
+    /// One shared fixture feed — the M1 history is the same `DriveFixtures.drives`
+    /// regardless of the selected vehicle (matches the M1 demo).
+    private let sharedDrivesFeed = SimulatedDrivesFeed()
 
     var isConnecting: Bool { false }
     var statusMessage: String? { nil }
@@ -81,6 +89,7 @@ final class SimulatedVehicleFleet: VehicleFleet {
 
     func telemetry(at index: Int) -> any VehicleTelemetrySource { sources[index] }
     func commandExecutor(at index: Int) -> any VehicleCommandExecutor { executors[index] }
+    func drivesFeed(at index: Int) -> any DrivesFeed { sharedDrivesFeed }
 
     func badgeStatus(at index: Int) -> MRTVehicleStatus {
         vehicles[index].activity.isDriving ? .driving : .parked
