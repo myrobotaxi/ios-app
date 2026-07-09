@@ -126,6 +126,10 @@ struct ParkedHeroContent: View {
     let vehicle: Vehicle
     let location: ParkedLocation
     let snapshot: VehicleTelemetrySnapshot
+    /// The design badge state for the status row. Defaults to `.parked` so the
+    /// simulated M1 hero is unchanged; the live path (MYR-201) passes the real
+    /// wire status so a charging/offline vehicle shows the matching badge.
+    var status: MRTVehicleStatus = .parked
     let expanded: Bool
     let executor: any VehicleCommandExecutor
     @Binding var isEditingPlate: Bool
@@ -146,7 +150,7 @@ struct ParkedHeroContent: View {
                             .font(.system(size: 18, weight: .semibold))
                             .tracking(-0.3)
                             .foregroundStyle(Color.mrtText)
-                        StatusBadge(.parked)
+                        StatusBadge(status)
                     }
                     Spacer()
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
