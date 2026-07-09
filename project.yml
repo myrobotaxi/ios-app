@@ -14,6 +14,12 @@ packages:
     path: Packages/DesignSystem
   MyRoboTaxiKit:
     path: Packages/MyRoboTaxiKit
+  # MYR-201 — the app's live telemetry adapter names generated contracts types
+  # (`VehicleState`, `VehicleSummary`) directly, so it links the contracts
+  # product explicitly (same version the Kit resolves — SPM dedupes).
+  contracts:
+    url: https://github.com/myrobotaxi/contracts.git
+    from: 0.5.0
 
 settings:
   base:
@@ -29,6 +35,8 @@ targets:
     dependencies:
       - package: DesignSystem
       - package: MyRoboTaxiKit
+      - package: contracts
+        product: MyRobotaxiContracts
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.myrobotaxi.ios
@@ -40,3 +48,36 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
+
+  # MYR-201 — app-side unit tests (adapter/contract mapping). Hosted by the app
+  # target so `@testable import MyRoboTaxi` can reach the App-target types
+  # (`Vehicle`, `VehicleTelemetrySnapshot`, `VehicleContractMapping`, the fleet).
+  # Pure/no-network: contracts fixtures in, view models out.
+  MyRoboTaxiTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - App/Tests
+    dependencies:
+      - target: MyRoboTaxi
+      - package: MyRoboTaxiKit
+      - package: DesignSystem
+      - package: contracts
+        product: MyRobotaxiContracts
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: app.myrobotaxi.ios.tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/MyRoboTaxi.app/MyRoboTaxi"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+schemes:
+  MyRoboTaxi:
+    build:
+      targets:
+        MyRoboTaxi: all
+    test:
+      targets:
+        - MyRoboTaxiTests
+    run:
+      config: Debug
