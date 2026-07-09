@@ -32,10 +32,16 @@ import DesignSystem
 // rendered as a chart.
 struct DriveSummaryScreen: View {
     let drive: Drive
+    /// Live-only (MYR-204): lazily fetches the drive's GPS polyline for the hero
+    /// on summary open. Nil for sim / rider-history drives (their route, if any,
+    /// is already baked into `Drive.route`), so those paths render unchanged.
+    var routeProvider: ((String) async -> [CLLocationCoordinate2D])?
+    /// Live-only (MYR-204): resolves friendly endpoint labels for the header.
+    /// Nil for sim / rider-history drives → the header keeps `Drive.from`/`to`.
+    var placeLabeler: PlaceLabeler?
     let onBack: () -> Void
 
     private let dateLabel: String
-    private let heroRegion: MKCoordinateRegion
     private let avgSpeedMPH: Int
     private let maxSpeedMPH: Int
     private let startBatteryPercent: Int
@@ -48,12 +54,28 @@ struct DriveSummaryScreen: View {
     /// screens.jsx:856 `goldMode` — fades in the page-wide warm wash once the
     /// celebration has settled (852-861: `isFull` gate, 2.7s / 200ms delay).
     @State private var goldMode = false
+    /// MYR-204 — the lazily-fetched live route polyline (empty until it lands /
+    /// for a routeless drive). Sim drives never populate this; they render
+    /// `drive.route` directly, so the simulated hero is unchanged.
+    @State private var liveRoute: [CLLocationCoordinate2D] = []
+    @State private var didRequestRoute = false
+    /// MYR-204 — resolved header labels (saved-place / POI / locality). Nil until
+    /// resolved, and always nil for sim drives, so the header shows `drive.from`/
+    /// `drive.to` verbatim.
+    @State private var startLabel: String?
+    @State private var endLabel: String?
 
-    init(drive: Drive, onBack: @escaping () -> Void) {
+    init(
+        drive: Drive,
+        routeProvider: ((String) async -> [CLLocationCoordinate2D])? = nil,
+        placeLabeler: PlaceLabeler? = nil,
+        onBack: @escaping () -> Void
+    ) {
         self.drive = drive
+        self.routeProvider = routeProvider
+        self.placeLabeler = placeLabeler
         self.onBack = onBack
         self.dateLabel = Drive.groupLabel(for: drive.dateGroup)
-        self.heroRegion = VehicleRoute.fittedRegion(for: drive.route)
 
         // screens.jsx:836-849 `seedN`/`speeds`/`startPct`/`endPct` — ported
         // verbatim (same char-code-sum seed, same LCG, same formulas) so
@@ -74,11 +96,27 @@ struct DriveSummaryScreen: View {
 
     private var isFullFSD: Bool { drive.fsdPercent >= 100 }
 
-    /// A live drive has no route polyline: contracts v0.6.0 Drive detail carries
-    /// no coordinates (the polyline is the separate §7.4 route endpoint, which
-    /// has no generated type yet), so `route` is empty and the hero renders a
-    /// calm routeless panel instead of the fitted map. M1 fixtures always route.
-    private var hasRoute: Bool { drive.route.count > 1 }
+    /// The route actually rendered: a sim drive's baked `drive.route`, or the
+    /// lazily-fetched live polyline (§7.4). Sim keeps `drive.route` verbatim; a
+    /// live drive starts empty and fills in when `routeProvider` returns.
+    private var effectiveRoute: [CLLocationCoordinate2D] {
+        drive.route.isEmpty ? liveRoute : drive.route
+    }
+
+    /// A hero map renders once we hold a real polyline; until then (and for a
+    /// genuinely routeless `[]` drive) the calm routeless panel holds — no
+    /// spinner. M1 fixtures always route.
+    private var hasRoute: Bool { effectiveRoute.count > 1 }
+
+    /// Static hero camera fitted to whatever route is in hand.
+    private var heroRegion: MKCoordinateRegion {
+        VehicleRoute.fittedRegion(for: effectiveRoute)
+    }
+
+    /// Header endpoint labels: the resolved place label when present, else the
+    /// backend/fixture address (`Drive.from`/`to`).
+    private var fromLabel: String { startLabel ?? drive.from }
+    private var toLabel: String { endLabel ?? drive.to }
 
     var body: some View {
         ZStack {
@@ -106,6 +144,37 @@ struct DriveSummaryScreen: View {
             ActivityShareSheet(activityItems: shareItems)
         }
         .onAppear { scheduleGoldMode() }
+        .task { await loadLiveRouteAndLabels() }
+    }
+
+    // MARK: Live route + header labels (MYR-204)
+
+    /// Lazily fetch the live route on summary open, then resolve the header
+    /// place labels from its endpoints. Runs ONLY for a live drive (an empty
+    /// baked `drive.route`) with a provider; sim / rider drives no-op, so their
+    /// summary is byte-for-byte unchanged. No spinner — the routeless
+    /// placeholder holds until the polyline lands.
+    @MainActor
+    private func loadLiveRouteAndLabels() async {
+        guard drive.route.isEmpty, let routeProvider, !didRequestRoute else { return }
+        didRequestRoute = true
+        let coordinates = await routeProvider(drive.id)
+        guard !coordinates.isEmpty else { return }
+        liveRoute = coordinates
+        await resolvePlaceLabels(start: coordinates.first, end: coordinates.last)
+    }
+
+    /// Resolve the "A → B" endpoints through the labeling ladder (saved place →
+    /// POI/locality → address). Each degrades to the existing address on a
+    /// geocode timeout, so the header never blocks.
+    @MainActor
+    private func resolvePlaceLabels(start: CLLocationCoordinate2D?, end: CLLocationCoordinate2D?) async {
+        guard let placeLabeler, let start, let end else { return }
+        async let resolvedStart = placeLabeler.label(for: start, fallback: drive.from, cacheKey: "\(drive.id)|start")
+        async let resolvedEnd = placeLabeler.label(for: end, fallback: drive.to, cacheKey: "\(drive.id)|end")
+        let (resolvedFrom, resolvedTo) = await (resolvedStart, resolvedEnd)
+        startLabel = resolvedFrom
+        endLabel = resolvedTo
     }
 
     /// screens.jsx:852-861 `goldMode` scheduling — fires once, 2.7s after
@@ -156,7 +225,7 @@ struct DriveSummaryScreen: View {
     private var heroSection: some View {
         ZStack {
             if hasRoute {
-                DriveHeroMap(route: drive.route, region: heroRegion)
+                DriveHeroMap(route: effectiveRoute, region: heroRegion)
             } else {
                 DriveHeroPlaceholder()
             }
@@ -271,7 +340,7 @@ struct DriveSummaryScreen: View {
 
         let mapImage = await DriveRouteSnapshot.render(
             region: heroRegion,
-            route: drive.route,
+            route: effectiveRoute,
             size: CGSize(width: MRTMetrics.shareCardWidth, height: MRTMetrics.shareCardMapHeight)
         )
         let card = DriveShareCard(drive: drive, dateLabel: dateLabel, mapImage: mapImage)
@@ -296,9 +365,9 @@ struct DriveSummaryScreen: View {
                 .textCase(.uppercase)
                 .foregroundStyle(Color.mrtGold)
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(drive.from).foregroundStyle(Color.mrtText)
+                Text(fromLabel).foregroundStyle(Color.mrtText)
                 Text("→").foregroundStyle(Color.mrtGold).fontWeight(.regular)
-                Text(drive.to).foregroundStyle(Color.mrtText)
+                Text(toLabel).foregroundStyle(Color.mrtText)
             }
             .font(.system(size: 22, weight: .semibold))
             .tracking(-0.5)
@@ -802,6 +871,13 @@ private struct BatteryTile: View {
 
     private var endColor: Color { .mrtBatteryColor(Double(endPercent)) }
 
+    /// MYR-204/MYR-207 — guards the start & "used" figures against a live
+    /// drive's bogus `startChargeLevel = 0` (renders them "—" instead of
+    /// "0% → 75% / -75% used"). Sim readings are always trustworthy → unchanged.
+    private var readout: BatteryReadout {
+        BatteryReadout(usedPercent: usedPercent, startPercent: startPercent, endPercent: endPercent)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -809,38 +885,44 @@ private struct BatteryTile: View {
                     .mrtTextStyle(.label())
                     .foregroundStyle(Color.mrtTextMuted)
                 Spacer()
-                Text("\(usedPercent)% used")
+                Text(readout.usedText)
                     .font(.system(size: 12, weight: .medium))
                     .monospacedDigit()
                     .foregroundStyle(Color.mrtTextSec)
             }
             HStack(alignment: .firstTextBaseline, spacing: 11) {
-                percentLabel(startPercent, color: .mrtText)
+                percentLabel(readout.startText, showsPercent: readout.isStartKnown, color: .mrtText)
                 Text("→").font(.system(size: 16)).foregroundStyle(Color.mrtTextMuted)
-                percentLabel(endPercent, color: endColor)
+                percentLabel(readout.endText, showsPercent: true, color: endColor)
             }
             GeometryReader { geo in
-                let startWidth = geo.size.width * CGFloat(startPercent) / 100
-                let endWidth = geo.size.width * CGFloat(endPercent) / 100
+                let startWidth = geo.size.width * CGFloat(readout.startFraction)
+                let endWidth = geo.size.width * CGFloat(readout.endFraction)
                 ZStack(alignment: .leading) {
                     Capsule()
                         .fill(Color.mrtElevated)
                         .overlay(Capsule().strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline))
-                    Capsule().fill(Color.mrtText.opacity(0.11)).frame(width: startWidth)
+                    // Start fill + START marker only when the start reading is
+                    // trustworthy (MYR-207 guard) — a bogus 0% start draws neither.
+                    if readout.isStartKnown {
+                        Capsule().fill(Color.mrtText.opacity(0.11)).frame(width: startWidth)
+                    }
                     Capsule()
                         .fill(LinearGradient(colors: [endColor.opacity(0.73), endColor], startPoint: .leading, endPoint: .trailing))
                         .frame(width: endWidth)
-                    Rectangle()
-                        .fill(Color.mrtGold)
-                        .frame(width: 2)
-                        .shadow(color: .mrtGoldGlow, radius: 3)
-                        .offset(x: startWidth - 1)
-                    Text("START")
-                        .font(.system(size: 9, weight: .semibold))
-                        .tracking(0.5)
-                        .foregroundStyle(Color.mrtGoldLight)
-                        .fixedSize()
-                        .offset(x: min(max(0, startWidth - 16), geo.size.width - 34), y: -16)
+                    if readout.isStartKnown {
+                        Rectangle()
+                            .fill(Color.mrtGold)
+                            .frame(width: 2)
+                            .shadow(color: .mrtGoldGlow, radius: 3)
+                            .offset(x: startWidth - 1)
+                        Text("START")
+                            .font(.system(size: 9, weight: .semibold))
+                            .tracking(0.5)
+                            .foregroundStyle(Color.mrtGoldLight)
+                            .fixedSize()
+                            .offset(x: min(max(0, startWidth - 16), geo.size.width - 34), y: -16)
+                    }
                 }
             }
             .frame(height: 10)
@@ -850,14 +932,16 @@ private struct BatteryTile: View {
         .dsTileChrome(horizontal: 18, top: 17, bottom: 18)
     }
 
-    private func percentLabel(_ value: Int, color: Color) -> some View {
+    private func percentLabel(_ text: String, showsPercent: Bool, color: Color) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 1) {
-            Text("\(value)")
+            Text(text)
                 .font(.system(size: 28, weight: .medium))
                 .monospacedDigit()
                 .tracking(-1)
-            Text("%")
-                .font(.system(size: 16, weight: .medium))
+            if showsPercent {
+                Text("%")
+                    .font(.system(size: 16, weight: .medium))
+            }
         }
         .foregroundStyle(color)
         .fixedSize()

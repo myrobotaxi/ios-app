@@ -1,4 +1,5 @@
 import Foundation
+import CoreLocation
 import MyRobotaxiContracts
 
 // MARK: - Drive contracts → view-model mapping (MYR-203)
@@ -160,4 +161,50 @@ enum DriveContractMapping {
         f.dateFormat = "EEE, MMM d"
         return f
     }()
+}
+
+// MARK: - DriveRoute (§7.4) → hero polyline (MYR-204)
+//
+// The lazy per-drive GPS polyline (`DriveRoute`, contracts v0.7.0) that
+// `DriveSummaryScreen` fetches on summary open to draw the live route on its
+// MapKit hero. Pure + no I/O (unit-testable with a contracts fixture, like the
+// mappings above): RoutePoint(lat,lng) → CLLocationCoordinate2D, oldest-first,
+// thinned to a sane render cap.
+extension DriveContractMapping {
+
+    /// Upper bound on the points handed to the non-interactive hero polyline.
+    /// A 60-minute drive is ~3.6k points (§7.4); MapKit renders that, but a
+    /// uniform decimation to this cap keeps the static hero + the `ImageRenderer`
+    /// share-card snapshot cheap with no visible shape loss at hero zoom. The
+    /// first and last point (the endpoints the place labels key off) are always
+    /// preserved.
+    static let maxRoutePoints = 800
+
+    /// `DriveRoute` → the app's `[CLLocationCoordinate2D]` polyline, oldest
+    /// first, thinned to `maxPoints`. Empty in → empty out, so the caller keeps
+    /// the routeless placeholder for an empty (`[]`) route.
+    static func coordinates(from route: DriveRoute, maxPoints: Int = maxRoutePoints) -> [CLLocationCoordinate2D] {
+        thin(route.routePoints.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lng) }, maxPoints: maxPoints)
+    }
+
+    /// Uniform stride decimation that always keeps the true first and last
+    /// point. A no-op when the input is already within `maxPoints` (or when
+    /// `maxPoints` is degenerately small).
+    static func thin(_ coordinates: [CLLocationCoordinate2D], maxPoints: Int = maxRoutePoints) -> [CLLocationCoordinate2D] {
+        guard maxPoints > 2, coordinates.count > maxPoints else { return coordinates }
+        let stride = Double(coordinates.count - 1) / Double(maxPoints - 1)
+        var result: [CLLocationCoordinate2D] = []
+        result.reserveCapacity(maxPoints)
+        for i in 0..<maxPoints {
+            let index = min(Int((Double(i) * stride).rounded()), coordinates.count - 1)
+            result.append(coordinates[index])
+        }
+        // Belt-and-suspenders: guarantee the final element is the true last point.
+        if let last = coordinates.last,
+           let tail = result.last,
+           tail.latitude != last.latitude || tail.longitude != last.longitude {
+            result[result.count - 1] = last
+        }
+        return result
+    }
 }

@@ -1,0 +1,9 @@
+{
+  "_meta": {
+    "description": "Empty-route case from GET /api/drives/{driveId}/route (rest-api.md §7.4), contracts DriveRoute (v0.7.0). A very short drive (or a route that failed to decrypt) yields routePoints: [] — ALWAYS an array, NEVER null or a missing key. Consumers branch on routePoints.isEmpty, keeping the routeless placeholder.",
+    "anchoredFRs": ["FR-3.3"],
+    "scenario": "empty-route"
+  },
+  "driveId": "clmno0000000000zyxw9999",
+  "routePoints": []
+}

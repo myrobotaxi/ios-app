@@ -88,6 +88,18 @@ public struct RestClient: Sendable, SnapshotFetching {
         try await get(["drives", id])
     }
 
+    /// `GET /api/drives/{driveId}/route` — the full GPS polyline for one
+    /// completed drive (rest-api.md §7.4, `DriveRoute`). Deliberately excluded
+    /// from both the drives list (§7.2) and drive detail (§7.3): it is the heavy
+    /// per-drive payload (~3.6k points / ~250 KB for an hour drive), fetched
+    /// LAZILY on tap-through of a drive's map, never eagerly per list row (§7.4
+    /// lazy-fetch guidance — cellular bandwidth / perceived latency). Returned as
+    /// a bare object; `routePoints` is ALWAYS an array (`[]`, never null, for a
+    /// very short drive) — callers branch on `.isEmpty`, not on optionality.
+    public func driveRoute(id: String) async throws -> DriveRoute {
+        try await get(["drives", id, "route"])
+    }
+
     // MARK: - Request pipeline
 
     private func get<T: Decodable>(_ segments: [String], query: [URLQueryItem] = []) async throws -> T {
