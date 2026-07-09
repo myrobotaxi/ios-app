@@ -27,3 +27,6 @@ Package.resolved
 
 # local dev credentials (never commit)
 .mrt-backend-token*
+
+# MYR-203 drift captures
+.drift-shots/
