@@ -1,7 +1,9 @@
 import CoreLocation
+import DesignSystem
 import MapKit
 @testable import MyRoboTaxi
 import Observation
+import SwiftUI
 import XCTest
 
 // MARK: - MYR-212 defects 1 & 2 — authoritative pin (map-center follow, label)
@@ -138,6 +140,20 @@ final class PinDropAuthoritativeTests: XCTestCase {
         XCTAssertNil(LivePinLabeler.streetLabel(from: F(locality: "Frisco")))
     }
 
+    // MARK: MYR-213 — `name` must never leak a ZIP / bare number (the client bug)
+
+    func testLadderRejectsPostalCodeAndBareNumberNames() {
+        typealias F = LivePinLabeler.Fields
+        // The exact client degradation: mid-block point, no street, name == ZIP.
+        XCTAssertNil(LivePinLabeler.streetLabel(from: F(name: "75034", locality: "Frisco", postalCode: "75034")))
+        // A lone house number with no street is not a pickup spot either.
+        XCTAssertNil(LivePinLabeler.streetLabel(from: F(name: "4220", locality: "Frisco")))
+        // ZIP+4 form.
+        XCTAssertNil(LivePinLabeler.streetLabel(from: F(name: "75034-1234", locality: "Frisco", postalCode: "75034-1234")))
+        // A real named place still passes.
+        XCTAssertEqual(LivePinLabeler.streetLabel(from: F(name: "Stonebriar Centre", locality: "Frisco", postalCode: "75034")), "Stonebriar Centre")
+    }
+
     // MARK: -
 
     private func eventually(timeout: TimeInterval = 2, _ condition: @escaping () -> Bool) async {
@@ -150,43 +166,42 @@ final class PinDropAuthoritativeTests: XCTestCase {
     }
 }
 
-// MARK: - MYR-212 round 2 — pin coordinate is exactly under the glyph
+// MARK: - MYR-213 round 3 — glyph screen point is the single source of truth
 
-/// Unit-tests the pure projection that maps the map's reported region onto the
-/// coordinate under the fixed pin GLYPH (screen fraction 0.36), instead of the
-/// region center (0.5) that sits under the sheet. The full-bleed / center-at-0.5
-/// model is validated visually at the drift gate (there is no headless MKMapView
-/// to settle a real region — the documented UI-level assertion gap); this covers
-/// the load-bearing math: direction + magnitude.
-final class PinDropProjectionTests: XCTestCase {
+/// Round 3 deletes the round-2 assumed-fraction `PinDropProjection` (the model
+/// the client evidence disproved) in favour of a live `MapProxy.convert` of the
+/// glyph's real rendered point — which needs a laid-out map and so is validated
+/// empirically in-simulator at the drift gate, not by a unit test. What CAN be
+/// pinned in a unit test is the load-bearing invariant that survives: the glyph's
+/// `.position` and the coordinate readout use the ONE `pinGlyphPoint` — so they
+/// can never desync — and the street-level zoom choice.
+final class PinDropGlyphPointTests: XCTestCase {
 
-    private let center = CLLocationCoordinate2D(latitude: 33.10, longitude: -96.80)
-
-    func testGlyphAboveCenterShiftsCoordinateNorthByTheSpanFraction() {
-        let span = MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
-        let coord = PinDropProjection.coordinate(regionCenter: center, span: span, pinScreenFraction: 0.36)
-
-        // Glyph at 0.36 is above center (0.5) → 0.14 of the span north.
-        XCTAssertEqual(coord.latitude, center.latitude + 0.14 * 0.02, accuracy: 1e-9)
-        // Horizontally centered → longitude is unchanged.
-        XCTAssertEqual(coord.longitude, center.longitude, accuracy: 1e-12)
-        // Sanity: at a ~0.02° span this is ~150m north — the very error round 1 left.
-        XCTAssertGreaterThan(coord.latitude, center.latitude)
+    func testGlyphPointIsHorizontallyCenteredAtTheRestingFraction() {
+        let size = CGSize(width: 393, height: 852)
+        let point = VehicleMapView.pinGlyphPoint(in: size)
+        // Horizontally centered (x = the region-center longitude on screen).
+        XCTAssertEqual(point.x, size.width / 2, accuracy: 1e-9)
+        // Vertically at the tuned resting fraction — the SAME value the overlay
+        // draws at and the proxy converts from (one source of truth).
+        XCTAssertEqual(point.y, size.height * MRTMetrics.ridePinDropGlyphScreenFraction, accuracy: 1e-9)
     }
 
-    func testGlyphAtCenterIsANoOp() {
-        let span = MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
-        let coord = PinDropProjection.coordinate(regionCenter: center, span: span, pinScreenFraction: 0.5)
-        XCTAssertEqual(coord.latitude, center.latitude, accuracy: 1e-12)
-        XCTAssertEqual(coord.longitude, center.longitude, accuracy: 1e-12)
+    func testGlyphPointScalesWithTheMapSize() {
+        // Whatever full-bleed size the map reports, the point stays at the same
+        // fraction — so glyph and coordinate track together across devices.
+        let small = VehicleMapView.pinGlyphPoint(in: CGSize(width: 200, height: 400))
+        let large = VehicleMapView.pinGlyphPoint(in: CGSize(width: 400, height: 800))
+        XCTAssertEqual(large.x, small.x * 2, accuracy: 1e-9)
+        XCTAssertEqual(large.y, small.y * 2, accuracy: 1e-9)
     }
 
-    func testOffsetScalesLinearlyWithZoom() {
-        let tight = PinDropProjection.coordinate(regionCenter: center, span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01), pinScreenFraction: 0.36)
-        let wide = PinDropProjection.coordinate(regionCenter: center, span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02), pinScreenFraction: 0.36)
-        let tightOffset = tight.latitude - center.latitude
-        let wideOffset = wide.latitude - center.latitude
-        // Double the span → double the coordinate offset for the same glyph.
-        XCTAssertEqual(wideOffset, tightOffset * 2, accuracy: 1e-9)
+    func testStreetLevelSpanIsTighterThanTheOverviewAndInRange() {
+        // The pin-drop opens street-level (a few blocks), never the miles-wide
+        // overview the client's round-2 capture showed.
+        XCTAssertLessThan(MRTMetrics.pinDropStreetSpanDelta, MRTMetrics.mapRegionSpanDelta)
+        // ~0.003–0.005° ≈ 330–550m viewport — the documented street-level band.
+        XCTAssertGreaterThanOrEqual(MRTMetrics.pinDropStreetSpanDelta, 0.003)
+        XCTAssertLessThanOrEqual(MRTMetrics.pinDropStreetSpanDelta, 0.005)
     }
 }

@@ -241,9 +241,24 @@ public enum MRTMetrics {
     public static let rideRequestPinDropMapInset: CGFloat = 280
     /// The vertical screen fraction (0 = top edge, 1 = bottom edge) at which the
     /// fixed pin-drop glyph is drawn over the map — it sits ABOVE the sheet so
-    /// the rider can see the spot it marks. The confirmed pickup coordinate is
-    /// projected to THIS point, not the map region's center (fraction 0.5, under
-    /// the sheet); the two share this one constant so glyph and coordinate can
-    /// never drift apart (MYR-212 round 2).
+    /// the rider can see the spot it marks. The confirmed pickup coordinate is the
+    /// coordinate MapKit renders UNDER this exact point (MYR-213 converts it via
+    /// `MapProxy.convert`), so glyph and pickup share one screen point and can
+    /// never drift apart. Kept at MYR-212's tuned resting fraction so the
+    /// simulated pin-drop scene renders pixel-identically.
     public static let ridePinDropGlyphScreenFraction: CGFloat = 0.36
+
+    /// Default map camera span (degrees, latitude+longitude) for the owner Home
+    /// map and the rider idle/search map — ~6.6km, the neighborhood overview the
+    /// prototype's resting map shows. (Was a hardcoded 0.06 in `VehicleMapView`.)
+    public static let mapRegionSpanDelta: Double = 0.06
+
+    /// Street-level span (degrees) for the LIVE pin-drop camera — 0.004° latitude
+    /// ≈ ~440m, so at the pin-drop sheet's bottom inset the unobstructed map shows
+    /// a few blocks, matching the prototype's street-grid pin-drop feel. MYR-213:
+    /// round 2 opened the pin-drop at the 0.06° overview (~6.6km, the client's
+    /// "Legacy Dr to Parker Rd in one view" miles-wide capture). Live-only — the
+    /// simulated pin-drop keeps `mapRegionSpanDelta` so its scene stays
+    /// pixel-identical.
+    public static let pinDropStreetSpanDelta: Double = 0.004
 }
