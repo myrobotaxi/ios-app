@@ -1,4 +1,5 @@
 import CoreLocation
+import MapKit
 @testable import MyRoboTaxi
 import Observation
 import XCTest
@@ -146,5 +147,46 @@ final class PinDropAuthoritativeTests: XCTestCase {
             try? await Task.sleep(nanoseconds: 5_000_000)
         }
         XCTFail("condition never became true")
+    }
+}
+
+// MARK: - MYR-212 round 2 — pin coordinate is exactly under the glyph
+
+/// Unit-tests the pure projection that maps the map's reported region onto the
+/// coordinate under the fixed pin GLYPH (screen fraction 0.36), instead of the
+/// region center (0.5) that sits under the sheet. The full-bleed / center-at-0.5
+/// model is validated visually at the drift gate (there is no headless MKMapView
+/// to settle a real region — the documented UI-level assertion gap); this covers
+/// the load-bearing math: direction + magnitude.
+final class PinDropProjectionTests: XCTestCase {
+
+    private let center = CLLocationCoordinate2D(latitude: 33.10, longitude: -96.80)
+
+    func testGlyphAboveCenterShiftsCoordinateNorthByTheSpanFraction() {
+        let span = MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
+        let coord = PinDropProjection.coordinate(regionCenter: center, span: span, pinScreenFraction: 0.36)
+
+        // Glyph at 0.36 is above center (0.5) → 0.14 of the span north.
+        XCTAssertEqual(coord.latitude, center.latitude + 0.14 * 0.02, accuracy: 1e-9)
+        // Horizontally centered → longitude is unchanged.
+        XCTAssertEqual(coord.longitude, center.longitude, accuracy: 1e-12)
+        // Sanity: at a ~0.02° span this is ~150m north — the very error round 1 left.
+        XCTAssertGreaterThan(coord.latitude, center.latitude)
+    }
+
+    func testGlyphAtCenterIsANoOp() {
+        let span = MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+        let coord = PinDropProjection.coordinate(regionCenter: center, span: span, pinScreenFraction: 0.5)
+        XCTAssertEqual(coord.latitude, center.latitude, accuracy: 1e-12)
+        XCTAssertEqual(coord.longitude, center.longitude, accuracy: 1e-12)
+    }
+
+    func testOffsetScalesLinearlyWithZoom() {
+        let tight = PinDropProjection.coordinate(regionCenter: center, span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01), pinScreenFraction: 0.36)
+        let wide = PinDropProjection.coordinate(regionCenter: center, span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02), pinScreenFraction: 0.36)
+        let tightOffset = tight.latitude - center.latitude
+        let wideOffset = wide.latitude - center.latitude
+        // Double the span → double the coordinate offset for the same glyph.
+        XCTAssertEqual(wideOffset, tightOffset * 2, accuracy: 1e-9)
     }
 }

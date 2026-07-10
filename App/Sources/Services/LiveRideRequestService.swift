@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import MyRoboTaxiKit
 import MyRobotaxiContracts
@@ -52,14 +53,32 @@ final class LiveRideRequestService: RideRequestService {
 
     private let api: any RideRequestAPI
     private let socket: any RideEventStreaming
+    private let reconcilePolicy: ReconcilePolicy
     /// `nonisolated(unsafe)` so the nonisolated `deinit` can cancel it — only ever
     /// touched on the main actor otherwise (same precedent as
     /// `SimulatedRideRequestService`'s timers).
     private nonisolated(unsafe) var eventTask: Task<Void, Never>?
 
-    init(api: any RideRequestAPI, socket: any RideEventStreaming, autoStart: Bool = true) {
+    /// How the INDETERMINATE-create-failure reconcile polls the rider's own ride
+    /// list before giving up and declaring a definitive failure (see
+    /// `reconcileCreate`). Injected so tests can drive the window fast.
+    struct ReconcilePolicy: Sendable {
+        var attempts: Int
+        var delay: Duration
+        /// ~3s window (4 polls, ~1s apart) — generous enough to cover create
+        /// write-visibility lag without stranding the rider on a spinner.
+        static let live = ReconcilePolicy(attempts: 4, delay: .seconds(1))
+    }
+
+    init(
+        api: any RideRequestAPI,
+        socket: any RideEventStreaming,
+        autoStart: Bool = true,
+        reconcilePolicy: ReconcilePolicy = .live
+    ) {
         self.api = api
         self.socket = socket
+        self.reconcilePolicy = reconcilePolicy
         if autoStart { start() }
     }
 
@@ -107,22 +126,108 @@ final class LiveRideRequestService: RideRequestService {
                     self.applyRemote(rideID: ride.id) // server already advanced it
                 }
             } catch {
-                // MYR-212 defect 3: do NOT drop the optimistic pending on a
-                // create error. The client's live QA saw a frozen "10s" +
-                // placeholder labels ("Destination", 14 mi, 28 min) on Booking
-                // because a create round-trip that errored on the CLIENT (e.g. a
-                // transport blip or a response-decode mismatch) even though the
-                // server had created the ride nilled `activeRequest`, leaving
-                // Booking with no record — its countdown reads
-                // `record.requestedAt` and its labels read `record.input`, so a
-                // nil record freezes at 10s with fixture-ish fallbacks. Keeping
-                // the optimistic record makes live Booking behave exactly like
-                // sim: the 10s fill ticks down off `requestedAt` and carries the
-                // REAL draft labels; a WS `ride_request_created` frame then
-                // reconciles the real record (or the rider cancels from the
-                // pending pill if it truly never landed).
+                // MYR-212 defect 3 (round 2): CLASSIFY the create failure instead
+                // of blindly keeping the optimistic pending. The original round-1
+                // fix (keep it on ANY error) cured the frozen-"10s"/placeholder
+                // Booking card seen when a create that DID land on the server
+                // errored client-side — but it over-applied: for a DEFINITIVE
+                // failure (the server refused the create, no ride exists) it left
+                // the rider staring at "Request sent · Waiting…" forever for a
+                // ride that will never be accepted (the client's stuck-card
+                // complaint). The decision tree:
+                //
+                //  DEFINITIVE — a typed HTTP 4xx from the Kit
+                //    (`RestError.http` with a 4xx status: 400 invalid_request,
+                //    403 forbidden/permission_denied, 409 conflict, …). The
+                //    server received and REFUSED the request; no ride was
+                //    created. We branch on the TYPED case (FR-7.1), never the
+                //    human message. → `failCreateDefinitively()`: transition the
+                //    stuck pending to `.declined` so the rider's SharedViewerScreen
+                //    surfaces the EXISTING declined affordance (the same
+                //    `handleStatusChange(.declined)` path an owner-decline uses —
+                //    no new UI) and can retry, rather than a frozen "Waiting…".
+                //
+                //  INDETERMINATE — transport failure / decode mismatch / invalid
+                //    response / a 5xx: the POST MAY have created the ride
+                //    (round-1's real bug). Keep the optimistic pending (unchanged)
+                //    and run ONE background reconcile that PREFERS a GET of the
+                //    rider's own ride list over a blind re-POST (a re-POST
+                //    duplicates rides). Found → adopt the server id; nothing after
+                //    the window → fall through to the DEFINITIVE path.
+                if Self.isDefinitiveCreateFailure(error) {
+                    self.failCreateDefinitively()
+                } else {
+                    await self.reconcileCreate(input: input)
+                }
             }
         }
+    }
+
+    // MARK: Create-failure classification (MYR-212 defect 3, round 2)
+
+    /// True when a create failure DEFINITIVELY means no ride was created — a
+    /// typed HTTP 4xx from the Kit (`RestError.http` with a client-error status).
+    /// A 4xx is the server understanding and refusing the create (bad input,
+    /// forbidden, lifecycle conflict, rate limit), so retrying the same POST is
+    /// futile. Everything else (transport / decode / invalid response / 5xx, and
+    /// any non-`RestError`) is INDETERMINATE — the ride might exist, so it routes
+    /// to `reconcileCreate`. Branches on the typed `httpStatus`, never the message.
+    private static func isDefinitiveCreateFailure(_ error: Error) -> Bool {
+        guard let status = (error as? RestError)?.httpStatus else { return false }
+        return (400..<500).contains(status)
+    }
+
+    /// DEFINITIVE create failure: the optimistic pending describes a ride that
+    /// does not (and won't) exist. Transition it to `.declined` so the rider's
+    /// `SharedViewerScreen` reacts through the SAME reactive path as an
+    /// owner-decline (`handleStatusChange(.declined)` → `DeclinedNotice` over
+    /// Search) — the stuck "Request sent · Waiting…" pill/countdown is gone and
+    /// the rider can retry. No-op if the request was cancelled or already moved on.
+    private func failCreateDefinitively() {
+        guard var request = activeRequest, request.status == .pending else { return }
+        request.status = .declined
+        activeRequest = request
+        serverRideID = nil
+    }
+
+    /// INDETERMINATE create failure: discover whether the server actually created
+    /// the ride WITHOUT a blind re-POST (which would duplicate rides). Poll the
+    /// rider's own ride list (`GET /api/ride-requests`, newest first) for a
+    /// request matching this submission; found → adopt its server id + fold its
+    /// status onto the optimistic record. If nothing surfaces within the window,
+    /// the create truly never landed → definitive path.
+    private func reconcileCreate(input: RideRequestInput) async {
+        let since = activeRequest?.requestedAt ?? Date()
+        for attempt in 0..<reconcilePolicy.attempts {
+            if attempt > 0 { try? await Task.sleep(for: reconcilePolicy.delay) }
+            // Stop if the rider cancelled, or a WS `ride_request_created` frame
+            // already adopted the ride out from under us.
+            guard activeRequest?.status == .pending, serverRideID == nil else { return }
+            guard let page = try? await api.rideRequests(cursor: nil, limit: 20) else { continue }
+            if let match = page.items.first(where: { Self.matchesSubmission($0, input: input, since: since) }) {
+                serverRideID = match.id
+                integrate(match) // keeps the richer local draft input, folds status/id
+                return
+            }
+        }
+        failCreateDefinitively()
+    }
+
+    /// A wire ride IS this submission when its pickup+dropoff coordinates match
+    /// the draft (tight epsilon) and it was created no earlier than our optimistic
+    /// timestamp — enough to disambiguate our just-POSTed ride from older rides to
+    /// the same places in the single-account demo. Cancelled/terminal rows are
+    /// never a match (a fresh create is never already terminal).
+    private static func matchesSubmission(_ ride: RideRequest, input: RideRequestInput, since: Date) -> Bool {
+        guard RideRequestContractMapping.status(ride.status) != nil else { return false }
+        if let created = RideRequestContractMapping.parseISO(ride.createdAt),
+           created < since.addingTimeInterval(-5) { return false }
+        return coordinatesMatch(ride.pickup, input.pickup.coordinate)
+            && coordinatesMatch(ride.dropoff, input.destination.coordinate)
+    }
+
+    private static func coordinatesMatch(_ wire: MyRobotaxiContracts.RidePlace, _ coord: CLLocationCoordinate2D) -> Bool {
+        abs(wire.lat - coord.latitude) < 1e-4 && abs(wire.lng - coord.longitude) < 1e-4
     }
 
     func accept() {

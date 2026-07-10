@@ -239,4 +239,11 @@ public enum MRTMetrics {
     /// jsx's own retired constant) is a reasonable stand-in for that sheet's
     /// actual auto-height (ride-request.jsx:51 `SHEET_HEIGHTS.pinDrop`).
     public static let rideRequestPinDropMapInset: CGFloat = 280
+    /// The vertical screen fraction (0 = top edge, 1 = bottom edge) at which the
+    /// fixed pin-drop glyph is drawn over the map — it sits ABOVE the sheet so
+    /// the rider can see the spot it marks. The confirmed pickup coordinate is
+    /// projected to THIS point, not the map region's center (fraction 0.5, under
+    /// the sheet); the two share this one constant so glyph and coordinate can
+    /// never drift apart (MYR-212 round 2).
+    public static let ridePinDropGlyphScreenFraction: CGFloat = 0.36
 }
