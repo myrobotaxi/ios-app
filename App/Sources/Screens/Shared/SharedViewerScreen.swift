@@ -33,8 +33,20 @@ struct SharedViewerScreen: View {
 
     var body: some View {
         GeometryReader { geo in
+            // MYR-213: ONE source of truth for the pin-drop glyph's screen point.
+            // `glyphLocal` positions the glyph (in this safe-area GeometryReader,
+            // unchanged from the original so the sim scene is pixel-identical);
+            // `glyphGlobal` is the SAME point projected into the global space and
+            // handed to `VehicleMapView`, which converts it to the coordinate MapKit
+            // renders there. Deriving both from `glyphLocal` means the drawn glyph
+            // and the confirmed pickup can never desync.
+            let glyphLocal = VehicleMapView.pinGlyphPoint(in: geo.size)
+            let glyphGlobal = CGPoint(
+                x: geo.frame(in: .global).minX + glyphLocal.x,
+                y: geo.frame(in: .global).minY + glyphLocal.y
+            )
             ZStack {
-                backgroundMap
+                backgroundMap(glyphGlobalPoint: glyphGlobal)
                     .ignoresSafeArea()
 
                 sheetContent(totalHeight: geo.size.height)
@@ -45,9 +57,11 @@ struct SharedViewerScreen: View {
 
                 if isPinDrop {
                     // MYR-211: live pin label is the reverse-geocoded device
-                    // location; sim keeps the fixture "Folsom & 2nd St".
+                    // location; sim keeps the fixture "Folsom & 2nd St". Drawn at
+                    // `glyphLocal` — the exact original position — and `VehicleMapView`
+                    // reads the coordinate under this same point (via `glyphGlobal`).
                     RidePinDropMapOverlay(label: viewerState.pinDropLabel)
-                        .position(x: geo.size.width / 2, y: geo.size.height * MRTMetrics.ridePinDropGlyphScreenFraction)
+                        .position(glyphLocal)
                 }
             }
         }
@@ -137,7 +151,7 @@ struct SharedViewerScreen: View {
     // pairing (see that file's own header comment).
 
     @ViewBuilder
-    private var backgroundMap: some View {
+    private func backgroundMap(glyphGlobalPoint: CGPoint) -> some View {
         switch viewerState.sheetPhase {
         case .idle, .search, .pinDrop:
             VehicleMapView(
@@ -158,15 +172,22 @@ struct SharedViewerScreen: View {
                 // (authorized only); off in sim so screenshots stay identical.
                 showsUserLocation: viewerState.userLocation.showsUserLocationDot,
                 bottomContentInset: mapBottomInset,
-                // MYR-212: during pin-drop, adopt the map's settled center as
-                // the authoritative pickup (only then — no geocoding churn on
-                // the idle/search map, and a no-op in sim).
-                onCameraCenterChange: isPinDrop ? { viewerState.pinDropCameraSettled(at: $0) } : nil,
-                // MYR-212 round 2: project that coordinate to the pin GLYPH's
-                // on-screen position (the same fraction the overlay is drawn at
-                // above), so the confirmed pickup is exactly under the pin, not
-                // the region center hidden under the sheet.
-                pinScreenFraction: isPinDrop ? MRTMetrics.ridePinDropGlyphScreenFraction : nil
+                // MYR-213: during pin-drop, adopt the coordinate UNDER THE GLYPH
+                // (ground-truthed via `MapProxy.convert` of the glyph's real global
+                // screen point) as the authoritative pickup — only then (no geocoding
+                // churn on the idle/search map, and a no-op in sim). The glyph itself
+                // is drawn in `body` at the local twin of this point.
+                pinDrop: isPinDrop
+                    ? PinDropOverlay(
+                        glyphGlobalPoint: glyphGlobalPoint,
+                        onCoordinate: { viewerState.pinDropCameraSettled(at: $0) }
+                    )
+                    : nil,
+                // MYR-213: the LIVE pin-drop opens at a street-level span (~440m,
+                // a few blocks) instead of the 0.06° neighborhood overview the
+                // client's round-2 capture showed ("Legacy Dr to Parker Rd in one
+                // view"). Sim keeps the default span so its scene is pixel-identical.
+                regionSpanDelta: pinDropRegionSpanDelta
             )
         case .review, .booking:
             RideRequestRouteMap(route: requestRoute)
@@ -183,6 +204,16 @@ struct SharedViewerScreen: View {
         case .pinDrop: MRTMetrics.rideRequestPinDropMapInset
         default: MRTMetrics.sharedIdleSheetHeight
         }
+    }
+
+    /// The map camera span for the shared idle/search/pin-drop map: the LIVE
+    /// pin-drop opens street-level (a few blocks) so the rider confirms an exact
+    /// spot; every other case keeps the neighborhood overview. Sim pin-drop stays
+    /// on the overview so its scene renders pixel-identically (MYR-213).
+    private var pinDropRegionSpanDelta: Double {
+        (isPinDrop && viewerState.isLiveLocation)
+            ? MRTMetrics.pinDropStreetSpanDelta
+            : MRTMetrics.mapRegionSpanDelta
     }
 
     /// Pickup → destination pair for the route-fitted phases — from the

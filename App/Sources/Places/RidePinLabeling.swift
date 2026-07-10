@@ -72,6 +72,7 @@ final class LivePinLabeler: RidePinLabeling {
         var name: String?
         var subLocality: String?
         var locality: String?
+        var postalCode: String?
     }
 
     /// Adapter for a real `CLPlacemark` (the live path + `LiveUserLocation`).
@@ -82,7 +83,8 @@ final class LivePinLabeler: RidePinLabeling {
             areasOfInterest: placemark.areasOfInterest,
             name: placemark.name,
             subLocality: placemark.subLocality,
-            locality: placemark.locality
+            locality: placemark.locality,
+            postalCode: placemark.postalCode
         ))
     }
 
@@ -98,18 +100,33 @@ final class LivePinLabeler: RidePinLabeling {
         if let poi = fields.areasOfInterest?.compactMap(nonEmpty).first {
             return poi
         }
-        if let name = nonEmpty(fields.name), name != fields.locality {
+        // MYR-213: `placemark.name` for a mid-block / non-addressable point in a
+        // suburb is often the bare ZIP ("75034") or the city — NOT a pickup spot.
+        // The client's pin degraded to exactly this. Accept `name` only when it's
+        // a real place string: not the postal code, not the city, and not a bare
+        // number (a lone house number or ZIP with no street is meaningless).
+        if let name = nonEmpty(fields.name),
+           name != fields.locality,
+           name != nonEmpty(fields.postalCode),
+           !isBareNumber(name) {
             return name
         }
         if let neighborhood = nonEmpty(fields.subLocality) {
             return neighborhood
         }
-        // Deliberately NOT `locality` — a bare city is not a pickup spot.
+        // Deliberately NOT `locality` / `postalCode` — a bare city or ZIP is not a
+        // pickup spot; the caller keeps its previous street label / "Pinned location".
         return nil
     }
 
     private static func nonEmpty(_ value: String?) -> String? {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
         return value
+    }
+
+    /// A token with no letters (e.g. "75034", "4220", "75034-1234") — a ZIP or a
+    /// lone house number, never a street on its own.
+    private static func isBareNumber(_ value: String) -> Bool {
+        !value.contains { $0.isLetter }
     }
 }
