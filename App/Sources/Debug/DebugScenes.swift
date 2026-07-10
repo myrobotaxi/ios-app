@@ -30,6 +30,7 @@ enum DebugScene: String, CaseIterable {
     case idle
     case search
     case searchFiltered
+    case searchSelected    // a destination chosen, "Continue" CTA showing (MYR-215)
     case pinDrop
     case review
     case reviewPicker
@@ -205,6 +206,12 @@ enum DebugScene: String, CaseIterable {
             viewer.sheetPhase = .search
             viewer.showDeclinedNotice = true
         case .search, .searchFiltered:
+            viewer.sheetPhase = .search
+        case .searchSelected:
+            // MYR-215 deliverable 3: a destination is chosen but the flow hasn't
+            // advanced — the search sheet reflects it as filled + "Continue"
+            // (RideRequestSearchContent.onAppear picks up this draft).
+            viewer.draftDestination = DebugScene.sampleDestination
             viewer.sheetPhase = .search
         case .pinDrop:
             viewer.draftDestination = DebugScene.sampleDestination

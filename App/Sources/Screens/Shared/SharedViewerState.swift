@@ -172,6 +172,41 @@ public final class SharedViewerState {
         }
     }
 
+    // MARK: MYR-215 deliverable 3 — choose-then-proceed on the search sheet
+    //
+    // CLIENT-APPROVED PROTOTYPE DEVIATION (the story's 2nd, alongside the
+    // pin-drop zoom): the prototype advances the flow the instant a result row
+    // is tapped (`selectDestination` above, screens.jsx:2195). The client ruled
+    // that too abrupt — tapping a result should just ENTER that destination into
+    // the field (keeping the rider on Search so they can still set the
+    // Now/Schedule + Me/Someone-else chips), and an EXPLICIT "Continue" CTA then
+    // advances. The prototype shows no such CTA ("even if it's not displayed in
+    // the prototype … add something … that follows our design system"). Applies
+    // in BOTH modes so sim and live share one flow. See `RideRequestSearchContent`
+    // for the CTA (a `.gold` step-CTA — outline-draw stays reserved for the final
+    // "Request from X" commit) and the field-edit → search-as-you-type return.
+
+    /// Enter a destination on the search sheet WITHOUT advancing — the rider
+    /// stays on `.search` to set chips before proceeding (deliverable 3).
+    public func chooseDestination(_ place: RidePlace) {
+        draftDestination = place
+    }
+
+    /// Clear a search-sheet destination choice (the field was edited or cleared),
+    /// returning the sheet to search-as-you-type (deliverable 3).
+    public func clearChosenDestination() {
+        draftDestination = nil
+    }
+
+    /// Advance from the search sheet once the rider taps "Continue" — identical
+    /// semantics to `selectDestination` (pin-drop to confirm the pickup when none
+    /// is set yet, else straight to Review), but the destination is already
+    /// chosen. No-op if somehow tapped with no destination (deliverable 3).
+    public func proceedFromSearch() {
+        guard let destination = draftDestination else { return }
+        selectDestination(destination)
+    }
+
     // MARK: MYR-212 — authoritative pin (map-center follow + street label)
     //
     // The confirmed pickup is wherever the rider drags the map to, not the

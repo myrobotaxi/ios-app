@@ -116,6 +116,11 @@ struct VehicleMapView: View {
         centerOverride.map { "\($0.latitude),\($0.longitude)" }
     }
 
+    /// Whether pin-drop mode is on (MYR-215): the trigger for the entry re-frame
+    /// below. Kept as a plain `Bool` so it's `Equatable` for `.onChange`
+    /// (`PinDropOverlay` carries a closure and isn't).
+    private var isPinDropActive: Bool { pinDrop != nil }
+
     var body: some View {
         // MYR-213: a `MapReader` exposes the `MapProxy` so a screen point can be
         // converted to the coordinate MapKit actually renders there. The pin-drop
@@ -183,6 +188,27 @@ struct VehicleMapView: View {
             // / device movement) — but never fight a user who has panned away.
             .onChange(of: centerOverrideKey) { _, _ in
                 guard centerOverride != nil, isFollowing else { return }
+                recenter(animated: true)
+            }
+            // MYR-215 defect 2 ROOT CAUSE + FIX: this ONE `VehicleMapView` is
+            // reused (same SwiftUI view identity) across the rider's
+            // idle/search/pinDrop phases — only the `regionSpanDelta` prop swaps
+            // to the street value on pin-drop entry. But `.onAppear` (the sole
+            // place that span reached the camera) does NOT re-run on a phase
+            // change, and no other recenter fires on the idle/search → pinDrop
+            // transition, so the camera kept its wide idle/search span and
+            // MYR-213's street span silently never applied in a live session
+            // (it only ever worked when the `pinDrop` scene was launched cold,
+            // hitting `onAppear` with the street span already set). Fix: force a
+            // fresh re-frame whenever pin-drop turns on — re-enter follow mode so
+            // the freshest device fix (from `enterPinDrop()`'s `refresh()`, which
+            // lands via `centerOverrideKey` above) also re-centers, and recenter
+            // now at the street span. First-render pin-drop (cold scene launch)
+            // still re-frames via `onAppear`; `.onChange` covers the in-session
+            // transition it missed.
+            .onChange(of: isPinDropActive) { _, active in
+                guard active else { return }
+                isFollowing = true
                 recenter(animated: true)
             }
         }

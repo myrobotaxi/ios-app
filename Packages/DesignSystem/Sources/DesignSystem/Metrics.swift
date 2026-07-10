@@ -253,12 +253,15 @@ public enum MRTMetrics {
     /// prototype's resting map shows. (Was a hardcoded 0.06 in `VehicleMapView`.)
     public static let mapRegionSpanDelta: Double = 0.06
 
-    /// Street-level span (degrees) for the LIVE pin-drop camera — 0.004° latitude
+    /// Street-level span (degrees) for the pin-drop camera — 0.004° latitude
     /// ≈ ~440m, so at the pin-drop sheet's bottom inset the unobstructed map shows
     /// a few blocks, matching the prototype's street-grid pin-drop feel. MYR-213:
     /// round 2 opened the pin-drop at the 0.06° overview (~6.6km, the client's
-    /// "Legacy Dr to Parker Rd in one view" miles-wide capture). Live-only — the
-    /// simulated pin-drop keeps `mapRegionSpanDelta` so its scene stays
-    /// pixel-identical.
+    /// "Legacy Dr to Parker Rd in one view" miles-wide capture).
+    /// MYR-215: applied in BOTH live and sim (client-approved deviation — the
+    /// rider needs a few-blocks view to confirm an exact pickup regardless of
+    /// mode; see `SharedViewerScreen.pinDropRegionSpanDelta`). MYR-213 had
+    /// gated it to live to keep the sim scene pixel-identical to the prototype;
+    /// that gate is intentionally lifted for pin-drop zoom.
     public static let pinDropStreetSpanDelta: Double = 0.004
 }
