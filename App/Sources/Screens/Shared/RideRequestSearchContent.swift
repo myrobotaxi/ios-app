@@ -30,6 +30,14 @@ struct RideRequestSearchContent: View {
     @State private var schedDay = "Today"
     @State private var schedTime = "5:30 PM"
 
+    // MYR-215 deliverable 3: the destination chosen on this sheet, pending an
+    // explicit "Continue". Non-nil ⇒ the field is filled, the results list gives
+    // way to the CTA, and the flow has NOT advanced. Editing the field clears it
+    // (back to search-as-you-type). Mirrors `viewerState.draftDestination` but
+    // kept local so the field/CTA presentation is a pure view concern.
+    @State private var pickedDestination: RidePlace?
+    @FocusState private var destinationFieldFocused: Bool
+
     // MYR-200 search-gap fix — measured heights that let the sheet size to its
     // content up to the 712pt cap (see `scrollRegionHeight`).
     @State private var headerHeight: CGFloat = 0
@@ -54,12 +62,36 @@ struct RideRequestSearchContent: View {
     /// above the physical bottom the prototype's list bottom inset measures —
     /// no void, in every case.
     private var scrollRegionHeight: CGFloat {
+        Self.scrollRegionHeight(
+            isLive: viewerState.isLiveLocation,
+            headerHeight: headerHeight,
+            resultsHeight: resultsHeight
+        )
+    }
+
+    /// Pure height derivation (MYR-215 defect 1) — extracted so the
+    /// stable-vs-hug choice is unit-testable without mounting the view.
+    ///
+    /// In LIVE mode the search phase holds ONE stable height — the full 712
+    /// envelope — so the sheet frame never JUMPS when the first keystroke swaps
+    /// the calm pre-typing region for filtered results (the client's report:
+    /// "start at that height and fill in the filtered results as I type").
+    /// Pre-typing there's no fixture Saved/Recent list to fill it (MYR-214 hides
+    /// those in live), so the MYR-200 hug-to-content path would open the sheet
+    /// SHORT, then snap tall on the first result — exactly the jump. Pinning the
+    /// scroll region to `available` keeps the frame put; results populate in
+    /// place inside it, so the returned height is INDEPENDENT of `resultsHeight`.
+    ///
+    /// SIM keeps MYR-200's hug-to-content behavior (a full fixture list fills
+    /// 712 and scrolls; a filtered set shrinks with no dead zone below the last
+    /// row), so every sim search/searchFiltered scene stays pixel-identical.
+    static func scrollRegionHeight(isLive: Bool, headerHeight: CGFloat, resultsHeight: CGFloat) -> CGFloat {
         let available = MRTMetrics.rideRequestSearchSheetHeight
             - 6 // .padding(.top, 6)
             - MRTMetrics.homeSheetContentBottomPadding
             - headerHeight
         guard available > 0 else { return 0 }
-        return min(resultsHeight, available)
+        return isLive ? available : min(resultsHeight, available)
     }
 
     /// The fleet owner the search phase is provisionally requesting from —
@@ -105,20 +137,10 @@ struct RideRequestSearchContent: View {
                 Color.clear.preference(key: SearchHeaderHeightKey.self, value: geo.size.height)
             })
 
-            // Results list — capped to the space the header leaves inside the
-            // 712pt envelope so the SHEET hugs `min(content, cap)`: a full
-            // list fills 712 and scrolls (faithful to the prototype default);
-            // a short list produces a short sheet with no black void below
-            // the last row (MYR-200 — see `scrollRegionHeight`'s doc comment
-            // for why the fixed 712 height was the real dead-zone cause).
-            ScrollView {
-                resultsList
-                    .padding(.bottom, 16)
-                    .background(GeometryReader { geo in
-                        Color.clear.preference(key: SearchResultsHeightKey.self, value: geo.size.height)
-                    })
-            }
-            .frame(height: scrollRegionHeight)
+            // Below the header: the results list (search-as-you-type), or — once
+            // a destination is chosen (MYR-215 deliverable 3) — the "Continue"
+            // CTA in its place.
+            belowHeaderRegion
         }
         .padding(.horizontal, 22)
         .padding(.top, 6)
@@ -134,6 +156,13 @@ struct RideRequestSearchContent: View {
         }
         .animation(reduceMotion ? .easeOut(duration: 0.2) : .timingCurve(0.32, 0.72, 0, 1, duration: 0.34), value: scheduleSheetOpen)
         .onChange(of: query) { _, newValue in
+            // MYR-215 deliverable 3: editing the filled field returns to
+            // search-as-you-type — clear the pending choice (unless this is our
+            // own programmatic fill of the exact chosen label on select).
+            if let picked = pickedDestination, newValue != picked.label {
+                pickedDestination = nil
+                viewerState.clearChosenDestination()
+            }
             viewerState.updateSearch(query: newValue)
         }
         // MYR-211 region-bias fix (live-audit defect): a search issued BEFORE
@@ -157,6 +186,15 @@ struct RideRequestSearchContent: View {
             #if DEBUG
             if let debugQuery = DebugScene.current?.searchQuery { query = debugQuery } // MYR-200 searchFiltered scene
             #endif
+            // MYR-215 deliverable 3: re-entering Search with a destination already
+            // chosen (e.g. bouncing back from pin-drop, or a declined rebook)
+            // reflects it as filled + Continue, not an empty field. A debug query
+            // (searchFiltered) takes precedence — it drives the search-as-you-type
+            // capture.
+            if query.isEmpty, let dest = viewerState.draftDestination {
+                pickedDestination = dest
+                query = dest.label
+            }
             // MYR-211 — seed the search backend with the (possibly debug-set)
             // query so the seam's `results` match the field on first render.
             viewerState.updateSearch(query: query)
@@ -374,6 +412,7 @@ struct RideRequestSearchContent: View {
                     TextField("Where to?", text: $query)
                         .font(.system(size: 14.5, weight: .medium))
                         .foregroundStyle(Color.mrtText)
+                        .focused($destinationFieldFocused)
                 }
                 if !query.isEmpty {
                     Button { query = "" } label: {
@@ -403,17 +442,83 @@ struct RideRequestSearchContent: View {
         .padding(.vertical, 19)
     }
 
+    // MARK: Region below the header (results, or the Continue CTA)
+
+    /// Search-as-you-type results, or — once a destination is chosen (MYR-215
+    /// deliverable 3) — the "Continue" CTA in their place.
+    @ViewBuilder
+    private var belowHeaderRegion: some View {
+        if let picked = pickedDestination {
+            proceedRegion(for: picked)
+        } else {
+            // Results list — capped to the space the header leaves inside the
+            // 712pt envelope so the SHEET hugs `min(content, cap)` in sim: a full
+            // list fills 712 and scrolls; a short list produces a short sheet with
+            // no black void below the last row (MYR-200). Live pins it to the full
+            // envelope so the frame never jumps on the first keystroke (MYR-215
+            // defect 1 — see `scrollRegionHeight`).
+            ScrollView {
+                resultsList
+                    .padding(.bottom, 16)
+                    .background(GeometryReader { geo in
+                        Color.clear.preference(key: SearchResultsHeightKey.self, value: geo.size.height)
+                    })
+            }
+            .frame(height: scrollRegionHeight)
+        }
+    }
+
+    /// The destination is chosen: the results list gives way to an explicit
+    /// "Continue" step-CTA (MYR-215 deliverable 3). `.gold` (solid), not
+    /// `.outlineDraw` — the design reserves the animated outline-draw treatment
+    /// for the flow's pivotal COMMIT actions ("Request from {owner}"
+    /// ride-request.jsx:451, "Confirm pickup here" :735, "Accept & send" :1406),
+    /// while its plain step-advance CTAs are solid gold ("Set pickup · …" the
+    /// schedule picker's confirm, :340). This proceed is a step-advance, so gold
+    /// keeps outline-draw meaning the final request. "Continue" is the design
+    /// system's advance verb (onboarding.jsx:398, tutorials.jsx:349).
+    ///
+    /// In LIVE the CTA is pinned to the bottom of the SAME stable region the
+    /// results filled, so the sheet height is byte-identical to search-as-you-type
+    /// — the CTA appearing never jumps the sheet (defect 1 interaction). In SIM
+    /// the sheet hugs the CTA (the sanctioned height change on selection; the
+    /// pre-selection search scene stays pixel-identical).
+    @ViewBuilder
+    private func proceedRegion(for place: RidePlace) -> some View {
+        let cta = MRTButton("Continue", variant: .gold) {
+            viewerState.proceedFromSearch()
+        }
+        .padding(.top, 8)
+
+        if viewerState.isLiveLocation {
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                cta
+            }
+            .frame(height: scrollRegionHeight, alignment: .bottom)
+        } else {
+            cta
+        }
+    }
+
+    /// Enter a chosen destination into the field WITHOUT advancing (MYR-215
+    /// deliverable 3): fill the field with the resolved place name, dismiss the
+    /// keyboard, and clear the results (the field is now filled). The explicit
+    /// "Continue" CTA advances. Editing the field again returns to results.
+    private func choose(_ place: RidePlace) {
+        pickedDestination = place
+        viewerState.chooseDestination(place)
+        query = place.label // programmatic fill; onChange keeps the pick (label matches)
+        destinationFieldFocused = false
+    }
+
     // MARK: Results
 
     @ViewBuilder
     private var resultsList: some View {
         if let filteredResults = searchResults {
             if filteredResults.isEmpty {
-                Text("No results for \u{201C}\(query)\u{201D}")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.mrtTextMuted)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 32)
+                emptyStateText("No results for \u{201C}\(query)\u{201D}")
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     sectionLabel("Results").padding(.top, 6)
@@ -425,10 +530,15 @@ struct RideRequestSearchContent: View {
             // Nearby places pre-typing (same cross-country poisoning as a live
             // search would hit — a Frisco rider tapping the fixture "Home" or
             // "SFO · Terminal 2"). No real saved places until accounts (MYR-193)
-            // and no session-recents store yet, so the pre-typing list is empty:
-            // the sheet hugs the route card + "Where to?" field — a calm empty
-            // state, no new UI. Sim keeps every fixture section (below).
-            EmptyView()
+            // and no session-recents store yet, so there's nothing local to list.
+            //
+            // MYR-215 defect 1: the search sheet now opens at its ONE stable
+            // (712) height in live (see `scrollRegionHeight`) so it never jumps
+            // when results arrive. This is the calm empty region that fills that
+            // stable frame before the first keystroke — the existing muted
+            // empty-state treatment (`emptyStateText`), no new component. As the
+            // rider types, filtered Results populate in place above it.
+            emptyStateText("Type a destination to search")
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 sectionLabel("Saved").padding(.top, 6)
@@ -448,6 +558,17 @@ struct RideRequestSearchContent: View {
         }
     }
 
+    /// The shared muted empty-state treatment — a centered, muted line with the
+    /// list's vertical breathing room. Reused for both "No results for …" and
+    /// (MYR-215) the live pre-typing calm empty region, so they read identically.
+    private func emptyStateText(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 13))
+            .foregroundStyle(Color.mrtTextMuted)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 32)
+    }
+
     private func sectionLabel(_ text: String) -> some View {
         Text(text.uppercased())
             .font(.system(size: 11, weight: .semibold))
@@ -457,7 +578,7 @@ struct RideRequestSearchContent: View {
 
     private func destRow(_ place: RidePlace) -> some View {
         Button {
-            selectDestination(place)
+            choose(place)
         } label: {
             HStack(spacing: 14) {
                 Circle()
@@ -506,7 +627,7 @@ struct RideRequestSearchContent: View {
 
     private func nearbyCard(_ place: RidePlace) -> some View {
         Button {
-            selectDestination(place)
+            choose(place)
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 Image(systemName: place.icon).font(.system(size: 13)).foregroundStyle(Color.mrtGold)
@@ -525,13 +646,6 @@ struct RideRequestSearchContent: View {
         }
         .buttonStyle(.plain)
         .mrtSurface(.control, fill: .mrtElevated, radius: 14)
-    }
-
-    private func selectDestination(_ place: RidePlace) {
-        // MYR-211 defect B: destination select routes through the pin-drop step
-        // (unless a pickup is already set), in live AND sim — the pin-drop map
-        // starts on the rider's live coordinate. See `selectDestination`.
-        viewerState.selectDestination(place)
     }
 
     // MARK: Schedule slide-up card (ride-request.jsx:296-346)

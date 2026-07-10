@@ -183,10 +183,12 @@ struct SharedViewerScreen: View {
                         onCoordinate: { viewerState.pinDropCameraSettled(at: $0) }
                     )
                     : nil,
-                // MYR-213: the LIVE pin-drop opens at a street-level span (~440m,
-                // a few blocks) instead of the 0.06° neighborhood overview the
-                // client's round-2 capture showed ("Legacy Dr to Parker Rd in one
-                // view"). Sim keeps the default span so its scene is pixel-identical.
+                // MYR-213/215: pin-drop opens at a street-level span (~440m, a few
+                // blocks) instead of the 0.06° neighborhood overview the client's
+                // round-2 capture showed ("Legacy Dr to Parker Rd in one view").
+                // MYR-215 applies it in BOTH live and sim (client-approved
+                // deviation — see `pinDropRegionSpanDelta`). `VehicleMapView`
+                // re-frames to this span on pin-drop entry (MYR-215 defect 2 fix).
                 regionSpanDelta: pinDropRegionSpanDelta
             )
         case .review, .booking:
@@ -206,14 +208,31 @@ struct SharedViewerScreen: View {
         }
     }
 
-    /// The map camera span for the shared idle/search/pin-drop map: the LIVE
-    /// pin-drop opens street-level (a few blocks) so the rider confirms an exact
-    /// spot; every other case keeps the neighborhood overview. Sim pin-drop stays
-    /// on the overview so its scene renders pixel-identically (MYR-213).
+    /// The map camera span for the shared idle/search/pin-drop map: pin-drop
+    /// opens street-level (a few blocks) so the rider confirms an exact spot;
+    /// every other phase keeps the neighborhood overview.
+    ///
+    /// MYR-215 CLIENT-APPROVED DEVIATION (waives the sim pixel-identity gate for
+    /// pin-drop zoom ONLY): pin-drop is now street-level in BOTH live and sim.
+    /// MYR-213 had gated the street span on `isLiveLocation` to keep the sim
+    /// scene pixel-identical to the prototype's miles-wide pin-drop; the client
+    /// overrode that — "if the prototype is showing it zoomed out, who cares; we
+    /// should be doing what's best for the end user." A rider confirming an exact
+    /// pickup needs a few-blocks view in every mode. The sim pin-drop scene's
+    /// ZOOM legitimately changes as a result (fixture region center, street span);
+    /// its pin, label, and sheet content are otherwise identical, and every other
+    /// sim scene stays pixel-identical. See the MYR-215 PR body for the sanctioned
+    /// before/after.
     private var pinDropRegionSpanDelta: Double {
-        (isPinDrop && viewerState.isLiveLocation)
-            ? MRTMetrics.pinDropStreetSpanDelta
-            : MRTMetrics.mapRegionSpanDelta
+        Self.mapSpanDelta(isPinDrop: isPinDrop)
+    }
+
+    /// Pure span selection (MYR-215) — extracted so the both-modes rule is
+    /// unit-testable without mounting the view. Deliberately takes NO
+    /// `isLiveLocation` parameter: the pin-drop street span now applies in every
+    /// mode (client-approved deviation), so mode simply can't influence it.
+    static func mapSpanDelta(isPinDrop: Bool) -> Double {
+        isPinDrop ? MRTMetrics.pinDropStreetSpanDelta : MRTMetrics.mapRegionSpanDelta
     }
 
     /// Pickup → destination pair for the route-fitted phases — from the
