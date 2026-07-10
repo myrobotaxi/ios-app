@@ -120,9 +120,9 @@ final class PickupPointLabelTests: XCTestCase {
                 [PickupPOI(name: "Starbucks", coordinate: center)] // at the pin
             },
             geocode: LivePinLabeler(resolve: { _ in
-                LivePinLabeler.GeocodeResult(
+                .success(LivePinLabeler.GeocodeResult(
                     fields: .init(subThoroughfare: "4555", thoroughfare: "Warwick Ln"),
-                    snappedLocation: nil)
+                    snappedLocation: nil))
             })
         )
         let label = await labeler.label(for: pin)
@@ -133,9 +133,9 @@ final class PickupPointLabelTests: XCTestCase {
         let labeler = LivePickupPointLabeler(
             pois: { _, _ in [] },
             geocode: LivePinLabeler(resolve: { _ in
-                LivePinLabeler.GeocodeResult(
+                .success(LivePinLabeler.GeocodeResult(
                     fields: .init(thoroughfare: "Town and Country Blvd"),
-                    snappedLocation: nil)
+                    snappedLocation: nil))
             })
         )
         let label = await labeler.label(for: pin)

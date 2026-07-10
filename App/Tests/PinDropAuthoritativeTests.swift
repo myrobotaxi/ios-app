@@ -28,12 +28,15 @@ private final class FakeUserLocation: UserLocationProviding {
     func refresh() { refreshCount += 1 }
 }
 
-/// Fake reverse geocoder — returns a canned street label for any coordinate.
+/// Fake reverse geocoder — returns a canned street label for any coordinate
+/// (`.resolved`), or a genuine `.unresolved` when the stub is nil.
 @MainActor
 private final class FakePinLabeler: RidePinLabeling {
     var stub: String?
     init(stub: String?) { self.stub = stub }
-    func label(for coordinate: CLLocationCoordinate2D) async -> String? { stub }
+    func resolve(for coordinate: CLLocationCoordinate2D) async -> PinLabelResolution {
+        stub.map { .resolved($0) } ?? .unresolved
+    }
 }
 
 @MainActor

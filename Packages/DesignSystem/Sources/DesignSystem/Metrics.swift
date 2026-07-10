@@ -200,6 +200,15 @@ public enum MRTMetrics {
     /// ride is scheduled — `idleHeight={(reqActive ? 246 : 286) + …}` reduces
     /// to 286 in M1, which never has an active/scheduled ride (screens.jsx:2078).
     public static let sharedIdleSheetHeight: CGFloat = 286
+    /// MYR-223 deliverable 2 — the idle sheet's ACTUAL height when it is showing
+    /// the minimized "Request sent" pending pill instead of the greeting/search
+    /// content. The idle sheet drops its fixed `sharedIdleSheetHeight` and hugs
+    /// the (much shorter) pill in that state (MYR-199), so the map's bottom inset
+    /// must track this shorter chrome — otherwise the MapKit legal attribution,
+    /// insetted for the tall 286 greeting sheet, floats at mid-page above the
+    /// short pill (the client's on-device screenshot). Sized to the pill card:
+    /// the idle sheet's 14 top + ~52 pill row + 98 nav-clearance bottom padding.
+    public static let sharedPendingPillSheetHeight: CGFloat = 164
     /// ScheduledRideSheet map-preview panel height (shared-screens.jsx:352 `height: 104`).
     public static let rideMapPreviewHeight: CGFloat = 104
     /// `S.modalSheet`'s top-corner radius in the flat look (design/app/

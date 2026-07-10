@@ -71,46 +71,73 @@ final class LivePickupPointLabeler: RidePinLabeling {
         self.geocode = geocode ?? LivePinLabeler()
     }
 
-    func label(for coordinate: CLLocationCoordinate2D) async -> String? {
+    func resolve(for coordinate: CLLocationCoordinate2D) async -> PinLabelResolution {
         async let poiCandidates = pois(coordinate, Self.poiQueryRadiusMeters)
-        async let geocodeLabel = geocode.label(for: coordinate)
-        return Self.bestLabel(
+        async let geocode = geocode.resolve(for: coordinate)
+        return Self.bestResolution(
             pin: coordinate,
             pois: await poiCandidates,
-            geocodeLabel: await geocodeLabel
+            geocode: await geocode
         )
     }
 
-    /// The label ladder (pure + static, unit-tested in
-    /// `PickupPointLabelTests`). Returns `nil` for the neutral case — the
-    /// caller (`SharedViewerState.pinDropLabel`) shows "Pinned location".
-    /// NEVER returns a coordinate adjustment: labeling reads the pin, it
-    /// never moves it (free-pin decision above).
+    /// The label ladder over the full `PinLabelResolution` (MYR-223) — the
+    /// throttle-aware core. Pure + static, unit-tested in `PickupPointLabelTests`
+    /// / `ThrottleAwarePinLabelTests`. A doorstep POI short-circuits ANY geocode
+    /// state (the POI is authoritative; no need to wait on a throttled geocoder),
+    /// and a `.failed` geocode surfaces as `.failed` so the caller RETRIES rather
+    /// than dropping to a "Near X"/neutral fallback while merely throttled — the
+    /// real street may still land. Only a genuine `.unresolved` geocode falls to
+    /// "Near X" (nearby named place) or neutral. NEVER returns a coordinate
+    /// adjustment: labeling reads the pin, it never moves it (free-pin above).
+    static func bestResolution(
+        pin: CLLocationCoordinate2D,
+        pois: [PickupPOI],
+        geocode: PinLabelResolution
+    ) -> PinLabelResolution {
+        let nearest = pois
+            .map { (poi: $0, distance: LivePinLabeler.distanceMeters($0.coordinate, pin)) }
+            .min { $0.distance < $1.distance }
+
+        // 1. A named place at the pin's doorstep beats a parcel address — and a
+        //    throttled geocode. No retry needed: the POI answered.
+        if let nearest, nearest.distance <= poiAtMeters {
+            return .resolved(nearest.poi.name)
+        }
+        switch geocode {
+        // 2. The guarded street-first reverse geocode (never ZIP/city,
+        //    far-parcel house numbers suppressed — MYR-212/213/216).
+        case .resolved(let label):
+            return .resolved(label)
+        // 2b. The geocoder was throttled / offline — retry (the caller backs
+        //     off); do NOT fall to a degraded label while a real street may yet
+        //     resolve. If a doorstep POI existed we'd have returned above.
+        case .failed:
+            return .failed
+        case .unresolved:
+            // 3. Label-unknown, but a named place is close: "Near X" — honest
+            //    about the offset, still human-meaningful (vs. bare "Pinned
+            //    location" in a spot the rider clearly recognizes).
+            if let nearest, nearest.distance <= poiNearMeters {
+                return .resolved("Near \(nearest.poi.name)")
+            }
+            // 4. Neutral — the caller's "Pinned location".
+            return .unresolved
+        }
+    }
+
+    /// Legacy `String?` projection of the ladder (pre-MYR-223 shape) — kept for
+    /// the pure `bestLabel` unit tests. `geocodeLabel == nil` maps to a genuine
+    /// `.unresolved` geocode (the old seam couldn't express `.failed`).
     static func bestLabel(
         pin: CLLocationCoordinate2D,
         pois: [PickupPOI],
         geocodeLabel: String?
     ) -> String? {
-        let nearest = pois
-            .map { (poi: $0, distance: LivePinLabeler.distanceMeters($0.coordinate, pin)) }
-            .min { $0.distance < $1.distance }
-
-        // 1. A named place at the pin's doorstep beats a parcel address.
-        if let nearest, nearest.distance <= poiAtMeters {
-            return nearest.poi.name
+        let geocode: PinLabelResolution = geocodeLabel.map { .resolved($0) } ?? .unresolved
+        if case .resolved(let label) = bestResolution(pin: pin, pois: pois, geocode: geocode) {
+            return label
         }
-        // 2. The guarded street-first reverse geocode (never ZIP/city,
-        //    far-parcel house numbers suppressed — MYR-212/213/216).
-        if let geocodeLabel {
-            return geocodeLabel
-        }
-        // 3. Label-unknown, but a named place is close: "Near X" — honest
-        //    about the offset, still human-meaningful (vs. bare "Pinned
-        //    location" in a spot the rider clearly recognizes).
-        if let nearest, nearest.distance <= poiNearMeters {
-            return "Near \(nearest.poi.name)"
-        }
-        // 4. Neutral — the caller's "Pinned location".
         return nil
     }
 

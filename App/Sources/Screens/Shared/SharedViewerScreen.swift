@@ -76,6 +76,36 @@ struct SharedViewerScreen: View {
                     RidePinDropMapOverlay(label: viewerState.pinDropLabel)
                         .position(glyphLocal)
                 }
+
+                // MYR-223 deliverable 3 — rider recenter (client-approved design
+                // addition). REUSES the owner map's `FloatingMapButton` + styling
+                // verbatim (HomeScreen.swift:144-150). Hidden while following;
+                // appears once follow-mode stops — i.e. after the rider's first
+                // pan/pinch, which `VehicleMapView.handleUserGesture` reports by
+                // flipping `isFollowing` false (MYR-222). Only on the resting IDLE
+                // map — never during pin-drop, which owns its camera through
+                // `PinDropCameraController` (recenter there is out of scope).
+                if isIdle {
+                    FloatingMapButton(
+                        // Mirror the owner placement metric `peekH + 80`
+                        // (screens.jsx:424, `MRTMetrics.mapButtonBottomGap`): float
+                        // the button one gap above the phase's bottom chrome (the
+                        // idle greeting sheet, or the shorter pending pill).
+                        bottom: mapBottomInset + MRTMetrics.mapButtonBottomGap,
+                        hidden: isFollowing
+                    ) {
+                        // Recenter on the current fix + resume follow. Setting
+                        // `isFollowing = true` drives `VehicleMapView`'s
+                        // `.onChange(of: isFollowing)` recenter, which registers
+                        // its OWN settle expectation in the `CameraSettleLedger`
+                        // (MYR-222) — so this programmatic recenter is classified
+                        // as ours, never misread as a gesture, and it re-engages
+                        // follow cleanly (subsequent fixes recenter until the
+                        // rider pans again, which stands follow down once more).
+                        isFollowing = true
+                    }
+                    .ignoresSafeArea(edges: .bottom)
+                }
             }
         }
         .background(Color.mrtBg)
@@ -172,6 +202,13 @@ struct SharedViewerScreen: View {
         return false
     }
 
+    /// MYR-223 d3 — the resting idle map (greeting or pending pill). The only
+    /// phase the rider recenter button shows on (the map is visible + pannable;
+    /// the search/pin-drop/route sheets cover it, and pin-drop owns its camera).
+    private var isIdle: Bool {
+        viewerState.sheetPhase == .idle
+    }
+
     /// MYR-198 client ruling (overrides screens.jsx:2239's idle/tracking
     /// z-index split — the design jsx keeps `BottomNav` visible under both
     /// `.idle` and `.tracking`): within the rider flow `BottomNav` shows on
@@ -248,9 +285,11 @@ struct SharedViewerScreen: View {
         case .review, .booking:
             // MYR-216 d4: inset the fit for the trip sheet so both endpoints +
             // the full polyline sit above it (the destination used to hide behind).
-            RideRequestRouteMap(route: requestRoute, bottomInset: MRTMetrics.rideRequestRouteMapBottomInset)
+            // MYR-223 d2: the SAME per-phase inset (`mapBottomInset`) also keeps
+            // the attribution above the sheet — one source of truth.
+            RideRequestRouteMap(route: requestRoute, bottomInset: mapBottomInset)
         case .tracking:
-            RideRequestRouteMap(route: requestRoute, progress: rideRequestService.activeRequest?.trackProgress ?? 0, showVehicle: true, bottomInset: MRTMetrics.rideRequestRouteMapBottomInset)
+            RideRequestRouteMap(route: requestRoute, progress: rideRequestService.activeRequest?.trackProgress ?? 0, showVehicle: true, bottomInset: mapBottomInset)
         case .summary:
             // Summary is a full-screen takeover (its own hero-map layout), not a
             // peek above a bottom sheet — no inset (MYR-216 d4).
@@ -258,12 +297,41 @@ struct SharedViewerScreen: View {
         }
     }
 
-    private var mapBottomInset: CGFloat {
-        switch viewerState.sheetPhase {
-        case .search: MRTMetrics.rideRequestSearchSheetHeight
-        case .pinDrop: MRTMetrics.rideRequestPinDropMapInset
-        default: MRTMetrics.sharedIdleSheetHeight
+    // MARK: MYR-223 deliverable 2 — per-phase map bottom inset (ONE source of truth)
+    //
+    // The map's bottom inset feeds `.safeAreaPadding(.bottom:)`, which keeps
+    // MapKit's legally-required attribution/legal label clear of the bottom
+    // chrome (MYR-196 #2). The pre-MYR-223 `mapBottomInset` collapsed every
+    // non-search/pin-drop phase to the FIXED tall greeting-sheet height (286) —
+    // so when the idle sheet shrank to the short "Request sent" pending pill, the
+    // attribution stayed insetted 286pt up and floated at mid-page (the client's
+    // on-device screenshot). The fix: the inset tracks the ACTUAL bottom chrome
+    // height PER PHASE, from one pure table used by BOTH the idle/search/pin-drop
+    // `VehicleMapView` (its `bottomContentInset`) and the route-fitted phases'
+    // `RideRequestRouteMap` (its attribution inset) — so the attribution sits
+    // just above the real chrome on every phase.
+
+    /// The phase→bottom-chrome-inset table (pure + static so it's unit-testable
+    /// without mounting the view — `PerPhaseMapInsetTests`). `isPendingPill`
+    /// distinguishes the two idle states (tall greeting sheet vs. short pending
+    /// pill). Summary is a full-screen takeover with no bottom sheet → 0.
+    static func mapBottomInset(phase: RiderSheetPhase, isPendingPill: Bool) -> CGFloat {
+        switch phase {
+        case .idle:
+            return isPendingPill ? MRTMetrics.sharedPendingPillSheetHeight : MRTMetrics.sharedIdleSheetHeight
+        case .search:
+            return MRTMetrics.rideRequestSearchSheetHeight
+        case .pinDrop:
+            return MRTMetrics.rideRequestPinDropMapInset
+        case .review, .booking, .tracking:
+            return MRTMetrics.rideRequestRouteMapBottomInset
+        case .summary:
+            return 0
         }
+    }
+
+    private var mapBottomInset: CGFloat {
+        Self.mapBottomInset(phase: viewerState.sheetPhase, isPendingPill: isPendingPill)
     }
 
     /// The map camera span for the shared idle/search/pin-drop map: pin-drop
