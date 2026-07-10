@@ -52,7 +52,11 @@ enum PlaceSearchComposition {
                 placeSearch: LivePlaceSearch(savedPlaces: []),
                 userLocation: LiveUserLocation(),
                 liveVehicleLocator: RiderLiveVehicleLocator(config: config),
-                pinLabeler: LivePinLabeler(),
+                // MYR-217: industry-style pickup-point labeling — nearby named
+                // POIs + the guarded reverse geocode, best label wins (see
+                // `PickupPointLabeler.swift`'s research record). The plain
+                // `LivePinLabeler` remains the geocode component inside it.
+                pinLabeler: LivePickupPointLabeler(),
                 isLive: true
             )
         }

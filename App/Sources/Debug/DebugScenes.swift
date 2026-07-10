@@ -32,6 +32,16 @@ enum DebugScene: String, CaseIterable {
     case searchFiltered
     case searchSelected    // a destination chosen, "Continue" CTA showing (MYR-215)
     case pinDrop
+    /// MYR-217 real-path probe: boots to IDLE and then drives the ACTUAL
+    /// in-session transition (idle → search → choose destination + Continue →
+    /// pinDrop) on a timer, with live location/region updates flowing the whole
+    /// time. This exists because cold-seeding `pinDrop` skips the exact
+    /// interleaving (pre-entry camera motion + async fixes + the `.onChange`
+    /// entry re-frame) that regressed on the client four times while cold
+    /// probes passed — headless tooling can't tap, so the SEQUENCE is replayed
+    /// in-process through the same `SharedViewerState` methods the taps call
+    /// (`sheetPhase = .search`, `chooseDestination`, `proceedFromSearch`).
+    case pinDropRealPath
     case review
     case reviewPicker
     case booking
@@ -131,6 +141,14 @@ enum DebugScene: String, CaseIterable {
     /// Whether `RideRequestReviewContent` should open its fleet picker card.
     var opensFleetPicker: Bool { self == .reviewPicker }
 
+    /// MYR-217: whether `SharedViewerScreen` should run the real-path replay
+    /// driver on appear (see `.pinDropRealPath`'s comment).
+    var replaysRealPinDropPath: Bool { self == .pinDropRealPath }
+
+    /// The destination the real-path replay chooses on the search sheet before
+    /// tapping Continue — the same sample the seeded scenes use.
+    static var realPathDestination: RidePlace { sampleDestination }
+
     /// The scheduled ride `RideHistoryScreen` should auto-open, if any.
     var scheduledRideID: String? {
         isScheduled ? RideHistoryFixtures.scheduledRides.first?.id : nil
@@ -200,7 +218,9 @@ enum DebugScene: String, CaseIterable {
         // have a real pickup/destination pair in every mid-flow phase.
         viewer.draftFleetMemberID = RideRequestFixtures.fleet[0].id
         switch self {
-        case .idle, .pending:
+        case .idle, .pending, .pinDropRealPath:
+            // `.pinDropRealPath` deliberately seeds NOTHING beyond idle — the
+            // replay driver walks the real transitions after boot (MYR-217).
             viewer.sheetPhase = .idle
         case .declined:
             viewer.sheetPhase = .search
