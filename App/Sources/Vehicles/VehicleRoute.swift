@@ -104,7 +104,18 @@ public enum VehicleRoute {
     /// the static camera for Drive Summary's hero map (MYR-169, Handoff
     /// §5.6 "static camera fitted to route"), distinct from `HomeScreen`'s
     /// live-following camera (`VehicleMapView.recenter`).
-    static func fittedRegion(for route: [CLLocationCoordinate2D], paddingFactor: Double = 1.6) -> MKCoordinateRegion {
+    ///
+    /// MYR-216 deliverable 4: `bottomInset` (points the bottom sheet covers) +
+    /// `viewHeight` (the map's height) reframe the fit so the whole route sits in
+    /// the UNOBSTRUCTED area ABOVE the sheet (the destination endpoint no longer
+    /// hides behind it). Defaults keep every non-inset caller (Drive Summary hero,
+    /// scheduled/incoming previews) byte-identical.
+    static func fittedRegion(
+        for route: [CLLocationCoordinate2D],
+        paddingFactor: Double = 1.6,
+        bottomInset: CGFloat = 0,
+        viewHeight: CGFloat = 0
+    ) -> MKCoordinateRegion {
         guard let first = route.first else {
             return MKCoordinateRegion(
                 center: CLLocationCoordinate2D(latitude: 0, longitude: 0),
@@ -124,6 +135,27 @@ public enum VehicleRoute {
             latitudeDelta: max(0.02, (maxLat - minLat) * paddingFactor),
             longitudeDelta: max(0.02, (maxLon - minLon) * paddingFactor)
         )
-        return MKCoordinateRegion(center: center, span: span)
+        return insetRegion(center: center, span: span, bottomInset: bottomInset, viewHeight: viewHeight)
+    }
+
+    /// MYR-216 deliverable 4 (pure, testable) — grow a fitted region so its route
+    /// sits in the top `(viewHeight − bottomInset)` band, clear of a bottom sheet
+    /// covering `bottomInset` points. The latitude span grows by `1/visibleFraction`
+    /// so that band holds the whole route, and the center shifts SOUTH by half the
+    /// added span so the covered strip falls behind the sheet; longitude grows by
+    /// the same factor (uniform zoom-out — never clips a horizontal endpoint).
+    /// No-op for an unset / degenerate inset, so plain fits are unchanged.
+    static func insetRegion(center: CLLocationCoordinate2D, span: MKCoordinateSpan, bottomInset: CGFloat, viewHeight: CGFloat) -> MKCoordinateRegion {
+        guard bottomInset > 0, viewHeight > 0, bottomInset < viewHeight else {
+            return MKCoordinateRegion(center: center, span: span)
+        }
+        let visibleFraction = (Double(viewHeight) - Double(bottomInset)) / Double(viewHeight)
+        let grownLat = span.latitudeDelta / visibleFraction
+        let grownLon = span.longitudeDelta / visibleFraction
+        let southwardShift = (grownLat - span.latitudeDelta) / 2
+        return MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: center.latitude - southwardShift, longitude: center.longitude),
+            span: MKCoordinateSpan(latitudeDelta: grownLat, longitudeDelta: grownLon)
+        )
     }
 }

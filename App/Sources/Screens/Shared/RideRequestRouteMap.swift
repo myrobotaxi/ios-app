@@ -22,17 +22,32 @@ struct RideRequestRouteMap: View {
     var progress: Double?
     /// Draws a moving marker at `progress` along the route — Tracking only.
     var showVehicle: Bool = false
+    /// MYR-216 deliverable 4: points the phase's bottom sheet covers (+ margin).
+    /// The route camera fits the route into the UNOBSTRUCTED area above the sheet
+    /// so both endpoints + the full polyline clear it. `0` (default) keeps the
+    /// plain full-frame fit for non-inset callers.
+    var bottomInset: CGFloat = 0
 
     var body: some View {
-        Map(initialPosition: .region(VehicleRoute.fittedRegion(for: route, paddingFactor: 1.7)), interactionModes: []) {
-            // Suppresses MapKit's own auto-drawn "Origin"/"Destination" title
-            // labels — see `VehicleMapView`'s identical call (MYR-167 review
-            // finding #3), reused verbatim by `ScheduledRideSheet.RideRouteMap`.
-            mapContent.annotationTitles(.hidden)
+        // The fit needs the map's height to know what fraction the sheet covers
+        // (MYR-216 d4). `GeometryReader` reports the full-bleed height (the caller
+        // applies `.ignoresSafeArea()`), read once for `initialPosition`.
+        GeometryReader { geo in
+            Map(
+                initialPosition: .region(VehicleRoute.fittedRegion(
+                    for: route, paddingFactor: 1.7, bottomInset: bottomInset, viewHeight: geo.size.height
+                )),
+                interactionModes: []
+            ) {
+                // Suppresses MapKit's own auto-drawn "Origin"/"Destination" title
+                // labels — see `VehicleMapView`'s identical call (MYR-167 review
+                // finding #3), reused verbatim by `ScheduledRideSheet.RideRouteMap`.
+                mapContent.annotationTitles(.hidden)
+            }
+            .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll, showsTraffic: false))
+            .preferredColorScheme(.dark)
+            .allowsHitTesting(false)
         }
-        .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll, showsTraffic: false))
-        .preferredColorScheme(.dark)
-        .allowsHitTesting(false)
     }
 
     @MapContentBuilder

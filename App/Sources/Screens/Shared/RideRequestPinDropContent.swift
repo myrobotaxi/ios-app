@@ -32,6 +32,27 @@ struct RideRequestPinDropContent: View {
         VStack(alignment: .leading, spacing: 0) {
             RideGrabHandle()
 
+            // MYR-216 deliverable 2: back to the search sheet (destination
+            // retained, CTA state) — the rider adjusts/restarts without confirming
+            // a pickup. Follows the design's existing back pattern, Review's
+            // "‹ Change trip" chevron+label (ride-request.jsx ReviewContent /
+            // `RideRequestReviewContent` 65-78) — reused, not a new component.
+            // Distinct from Cancel below, which abandons the request to idle.
+            HStack {
+                Button {
+                    viewerState.returnFromPinDropToSearch()
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "chevron.left").font(.system(size: 13, weight: .semibold))
+                        Text("Change trip").font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(Color.mrtGold)
+                }
+                .buttonStyle(.plain)
+                Spacer(minLength: 0)
+            }
+            .padding(.bottom, 12)
+
             HStack(spacing: 11) {
                 Circle()
                     .fill(Color.mrtGold.opacity(0.16))
@@ -101,8 +122,13 @@ struct RideRequestPinDropContent: View {
         }
     }
 
+    /// MYR-216 deliverable 2: Cancel ABANDONS the whole request back to idle
+    /// (`closeToIdle`, ride-request.jsx:1133) — distinct from the new back control
+    /// above, which returns to search keeping the destination. (Pre-MYR-216 this
+    /// went to `.search`, identical to where back now lands; splitting them makes
+    /// the two controls genuinely distinct — back = adjust, Cancel = abandon.)
     private func cancel() {
-        viewerState.sheetPhase = .search
+        viewerState.resetDraftToIdle()
     }
 }
 

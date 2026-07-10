@@ -220,7 +220,22 @@ public final class SharedViewerState {
     private(set) var pinDropCameraCenter: CLLocationCoordinate2D?
     /// The reverse-geocoded street label for `pinDropCameraCenter` (live only).
     private(set) var pinDropResolvedLabel: String?
+    /// MYR-216-3b: the coordinate `pinDropResolvedLabel` was resolved FOR — the
+    /// staleness guard only lets a resolved street persist across a later settle
+    /// while the pin stays within `pinLabelStalenessMeters` of it.
+    @ObservationIgnored private var pinDropResolvedLabelCoordinate: CLLocationCoordinate2D?
     @ObservationIgnored private var pinLabelTask: Task<Void, Never>?
+
+    /// MYR-216-3b — the calm neutral shown while no street is confidently
+    /// resolved for the current pin (never a stale street resolved elsewhere).
+    static let pinNeutralLabel = "Pinned location"
+    /// MYR-216-3b — a resolved street label may persist across a settle only
+    /// while the pin stays within this radius of where it was resolved.
+    static let pinLabelStalenessMeters: Double = 40
+    /// MYR-216-3c.3 — reverse-geocode debounce after a settle: tight enough to
+    /// track the pin as it moves (client: "label should track as the pin moves")
+    /// while coalescing a fast drag's settle stream into one request.
+    static let pinLabelDebounceMs = 350
 
     /// Pin-drop pickup coordinate: in live mode the map's settled center (the
     /// authoritative pin position the rider dragged to), falling back to the
@@ -232,11 +247,12 @@ public final class SharedViewerState {
     }
 
     /// Pin-drop pickup label: in live mode the reverse-geocoded street label of
-    /// the settled map center (falling back to the device label until the first
-    /// geocode lands); the fixture "Folsom & 2nd St" in sim (byte-identical).
+    /// the settled map center, or the calm neutral (`pinNeutralLabel`) until a
+    /// fresh street resolves — NEVER a stale street resolved for somewhere else
+    /// (MYR-216-3b); the fixture "Folsom & 2nd St" in sim (byte-identical).
     public var pinDropLabel: String {
         guard isLiveLocation else { return RideRequestFixtures.pinSpots[0] }
-        return pinDropResolvedLabel ?? userLocation.currentLocationLabel
+        return pinDropResolvedLabel ?? Self.pinNeutralLabel
     }
 
     /// Called when the pin-drop phase mounts: request a fresh device fix (so the
@@ -248,25 +264,54 @@ public final class SharedViewerState {
         pinLabelTask?.cancel()
         pinDropCameraCenter = nil
         pinDropResolvedLabel = nil
+        pinDropResolvedLabelCoordinate = nil
         userLocation.refresh()
     }
 
-    /// The map reported a settled center during pin-drop (live only): adopt it
-    /// as the authoritative pickup and kick a debounced reverse-geocode to
-    /// refresh the street label. Ignored in sim so screenshots stay identical.
+    /// The map reported a settled center during pin-drop (live only): adopt it as
+    /// the authoritative pickup and refresh the street label. Fires on the ENTRY
+    /// settle too, not only after a drag (MYR-216-3a) — the label resolves on
+    /// entry without the rider having to jiggle the pin. Ignored in sim so
+    /// screenshots stay identical.
+    ///
+    /// MYR-216-3b STALENESS GUARD: before the fresh geocode lands, a previously
+    /// resolved street may keep showing ONLY while the pin is still within
+    /// `pinLabelStalenessMeters` of where that street was resolved; past that it's
+    /// stale (resolved for somewhere else) and drops to the neutral label at once,
+    /// so a drag can never leave a confidently-wrong street on screen. A geocode
+    /// that returns `nil` (unresolved / far parcel — MYR-216-3c.2) likewise never
+    /// re-keeps a stale street: it clears to neutral until a real result lands.
     public func pinDropCameraSettled(at center: CLLocationCoordinate2D) {
         guard isLiveLocation else { return }
         pinDropCameraCenter = center
+
+        if !Self.resolvedLabelSurvivesSettle(previousCoordinate: pinDropResolvedLabelCoordinate, newCenter: center) {
+            pinDropResolvedLabel = nil
+            pinDropResolvedLabelCoordinate = nil
+        }
+
         pinLabelTask?.cancel()
         let labeler = pinLabeler
         pinLabelTask = Task { [weak self] in
             // Debounce so a fast drag doesn't fire a geocode per settle event.
-            try? await Task.sleep(for: .milliseconds(350))
+            try? await Task.sleep(for: .milliseconds(Self.pinLabelDebounceMs))
             guard !Task.isCancelled else { return }
             let label = await labeler.label(for: center)
-            guard !Task.isCancelled, let label else { return }
+            guard !Task.isCancelled else { return }
+            // A resolved label records the coordinate it's valid for; a nil
+            // result clears to neutral (never keeps a stale street — MYR-216-3b).
             self?.pinDropResolvedLabel = label
+            self?.pinDropResolvedLabelCoordinate = label == nil ? nil : center
         }
+    }
+
+    /// MYR-216-3b (pure, testable) — whether the currently resolved street label
+    /// may survive a settle to `newCenter`: only while it was resolved for a
+    /// coordinate within `pinLabelStalenessMeters` of the new pin. No prior
+    /// resolution (nil) never survives (there's nothing valid to keep).
+    static func resolvedLabelSurvivesSettle(previousCoordinate: CLLocationCoordinate2D?, newCenter: CLLocationCoordinate2D) -> Bool {
+        guard let previous = previousCoordinate else { return false }
+        return LivePinLabeler.distanceMeters(previous, newCenter) <= pinLabelStalenessMeters
     }
 
     /// Enter Review, computing the trip estimate once from the confirmed
@@ -292,6 +337,28 @@ public final class SharedViewerState {
     /// live mode (single-vehicle join), else the fixture looked up by id.
     public func fleetMember(forID id: String) -> FleetMember {
         liveFleetMember ?? (RideRequestFixtures.fleet.first { $0.id == id } ?? RideRequestFixtures.fleet[0])
+    }
+
+    // MARK: MYR-216 deliverable 2 — pin-drop back affordance
+    //
+    // A back control on the pin-drop sheet returns to SEARCH *without* confirming
+    // a pickup, RETAINING the chosen destination so the rider lands back on the
+    // search sheet in its CTA state (the field filled + "Continue") to adjust or
+    // restart. This is distinct from Cancel, which ABANDONS the whole request to
+    // idle (`resetDraftToIdle`). The design's `PinDropContent` (ride-request.jsx
+    // 722-738) has only one control — Cancel wired to `setPhase('search')`
+    // (screens.jsx:2075); MYR-216 splits that into a dedicated back (→ search,
+    // keep destination) and a true Cancel (→ idle), so the two are genuinely
+    // distinct (the design's lone Cancel and a new back would otherwise both land
+    // on search). The back chevron follows the design's existing back pattern —
+    // Review's "‹ Change trip" (ride-request.jsx ReviewContent / this app's
+    // `RideRequestReviewContent` 65-78).
+
+    /// Pin-drop "back": return to the search sheet, keeping the chosen
+    /// destination (CTA state) — the rider adjusts or restarts. No pickup is
+    /// confirmed. Nothing else in the draft is touched.
+    public func returnFromPinDropToSearch() {
+        sheetPhase = .search
     }
 
     /// Resets the draft + returns to `.idle` — ride-request.jsx `closeToIdle`.
