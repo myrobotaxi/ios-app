@@ -36,6 +36,10 @@ protocol UserLocationProviding: AnyObject, Observable {
     func start()
     /// Stop updates. Idempotent.
     func stop()
+    /// MYR-212 defect 2: force a fresh one-shot fix — called when the pin-drop
+    /// phase mounts so a stale/absent cached fix doesn't leave the pin opening
+    /// on the vehicle-region fallback. No-op for the simulated backend.
+    func refresh()
 }
 
 // MARK: - Simulated backend (no-op — byte-identical pre-MYR-211 behavior)
@@ -53,6 +57,7 @@ final class SimulatedUserLocation: UserLocationProviding {
     var showsUserLocationDot: Bool { false }
     func start() {}
     func stop() {}
+    func refresh() {}
 }
 
 // MARK: - Live backend (CLLocationManager, when-in-use)
@@ -103,6 +108,16 @@ final class LiveUserLocation: NSObject, UserLocationProviding, CLLocationManager
         geocodeTask?.cancel()
     }
 
+    /// MYR-212 defect 2: request a fresh one-shot fix (when authorized) so the
+    /// pin-drop phase opens on the freshest device coordinate rather than a
+    /// stale cached one. `requestLocation` delivers a single up-to-date fix
+    /// through `didUpdateLocations`; harmless if a continuous stream is already
+    /// running. No-op until authorized (auth is requested by `start()`).
+    func refresh() {
+        guard isAuthorized else { return }
+        manager.requestLocation()
+    }
+
     // MARK: CLLocationManagerDelegate (delivered on the main thread — the
     // manager was created on the main actor)
 
@@ -131,21 +146,18 @@ final class LiveUserLocation: NSObject, UserLocationProviding, CLLocationManager
         // Transient failures leave the last-known fix in place — no UI change.
     }
 
-    /// Best-effort reverse geocode to upgrade "Current location" to a street/POI,
-    /// mirroring `PlaceLabeler`'s ladder (POI → neighborhood → street). Failure
-    /// leaves the calm "Current location" fallback untouched.
+    /// Best-effort reverse geocode to upgrade "Current location" to a
+    /// street-level label. MYR-212 defect 1: uses the shared street-first ladder
+    /// (`LivePinLabeler.streetLabel`), which never falls through to a bare city
+    /// — the client's pin resolved to "Frisco" under the old ladder. Failure /
+    /// no-precise-match leaves the calm "Current location" fallback untouched.
     private func reverseGeocode(_ location: CLLocation) {
         geocodeTask?.cancel()
         geocodeTask = Task { [weak self] in
             let geocoder = CLGeocoder()
             guard let placemark = try? await geocoder.reverseGeocodeLocation(location).first else { return }
             guard !Task.isCancelled else { return }
-            let poi = placemark.areasOfInterest?.first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
-            let label = poi
-                ?? placemark.thoroughfare
-                ?? placemark.subLocality
-                ?? placemark.locality
-            if let label, !label.isEmpty {
+            if let label = LivePinLabeler.streetLabel(from: placemark) {
                 self?.currentLocationLabel = label
             }
         }

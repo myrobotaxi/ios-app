@@ -71,6 +71,18 @@ struct VehicleMapView: View {
     /// render, so the label settles just above the sheet's peek edge
     /// instead of being hidden underneath it.
     let bottomContentInset: CGFloat
+    /// MYR-212: reports the map's settled region center at the end of every
+    /// pan/zoom — the rider's pin-drop phase uses it as the AUTHORITATIVE
+    /// pickup coordinate (the pin is fixed on screen; the coordinate under it is
+    /// wherever the map settled). `nil` at every other call site.
+    var onCameraCenterChange: ((CLLocationCoordinate2D) -> Void)? = nil
+    /// MYR-212 round 2: the vertical screen fraction (0 = top) of the fixed
+    /// pin-drop glyph. When set, `onCameraCenterChange` reports the coordinate
+    /// UNDER THE GLYPH — not the map region's center (fraction 0.5), which sits
+    /// under the sheet. At street-level zoom that gap is a 100-300m error on the
+    /// screen whose whole job is "confirm your EXACT pickup spot". `nil` at every
+    /// non-pin-drop call site (report the raw center, unchanged).
+    var pinScreenFraction: CGFloat? = nil
 
     // Cooldown *window*, not a single-consume flag: recenters can overlap
     // (a new one fires every progress-percent tick, ~1/sec, while the
@@ -127,7 +139,17 @@ struct VehicleMapView: View {
         // side-by-side evidence; there is no more aggressive terrain color
         // knob on the public SwiftUI `Map` style API.
         .preferredColorScheme(.dark)
-        .onMapCameraChange(frequency: .onEnd) { _ in
+        .onMapCameraChange(frequency: .onEnd) { context in
+            // MYR-212: report the settled center for the pin-drop pickup — on
+            // every settle (programmatic seed AND user drag) so the confirmed
+            // coordinate always tracks the map. Round 2: project it to the pin
+            // GLYPH's screen position (fraction < 0.5, above the sheet), not the
+            // region center under the sheet. Reported before the follow guard
+            // below, which is unrelated (recenter-affordance state).
+            let reported = pinScreenFraction.map {
+                PinDropProjection.coordinate(regionCenter: context.region.center, span: context.region.span, pinScreenFraction: $0)
+            } ?? context.region.center
+            onCameraCenterChange?(reported)
             guard Date() >= programmaticCameraUntil else { return }
             // A real drag/pinch settled — the prototype's FloatingMapButton
             // recenter affordance is meant for exactly this (Handoff §5.5;
@@ -212,5 +234,43 @@ struct VehicleMapView: View {
         } else {
             cameraPosition = .region(region)
         }
+    }
+}
+
+// MARK: - Pin-drop glyph projection (MYR-212 round 2)
+//
+// Geometry that maps the map's reported region onto the coordinate under the
+// fixed pin glyph. The pin-drop map is FULL-BLEED (`SharedViewerScreen`'s
+// background `.ignoresSafeArea()`), so `MKMapView`'s bounds == the whole screen
+// and `onMapCameraChange`'s `context.region` spans it edge-to-edge: its
+// `center` is the coordinate at vertical screen fraction 0.5, and its
+// `span.latitudeDelta` covers the full screen height. (`.safeAreaPadding(.bottom)`
+// only re-homes MapKit's legal/attribution chrome; it does NOT re-center the
+// reported region — confirmed by the fact that round 1, which reported
+// `region.center` directly under that same padding, still landed the pin at
+// fraction 0.5. That residual is exactly the 0.5→0.36 gap this closes.)
+//
+// Because the glyph is horizontally centered (x = width/2 = the center's
+// longitude) and sits ABOVE center (fraction < 0.5, i.e. north), only latitude
+// shifts: up by the fraction of the visible latitude span between 0.5 and the
+// glyph. Adapts to the live zoom via `span`, so a street-level pinch reports a
+// street-accurate coordinate.
+//
+// UI-LEVEL ASSERTION GAP: the full-bleed / center-at-0.5 model above is verified
+// against the running Simulator at the drift gate, not by a unit test (there is
+// no headless `MKMapView` to read a real settled region from). `PinDropProjectionTests`
+// unit-tests THIS pure math — direction (north for a glyph above center) and
+// magnitude (linear in `span` and the 0.5-offset) — which is the load-bearing part.
+enum PinDropProjection {
+    static func coordinate(
+        regionCenter: CLLocationCoordinate2D,
+        span: MKCoordinateSpan,
+        pinScreenFraction: CGFloat
+    ) -> CLLocationCoordinate2D {
+        let latOffset = (0.5 - Double(pinScreenFraction)) * span.latitudeDelta
+        return CLLocationCoordinate2D(
+            latitude: regionCenter.latitude + latOffset,
+            longitude: regionCenter.longitude
+        )
     }
 }

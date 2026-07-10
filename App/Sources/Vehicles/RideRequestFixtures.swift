@@ -60,8 +60,17 @@ public struct FleetMember: Identifiable, Sendable, Equatable {
     public let battery: Int
     public let etaMin: Int
     public let plate: String
+    /// MYR-212: whether the vehicle is bookable now — drives the green dot +
+    /// the "now" suffix in the Review vehicle row. Fixtures are always
+    /// available (the design's resting state); a live join folds in the real
+    /// telemetry status (`LiveFleetMemberMapping`).
+    public let isAvailable: Bool
+    /// MYR-212: the status word shown in the vehicle row ("Available" normally,
+    /// a live status like "Driving"/"Offline" for an unavailable live vehicle).
+    /// Defaults to "Available" so every fixture row renders identically.
+    public let availabilityWord: String
 
-    public init(id: String, owner: String, relationship: String, name: String, model: String, colorName: String, battery: Int, etaMin: Int, plate: String) {
+    public init(id: String, owner: String, relationship: String, name: String, model: String, colorName: String, battery: Int, etaMin: Int, plate: String, isAvailable: Bool = true, availabilityWord: String = "Available") {
         self.id = id
         self.owner = owner
         self.relationship = relationship
@@ -71,6 +80,8 @@ public struct FleetMember: Identifiable, Sendable, Equatable {
         self.battery = battery
         self.etaMin = etaMin
         self.plate = plate
+        self.isAvailable = isAvailable
+        self.availabilityWord = availabilityWord
     }
 }
 

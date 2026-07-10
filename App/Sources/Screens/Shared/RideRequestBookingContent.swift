@@ -22,7 +22,9 @@ struct RideRequestBookingContent: View {
     @State private var tapForceSent = false
 
     private var request: RideRequestRecord? { rideRequestService.activeRequest }
-    private var fleetMember: FleetMember { request?.input.fleetMember ?? RideRequestFixtures.fleet[0] }
+    /// MYR-212 deliverable 4: the live vehicle (nickname / real battery / VIN
+    /// plate) in live mode, else the record's fixture fleet member.
+    private var fleetMember: FleetMember { viewerState.liveFleetMember ?? request?.input.fleetMember ?? RideRequestFixtures.fleet[0] }
     private var owner: String { fleetMember.owner }
     private var passenger: RidePassenger? { request?.input.passenger }
 
@@ -226,7 +228,12 @@ struct RideRequestBookingContent: View {
                     .foregroundStyle(Color.mrtTextSec)
             }
             Spacer(minLength: 0)
-            RidePlateChip(plate: fleetMember.plate)
+            // MYR-212 plate degrade: live telemetry has no plate — the chip
+            // carries the VIN last-4 ("VIN ····2046") when known, and is hidden
+            // entirely when there's nothing to show (never a blank box).
+            if !fleetMember.plate.isEmpty {
+                RidePlateChip(plate: fleetMember.plate)
+            }
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 11)

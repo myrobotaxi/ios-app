@@ -23,6 +23,10 @@ protocol RideRequestAPI: Sendable {
     /// in live mode (see `LiveRideRequestService.resolveVehicleID`).
     func vehicles() async throws -> [VehicleSummary]
     func createRideRequest(_ body: RideRequestCreateRequest) async throws -> RideRequest
+    /// The authenticated rider's own requests, newest first (rest-api.md §7.8) —
+    /// used by `LiveRideRequestService.reconcileCreate` to discover whether a
+    /// create that errored client-side actually landed on the server.
+    func rideRequests(cursor: String?, limit: Int) async throws -> RideRequestsListResponse
     func rideRequest(id: String) async throws -> RideRequest
     func cancelRideRequest(id: String) async throws -> RideRequest
     func acceptRideRequest(id: String) async throws -> RideRequest

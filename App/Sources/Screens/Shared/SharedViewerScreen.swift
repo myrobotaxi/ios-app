@@ -47,7 +47,7 @@ struct SharedViewerScreen: View {
                     // MYR-211: live pin label is the reverse-geocoded device
                     // location; sim keeps the fixture "Folsom & 2nd St".
                     RidePinDropMapOverlay(label: viewerState.pinDropLabel)
-                        .position(x: geo.size.width / 2, y: geo.size.height * 0.36)
+                        .position(x: geo.size.width / 2, y: geo.size.height * MRTMetrics.ridePinDropGlyphScreenFraction)
                 }
             }
         }
@@ -68,6 +68,11 @@ struct SharedViewerScreen: View {
         )
         .mrtBottomNav(selection: $sharedTab, tabs: MRTTab.sharedTabs, hidden: hideBottomNav)
         .onAppear { viewerState.startTelemetry() }
+        .onChange(of: isPinDrop) { _, entering in
+            // MYR-212 defect 2: force a fresh device fix + re-seed the pin when
+            // the pin-drop phase mounts (no-op in sim).
+            if entering { viewerState.enterPinDrop() }
+        }
         .onChange(of: rideRequestService.activeRequest?.status) { _, newStatus in
             handleStatusChange(newStatus)
         }
@@ -152,7 +157,16 @@ struct SharedViewerScreen: View {
                 // MYR-211 addendum: standard user-location dot in live mode
                 // (authorized only); off in sim so screenshots stay identical.
                 showsUserLocation: viewerState.userLocation.showsUserLocationDot,
-                bottomContentInset: mapBottomInset
+                bottomContentInset: mapBottomInset,
+                // MYR-212: during pin-drop, adopt the map's settled center as
+                // the authoritative pickup (only then — no geocoding churn on
+                // the idle/search map, and a no-op in sim).
+                onCameraCenterChange: isPinDrop ? { viewerState.pinDropCameraSettled(at: $0) } : nil,
+                // MYR-212 round 2: project that coordinate to the pin GLYPH's
+                // on-screen position (the same fraction the overlay is drawn at
+                // above), so the confirmed pickup is exactly under the pin, not
+                // the region center hidden under the sheet.
+                pinScreenFraction: isPinDrop ? MRTMetrics.ridePinDropGlyphScreenFraction : nil
             )
         case .review, .booking:
             RideRequestRouteMap(route: requestRoute)
@@ -353,7 +367,7 @@ struct SharedViewerScreen: View {
                             .font(.system(size: 14, weight: .semibold))
                             .tracking(-0.2)
                             .foregroundStyle(Color.mrtText)
-                        Text("Waiting for \(request.input.fleetMember.owner) \u{00B7} \(request.input.destination.label)")
+                        Text("Waiting for \(viewerState.liveFleetMember?.owner ?? request.input.fleetMember.owner) \u{00B7} \(request.input.destination.label)")
                             .font(.system(size: 12))
                             .foregroundStyle(Color.mrtTextSec)
                             .lineLimit(1)

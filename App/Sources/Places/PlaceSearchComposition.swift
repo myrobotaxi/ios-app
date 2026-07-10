@@ -19,6 +19,9 @@ enum PlaceSearchComposition {
         var userLocation: any UserLocationProviding
         /// Live-vehicle region fallback (nil in sim — fixtures never need it).
         var liveVehicleLocator: RiderLiveVehicleLocator?
+        /// MYR-212: reverse-geocoder for the authoritative pin's street label
+        /// (sim conformer returns nil → the pin keeps its fixture string).
+        var pinLabeler: any RidePinLabeling
         /// True when the live seams were selected — gates the live-only pickup
         /// resolution + pin-drop coordinate in `SharedViewerState`.
         var isLive: Bool
@@ -32,6 +35,7 @@ enum PlaceSearchComposition {
                 placeSearch: SimulatedPlaceSearch(),
                 userLocation: SimulatedUserLocation(),
                 liveVehicleLocator: nil,
+                pinLabeler: SimulatedPinLabeler(),
                 isLive: false
             )
         }
@@ -45,6 +49,7 @@ enum PlaceSearchComposition {
                 placeSearch: LivePlaceSearch(),
                 userLocation: LiveUserLocation(),
                 liveVehicleLocator: RiderLiveVehicleLocator(config: config),
+                pinLabeler: LivePinLabeler(),
                 isLive: true
             )
         }
