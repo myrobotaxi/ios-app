@@ -245,9 +245,35 @@ public final class SharedViewerState {
     // Both are live-only — sim keeps the fixture coordinate/label so every
     // simulated pin-drop scene renders byte-identically.
 
+    // MARK: MYR-223 deliverable 1 — throttle-aware label state
+    //
+    // The label the pin capsule + sheet header show has THREE states, not two:
+    // besides the resolved street and the neutral "Pinned location", there is a
+    // calm in-flight "Finding address…" shown WHILE a resolution (including its
+    // backoff retries) is running with nothing valid to display yet. The client
+    // explicitly wanted to SEE that capture is live rather than watch a named
+    // road read neutral: on-device geocoders THROTTLE drag bursts, and the old
+    // ladder degraded every such failure straight to neutral. Now a throttled/
+    // transient failure retries with backoff while the pin stays settled, and
+    // only a genuine unresolvable point (or exhausted retries) reaches neutral.
+
+    /// The label display state (MYR-223). `.neutral` initially; drives
+    /// `pinDropLabel`. Private setter — only the settle pipeline mutates it.
+    enum PinLabelDisplayState: Equatable {
+        /// A resolution (including backoff retries) is in flight and there is
+        /// nothing valid to show yet → the calm "Finding address…".
+        case resolving
+        /// A precise label resolved → show it.
+        case resolved(String)
+        /// Genuinely unresolvable, or retries exhausted → "Pinned location".
+        case neutral
+    }
+    private(set) var pinLabelState: PinLabelDisplayState = .neutral
+
     /// The map's last settled center while dropping a pin (live only).
     private(set) var pinDropCameraCenter: CLLocationCoordinate2D?
-    /// The reverse-geocoded street label for `pinDropCameraCenter` (live only).
+    /// The resolved street label currently valid for `pinDropResolvedLabelCoordinate`
+    /// (live only) — the staleness guard's kept-street. `nil` once cleared.
     private(set) var pinDropResolvedLabel: String?
     /// MYR-216-3b: the coordinate `pinDropResolvedLabel` was resolved FOR — the
     /// staleness guard only lets a resolved street persist across a later settle
@@ -258,6 +284,10 @@ public final class SharedViewerState {
     /// MYR-216-3b — the calm neutral shown while no street is confidently
     /// resolved for the current pin (never a stale street resolved elsewhere).
     static let pinNeutralLabel = "Pinned location"
+    /// MYR-223 deliverable 1 — the calm in-flight label shown while a resolution
+    /// (or its backoff retries) is running. Distinct from the neutral so the
+    /// client can SEE capture is live; never a wrong street.
+    static let pinResolvingLabel = "Finding address…"
     /// MYR-216-3b — a resolved street label may persist across a settle only
     /// while the pin stays within this radius of where it was resolved.
     static let pinLabelStalenessMeters: Double = 40
@@ -265,6 +295,15 @@ public final class SharedViewerState {
     /// track the pin as it moves (client: "label should track as the pin moves")
     /// while coalescing a fast drag's settle stream into one request.
     static let pinLabelDebounceMs = 350
+    /// MYR-223 deliverable 1 — backoff schedule for retrying a THROTTLED /
+    /// transient geocode failure (`.failed`) while the pin stays settled. The
+    /// first attempt runs immediately (after the debounce); each `.failed`
+    /// waits the next interval, then retries; once the schedule is exhausted the
+    /// failure is treated as genuine and the label degrades to neutral. Real
+    /// devices clear a reverse-geocode rate limit within a second or two, so a
+    /// short 1s→2s ladder recovers the common burst-throttle without leaving the
+    /// pin "Finding address…" indefinitely.
+    static let pinLabelRetryBackoffs: [Duration] = [.seconds(1), .seconds(2)]
 
     /// Pin-drop pickup coordinate: in live mode the map's settled center (the
     /// authoritative pin position the rider dragged to), falling back to the
@@ -275,13 +314,20 @@ public final class SharedViewerState {
         return pinDropCameraCenter ?? mapRegionCenter
     }
 
-    /// Pin-drop pickup label: in live mode the reverse-geocoded street label of
-    /// the settled map center, or the calm neutral (`pinNeutralLabel`) until a
-    /// fresh street resolves — NEVER a stale street resolved for somewhere else
-    /// (MYR-216-3b); the fixture "Folsom & 2nd St" in sim (byte-identical).
+    /// Pin-drop pickup label (MYR-223): in live mode the current label display
+    /// state — the calm in-flight "Finding address…" while a resolution/retry is
+    /// running, the resolved street once it lands, or the calm neutral
+    /// ("Pinned location") for a genuinely unresolvable point / exhausted retries.
+    /// NEVER a stale street resolved for somewhere else (MYR-216-3b, preserved by
+    /// the staleness guard in `pinDropCameraSettled`). The fixture "Folsom & 2nd
+    /// St" in sim (byte-identical).
     public var pinDropLabel: String {
         guard isLiveLocation else { return RideRequestFixtures.pinSpots[0] }
-        return pinDropResolvedLabel ?? Self.pinNeutralLabel
+        switch pinLabelState {
+        case .resolving: return Self.pinResolvingLabel
+        case .resolved(let label): return label
+        case .neutral: return Self.pinNeutralLabel
+        }
     }
 
     /// Called when the pin-drop phase mounts: request a fresh device fix (so the
@@ -294,6 +340,11 @@ public final class SharedViewerState {
         pinDropCameraCenter = nil
         pinDropResolvedLabel = nil
         pinDropResolvedLabelCoordinate = nil
+        // MYR-223: capture is starting — show the calm in-flight label from the
+        // first frame (the camera seats before the first settle reports a
+        // coordinate), rather than a flash of neutral. The sim path ignores this
+        // (pinDropLabel returns the fixture behind the isLiveLocation guard).
+        pinLabelState = .resolving
         userLocation.refresh()
     }
 
@@ -314,23 +365,76 @@ public final class SharedViewerState {
         guard isLiveLocation else { return }
         pinDropCameraCenter = center
 
-        if !Self.resolvedLabelSurvivesSettle(previousCoordinate: pinDropResolvedLabelCoordinate, newCenter: center) {
+        // MYR-216-3b staleness guard, extended for MYR-223's in-flight state: a
+        // previously-resolved street may keep showing across this settle ONLY
+        // while the pin is still within `pinLabelStalenessMeters` of where it was
+        // resolved. If it survives, keep it on screen while we re-resolve (no
+        // flicker to "Finding…"); if it does NOT (a drag to a new area, or no
+        // prior resolution), drop the stale street at once and show the calm
+        // in-flight label — never a confidently-wrong street, never (yet) neutral.
+        if Self.resolvedLabelSurvivesSettle(previousCoordinate: pinDropResolvedLabelCoordinate, newCenter: center),
+           let kept = pinDropResolvedLabel {
+            pinLabelState = .resolved(kept)
+        } else {
             pinDropResolvedLabel = nil
             pinDropResolvedLabelCoordinate = nil
+            pinLabelState = .resolving
         }
 
+        // MYR-223 SINGLE-FLIGHT + SUPERSEDE: cancel any in-flight resolution — a
+        // newer settle always wins. Only ONE resolution runs at a time; a stale
+        // one that was mid-backoff is cancelled and ignored.
         pinLabelTask?.cancel()
         let labeler = pinLabeler
         pinLabelTask = Task { [weak self] in
             // Debounce so a fast drag doesn't fire a geocode per settle event.
             try? await Task.sleep(for: .milliseconds(Self.pinLabelDebounceMs))
             guard !Task.isCancelled else { return }
-            let label = await labeler.label(for: center)
+            await self?.resolveLabel(for: center, using: labeler)
+        }
+    }
+
+    /// MYR-223 deliverable 1 — the single-flight resolution with THROTTLE-AWARE
+    /// backoff retry. Runs inside `pinLabelTask` (so a newer settle cancels it):
+    ///   • `.resolved` → adopt the street (records the coordinate it's valid for);
+    ///   • `.unresolved` → genuine no-result, degrade to neutral immediately (a
+    ///     retry returns the same nothing) — never re-keeps a stale street;
+    ///   • `.failed` → throttled / transient: stay in-flight ("Finding address…"
+    ///     — or, if a valid nearby street is still showing, keep it) and retry
+    ///     after the next backoff interval; only once the backoff schedule is
+    ///     exhausted is the failure treated as genuine → neutral.
+    /// Every branch checks `Task.isCancelled` around the awaits so a superseded
+    /// resolution never writes a stale label.
+    private func resolveLabel(for center: CLLocationCoordinate2D, using labeler: any RidePinLabeling) async {
+        var attempt = 0
+        while true {
             guard !Task.isCancelled else { return }
-            // A resolved label records the coordinate it's valid for; a nil
-            // result clears to neutral (never keeps a stale street — MYR-216-3b).
-            self?.pinDropResolvedLabel = label
-            self?.pinDropResolvedLabelCoordinate = label == nil ? nil : center
+            let resolution = await labeler.resolve(for: center)
+            guard !Task.isCancelled else { return }
+            switch resolution {
+            case .resolved(let label):
+                pinDropResolvedLabel = label
+                pinDropResolvedLabelCoordinate = center
+                pinLabelState = .resolved(label)
+                return
+            case .unresolved:
+                pinDropResolvedLabel = nil
+                pinDropResolvedLabelCoordinate = nil
+                pinLabelState = .neutral
+                return
+            case .failed:
+                guard attempt < Self.pinLabelRetryBackoffs.count else {
+                    // Retries exhausted — treat the persistent failure as genuine.
+                    pinDropResolvedLabel = nil
+                    pinDropResolvedLabelCoordinate = nil
+                    pinLabelState = .neutral
+                    return
+                }
+                // Stay in flight (the label is already `.resolving`, or a valid
+                // nearby street is being kept) and back off before retrying.
+                try? await Task.sleep(for: Self.pinLabelRetryBackoffs[attempt])
+                attempt += 1
+            }
         }
     }
 

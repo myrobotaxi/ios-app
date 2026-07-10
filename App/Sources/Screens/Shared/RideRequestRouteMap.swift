@@ -26,6 +26,14 @@ struct RideRequestRouteMap: View {
     /// The route camera fits the route into the UNOBSTRUCTED area above the sheet
     /// so both endpoints + the full polyline clear it. `0` (default) keeps the
     /// plain full-frame fit for non-inset callers.
+    ///
+    /// MYR-223 deliverable 2: this same value ALSO drives `.safeAreaPadding
+    /// (.bottom:)`, so MapKit's legally-required attribution/legal label sits
+    /// just above the sheet instead of hidden behind it (parity with
+    /// `VehicleMapView`'s idle/search/pin-drop map). `safeAreaPadding` repositions
+    /// only the map ornaments — it does NOT reframe the camera (the route fit is
+    /// still the `initialPosition` region above) — so the polyline framing is
+    /// unchanged; only the attribution moves.
     var bottomInset: CGFloat = 0
 
     var body: some View {
@@ -45,6 +53,10 @@ struct RideRequestRouteMap: View {
                 mapContent.annotationTitles(.hidden)
             }
             .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll, showsTraffic: false))
+            // MYR-223 d2: keep the MapKit attribution just above the phase's
+            // bottom chrome (same mechanism as `VehicleMapView`). No-op when
+            // `bottomInset` is 0 (the Summary full-screen takeover).
+            .safeAreaPadding(.bottom, bottomInset)
             .preferredColorScheme(.dark)
             .allowsHitTesting(false)
         }
