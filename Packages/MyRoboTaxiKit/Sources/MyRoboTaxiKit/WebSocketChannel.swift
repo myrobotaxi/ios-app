@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The minimal duplex-socket capability the telemetry actor needs, abstracted so
 /// the reconnect / backoff state machine can be exercised against a scripted
@@ -75,8 +76,20 @@ actor URLSessionWebSocketChannel: WebSocketChannel {
 
     func ping() async throws {
         resumeIfNeeded()
+        // MYR-227 — URLSession can invoke the pong handler TWICE when a pong
+        // races a cancellation/teardown error (observed on-device: fatal
+        // CheckedContinuation double-resume, crash report 2026-07-10-004939).
+        // The lock guarantees the continuation resumes exactly once; a second
+        // invocation is dropped.
+        let resumed = OSAllocatedUnfairLock(initialState: false)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             task.sendPing { error in
+                let isFirst = resumed.withLock { done -> Bool in
+                    if done { return false }
+                    done = true
+                    return true
+                }
+                guard isFirst else { return }
                 if let error { continuation.resume(throwing: error) }
                 else { continuation.resume() }
             }

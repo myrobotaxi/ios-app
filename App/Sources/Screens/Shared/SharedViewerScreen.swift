@@ -58,6 +58,7 @@ struct SharedViewerScreen: View {
             // handed to `VehicleMapView`, which converts it to the coordinate MapKit
             // renders there. Deriving both from `glyphLocal` means the drawn glyph
             // and the confirmed pickup can never desync.
+            let _ = NSLog("MRT226 geo=%@ w=%.1f h=%.1f", geo.size.width.isFinite ? "FIN" : "INF", geo.size.width, geo.size.height)
             let glyphLocal = VehicleMapView.pinGlyphPoint(in: geo.size)
             let glyphGlobal = CGPoint(
                 x: geo.frame(in: .global).minX + glyphLocal.x,
@@ -68,6 +69,7 @@ struct SharedViewerScreen: View {
                     .ignoresSafeArea()
 
                 sheetContent(totalHeight: geo.size.height)
+                    .background(GeometryReader { sg in Color.clear.onAppear { NSLog("MRT226 sheetBG w=%.1f h=%.1f", sg.size.width, sg.size.height) } })
                     .animation(
                         reduceMotion ? .easeOut(duration: 0.2) : .timingCurve(0.32, 0.72, 0, 1, duration: 0.42), // ride-request.jsx:1185
                         value: viewerState.sheetPhase
