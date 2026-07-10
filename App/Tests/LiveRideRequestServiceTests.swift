@@ -222,6 +222,69 @@ final class LiveRideRequestServiceTests: XCTestCase {
         await eventually { service.activeRequest?.status == .declined }
     }
 
+    // MARK: MYR-220 — session/connection failures are NOT owner declines
+
+    /// A bare HTTP 401 on the create POST means the SESSION died mid-send (token
+    /// expired), not that the owner refused. The optimistic pending must NOT
+    /// become `.declined` (that renders "… can't take this ride right now" for a
+    /// dead session); it clears, `sessionFailure` is flagged for the rider's calm
+    /// retry, and no reconcile GET runs (a 401 is not indeterminate).
+    func testAuthFailure401OnCreateFlagsSessionErrorNotDeclined() async {
+        let api = StubRideAPI(
+            created: Self.wireRide(id: "srv-401", status: .requested),
+            createError: RestError.http(status: 401, code: .authFailed, message: "token expired", subCode: nil)
+        )
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.liveInput())
+        XCTAssertEqual(service.activeRequest?.status, .pending, "optimistic pending is visible synchronously")
+        service.confirmSend()
+        await eventually { await api.createCount == 1 } // the 401'd POST fired
+
+        await eventually { service.sessionFailure != nil }
+        XCTAssertNil(service.activeRequest, "a session failure clears the stuck pending — no frozen Waiting… card")
+        XCTAssertNotEqual(service.activeRequest?.status, .declined, "auth failure never renders as an owner decline")
+        let listCount = await api.rideListCount
+        XCTAssertEqual(listCount, 0, "a 401 is definitive-not-indeterminate — no reconcile GET")
+    }
+
+    /// An auth-shaped 403 (carrying the typed `auth_failed` code — the backend's
+    /// re-auth-required shape) is likewise a session failure, not a decline. We
+    /// branch on the TYPED code, so this 403 does NOT take the definitive path a
+    /// generic `permission_denied` 403 does.
+    func testAuthShaped403OnCreateFlagsSessionErrorNotDeclined() async {
+        let api = StubRideAPI(
+            created: Self.wireRide(id: "srv-403a", status: .requested),
+            createError: RestError.http(status: 403, code: .authFailed, message: "reauth required", subCode: .reauthRequired)
+        )
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.liveInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+
+        await eventually { service.sessionFailure != nil }
+        XCTAssertNil(service.activeRequest, "auth-shaped 403 clears the pending, not declines it")
+    }
+
+    /// A genuine semantic refusal — 409 conflict (lifecycle collision) — keeps the
+    /// DEFINITIVE path unchanged: the request goes `.declined` and no session
+    /// failure is raised. Proves the split only diverts AUTH-shaped 4xx.
+    func testConflict409KeepsDefinitiveDeclinedPath() async {
+        let api = StubRideAPI(
+            created: Self.wireRide(id: "srv-409", status: .requested),
+            createError: RestError.http(status: 409, code: .conflict, message: "already exists", subCode: nil)
+        )
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.liveInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+
+        await eventually { service.activeRequest?.status == .declined }
+        XCTAssertNil(service.sessionFailure, "a 409 is a real refusal — not a session failure")
+    }
+
     // MARK: WS ride_status_changed round-trips into the UI state
 
     func testStatusChangedFrameRefetchesAndReconcilesToAccepted() async {

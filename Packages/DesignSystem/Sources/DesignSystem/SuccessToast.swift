@@ -10,14 +10,23 @@ import SwiftUI
 public extension View {
     /// Presents the shared success toast over this view. Apply at the screen
     /// root; `bottomOffset` positions the pill above the floating tab bar.
+    ///
+    /// `systemImage`/`tint` default to the success look (gold checkmark + gold
+    /// hairline), so every existing caller renders byte-identically. A calm
+    /// non-success notice (e.g. MYR-220's session/connection retry) passes a
+    /// muted glyph + tint to reuse this SAME pill without a dramatic error UI.
     func mrtSuccessToast(
         isPresented: Binding<Bool>,
         message: String,
+        systemImage: String = "checkmark",
+        tint: Color = .mrtGold,
         bottomOffset: CGFloat = MRTMetrics.toastBottomOffset
     ) -> some View {
         modifier(MRTSuccessToastModifier(
             isPresented: isPresented,
             message: message,
+            systemImage: systemImage,
+            tint: tint,
             bottomOffset: bottomOffset
         ))
     }
@@ -26,6 +35,8 @@ public extension View {
 private struct MRTSuccessToastModifier: ViewModifier {
     @Binding var isPresented: Bool
     let message: String
+    let systemImage: String
+    let tint: Color
     let bottomOffset: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -35,7 +46,7 @@ private struct MRTSuccessToastModifier: ViewModifier {
     func body(content: Content) -> some View {
         content.overlay(alignment: .bottom) {
             if isPresented {
-                MRTSuccessToastPill(message: message)
+                MRTSuccessToastPill(message: message, systemImage: systemImage, tint: tint)
                     .padding(.horizontal, MRTMetrics.pageGutter)
                     .padding(.bottom, bottomOffset)
                     .transition(
@@ -55,12 +66,14 @@ private struct MRTSuccessToastModifier: ViewModifier {
 
 private struct MRTSuccessToastPill: View {
     let message: String
+    var systemImage: String = "checkmark"
+    var tint: Color = .mrtGold
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "checkmark")
+            Image(systemName: systemImage)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.mrtGold)
+                .foregroundStyle(tint)
             Text(message)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(Color.mrtText)
@@ -69,7 +82,7 @@ private struct MRTSuccessToastPill: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
         .background(Color.mrtToastSurface, in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.mrtGold, lineWidth: MRTMetrics.hairline))
+        .overlay(Capsule().strokeBorder(tint, lineWidth: MRTMetrics.hairline))
         .accessibilityElement(children: .combine)
     }
 }

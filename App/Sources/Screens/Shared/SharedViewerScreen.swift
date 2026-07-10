@@ -36,6 +36,12 @@ struct SharedViewerScreen: View {
     /// state machine survives view updates, and passed unconditionally so the
     /// map can release it when the phase exits.
     @State private var pinDropCamera = PinDropCameraController()
+    /// MYR-220: a calm session/connection-failure notice — shown when a live
+    /// create POST's auth died mid-send (401 / auth-shaped 403), NOT an owner
+    /// decline. Reuses the shared bottom pill (`mrtSuccessToast`) with a muted
+    /// tone; the rider is already returned to a retryable state with the draft
+    /// intact by `handleSessionFailure()`.
+    @State private var showSessionErrorToast = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -117,6 +123,21 @@ struct SharedViewerScreen: View {
         .onChange(of: rideRequestService.activeRequest?.trackProgress) { _, progress in
             handleProgressChange(progress)
         }
+        .onChange(of: rideRequestService.sessionFailure) { _, failure in
+            // MYR-220: an auth/session failure of the create POST is NOT an owner
+            // decline — never let it drive `DeclinedNotice`. Return the rider to a
+            // retryable state (draft intact) and raise the calm retry notice.
+            if failure != nil { handleSessionFailure() }
+        }
+        .mrtSuccessToast(
+            isPresented: $showSessionErrorToast,
+            // Calm, non-alarming copy (design minimalism — cf. the "can't reach"
+            // fleet placeholder): the trip is preserved and retryable once the
+            // session is back. No "declined", no vehicle/owner name.
+            message: "Couldn’t reach your session. Your trip’s saved — try again.",
+            systemImage: "arrow.clockwise",
+            tint: .mrtTextMuted
+        )
     }
 
     // MARK: Phase content (MYR-171)
@@ -328,8 +349,34 @@ struct SharedViewerScreen: View {
         viewerState.sheetPhase = .summary
     }
 
+    // MARK: MYR-220 — session/connection failure is NOT a decline
+    //
+    // The live create POST's auth died mid-send (token expired → 401 / auth-
+    // shaped 403). Backend confirmed no ride was created, so this must NOT render
+    // as an owner decline ("Alex can't take this ride right now"). Return the
+    // rider to a RETRYABLE state with the draft intact — Review when a full draft
+    // exists (retry the exact same trip in one tap), else the collapsed search
+    // sheet — and raise the calm retry notice. The draft lives in
+    // `SharedViewerState` (untouched by the failed submit), so nothing to restore.
+    private func handleSessionFailure() {
+        // Never leave the declined affordance up for a session failure.
+        viewerState.showDeclinedNotice = false
+        if viewerState.draftPickup != nil, viewerState.draftDestination != nil {
+            viewerState.sheetPhase = .review
+        } else {
+            viewerState.sheetPhase = .search
+        }
+        showSessionErrorToast = true
+    }
+
+    /// The actor named in the declined card. MYR-220 deliverable 2: in LIVE mode
+    /// the rider knows the VEHICLE, not a fixture owner — its nickname ("Lunar")
+    /// stands in as `liveFleetMember.owner` (MYR-212's naming, mirrored by the
+    /// Booking/Tracking "Waiting for {name}" cards). Sim keeps the fixture owner
+    /// ("Alex") so the simulated declined scene is content-identical.
     private var declinedRequesterName: String {
-        RideRequestFixtures.fleet.first { $0.id == viewerState.draftFleetMemberID }?.owner
+        if let live = viewerState.liveFleetMember { return live.owner }
+        return RideRequestFixtures.fleet.first { $0.id == viewerState.draftFleetMemberID }?.owner
             ?? RideRequestFixtures.fleet[0].owner
     }
 
