@@ -228,6 +228,7 @@ final class LivePlaceSearchTests: XCTestCase {
             placeSearch: SimulatedPlaceSearch(),
             userLocation: SimulatedUserLocation(),
             liveVehicleLocator: nil,
+            pinLabeler: SimulatedPinLabeler(),
             isLive: false
         )
         let state = SharedViewerState(seams: seams)

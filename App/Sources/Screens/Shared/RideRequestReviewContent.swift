@@ -11,8 +11,15 @@ struct RideRequestReviewContent: View {
     @State private var fleetPickerOpen = false
 
     private var destination: RidePlace? { viewerState.draftDestination }
+    /// MYR-212 deliverable 4: the live vehicle (nickname / real battery /
+    /// availability) in live mode, else the fixture picked by draft id.
     private var fleetMember: FleetMember {
-        RideRequestFixtures.fleet.first { $0.id == viewerState.draftFleetMemberID } ?? RideRequestFixtures.fleet[0]
+        viewerState.fleetMember(forID: viewerState.draftFleetMemberID)
+    }
+    /// The Review fleet picker is a fixture-only affordance — a live ride joins
+    /// the single owned vehicle (multi-vehicle picker is MYR-91 scope).
+    private var canPickFleet: Bool {
+        viewerState.liveFleetMember == nil && RideRequestFixtures.fleet.count > 1
     }
     private var schedule: RideSchedule? { viewerState.draftSchedule }
     private var passenger: RidePassenger? { viewerState.draftPassenger }
@@ -232,7 +239,7 @@ struct RideRequestReviewContent: View {
 
     private var vehicleRow: some View {
         Button {
-            if RideRequestFixtures.fleet.count > 1 { fleetPickerOpen = true }
+            if canPickFleet { fleetPickerOpen = true }
         } label: {
             HStack(spacing: 11) {
                 Circle().fill(Color.mrtGoldTileFaint).frame(width: 36, height: 36)
@@ -243,14 +250,16 @@ struct RideRequestReviewContent: View {
                         .tracking(-0.2)
                         .foregroundStyle(Color.mrtText)
                     HStack(spacing: 6) {
-                        Circle().fill(Color.mrtParked).frame(width: 6, height: 6).shadow(color: .mrtParked.opacity(0.6), radius: 3)
-                        Text("Available\(schedule == nil ? " now" : "") \u{00B7} \(fleetMember.battery)%")
+                        // MYR-212: green dot + "now" only when live status is
+                        // bookable; fixtures are always available (identical).
+                        Circle().fill(fleetMember.isAvailable ? Color.mrtParked : Color.mrtTextMuted).frame(width: 6, height: 6).shadow(color: (fleetMember.isAvailable ? Color.mrtParked : Color.clear).opacity(0.6), radius: 3)
+                        Text("\(fleetMember.availabilityWord)\(fleetMember.isAvailable && schedule == nil ? " now" : "") \u{00B7} \(fleetMember.battery)%")
                             .font(.system(size: 12))
                             .foregroundStyle(Color.mrtTextSec)
                     }
                 }
                 Spacer(minLength: 0)
-                if RideRequestFixtures.fleet.count > 1 {
+                if canPickFleet {
                     HStack(spacing: 3) {
                         Text("Change").font(.system(size: 12, weight: .semibold))
                         Image(systemName: "chevron.down").font(.system(size: 11))
@@ -267,7 +276,7 @@ struct RideRequestReviewContent: View {
         }
         .buttonStyle(.plain)
         .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).strokeBorder(Color.mrtGold.opacity(Double(0x24) / 255.0), lineWidth: MRTMetrics.hairline))
-        .disabled(RideRequestFixtures.fleet.count <= 1)
+        .disabled(!canPickFleet)
         .frame(minHeight: MRTMetrics.minTapTarget)
     }
 

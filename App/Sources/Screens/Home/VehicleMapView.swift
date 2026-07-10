@@ -71,6 +71,11 @@ struct VehicleMapView: View {
     /// render, so the label settles just above the sheet's peek edge
     /// instead of being hidden underneath it.
     let bottomContentInset: CGFloat
+    /// MYR-212: reports the map's settled region center at the end of every
+    /// pan/zoom — the rider's pin-drop phase uses it as the AUTHORITATIVE
+    /// pickup coordinate (the pin is fixed on screen; the coordinate under it is
+    /// wherever the map settled). `nil` at every other call site.
+    var onCameraCenterChange: ((CLLocationCoordinate2D) -> Void)? = nil
 
     // Cooldown *window*, not a single-consume flag: recenters can overlap
     // (a new one fires every progress-percent tick, ~1/sec, while the
@@ -127,7 +132,12 @@ struct VehicleMapView: View {
         // side-by-side evidence; there is no more aggressive terrain color
         // knob on the public SwiftUI `Map` style API.
         .preferredColorScheme(.dark)
-        .onMapCameraChange(frequency: .onEnd) { _ in
+        .onMapCameraChange(frequency: .onEnd) { context in
+            // MYR-212: report the settled center for the pin-drop pickup — on
+            // every settle (programmatic seed AND user drag) so the confirmed
+            // coordinate always tracks the map. Reported before the follow
+            // guard below, which is unrelated (recenter-affordance state).
+            onCameraCenterChange?(context.region.center)
             guard Date() >= programmaticCameraUntil else { return }
             // A real drag/pinch settled — the prototype's FloatingMapButton
             // recenter affordance is meant for exactly this (Handoff §5.5;

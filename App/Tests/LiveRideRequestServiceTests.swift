@@ -68,6 +68,33 @@ final class LiveRideRequestServiceTests: XCTestCase {
         XCTAssertEqual(cancelID, "srv-3")
     }
 
+    // MARK: create fails on the client but the optimistic Booking record survives (MYR-212 defect 3)
+
+    func testCreateFailureKeepsOptimisticPendingWithRealDraftLabels() async {
+        // A create round-trip that errors on the CLIENT (transport blip / decode
+        // mismatch) must NOT strand Booking with a nil record — the countdown
+        // reads `requestedAt` and labels read `input`, so a nil record freezes
+        // at "10s" with fixture-ish fallbacks (the client's live QA bug).
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-x", status: .requested), createError: URLError(.timedOut))
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        let input = RideRequestInput(
+            pickup: RidePlace(id: "pin", label: "1200 Grandscape Blvd", subtitle: nil, miles: 0, minutes: 0, icon: "mappin", coordinate: CLLocationCoordinate2D(latitude: 33.09, longitude: -96.85)),
+            destination: RidePlace(id: "live|bell", label: "Bell Southstone Yards", subtitle: nil, miles: 5.4, minutes: 16, icon: "mappin", coordinate: CLLocationCoordinate2D(latitude: 33.15, longitude: -96.82)),
+            fleetMemberID: "veh-live"
+        )
+        service.submit(input)
+        XCTAssertEqual(service.activeRequest?.status, .pending)
+        await eventually { await api.createCount == 1 } // the failing POST fired
+
+        // Record survives the failure, carrying the REAL draft labels (not the
+        // "Destination" / 28-min placeholders) and a real `requestedAt`.
+        XCTAssertEqual(service.activeRequest?.status, .pending, "optimistic pending survives a create error")
+        XCTAssertEqual(service.activeRequest?.input.destination.label, "Bell Southstone Yards")
+        XCTAssertEqual(service.activeRequest?.input.destination.minutes, 16)
+        XCTAssertEqual(service.activeRequest?.input.pickup.label, "1200 Grandscape Blvd")
+    }
+
     // MARK: WS ride_status_changed round-trips into the UI state
 
     func testStatusChangedFrameRefetchesAndReconcilesToAccepted() async {
@@ -130,6 +157,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
 /// In-memory `RideRequestAPI` — records calls + arguments, returns canned records.
 private actor StubRideAPI: RideRequestAPI {
     private let createReturn: RideRequest
+    private let createError: Error?
     private var detailReturn: RideRequest?
 
     private(set) var createCount = 0
@@ -141,7 +169,10 @@ private actor StubRideAPI: RideRequestAPI {
     private(set) var lastDeclineID: String?
     private(set) var lastCancelID: String?
 
-    init(created: RideRequest) { self.createReturn = created }
+    init(created: RideRequest, createError: Error? = nil) {
+        self.createReturn = created
+        self.createError = createError
+    }
 
     func setDetail(_ ride: RideRequest) { detailReturn = ride }
 
@@ -154,6 +185,7 @@ private actor StubRideAPI: RideRequestAPI {
     func createRideRequest(_ body: RideRequestCreateRequest) async throws -> RideRequest {
         createCount += 1
         lastCreateVehicleID = body.vehicleId
+        if let createError { throw createError }
         return createReturn
     }
 

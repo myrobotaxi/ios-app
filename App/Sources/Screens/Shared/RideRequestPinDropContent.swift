@@ -80,9 +80,10 @@ struct RideRequestPinDropContent: View {
     }
 
     private func confirm() {
-        // MYR-211: the confirmed pickup is the real map-center coordinate in
-        // live mode (device/vehicle region) and the fixture point in sim — see
-        // `SharedViewerState.pinDropCoordinate`/`pinDropLabel`.
+        // MYR-211/212: the confirmed pickup is the AUTHORITATIVE pin position —
+        // in live mode the map's settled center (wherever the rider dragged to)
+        // with its reverse-geocoded street label, and the fixture point in sim.
+        // See `SharedViewerState.pinDropCoordinate`/`pinDropLabel`.
         viewerState.draftPickup = RidePlace(
             id: "pin",
             label: viewerState.pinDropLabel,
@@ -94,7 +95,9 @@ struct RideRequestPinDropContent: View {
         )
         switch returnTo {
         case .search: viewerState.sheetPhase = .search
-        case .review: viewerState.sheetPhase = .review
+        // MYR-212 defect 5: enter Review through the estimate seam so the trip
+        // miles/minutes are computed once from this just-confirmed pickup.
+        case .review: viewerState.enterReview()
         }
     }
 

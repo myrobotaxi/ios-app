@@ -66,6 +66,7 @@ public final class SharedViewerState {
     let placeSearch: any PlaceSearching
     let userLocation: any UserLocationProviding
     let liveVehicleLocator: RiderLiveVehicleLocator?
+    let pinLabeler: any RidePinLabeling
     /// True only when the live seams are composed — gates the real pin-drop
     /// coordinate (device/vehicle region) below.
     let isLiveLocation: Bool
@@ -110,6 +111,7 @@ public final class SharedViewerState {
         placeSearch = seams.placeSearch
         userLocation = seams.userLocation
         liveVehicleLocator = seams.liveVehicleLocator
+        pinLabeler = seams.pinLabeler
         isLiveLocation = seams.isLive
     }
 
@@ -163,23 +165,98 @@ public final class SharedViewerState {
     public func selectDestination(_ place: RidePlace) {
         draftDestination = place
         if draftPickup != nil {
-            sheetPhase = .review
+            enterReview()
         } else {
             pinReturn = .review
             sheetPhase = .pinDrop(returnTo: .review)
         }
     }
 
-    /// Pin-drop pickup coordinate: the real map-center (device/vehicle region)
-    /// in live mode, the fixture point in sim (byte-identical).
+    // MARK: MYR-212 — authoritative pin (map-center follow + street label)
+    //
+    // The confirmed pickup is wherever the rider drags the map to, not the
+    // static initial center. `pinDropCameraCenter` is the map's live settled
+    // center (reported by `VehicleMapView` while the pin-drop phase is up);
+    // `pinDropResolvedLabel` is that center reverse-geocoded to a street label.
+    // Both are live-only — sim keeps the fixture coordinate/label so every
+    // simulated pin-drop scene renders byte-identically.
+
+    /// The map's last settled center while dropping a pin (live only).
+    private(set) var pinDropCameraCenter: CLLocationCoordinate2D?
+    /// The reverse-geocoded street label for `pinDropCameraCenter` (live only).
+    private(set) var pinDropResolvedLabel: String?
+    @ObservationIgnored private var pinLabelTask: Task<Void, Never>?
+
+    /// Pin-drop pickup coordinate: in live mode the map's settled center (the
+    /// authoritative pin position the rider dragged to), falling back to the
+    /// region center until the first camera settle; the fixture point in sim
+    /// (byte-identical).
     public var pinDropCoordinate: CLLocationCoordinate2D {
-        isLiveLocation ? mapRegionCenter : DriveFixtures.financialDistrict
+        guard isLiveLocation else { return DriveFixtures.financialDistrict }
+        return pinDropCameraCenter ?? mapRegionCenter
     }
 
-    /// Pin-drop pickup label: the reverse-geocoded device label in live mode,
-    /// the fixture "Folsom & 2nd St" in sim (byte-identical).
+    /// Pin-drop pickup label: in live mode the reverse-geocoded street label of
+    /// the settled map center (falling back to the device label until the first
+    /// geocode lands); the fixture "Folsom & 2nd St" in sim (byte-identical).
     public var pinDropLabel: String {
-        isLiveLocation ? userLocation.currentLocationLabel : RideRequestFixtures.pinSpots[0]
+        guard isLiveLocation else { return RideRequestFixtures.pinSpots[0] }
+        return pinDropResolvedLabel ?? userLocation.currentLocationLabel
+    }
+
+    /// Called when the pin-drop phase mounts: request a fresh device fix (so the
+    /// pin opens on the freshest coordinate, not a stale one / the vehicle
+    /// fallback — MYR-212 defect 2) and clear any prior settled pin so it
+    /// re-seeds from this session's map. No-op-ish in sim (refresh is a no-op;
+    /// the live-only fields stay nil and unused).
+    public func enterPinDrop() {
+        pinLabelTask?.cancel()
+        pinDropCameraCenter = nil
+        pinDropResolvedLabel = nil
+        userLocation.refresh()
+    }
+
+    /// The map reported a settled center during pin-drop (live only): adopt it
+    /// as the authoritative pickup and kick a debounced reverse-geocode to
+    /// refresh the street label. Ignored in sim so screenshots stay identical.
+    public func pinDropCameraSettled(at center: CLLocationCoordinate2D) {
+        guard isLiveLocation else { return }
+        pinDropCameraCenter = center
+        pinLabelTask?.cancel()
+        let labeler = pinLabeler
+        pinLabelTask = Task { [weak self] in
+            // Debounce so a fast drag doesn't fire a geocode per settle event.
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            let label = await labeler.label(for: center)
+            guard !Task.isCancelled, let label else { return }
+            self?.pinDropResolvedLabel = label
+        }
+    }
+
+    /// Enter Review, computing the trip estimate once from the confirmed
+    /// pickup → destination (MYR-212 defect 5). Only recomputes when the
+    /// destination carries no estimate yet (`minutes == 0`, the live search /
+    /// pin case) — fixture destinations keep their canned miles/minutes, so the
+    /// simulated flow is untouched.
+    public func enterReview() {
+        if let pickup = draftPickup, let destination = draftDestination {
+            draftDestination = TripEstimate.applied(to: destination, pickup: pickup.coordinate)
+        }
+        sheetPhase = .review
+    }
+
+    /// The live fleet member (nickname / real battery / availability / VIN
+    /// plate), or `nil` in sim / before the vehicle list loads — MYR-212
+    /// deliverable 4. Review + Booking prefer this over the fixture fleet.
+    public var liveFleetMember: FleetMember? {
+        isLiveLocation ? liveVehicleLocator?.fleetMember : nil
+    }
+
+    /// The fleet member to render for a draft/record `id`: the live vehicle in
+    /// live mode (single-vehicle join), else the fixture looked up by id.
+    public func fleetMember(forID id: String) -> FleetMember {
+        liveFleetMember ?? (RideRequestFixtures.fleet.first { $0.id == id } ?? RideRequestFixtures.fleet[0])
     }
 
     /// Resets the draft + returns to `.idle` — ride-request.jsx `closeToIdle`.

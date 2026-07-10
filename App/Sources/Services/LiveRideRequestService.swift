@@ -107,9 +107,20 @@ final class LiveRideRequestService: RideRequestService {
                     self.applyRemote(rideID: ride.id) // server already advanced it
                 }
             } catch {
-                // Create failed (e.g. 403 vehicle-not-owned / transport). Drop the
-                // optimistic pending so the rider can retry from Review — no new UI.
-                if self.serverRideID == nil { self.activeRequest = nil }
+                // MYR-212 defect 3: do NOT drop the optimistic pending on a
+                // create error. The client's live QA saw a frozen "10s" +
+                // placeholder labels ("Destination", 14 mi, 28 min) on Booking
+                // because a create round-trip that errored on the CLIENT (e.g. a
+                // transport blip or a response-decode mismatch) even though the
+                // server had created the ride nilled `activeRequest`, leaving
+                // Booking with no record — its countdown reads
+                // `record.requestedAt` and its labels read `record.input`, so a
+                // nil record freezes at 10s with fixture-ish fallbacks. Keeping
+                // the optimistic record makes live Booking behave exactly like
+                // sim: the 10s fill ticks down off `requestedAt` and carries the
+                // REAL draft labels; a WS `ride_request_created` frame then
+                // reconciles the real record (or the rider cancels from the
+                // pending pill if it truly never landed).
             }
         }
     }

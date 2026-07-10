@@ -25,10 +25,13 @@ private final class FakeUserLocation: UserLocationProviding {
         self.label = label
     }
 
+    private(set) var refreshCount = 0
+
     var currentLocationLabel: String { label }
     var showsUserLocationDot: Bool { authorized }
     func start() {}
     func stop() {}
+    func refresh() { refreshCount += 1 }
 }
 
 @MainActor
@@ -41,6 +44,7 @@ final class RiderLocationTests: XCTestCase {
             placeSearch: SimulatedPlaceSearch(),
             userLocation: userLocation,
             liveVehicleLocator: nil,
+            pinLabeler: SimulatedPinLabeler(),
             isLive: isLive
         )
         return SharedViewerState(seams: seams)
