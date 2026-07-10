@@ -105,7 +105,12 @@ struct RootView: View {
     /// MYR-204 — one session-lived place labeler (saved-place → POI/locality →
     /// address) for the owner Drive Summary header. Holds the per-drive label
     /// cache; sim summaries never invoke it (they keep their fixture labels).
-    @State private var placeLabeler = PlaceLabeler(savedPlaces: RideRequestFixtures.savedPlaces)
+    /// MYR-214 — seeded with an EMPTY saved-place list in live mode: the
+    /// saved-place proximity layer must not label a live drive endpoint that
+    /// happens to sit near an SF fixture coordinate "Home"/"Work" (same
+    /// poisoning class as the live search). Sim keeps the fixtures (composed
+    /// in `init`). Real saved places arrive with accounts (MYR-193).
+    @State private var placeLabeler: PlaceLabeler
 
     // MYR-200 — seed the debug scene (if any) in `init` so the very first
     // render already shows the requested phase. Applying it later (onAppear/
@@ -120,7 +125,14 @@ struct RootView: View {
         var startOwnerTab = "home"
         // MYR-211 — compose the rider's place-search + location seams (sim
         // fixtures by default, live MapKit/CoreLocation when MRT_TELEMETRY=live).
-        let viewer = SharedViewerState(seams: PlaceSearchComposition.make())
+        let seams = PlaceSearchComposition.make()
+        let viewer = SharedViewerState(seams: seams)
+        // MYR-214 — the Drive Summary place labeler drops the fixture saved
+        // places in live mode (see the `placeLabeler` property comment): a live
+        // endpoint near the SF fixture coords must not be labeled "Home".
+        _placeLabeler = State(initialValue: PlaceLabeler(
+            savedPlaces: seams.isLive ? [] : RideRequestFixtures.savedPlaces
+        ))
         // Default to the composed service (sim, or live when the launch env
         // selects it). A DEBUG scene overrides with a concrete simulated service
         // it can `debugSeed` — UNLESS the env composed the live service: the

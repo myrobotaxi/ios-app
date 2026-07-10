@@ -105,6 +105,11 @@ final class LivePlaceSearch: PlaceSearching {
     /// Kept out of `@Observable` tracking — internal plumbing, not view state.
     @ObservationIgnored private let engine: any AutocompleteEngine
     @ObservationIgnored private let resolveItem: ItemResolver
+    /// The saved places ranked ahead of live suggestions. EMPTY on the live
+    /// composition path (MYR-214) so fixture SF places never poison a live
+    /// destination search; real saved places populate this with accounts
+    /// (MYR-193). Tests inject a list to exercise the saved-first ranking.
+    @ObservationIgnored private let savedPlaces: [RidePlace]
     @ObservationIgnored private var regionCenter = CLLocationCoordinate2D(latitude: 0, longitude: 0)
     @ObservationIgnored private var query = ""
     @ObservationIgnored private var debounceTask: Task<Void, Never>?
@@ -122,11 +127,13 @@ final class LivePlaceSearch: PlaceSearching {
     init(
         engine: (any AutocompleteEngine)? = nil,
         resolveItem: ItemResolver? = nil,
+        savedPlaces: [RidePlace] = [],
         debounce: Duration = .milliseconds(250),
         maxResults: Int = 8
     ) {
         self.engine = engine ?? LocalSearchCompleterEngine()
         self.resolveItem = resolveItem ?? Self.localSearchItem
+        self.savedPlaces = savedPlaces
         self.debounce = debounce
         self.maxResults = maxResults
         self.engine.onSuggestions = { [weak self] suggestions in
@@ -139,7 +146,7 @@ final class LivePlaceSearch: PlaceSearching {
             guard let self else { return }
             // Fall back to the saved-place matches alone rather than a hard
             // failure — the design's "No results" reads calmly either way.
-            self.results = RidePlaceMapper.matchingSavedPlaces(query: self.query)
+            self.results = RidePlaceMapper.matchingSavedPlaces(query: self.query, in: self.savedPlaces)
         }
     }
 
@@ -186,7 +193,7 @@ final class LivePlaceSearch: PlaceSearching {
         resolveTask?.cancel()
         let center = regionCenter
         let queryAtDispatch = query
-        let savedMatches = RidePlaceMapper.matchingSavedPlaces(query: queryAtDispatch)
+        let savedMatches = RidePlaceMapper.matchingSavedPlaces(query: queryAtDispatch, in: savedPlaces)
         let top = Array(suggestions.prefix(maxResults))
 
         // No live suggestions: the saved matches (possibly empty → "No results").

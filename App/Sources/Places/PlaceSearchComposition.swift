@@ -46,7 +46,10 @@ enum PlaceSearchComposition {
         #if DEBUG
         if let config = TelemetryComposition.liveConfigFromEnvironment() {
             return Seams(
-                placeSearch: LivePlaceSearch(),
+                // MYR-214 — EMPTY saved places in live: the SF fixture places
+                // ("Home · 221 Folsom St") must never rank into a live ride's
+                // destination search. Real saved places arrive with MYR-193.
+                placeSearch: LivePlaceSearch(savedPlaces: []),
                 userLocation: LiveUserLocation(),
                 liveVehicleLocator: RiderLiveVehicleLocator(config: config),
                 pinLabeler: LivePinLabeler(),

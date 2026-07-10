@@ -21,6 +21,12 @@ struct RideRequestReviewContent: View {
     private var canPickFleet: Bool {
         viewerState.liveFleetMember == nil && RideRequestFixtures.fleet.count > 1
     }
+    /// MYR-214: the live single-owned vehicle. The fixture fleet is OTHER
+    /// people's cars, so the design's possessive row template ("{owner}'s
+    /// {model}", ride-request.jsx:439) reads right there — but for the rider's
+    /// OWN Tesla it produced "Lunar's Model Y" (nickname mis-mapped as an owner
+    /// name). Live rows name the car by its nickname instead (see `vehicleRow`).
+    private var isLiveVehicle: Bool { viewerState.liveFleetMember != nil }
     private var schedule: RideSchedule? { viewerState.draftSchedule }
     private var passenger: RidePassenger? { viewerState.draftPassenger }
 
@@ -245,7 +251,14 @@ struct RideRequestReviewContent: View {
                 Circle().fill(Color.mrtGoldTileFaint).frame(width: 36, height: 36)
                     .overlay(Text(String(fleetMember.owner.prefix(1))).font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.mrtGold))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(fleetMember.owner)\u{2019}s \(fleetMember.name)")
+                    // MYR-214: the fixture rows keep the design's possessive
+                    // "{owner}'s {model}" (ride-request.jsx:439) — those ARE other
+                    // people's cars. The live single-owned Tesla names itself by
+                    // its nickname ("Lunar") and drops the model into the subline
+                    // (design row anatomy: primary name + secondary status line,
+                    // ride-request.jsx:438-444), so it never renders the wrong
+                    // "Lunar's Model Y" possessive.
+                    Text(isLiveVehicle ? fleetMember.owner : "\(fleetMember.owner)\u{2019}s \(fleetMember.name)")
                         .font(.system(size: 14.5, weight: .semibold))
                         .tracking(-0.2)
                         .foregroundStyle(Color.mrtText)
@@ -253,7 +266,7 @@ struct RideRequestReviewContent: View {
                         // MYR-212: green dot + "now" only when live status is
                         // bookable; fixtures are always available (identical).
                         Circle().fill(fleetMember.isAvailable ? Color.mrtParked : Color.mrtTextMuted).frame(width: 6, height: 6).shadow(color: (fleetMember.isAvailable ? Color.mrtParked : Color.clear).opacity(0.6), radius: 3)
-                        Text("\(fleetMember.availabilityWord)\(fleetMember.isAvailable && schedule == nil ? " now" : "") \u{00B7} \(fleetMember.battery)%")
+                        Text("\(isLiveVehicle ? "\(fleetMember.name) \u{00B7} " : "")\(fleetMember.availabilityWord)\(fleetMember.isAvailable && schedule == nil ? " now" : "") \u{00B7} \(fleetMember.battery)%")
                             .font(.system(size: 12))
                             .foregroundStyle(Color.mrtTextSec)
                     }
@@ -276,7 +289,15 @@ struct RideRequestReviewContent: View {
         }
         .buttonStyle(.plain)
         .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).strokeBorder(Color.mrtGold.opacity(Double(0x24) / 255.0), lineWidth: MRTMetrics.hairline))
-        .disabled(!canPickFleet)
+        // MYR-214: the single-vehicle (live) row is a non-interactive display,
+        // NOT a disabled control. `.disabled()` greyed the ENTIRE plain-button
+        // row (client QA: "Lunar" row rendered dimmed vs. the design's
+        // full-strength active row). The design keeps the single-vehicle row at
+        // full strength and merely inert (ride-request.jsx:436 `cursor: default`
+        // — no dimming) with a `car.fill` trailing glyph instead of "Change".
+        // `.allowsHitTesting` makes it inert without the disabled dimming; the
+        // tap action is already guarded by `canPickFleet`.
+        .allowsHitTesting(canPickFleet)
         .frame(minHeight: MRTMetrics.minTapTarget)
     }
 

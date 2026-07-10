@@ -34,6 +34,19 @@ final class PlaceLabelerTests: XCTestCase {
         XCTAssertNil(match)
     }
 
+    // MARK: MYR-214 — live composition drops fixture saved places
+
+    /// In live mode `RootView` seeds the labeler with an EMPTY saved-place list,
+    /// so a live drive endpoint sitting right on the SF fixture "Home"
+    /// coordinate is NOT mislabeled "Home" (same poisoning class as the live
+    /// search). Real saved places arrive with accounts (MYR-193).
+    func testLiveLabelerWithEmptySavedPlacesNeverMatchesFixtureHome() async {
+        let live = PlaceLabeler(savedPlaces: [], proximityMeters: 150, geocodeTimeout: .milliseconds(1))
+        // Exactly on the fixture "Home" — a full-list labeler would return "Home".
+        let match = await live.nearestSavedPlace(to: home)
+        XCTAssertNil(match, "empty saved-place list must never proximity-match a fixture place")
+    }
+
     func testResolveEndpointUsesSavedNameBeforeAnyGeocode() async {
         let near = CLLocationCoordinate2D(latitude: home.latitude + 0.0004, longitude: home.longitude)
         let resolved = await labeler().resolveEndpoint(near)
