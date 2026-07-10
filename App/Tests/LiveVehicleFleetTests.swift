@@ -112,20 +112,20 @@ final class TelemetryCompositionTests: XCTestCase {
     func testDefaultBackendIsProductionTelemetryHost() {
         // Default is the Fly-managed API listener on :4443 (PR #24) — :443 serves
         // Tesla vehicle mTLS and rejects plain API clients (split-TLS host).
-        let env = TelemetryComposition.backendEnvironment(from: nil)
+        let env = AppMode.backendEnvironment(from: nil)
         XCTAssertEqual(env?.restBaseURL.absoluteString, "https://telemetry.myrobotaxi.app:4443/api")
         XCTAssertEqual(env?.webSocketURL.absoluteString, "wss://telemetry.myrobotaxi.app:4443/api/ws")
         XCTAssertEqual(env?.allowsInsecureLoopback, false)
     }
 
     func testCustomHTTPSBackendMountsRestAndWebSocketPaths() {
-        let env = TelemetryComposition.backendEnvironment(from: "https://staging.telemetry.example")
+        let env = AppMode.backendEnvironment(from: "https://staging.telemetry.example")
         XCTAssertEqual(env?.restBaseURL.absoluteString, "https://staging.telemetry.example/api")
         XCTAssertEqual(env?.webSocketURL.absoluteString, "wss://staging.telemetry.example/api/ws")
     }
 
     func testLoopbackBackendAllowsInsecureAndDowngradesScheme() {
-        let env = TelemetryComposition.backendEnvironment(from: "http://localhost:8080")
+        let env = AppMode.backendEnvironment(from: "http://localhost:8080")
         XCTAssertEqual(env?.restBaseURL.absoluteString, "http://localhost:8080/api")
         XCTAssertEqual(env?.webSocketURL.absoluteString, "ws://localhost:8080/api/ws")
         XCTAssertEqual(env?.allowsInsecureLoopback, true)

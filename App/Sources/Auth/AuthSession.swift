@@ -36,6 +36,19 @@ protocol AuthSession: AnyObject {
     /// revokes the refresh-token family + clears the Keychain (best-effort,
     /// non-blocking). Sim: flips the flag.
     func signOut()
+
+    /// Attempt to SILENTLY resume a stored session at launch — no user
+    /// interaction (MYR-221 returning-user auto-route). Live: refresh from the
+    /// Keychain refresh token; on success `isSignedIn` becomes true and the app
+    /// routes straight in, skipping SignInScreen; on failure (no session / spent
+    /// or revoked refresh token / network) it returns false and the app shows
+    /// SignInScreen. Sim: no stored session → always false (default below).
+    func resumeStoredSession() async -> Bool
+}
+
+extension AuthSession {
+    /// Default: no resumable session (the simulated session never persists one).
+    func resumeStoredSession() async -> Bool { false }
 }
 
 /// Why a live sign-in did not complete, so the sign-in screen can react calmly.
@@ -113,6 +126,21 @@ final class LiveAuthSession: AuthSession {
             throw AuthSignInError.failed
         }
         isSignedIn = true
+    }
+
+    /// Silent resume (MYR-221): ask the session provider for an access token,
+    /// which refreshes from the stored Keychain refresh token. Success →
+    /// signed-in (route straight into the app). A `notSignedIn` (no stored token),
+    /// `sessionExpired` (refresh rejected — provider already cleared it), or a
+    /// network error all resolve to false → the app shows SignInScreen.
+    func resumeStoredSession() async -> Bool {
+        do {
+            _ = try await sessionProvider.token()
+            isSignedIn = true
+            return true
+        } catch {
+            return false
+        }
     }
 
     func signOut() {
