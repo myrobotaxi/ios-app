@@ -377,9 +377,16 @@ struct RootView: View {
             }
         }
         .onChange(of: scenePhase) { _, phase in
+            // MYR-222: the rider's location stream joins the owner fleet in
+            // explicit suspend/resume handling — see `SharedViewerState
+            // .handleBackground()`'s header comment.
             switch phase {
-            case .active: ownerHomeState.handleForeground()
-            case .background: ownerHomeState.handleBackground()
+            case .active:
+                ownerHomeState.handleForeground()
+                sharedViewerState.handleForeground()
+            case .background:
+                ownerHomeState.handleBackground()
+                sharedViewerState.handleBackground()
             default: break
             }
         }

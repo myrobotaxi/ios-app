@@ -1,6 +1,24 @@
 import SwiftUI
 import MapKit
 import DesignSystem
+#if DEBUG
+import os
+
+// MYR-222 — standing camera-write probe: every programmatic camera write and
+// every settle classification is logged (DEBUG only) so the streaming-fix
+// probe (CLAUDE.md "Streaming-fix camera probe") can capture feedback loops
+// that static-fix screenshots can never show. Filter with:
+//   log stream --predicate 'subsystem == "app.myrobotaxi.ios" AND category == "camera"'
+let mrtCameraLog = Logger(subsystem: "app.myrobotaxi.ios", category: "camera")
+#endif
+
+@inline(__always)
+func mrtCameraTrace(_ message: @autoclosure () -> String) {
+    #if DEBUG
+    let text = message()
+    mrtCameraLog.info("\(text, privacy: .public)")
+    #endif
+}
 
 // MARK: - VehicleMapView (MYR-167 deliverable 2)
 //
@@ -96,15 +114,31 @@ struct VehicleMapView: View {
     /// zoom/pan afterwards is never overridden.
     var regionSpanDelta: Double = MRTMetrics.mapRegionSpanDelta
 
-    // Cooldown *window*, not a single-consume flag: recenters can overlap
-    // (a new one fires every progress-percent tick, ~1/sec, while the
-    // previous 0.8s animation's `.onEnd` is still in flight), so a
-    // consume-once boolean races — a later recenter's suppress flag can get
-    // eaten by an earlier animation's trailing `.onEnd`. A rolling deadline
-    // tolerates overlap: any camera-change event that lands before it is
-    // ours, no matter which recenter call last set it.
-    @State private var programmaticCameraUntil: Date = .distantPast
+    // MYR-222 — token accounting for the legacy (non-pin-drop) writers,
+    // replacing the wall-clock `programmaticCameraUntil` window. The window
+    // was only sound when programmatic writes were RARE: with a live device
+    // streaming a fix every second (MYR-221), the follow recenter re-stamped
+    // the 1.2s deadline faster than it could lapse, so EVERY settle —
+    // including the user's own drags — was classified programmatic,
+    // `isFollowing` could never turn off, and the camera snapped back on
+    // every gesture (client evidence #1). The ledger classifies by matching
+    // each settle against the writes we actually issued — no clock, immune to
+    // fix rate. See `CameraSettleLedger`'s header.
+    @State private var settleLedger = CameraSettleLedger()
+    // MYR-222 — the camera's LIVE region, tracked continuously into a plain
+    // reference box (mutating a class var doesn't invalidate the view, so the
+    // 60Hz stream costs nothing). Exists for exactly one moment: when a user
+    // gesture begins while a programmatic camera animation is still gliding
+    // (with a 1Hz follow stream one nearly always is), the gesture handler
+    // pins the camera at its current visual region — cancelling the glide —
+    // so the last pre-gesture write can never "finish" over the user's drag.
+    @State private var liveCameraRegion = LiveCameraRegionBox()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    // MYR-222 — scene lifecycle is handled BY DESIGN (the pre-fix behavior
+    // "backgrounding heals the glitch" was the wall-clock loop starving, not
+    // a feature): suspend drops in-flight write expectations; resume re-arms
+    // one clean re-seat if (and only if) seating was interrupted.
+    @Environment(\.scenePhase) private var scenePhase
 
     private var vehiclePosition: VehicleRoute.Position {
         switch vehicle.activity {
@@ -165,6 +199,11 @@ struct VehicleMapView: View {
             // side-by-side evidence; there is no more aggressive terrain color
             // knob on the public SwiftUI `Map` style API.
             .preferredColorScheme(.dark)
+            // MYR-222: live camera tracking for gesture-time animation cancel —
+            // see `liveCameraRegion`'s declaration comment.
+            .onMapCameraChange(frequency: .continuous) { context in
+                liveCameraRegion.region = context.region
+            }
             .onMapCameraChange(frequency: .onEnd) { context in
                 // MYR-213: ground-truth pickup — no assumed screen fraction or
                 // region-center model. Convert the pin GLYPH's actual rendered
@@ -188,11 +227,13 @@ struct VehicleMapView: View {
                         pinDrop.onCoordinate(glyphCoord) // defensive: no owner composed
                         return
                     }
-                    switch camera.cameraSettled(
+                    let outcome = camera.cameraSettled(
                         glyphCoordinate: glyphCoord,
                         cameraCenter: context.region.center,
                         cameraLatitudeDelta: context.region.span.latitudeDelta
-                    ) {
+                    )
+                    mrtCameraTrace("settle pinDrop center=\(context.region.center.latitude),\(context.region.center.longitude) latDelta=\(context.region.span.latitudeDelta) outcome=\(String(describing: outcome)) phase=\(String(describing: camera.phase))")
+                    switch outcome {
                     case .refine(let write):
                         applyOwnerWrite(write)
                     case .seated, .report:
@@ -206,21 +247,71 @@ struct VehicleMapView: View {
                     }
                     return
                 }
-                guard Date() >= programmaticCameraUntil else { return }
+                // MYR-222: token classification — a settle is ours only if it
+                // matches a write we actually issued; everything else is the
+                // user's gesture, which permanently disengages follow for this
+                // screen visit (no wall-clock window to starve — see
+                // `settleLedger`'s declaration comment).
+                guard !settleLedger.classifySettle(center: context.region.center, latitudeDelta: context.region.span.latitudeDelta) else {
+                    mrtCameraTrace("settle idle center=\(context.region.center.latitude),\(context.region.center.longitude) latDelta=\(context.region.span.latitudeDelta) classified=programmatic (token)")
+                    return
+                }
                 // A real drag/pinch settled — the prototype's FloatingMapButton
                 // recenter affordance is meant for exactly this (Handoff §5.5;
                 // "appears when user has panned away").
+                mrtCameraTrace("settle idle center=\(context.region.center.latitude),\(context.region.center.longitude) latDelta=\(context.region.span.latitudeDelta) classified=user → follow off")
                 isFollowing = false
+                settleLedger.clear()
             }
+            // MYR-222: DIRECT user-gesture detection — the primary "user wins"
+            // signal, ahead of settle classification. `simultaneousGesture`
+            // observes the map's own pan/pinch without stealing it: any drag or
+            // magnification is the user's hand, so follow disengages (idle) or
+            // the pin-drop owner stands down (`userGestureBegan`) IMMEDIATELY —
+            // no waiting for the gesture's settle, no inference at all.
+            .simultaneousGesture(DragGesture(minimumDistance: 8).onChanged { _ in handleUserGesture() })
+            .simultaneousGesture(MagnifyGesture(minimumScaleDelta: 0.02).onChanged { _ in handleUserGesture() })
             .onAppear {
                 // MYR-217: a COLD pin-drop mount (`pinDrop` scene launch) enters
                 // through the same single owner as the warm in-session transition
                 // below — one code path, closing the cold-probe-passes /
                 // real-path-fails verification gap that MYR-213/215/216 fell into.
+                //
+                // MYR-222: the mount's initial layout settle can land at a
+                // position we didn't write (the `.automatic` camera) — it is
+                // not a gesture; let one unmatched settle through.
+                settleLedger.grantFreePass()
                 if isPinDropActive {
                     enterPinDropCamera(animated: false)
                 } else {
                     recenter(animated: false)
+                }
+            }
+            // MYR-222: a sheet-inset change re-fits the camera and re-fires a
+            // settle at geometry we didn't write — a layout event, not a
+            // gesture. One free pass so it can't disengage follow.
+            .onChange(of: bottomContentInset) { _, _ in
+                settleLedger.grantFreePass()
+            }
+            // MYR-222: scene lifecycle BY DESIGN (the states must survive a
+            // background round-trip; pre-fix, backgrounding was accidentally
+            // HEALING the feedback loop — see `PinDropCameraController`'s
+            // header). Suspend drops in-flight expectations; resume re-arms
+            // one clean re-seat only if seating was interrupted mid-pass.
+            .onChange(of: scenePhase) { _, phase in
+                switch phase {
+                case .background:
+                    pinDropCamera?.sceneWillBackground() // no-op unless mid-seat
+                case .active:
+                    if isPinDropActive, let write = pinDropCamera?.sceneDidForeground() {
+                        mrtCameraTrace("scene foreground mid-seat → single re-seat")
+                        applyOwnerWrite(write)
+                    } else {
+                        // The resume re-layout can re-fire a settle — not a gesture.
+                        settleLedger.grantFreePass()
+                    }
+                default:
+                    break
                 }
             }
             .onChange(of: progressBucket) { _, _ in
@@ -234,17 +325,22 @@ struct VehicleMapView: View {
             }
             // MYR-211: re-center when the live location override changes (first fix
             // / device movement) — but never fight a user who has panned away.
-            // MYR-217: during pin-drop the fresh fix (from `enterPinDrop()`'s
-            // `refresh()`, or the device moving) goes to the camera OWNER, which
-            // re-seats the fix under the glyph — or refuses, if the user has
-            // already taken the camera over. `recenter` is hard-gated off during
-            // pin-drop either way (`cameraWritePermitted`).
+            // MYR-217/MYR-222: during pin-drop the fix goes to the camera OWNER,
+            // which seats ONCE per entry — a mid-seat fix re-aims the in-flight
+            // (budget-bounded) pass, a late FIRST fix completes it, and every fix
+            // after that moves the blue-dot annotation only (zero camera writes,
+            // zero pin movement, at any fix rate — the MYR-222 streaming-GPS
+            // loop was this handler re-arming a full re-seat on every 1Hz fix).
+            // `recenter` is hard-gated off during pin-drop either way
+            // (`cameraWritePermitted`).
             .onChange(of: centerOverrideKey) { _, _ in
                 guard centerOverride != nil else { return }
                 if isPinDropActive {
-                    if let camera = pinDropCamera, let fix = pinDrop?.entryFix,
-                       let write = camera.fixChanged(fix) {
-                        applyOwnerWrite(write)
+                    if let camera = pinDropCamera, let fix = pinDrop?.entryFix {
+                        mrtCameraTrace("fixChanged pinDrop fix=\(fix.latitude),\(fix.longitude) phase=\(String(describing: camera.phase))")
+                        if let write = camera.fixChanged(fix) {
+                            applyOwnerWrite(write)
+                        }
                     }
                     return
                 }
@@ -286,6 +382,45 @@ struct VehicleMapView: View {
         }
     }
 
+    /// MYR-222 — the user's hand on the map, reported by the gesture
+    /// recognizers (not inferred from settles): the user wins immediately and
+    /// permanently for this screen visit / pin-drop entry. Runs its takeover
+    /// exactly once per engagement (the guards below), so the camera pin
+    /// can't fight the ongoing drag.
+    private func handleUserGesture() {
+        if isPinDropActive {
+            guard let camera = pinDropCamera,
+                  camera.phase == .seating || camera.phase == .settled else { return }
+            mrtCameraTrace("gesture user pan/zoom during pinDrop → userControlled")
+            camera.userGestureBegan()
+            isFollowing = false
+            cancelInFlightCameraAnimation()
+        } else {
+            guard isFollowing else { return }
+            mrtCameraTrace("gesture user pan/zoom → follow off")
+            isFollowing = false
+            settleLedger.clear()
+            cancelInFlightCameraAnimation()
+        }
+    }
+
+    /// With a streaming fix a programmatic camera animation is nearly always
+    /// in flight when the user grabs the map; SwiftUI keeps driving it to its
+    /// target even after the writers stand down, so the map would glide back
+    /// over the user's drag ONE more time. Pin the camera at its current
+    /// visual region (no animation) — a no-op visually, but it retargets the
+    /// transaction and kills the glide. On behalf of the USER, deliberately
+    /// not routed through the programmatic writers or their ledgers: its
+    /// settle (wherever the user's gesture ends) must classify as the user's.
+    private func cancelInFlightCameraAnimation() {
+        guard let current = liveCameraRegion.region else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            cameraPosition = .region(current)
+        }
+    }
+
     /// Route a pin-drop entry through the single owner (cold `onAppear` and the
     /// warm in-session transition share this one path).
     private func enterPinDropCamera(animated: Bool) {
@@ -300,11 +435,11 @@ struct VehicleMapView: View {
     }
 
     /// Apply an owner-issued camera write — the ONLY site that mutates the
-    /// camera during pin-drop. Stamps the same rolling programmatic window the
-    /// legacy writers use so nothing misattributes the resulting settle.
+    /// camera during pin-drop. The owner has already registered the write's
+    /// expected settle in its own ledger (MYR-222) — nothing here to stamp.
     private func applyOwnerWrite(_ write: PinDropCameraController.Write) {
         guard Self.cameraWritePermitted(source: .pinDropOwner, isPinDropActive: isPinDropActive) else { return }
-        programmaticCameraUntil = Date().addingTimeInterval(1.2)
+        mrtCameraTrace("WRITE owner center=\(write.region.center.latitude),\(write.region.center.longitude) span=\(write.region.span.latitudeDelta) animated=\(write.animated)")
         if write.animated, !reduceMotion {
             withAnimation(.easeInOut(duration: 0.35)) {
                 cameraPosition = .region(write.region)
@@ -375,12 +510,14 @@ struct VehicleMapView: View {
         // writer firing mid-pin-drop (fix stream, follow re-engage, progress
         // tick) can never mutate the camera underneath the owner again.
         guard Self.cameraWritePermitted(source: .legacyRecenter, isPinDropActive: isPinDropActive) else { return }
-        // Covers the 0.8s animation plus slack for `.onEnd`'s async delivery.
-        programmaticCameraUntil = Date().addingTimeInterval(1.2)
         let region = MKCoordinateRegion(
             center: centerOverride ?? vehiclePosition.coordinate,
             span: MKCoordinateSpan(latitudeDelta: regionSpanDelta, longitudeDelta: regionSpanDelta)
         )
+        // MYR-222: register the expected settle (token classification — the
+        // wall-clock window misclassified every gesture under a 1Hz fix stream).
+        settleLedger.expect(center: region.center, spanDelta: regionSpanDelta)
+        mrtCameraTrace("WRITE recenter center=\(region.center.latitude),\(region.center.longitude) span=\(regionSpanDelta) animated=\(animated)")
         if animated, !reduceMotion {
             // screens.jsx:417 vehicle-marker transition — `left .8s linear, top .8s linear`.
             withAnimation(.linear(duration: 0.8)) {
@@ -390,6 +527,16 @@ struct VehicleMapView: View {
             cameraPosition = .region(region)
         }
     }
+}
+
+// MARK: - Live camera region box (MYR-222)
+
+/// Plain reference holder for the continuously-tracked camera region — a
+/// class so 60Hz writes during animations/gestures never invalidate the view.
+/// See `VehicleMapView.liveCameraRegion`.
+@MainActor
+final class LiveCameraRegionBox {
+    var region: MKCoordinateRegion?
 }
 
 // MARK: - Pin-drop overlay config (MYR-213)
