@@ -11,6 +11,10 @@ import DesignSystem
 /// Top-level screens. Mirrors the prototype's `screen` state
 /// (design/app/app.jsx `aS('…')`), one case per ported screen.
 enum AppScreen: Hashable {
+    /// MYR-221 — brief launch splash while a stored session is silently resumed
+    /// (returning user). Resolves to `.ownerHome` on success or `.signIn` on
+    /// failure/no-session. Never shown in the simulator (no stored session).
+    case resolvingSession
     case signIn
     /// First-run choice screen (app.jsx 'empty') — Add your Tesla vs Join
     /// with an invite code.
@@ -123,6 +127,13 @@ struct RootView: View {
     // default initializers below.
     @MainActor
     init() {
+        // MYR-221 — resolve the ONE launch mode first: `.simulated` (simulator,
+        // env-driven) or `.live` (device default, or `MRT_TELEMETRY=live` in the
+        // sim). Every composition below reads this single decision instead of each
+        // re-reading `MRT_TELEMETRY`.
+        let mode = AppMode.resolve()
+        // MYR-221 — a returning user with a stored refresh token skips SignInScreen:
+        // start on the resolving splash and silently refresh in `.task` below.
         var startScreen: AppScreen = .signIn
         var startRole: UserRole = .owner
         var startSharedTab = "shared"
@@ -130,14 +141,16 @@ struct RootView: View {
         // MYR-164 — pick the sign-in session and (in live mode, no static token)
         // the shared backend `SessionTokenProvider`. Threaded into the fleet +
         // ride-request compositions so one session authenticates everything.
-        let auth = AuthComposition.make()
+        let auth = AuthComposition.make(mode: mode)
+        if auth.hasStoredSession { startScreen = .resolvingSession }
         _session = State(initialValue: auth.session)
         _ownerHomeState = State(initialValue: TelemetryComposition.makeOwnerHomeState(
+            mode: mode,
             sessionTokenProvider: auth.sessionTokenProvider
         ))
         // MYR-211 — compose the rider's place-search + location seams (sim
-        // fixtures by default, live MapKit/CoreLocation when MRT_TELEMETRY=live).
-        let seams = PlaceSearchComposition.make()
+        // fixtures by default; live MapKit/CoreLocation on device / when live).
+        let seams = PlaceSearchComposition.make(mode: mode, sessionTokenProvider: auth.sessionTokenProvider)
         let viewer = SharedViewerState(seams: seams)
         // MYR-214 — the Drive Summary place labeler drops the fixture saved
         // places in live mode (see the `placeLabeler` property comment): a live
@@ -155,6 +168,7 @@ struct RootView: View {
         // scenes remain sim-only: in live mode the scene still routes and seeds
         // the viewer, but its fixture ride record goes to a throwaway service.
         var service: any RideRequestService = RideRequestComposition.makeService(
+            mode: mode,
             sessionTokenProvider: auth.sessionTokenProvider
         )
         #if DEBUG
@@ -183,6 +197,9 @@ struct RootView: View {
     var body: some View {
         ZStack {
             switch screen {
+            case .resolvingSession:
+                // MYR-221 — calm brand splash while the stored session refreshes.
+                ResolvingSessionView()
             case .signIn:
                 SignInScreen(session: session) {
                     // First run lands on the choice screen (app.jsx 'empty');
@@ -345,6 +362,20 @@ struct RootView: View {
             }
         }
         .background(Color.mrtBg.ignoresSafeArea())
+        // MYR-221 — returning-user silent resume. Runs once at launch when the
+        // start screen is the resolving splash (a stored refresh token exists):
+        // refresh silently and route straight into the app on success, or fall
+        // back to SignInScreen on no-session / expired / network failure.
+        .task {
+            guard screen == .resolvingSession else { return }
+            if await session.resumeStoredSession() {
+                role = .owner
+                ownerTab = "home"
+                screen = .ownerHome
+            } else {
+                screen = .signIn
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active: ownerHomeState.handleForeground()
@@ -352,6 +383,28 @@ struct RootView: View {
             default: break
             }
         }
+    }
+}
+
+// MARK: - Resolving-session splash (MYR-221)
+
+/// A calm brand-only splash shown for the brief moment a returning user's stored
+/// session is silently refreshed at launch. Deliberately motion-free and
+/// token-only — it either crossfades into the app (resume ok) or into
+/// SignInScreen (resume failed), so it must sit neutrally under both. The brand
+/// mark matches SignInScreen's so the SignInScreen fallback is seamless.
+private struct ResolvingSessionView: View {
+    var body: some View {
+        ZStack {
+            Color.mrtBg.ignoresSafeArea()
+            VStack(spacing: 28) {
+                HexLogo(size: 62)
+                Wordmark(size: 28)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Signing in")
     }
 }
 

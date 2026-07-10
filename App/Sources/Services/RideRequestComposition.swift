@@ -1,18 +1,15 @@
 import Foundation
 import MyRoboTaxiKit
 
-// MARK: - Ride-request composition point (MYR-209)
+// MARK: - Ride-request composition point (MYR-209; MYR-221)
 //
 // The ONE place the app decides between the simulated ride-request service (M1
-// default, offline demo) and the live Kit-backed one — mirrors
-// `TelemetryComposition.makeOwnerHomeState()` and reuses its exact launch-env
-// gating so live telemetry and live ride-requests light up together:
+// default, offline demo) and the live Kit-backed one — driven by the single
+// resolved `AppMode` (MYR-221) so live telemetry, live ride-requests, live search
+// and real auth all light up together on one decision. No other site branches on
+// sim-vs-live.
 //
-//   MRT_TELEMETRY = live | sim   (default: sim)
-//   MRT_BACKEND_URL / MRT_BACKEND_TOKEN — as documented in `TelemetryComposition`.
-//
-// Live mode is DEBUG-only (RELEASE always compiles to the simulated service, so
-// the shipped demo is unchanged). No other site branches on sim-vs-live.
+// No longer `#if DEBUG`: a device RELEASE build composes the live service.
 //
 // NOTE (v1): the live service opens its OWN `TelemetrySocket` (its own WS
 // connection), independent of the owner fleet's socket. Two authenticated
@@ -22,17 +19,20 @@ import MyRoboTaxiKit
 enum RideRequestComposition {
 
     @MainActor
-    static func makeService(sessionTokenProvider: SessionTokenProvider? = nil) -> any RideRequestService {
-        #if DEBUG
-        if let live = makeLiveService(sessionTokenProvider: sessionTokenProvider) { return live }
-        #endif
+    static func makeService(
+        mode: AppMode,
+        sessionTokenProvider: SessionTokenProvider? = nil
+    ) -> any RideRequestService {
+        if let live = makeLiveService(mode: mode, sessionTokenProvider: sessionTokenProvider) { return live }
         return SimulatedRideRequestService() // the default
     }
 
-    #if DEBUG
     @MainActor
-    static func makeLiveService(sessionTokenProvider: SessionTokenProvider? = nil) -> LiveRideRequestService? {
-        guard let config = TelemetryComposition.liveConfigFromEnvironment(sessionTokenProvider: sessionTokenProvider) else { return nil }
+    static func makeLiveService(
+        mode: AppMode,
+        sessionTokenProvider: SessionTokenProvider? = nil
+    ) -> LiveRideRequestService? {
+        guard let config = TelemetryComposition.liveFleetConfig(mode: mode, sessionTokenProvider: sessionTokenProvider) else { return nil }
         let http = config.http ?? URLSession(configuration: RestClient.defaultConfiguration())
         let rest = RestClient(environment: config.environment, tokenProvider: config.tokenProvider, http: http)
         let socket = TelemetrySocket(
@@ -43,5 +43,4 @@ enum RideRequestComposition {
         )
         return LiveRideRequestService(api: rest, socket: socket)
     }
-    #endif
 }

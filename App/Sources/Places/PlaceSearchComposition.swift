@@ -1,17 +1,16 @@
 import Foundation
+import MyRoboTaxiKit
 
-// MARK: - Place-search + location composition point (MYR-211)
+// MARK: - Place-search + location composition point (MYR-211; MYR-221)
 //
 // The ONE place the app decides between the simulated place-search / location
 // seams (M1 default, offline demo — fixtures) and the live ones
-// (`MKLocalSearchCompleter`/`CLLocationManager`, region-biased). Mirrors
-// `RideRequestComposition` / `TelemetryComposition` and reuses their exact
-// launch-env gating (`MRT_TELEMETRY=live`) so live search + live location light
-// up together with live telemetry and live ride-requests.
-//
-// Live mode is DEBUG-only (RELEASE always composes the simulated seams, so the
-// shipped demo is unchanged). `SharedViewerState` receives the bundle and owns
-// the lifecycle.
+// (`MKLocalSearchCompleter`/`CLLocationManager`, region-biased). Driven by the
+// single resolved `AppMode` (MYR-221) — the same decision as
+// `TelemetryComposition` / `RideRequestComposition` — so live search + live
+// location light up together with live telemetry, live ride-requests, and real
+// auth. No longer `#if DEBUG`: a device RELEASE build composes the live seams.
+// `SharedViewerState` receives the bundle and owns the lifecycle.
 enum PlaceSearchComposition {
 
     struct Seams {
@@ -42,9 +41,11 @@ enum PlaceSearchComposition {
     }
 
     @MainActor
-    static func make() -> Seams {
-        #if DEBUG
-        if let config = TelemetryComposition.liveConfigFromEnvironment() {
+    static func make(
+        mode: AppMode,
+        sessionTokenProvider: SessionTokenProvider? = nil
+    ) -> Seams {
+        if let config = TelemetryComposition.liveFleetConfig(mode: mode, sessionTokenProvider: sessionTokenProvider) {
             return Seams(
                 // MYR-214 — EMPTY saved places in live: the SF fixture places
                 // ("Home · 221 Folsom St") must never rank into a live ride's
@@ -60,7 +61,6 @@ enum PlaceSearchComposition {
                 isLive: true
             )
         }
-        #endif
         return .simulated
     }
 }
