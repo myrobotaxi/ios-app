@@ -37,6 +37,14 @@ targets:
       - package: MyRoboTaxiKit
       - package: contracts
         product: MyRobotaxiContracts
+    # MYR-164 — Sign In with Apple capability. XcodeGen writes/owns this
+    # entitlements file and sets CODE_SIGN_ENTITLEMENTS. The `Default`
+    # authorization scope is the standard native-app value.
+    entitlements:
+      path: App/MyRoboTaxi.entitlements
+      properties:
+        com.apple.developer.applesignin:
+          - Default
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.myrobotaxi.ios
@@ -50,7 +58,12 @@ targets:
         # location" pickup (live mode only; sim never requests it).
         INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Shows where you are and sets your pickup point."
         TARGETED_DEVICE_FAMILY: "1"
+        # MYR-164 — automatic signing + the paid team so a device build resolves a
+        # managed profile carrying the Sign In with Apple entitlement. Simulator
+        # builds do not require a provisioning profile (CODE_SIGNING_ALLOWED is NO
+        # for the simulator SDK), so this never prompts for sim runs.
         CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: NFKX777598
 
   # MYR-201 — app-side unit tests (adapter/contract mapping). Hosted by the app
   # target so `@testable import MyRoboTaxi` can reach the App-target types

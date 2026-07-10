@@ -24,6 +24,12 @@ struct SignInScreen: View {
     @State private var sheetOpen = false
     @State private var leaving = false
     @State private var affordanceAnimating = false
+    // MYR-164 — live Sign in with Apple can fail (bad token / backend / network).
+    // The design has NO sign-in error affordance (screens.jsx doSignIn always
+    // succeeds), so this is a minimal, calm, token-only line shown only on a live
+    // failure. A user-cancel never sets it. In SIM the session cannot fail, so
+    // this never appears and the screen stays pixel-identical.
+    @State private var showError = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// mrtSignOut / mrtBloom share this curve (cubic-bezier(0.4,0,0.2,1)).
@@ -221,6 +227,15 @@ struct SignInScreen: View {
             AppleSignInButton { signIn() }
                 .frame(height: MRTMetrics.appleButtonHeight)
                 .accessibilityLabel("Sign in with Apple")
+            if showError {
+                Text("Couldn’t sign in. Please try again.")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(Color.mrtDialogRed)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 12)
+                    .transition(.opacity)
+                    .accessibilityAddTraits(.isStaticText)
+            }
             Text("By continuing, you agree to our Terms and Privacy.")
                 .font(.system(size: 11)) // jsx 11, line-height 1.5
                 .lineSpacing(3)
@@ -301,11 +316,18 @@ struct SignInScreen: View {
     /// off 560ms in (screens.jsx setTimeout(onSignIn, 560)).
     private func signIn() {
         guard !leaving else { return }
+        withAnimation(.easeInOut(duration: 0.2)) { showError = false }
         Task { @MainActor in
             do {
-                try await session.signIn() // M1: simulated, cannot fail
+                try await session.signIn() // sim: cannot fail; live: real Apple flow
             } catch {
-                return // MYR-193: cancel/error keeps the user on the sheet
+                // Cancel keeps the user on the sheet silently; any other failure
+                // shows the calm error line. (Sim never reaches this branch.)
+                if let authError = error as? AuthSignInError, case .canceled = authError {
+                    return
+                }
+                withAnimation(.easeInOut(duration: 0.2)) { showError = true }
+                return
             }
             leaving = true
             try? await Task.sleep(for: .milliseconds(560))
@@ -333,8 +355,9 @@ private struct ChevronUpShape: Shape {
 
 /// The real Apple-provided button chrome (AuthenticationServices,
 /// `ASAuthorizationAppleIDButton`, white style, 14pt radius per the jsx).
-/// M1 wires the tap straight to the simulated session — no
-/// ASAuthorizationController until MYR-193.
+/// The tap drives `session.signIn()`: the simulated session in sim/RELEASE, or
+/// the real `ASAuthorizationController` flow via `LiveAuthSession` in live mode
+/// (MYR-164).
 private struct AppleSignInButton: UIViewRepresentable {
     let action: () -> Void
 

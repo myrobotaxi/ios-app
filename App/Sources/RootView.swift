@@ -56,7 +56,11 @@ struct RootView: View {
     // live `TelemetrySocket` reconnects on resume and settles on suspend via the
     // Kit's transition hooks (no-op for the simulated fleet).
     @Environment(\.scenePhase) private var scenePhase
-    @State private var session = SimulatedAuthSession()
+    // MYR-164 — the sign-in session: SimulatedAuthSession in sim/RELEASE, the real
+    // LiveAuthSession (Sign in with Apple → backend session) for a live launch
+    // with no static token. Chosen in `init` via `AuthComposition`, which also
+    // yields the shared `SessionTokenProvider` threaded into the live fleet below.
+    @State private var session: any AuthSession
     @State private var screen: AppScreen = .signIn
     @State private var role: UserRole = .owner
     // Lifted above `.ownerHome`'s tab switch (app.jsx's `vehicleIdx`/`sheet`
@@ -67,7 +71,7 @@ struct RootView: View {
     // default (M1 offline demo), or the live Kit-backed fleet when the DEBUG
     // launch env selects it (`MRT_TELEMETRY=live`). No other site branches on
     // sim-vs-live.
-    @State private var ownerHomeState = TelemetryComposition.makeOwnerHomeState()
+    @State private var ownerHomeState: OwnerHomeState
     @State private var ownerTab = "home"
     /// MYR-169 — mirrors `ownerHomeState`'s reasoning: app.jsx keeps
     /// `ownerUpcoming` App-level, not local to `DrivesScreen`, so a
@@ -123,6 +127,14 @@ struct RootView: View {
         var startRole: UserRole = .owner
         var startSharedTab = "shared"
         var startOwnerTab = "home"
+        // MYR-164 — pick the sign-in session and (in live mode, no static token)
+        // the shared backend `SessionTokenProvider`. Threaded into the fleet +
+        // ride-request compositions so one session authenticates everything.
+        let auth = AuthComposition.make()
+        _session = State(initialValue: auth.session)
+        _ownerHomeState = State(initialValue: TelemetryComposition.makeOwnerHomeState(
+            sessionTokenProvider: auth.sessionTokenProvider
+        ))
         // MYR-211 — compose the rider's place-search + location seams (sim
         // fixtures by default, live MapKit/CoreLocation when MRT_TELEMETRY=live).
         let seams = PlaceSearchComposition.make()
@@ -142,7 +154,9 @@ struct RootView: View {
         // fleet stayed live (found in the MYR-209 live audit). Seeded ride-flow
         // scenes remain sim-only: in live mode the scene still routes and seeds
         // the viewer, but its fixture ride record goes to a throwaway service.
-        var service: any RideRequestService = RideRequestComposition.makeService()
+        var service: any RideRequestService = RideRequestComposition.makeService(
+            sessionTokenProvider: auth.sessionTokenProvider
+        )
         #if DEBUG
         if let scene = DebugScene.current {
             if service is SimulatedRideRequestService {

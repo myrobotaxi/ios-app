@@ -17,7 +17,7 @@ public protocol SnapshotFetching: Sendable {
 ///
 /// Value type (`Sendable`): all dependencies are immutable, so it is free to
 /// share across tasks without a serialization bottleneck.
-public struct RestClient: Sendable, SnapshotFetching {
+public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint {
     private let environment: BackendEnvironment
     private let tokenProvider: any TokenProvider
     private let http: any HTTPPerforming
@@ -172,6 +172,35 @@ public struct RestClient: Sendable, SnapshotFetching {
     /// (`/cancel`, `/accept`, `/decline`). Encodes to `{}`.
     private struct Empty: Encodable {}
 
+    // MARK: - Authentication (rest-api.md §7.10, identity module — MYR-193)
+    //
+    // These three are PRE-AUTHENTICATION: they mint or rotate the very Bearer
+    // credential every other endpoint requires. They therefore run the separate
+    // `performAuth` pipeline below — NO `Authorization` header, and NO 401
+    // refresh-retry (the retry loop is what calls `refreshSession`; routing
+    // these through it would recurse). Bodies/responses are the local §7.10
+    // shapes in `AuthPayloads.swift` (pending contracts codegen). `nonce` is
+    // optional; when present it must equal the identity token's `nonce` claim.
+
+    /// `POST /api/auth/apple` (§7.10.1) — validate a native Sign in with Apple
+    /// identity token and mint the first token pair.
+    public func signInWithApple(_ body: AppleSignInRequest) async throws -> AuthTokenResponse {
+        try await performAuth(["auth", "apple"], body: body)
+    }
+
+    /// `POST /api/auth/refresh` (§7.10.2) — single-use refresh-token rotation.
+    /// A spent/revoked token revokes the whole family → `401` (surfaced typed).
+    public func refreshSession(_ body: RefreshTokenRequest) async throws -> AuthTokenResponse {
+        try await performAuth(["auth", "refresh"], body: body)
+    }
+
+    /// `POST /api/auth/revoke` (§7.10.3) — revoke the token's family (sign-out).
+    /// Always `204 No Content` for a well-formed request; the response body is
+    /// discarded.
+    public func revokeSession(_ body: RefreshTokenRequest) async throws {
+        try await performAuthNoContent(["auth", "revoke"], body: body)
+    }
+
     // MARK: - Request pipeline
 
     private func get<T: Decodable>(_ segments: [String], query: [URLQueryItem] = []) async throws -> T {
@@ -224,12 +253,60 @@ public struct RestClient: Sendable, SnapshotFetching {
             do { return try decoder.decode(T.self, from: data) }
             catch { throw RestError.decoding(underlying: error) }
         case 401 where allowTokenRefresh:
-            // FR-6.2: do NOT retry with the same token — refresh once, retry
-            // exactly once, then surface the typed error.
+            // FR-6.2: do NOT retry with the same token — tell the provider the
+            // token it vended was rejected (so a stateful provider forces a
+            // refresh), refresh once, retry exactly once, then surface the typed
+            // error on a second 401.
+            await tokenProvider.invalidate(rejectedToken: token)
             return try await perform(segments, query: query, method: method, body: body, allowTokenRefresh: false)
         default:
             throw Self.mapError(status: httpResponse.statusCode, data: data)
         }
+    }
+
+    /// Pre-auth POST for the §7.10 identity endpoints: a JSON body, NO Bearer
+    /// header, NO 401 refresh-retry (see the auth MARK). Decodes the 2xx body.
+    private func performAuth<T: Decodable>(_ segments: [String], body: some Encodable) async throws -> T {
+        let (data, _) = try await sendAuth(segments, body: body, expectedEmpty: false)
+        do { return try decoder.decode(T.self, from: data) }
+        catch { throw RestError.decoding(underlying: error) }
+    }
+
+    /// Pre-auth POST that expects `204 No Content` (revoke). Discards the body.
+    private func performAuthNoContent(_ segments: [String], body: some Encodable) async throws {
+        _ = try await sendAuth(segments, body: body, expectedEmpty: true)
+    }
+
+    /// Shared pre-auth transport: build URL, guard transport, POST the JSON body
+    /// with no `Authorization` header, map non-2xx to a typed `RestError`.
+    private func sendAuth(_ segments: [String], body: some Encodable, expectedEmpty: Bool) async throws -> (Data, HTTPURLResponse) {
+        let url = try Self.buildURL(base: environment.restBaseURL, segments: segments, query: [])
+        try validateTransport(url)
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        do {
+            request.httpBody = try JSONEncoder().encode(body)
+        } catch {
+            throw RestError.decoding(underlying: error)
+        }
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await http.data(for: request)
+        } catch {
+            throw RestError.transport(underlying: error)
+        }
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw RestError.invalidResponse
+        }
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw Self.mapError(status: httpResponse.statusCode, data: data)
+        }
+        return (data, httpResponse)
     }
 
     /// Compose the request URL by appending each path segment to the REST base
