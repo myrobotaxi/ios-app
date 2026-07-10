@@ -28,6 +28,16 @@ protocol AuthSession: AnyObject {
     /// True once a session is established.
     var isSignedIn: Bool { get }
 
+    /// The real signed-in account identity (MYR-224), or `nil` when there is no
+    /// real account behind the session. `nil` is the seam the persona surfaces
+    /// branch on: SIM (and the static-token dev override) return `nil` so the
+    /// greeting/Settings keep their pixel-identical FIXTURE persona; the live
+    /// Sign in with Apple session returns the real `{ id, name?, email? }` so
+    /// those same surfaces render true identity. Presence of a value ALSO gates
+    /// the owner/rider mode chooser + the Settings "Switch mode" row — both exist
+    /// only on the live signed-in path.
+    var currentUser: UserProfile? { get }
+
     /// Establishes a session. Live: Sign in with Apple + backend token exchange
     /// (throws ``AuthSignInError`` on cancel/failure). Sim: resolves immediately.
     func signIn() async throws
@@ -66,6 +76,11 @@ enum AuthSignInError: Error {
 final class SimulatedAuthSession: AuthSession {
     private(set) var isSignedIn = false
 
+    /// Always `nil`: the simulated session carries no real account, so every
+    /// persona surface keeps its fixture persona and the mode chooser never
+    /// appears (the sim keeps the existing onboarding role selection).
+    var currentUser: UserProfile? { nil }
+
     func signIn() async throws {
         isSignedIn = true
     }
@@ -83,11 +98,22 @@ final class SimulatedAuthSession: AuthSession {
 final class LiveAuthSession: AuthSession {
     private(set) var isSignedIn = false
 
+    /// The real signed-in identity (MYR-224). Populated on sign-in (the
+    /// `/api/auth/apple` response) and on silent resume (from the refresh the
+    /// provider performs — `sessionProvider.sessionUser()`), persisted to
+    /// ``profileStore`` so it is available immediately on the next launch and
+    /// offline, and cleared on sign-out. Eagerly seeded from the store in `init`
+    /// so a returning user's greeting/Settings never flash empty before resume.
+    private(set) var currentUser: UserProfile?
+
     private let sessionProvider: SessionTokenProvider
+    private let profileStore: any ProfileStore
     private let appleController = AppleSignInController()
 
-    init(sessionProvider: SessionTokenProvider) {
+    init(sessionProvider: SessionTokenProvider, profileStore: any ProfileStore = UserDefaultsProfileStore()) {
         self.sessionProvider = sessionProvider
+        self.profileStore = profileStore
+        self.currentUser = profileStore.read()
     }
 
     func signIn() async throws {
@@ -121,7 +147,8 @@ final class LiveAuthSession: AuthSession {
         )
 
         do {
-            _ = try await sessionProvider.completeAppleSignIn(request)
+            let user = try await sessionProvider.completeAppleSignIn(request)
+            adoptProfile(user)
         } catch {
             throw AuthSignInError.failed
         }
@@ -136,6 +163,13 @@ final class LiveAuthSession: AuthSession {
     func resumeStoredSession() async -> Bool {
         do {
             _ = try await sessionProvider.token()
+            // The refresh `token()` just performed returns the server's current
+            // `{ id, name?, email? }` — the recovery path for a session that
+            // predates local profile persistence (no `/api/auth/me` exists).
+            // Falls back to the eagerly-loaded stored profile if absent.
+            if let user = await sessionProvider.sessionUser() {
+                adoptProfile(user)
+            }
             isSignedIn = true
             return true
         } catch {
@@ -145,10 +179,21 @@ final class LiveAuthSession: AuthSession {
 
     func signOut() {
         // Local state clears immediately; the network revoke + Keychain clear run
-        // best-effort in the background (revoke is idempotent, §7.10.3).
+        // best-effort in the background (revoke is idempotent, §7.10.3). The
+        // profile is display state, cleared synchronously so a signed-out device
+        // forgets the identity at once.
         isSignedIn = false
+        currentUser = nil
+        profileStore.clear()
         let provider = sessionProvider
         Task { await provider.signOut() }
+    }
+
+    /// Adopt a fresh identity: publish it to `currentUser` and persist it.
+    private func adoptProfile(_ user: AuthUser) {
+        let profile = UserProfile(id: user.id, name: user.name, email: user.email)
+        currentUser = profile
+        profileStore.write(profile)
     }
 
     // MARK: Nonce

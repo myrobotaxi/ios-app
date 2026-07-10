@@ -176,6 +176,65 @@ final class SessionTokenProviderTests: XCTestCase {
         XCTAssertEqual(token, "acc2")
     }
 
+    // MARK: - Session user identity (MYR-224)
+
+    func testSessionUserNilBeforeAnyTokenResponse() async {
+        let provider = SessionTokenProvider(auth: MockAuthEndpoint(), store: InMemoryRefreshTokenStore())
+        let user = await provider.sessionUser()
+        XCTAssertNil(user, "no identity before the first token response")
+    }
+
+    func testSignInPopulatesSessionUser() async throws {
+        let store = InMemoryRefreshTokenStore()
+        let response = AuthTokenResponse(
+            accessToken: "acc1", expiresIn: 3600, refreshToken: "rt1",
+            user: AuthUser(id: "u1", name: "Thomas Nandola", email: "thomas@example.com")
+        )
+        let auth = MockAuthEndpoint(apple: [.success(response)])
+        let provider = SessionTokenProvider(auth: auth, store: store)
+
+        try await provider.completeAppleSignIn(AppleSignInRequest(identityToken: "j"))
+
+        let user = await provider.sessionUser()
+        XCTAssertEqual(user?.id, "u1")
+        XCTAssertEqual(user?.name, "Thomas Nandola")
+        XCTAssertEqual(user?.email, "thomas@example.com")
+    }
+
+    /// The MYR-224 recovery path: a session that predates local profile storage
+    /// (a returning user with only a Keychain refresh token) recovers its
+    /// identity from the refresh response `token()` performs at launch — there is
+    /// no `/api/auth/me` endpoint.
+    func testSilentResumeRecoversSessionUserFromRefresh() async throws {
+        let store = InMemoryRefreshTokenStore(seed: "rt1") // already signed in, no in-memory user
+        let refreshed = AuthTokenResponse(
+            accessToken: "acc2", expiresIn: 3600, refreshToken: "rt2",
+            user: AuthUser(id: "u1", name: "Thomas Nandola", email: "thomas@example.com")
+        )
+        let auth = MockAuthEndpoint(refresh: [.success(refreshed)])
+        let provider = SessionTokenProvider(auth: auth, store: store)
+
+        let before = await provider.sessionUser()
+        XCTAssertNil(before, "cold: no identity until the refresh runs")
+        _ = try await provider.token() // the silent-resume refresh
+        let user = await provider.sessionUser()
+        XCTAssertEqual(user?.name, "Thomas Nandola", "identity recovered from the refresh response")
+    }
+
+    func testSignOutClearsSessionUser() async throws {
+        let store = InMemoryRefreshTokenStore()
+        let auth = MockAuthEndpoint(apple: [.success(pair(access: "acc1", refresh: "rt1"))])
+        let provider = SessionTokenProvider(auth: auth, store: store)
+        try await provider.completeAppleSignIn(AppleSignInRequest(identityToken: "j"))
+        let signedIn = await provider.sessionUser()
+        XCTAssertNotNil(signedIn)
+
+        await provider.signOut()
+
+        let afterSignOut = await provider.sessionUser()
+        XCTAssertNil(afterSignOut, "sign-out forgets the identity")
+    }
+
     func testSignOutRevokesAndClears() async throws {
         let store = InMemoryRefreshTokenStore()
         let auth = MockAuthEndpoint(apple: [.success(pair(access: "acc1", refresh: "rt1"))])

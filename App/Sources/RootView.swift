@@ -16,6 +16,10 @@ enum AppScreen: Hashable {
     /// failure/no-session. Never shown in the simulator (no stored session).
     case resolvingSession
     case signIn
+    /// MYR-224 — owner/rider view chooser, shown once on the live signed-in path
+    /// when no view mode is stored yet. Never shown in SIM (which keeps the
+    /// existing onboarding role selection) or once a choice is persisted.
+    case modeChooser
     /// First-run choice screen (app.jsx 'empty') — Add your Tesla vs Join
     /// with an invite code.
     case emptyState
@@ -67,6 +71,9 @@ struct RootView: View {
     @State private var session: any AuthSession
     @State private var screen: AppScreen = .signIn
     @State private var role: UserRole = .owner
+    // MYR-224 — per-user owner/rider view-mode choice. A value-type store over
+    // UserDefaults; no @State needed (it holds no observable state itself).
+    private let modeStore: any ModeChoiceStore = UserDefaultsModeChoiceStore()
     // Lifted above `.ownerHome`'s tab switch (app.jsx's `vehicleIdx`/`sheet`
     // are App-level state, not HomeScreen-local — screens.jsx:369) so the
     // selected vehicle, sheet detent, and each vehicle's ticking telemetry
@@ -194,6 +201,87 @@ struct RootView: View {
         _ownerTab = State(initialValue: startOwnerTab)
     }
 
+    // MARK: - Post-auth routing (MYR-224)
+
+    /// After a real sign-in or silent resume, route by the account's stored view
+    /// mode. No real account (SIM / static-token dev override) → the existing
+    /// onboarding choice screen, unchanged. Real account with a stored mode →
+    /// straight to that shell. Real account, no stored mode → the chooser.
+    @MainActor
+    private func routeAfterAuth() {
+        let user = session.currentUser
+        let stored = user.flatMap { modeStore.mode(forUserID: $0.id) }
+        switch PostAuthRouter.destination(user: user, storedMode: stored) {
+        case .onboarding: screen = .emptyState
+        case .chooser: screen = .modeChooser
+        case .shell(let mode): applyViewMode(mode)
+        }
+    }
+
+    /// Apply a view-mode choice to the shell: pick the role, reset its landing
+    /// tab, and route to that shell. Used by the chooser, the Settings switch
+    /// row, and a stored-mode resume alike.
+    @MainActor
+    private func applyViewMode(_ mode: ViewMode) {
+        switch mode {
+        case .owner:
+            role = .owner
+            ownerTab = "home"
+            screen = .ownerHome
+        case .rider:
+            role = .shared
+            sharedTab = "shared"
+            screen = .sharedHome
+        }
+    }
+
+    /// Flip to the OTHER shell from a Settings "Switch mode" row, persisting the
+    /// new choice. Only reachable on the live path (the row renders only when a
+    /// real account is signed in).
+    @MainActor
+    private func switchViewMode() {
+        guard let user = session.currentUser else { return }
+        let next: ViewMode = (role == .owner ? ViewMode.owner : ViewMode.rider).toggled
+        modeStore.setMode(next, forUserID: user.id)
+        applyViewMode(next)
+    }
+
+    /// Clear the account's persisted view mode on sign-out — the choice is
+    /// session-scoped (MYR-224 mode semantics: it does NOT survive sign-out, so
+    /// the next sign-in re-presents the chooser). Read the id BEFORE `signOut`
+    /// clears `currentUser`.
+    @MainActor
+    private func clearModeOnSignOut() {
+        if let id = session.currentUser?.id {
+            modeStore.clearMode(forUserID: id)
+        }
+    }
+
+    /// The identity the chooser renders. The real signed-in user on the live
+    /// path; a representative fixture ONLY for the DEBUG `modeChooser` capture
+    /// scene (which runs in the simulator, where `currentUser` is nil).
+    private var chooserProfile: UserProfile {
+        if let user = session.currentUser { return user }
+        #if DEBUG
+        return DebugScene.sampleProfile
+        #else
+        return UserProfile(id: "unknown", name: nil, email: nil)
+        #endif
+    }
+
+    /// The profile the Settings surfaces render as real identity. The live user,
+    /// or — only for the DEBUG `ownerSettings`/`riderSettings` capture scenes —
+    /// the sample profile, so the real-identity Profile section + "Switch mode"
+    /// row are captureable in the simulator. `nil` everywhere else → the fixture
+    /// persona (pixel-identical sim).
+    private var settingsLiveProfile: UserProfile? {
+        if let user = session.currentUser { return user }
+        #if DEBUG
+        if DebugScene.current?.showsLiveSettings == true { return DebugScene.sampleProfile }
+        #endif
+        return nil
+    }
+
     var body: some View {
         ZStack {
             switch screen {
@@ -202,9 +290,19 @@ struct RootView: View {
                 ResolvingSessionView()
             case .signIn:
                 SignInScreen(session: session) {
-                    // First run lands on the choice screen (app.jsx 'empty');
-                    // returning-user routing straight to home is a later issue.
-                    screen = .emptyState
+                    // MYR-224 — after a real sign-in, route by the account's stored
+                    // view mode (chooser if none). SIM/static falls through to the
+                    // existing onboarding choice screen (app.jsx 'empty').
+                    routeAfterAuth()
+                }
+            case .modeChooser:
+                // MYR-224 — the live chooser. `chooserProfile` resolves the real
+                // signed-in identity (or a DEBUG fixture for the capture scene).
+                ModeChooserScreen(profile: chooserProfile) { mode in
+                    if let id = session.currentUser?.id {
+                        modeStore.setMode(mode, forUserID: id)
+                    }
+                    applyViewMode(mode)
                 }
             case .emptyState:
                 // app.jsx:92 — the two self-describing paths.
@@ -300,9 +398,14 @@ struct RootView: View {
                         shareState: ownerShareState,
                         vehiclesState: ownerVehiclesState,
                         ownerTab: $ownerTab,
+                        // MYR-224 — real profile (nil in SIM → fixture persona);
+                        // the "Switch to Rider" row renders only when non-nil.
+                        liveProfile: settingsLiveProfile,
+                        onSwitchMode: switchViewMode,
                         onSignOut: {
                             // MYR-201 — release the live socket + streams before
                             // dropping the session (no-op for the simulated fleet).
+                            clearModeOnSignOut()
                             ownerHomeState.stopTelemetry()
                             session.signOut()
                             screen = .signIn
@@ -325,11 +428,16 @@ struct RootView: View {
                 case "sharedSettings":
                     SharedSettingsScreen(
                         sharedTab: $sharedTab,
+                        // MYR-224 — real profile (nil in SIM → fixture persona);
+                        // the "Switch to Owner" row renders only when non-nil.
+                        liveProfile: settingsLiveProfile,
+                        onSwitchMode: switchViewMode,
                         onAddCode: {
                             inviteOrigin = .sharedSettings
                             screen = .inviteCode
                         },
                         onSignOut: {
+                            clearModeOnSignOut()
                             session.signOut()
                             screen = .signIn
                         }
@@ -356,7 +464,10 @@ struct RootView: View {
                         viewerState: sharedViewerState,
                         sharedTab: $sharedTab,
                         rideRequestService: rideRequestService,
-                        historyStore: rideHistoryStore
+                        historyStore: rideHistoryStore,
+                        // MYR-224 — real rider identity for the greeting + summary
+                        // (nil in SIM → the fixture "Sam", pixel-identical).
+                        liveProfile: session.currentUser
                     )
                 }
             }
@@ -369,9 +480,10 @@ struct RootView: View {
         .task {
             guard screen == .resolvingSession else { return }
             if await session.resumeStoredSession() {
-                role = .owner
-                ownerTab = "home"
-                screen = .ownerHome
+                // MYR-224 — route by the resumed account's stored view mode; a
+                // session that predates the choice (no stored mode) lands on the
+                // chooser rather than defaulting silently into the owner shell.
+                routeAfterAuth()
             } else {
                 screen = .signIn
             }

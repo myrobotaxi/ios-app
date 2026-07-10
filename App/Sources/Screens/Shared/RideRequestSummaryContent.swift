@@ -12,6 +12,10 @@ struct RideRequestSummaryContent: View {
     var rideRequestService: any RideRequestService
     var historyStore: RideHistoryStore
     var riderName: String
+    /// MYR-224 — the real signed-in rider on the LIVE path, else nil (SIM keeps
+    /// the fixture "Sam"). The "Have a wonderful {part of day}, {first}" sign-off
+    /// personalizes to the rider who took the ride.
+    var liveProfile: UserProfile? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var tip: String?
@@ -30,9 +34,20 @@ struct RideRequestSummaryContent: View {
         }
     }
 
-    private var firstName: String {
+    /// The rider first name for the sign-off, or `nil` for a name-less live
+    /// account (→ a generic sign-off with no name). SIM keeps the fixture-derived
+    /// behavior (`riderName` "Sam", or the ride's passenger).
+    private var greetingFirstName: String? {
+        if let profile = liveProfile { return profile.firstName }
         let name = riderName.isEmpty ? (passenger?.name ?? "Sam") : riderName
         return name.split(separator: " ").first.map(String.init) ?? name
+    }
+
+    /// "Have a wonderful {part of day}, {first}." — or, with no name, the same
+    /// warm line without a trailing name (never "…, ." — MYR-224).
+    private var summaryGreeting: String {
+        if let first = greetingFirstName { return "Have a wonderful \(partOfDay),\n\(first)." }
+        return "Have a wonderful \(partOfDay)."
     }
 
     private var tripMinutes: Int { destination.minutes }
@@ -72,7 +87,7 @@ struct RideRequestSummaryContent: View {
                 RideEyebrowText(text: "Arrived \u{00B7} \(endedClock)", color: Color.mrtGold.opacity(0.6), size: 10)
                     .padding(.bottom, 12)
 
-                Text("Have a wonderful \(partOfDay),\n\(firstName).")
+                Text(summaryGreeting)
                     .font(.system(size: 25, weight: .semibold))
                     .tracking(-0.5)
                     .lineSpacing(4)
