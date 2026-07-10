@@ -87,7 +87,11 @@ struct RideRequestReviewContent: View {
                         .font(.system(size: 28, weight: .semibold))
                         .tracking(-0.7)
                         .foregroundStyle(Color.mrtText)
-                        .lineLimit(1)
+                        // MYR-218 defect 2: a long destination name may wrap to a
+                        // second line in the Review header (standalone title, no
+                        // trailing metric). Fixture names fit one line — sim
+                        // unchanged.
+                        .lineLimit(2)
                     if let subtitle = destination?.subtitle {
                         Text(subtitle)
                             .font(.system(size: 14.5))

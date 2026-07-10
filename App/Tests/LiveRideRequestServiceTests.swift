@@ -25,6 +25,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
 
         service.submit(Self.sampleInput())
         XCTAssertEqual(service.activeRequest?.status, .pending, "optimistic pending is visible synchronously")
+        service.confirmSend() // MYR-218: the deferred create POST fires on send
         await eventually { await api.createCount == 1 }
         await eventually { await api.lastCreateVehicleID == "veh-live" } // resolved from vehicles()
 
@@ -43,6 +44,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
         let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
 
         service.submit(Self.sampleInput())
+        service.confirmSend()
         await eventually { await api.createCount == 1 }
 
         service.decline()
@@ -59,6 +61,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
         let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
 
         service.submit(Self.sampleInput())
+        service.confirmSend()
         await eventually { await api.createCount == 1 } // serverRideID now set
 
         service.cancel()
@@ -66,6 +69,82 @@ final class LiveRideRequestServiceTests: XCTestCase {
         await eventually { await api.cancelCount == 1 }
         let cancelID = await api.lastCancelID
         XCTAssertEqual(cancelID, "srv-3")
+    }
+
+    // MARK: MYR-218 defect 1 — the countdown is a REAL send grace window
+
+    /// The create POST must NOT fire at booking entry: while the rider's
+    /// "Sending request 10s" fill is running, no server ride exists yet, so the
+    /// owner's simulator cannot have received the request (the client's
+    /// side-by-side complaint). `submit` shows the optimistic pending but makes
+    /// zero API calls until the send is confirmed.
+    func testSubmitDefersCreatePOSTUntilSendConfirmed() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-defer", status: .requested))
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.sampleInput())
+        XCTAssertEqual(service.activeRequest?.status, .pending, "optimistic pending is visible synchronously")
+        // Give any stray background work a beat — no create must have fired.
+        try? await Task.sleep(nanoseconds: 40_000_000)
+        let createdBeforeSend = await api.createCount
+        XCTAssertEqual(createdBeforeSend, 0, "no create POST fires during the countdown window")
+
+        service.confirmSend() // "Tap to send now"
+        await eventually { await api.createCount == 1 }
+    }
+
+    /// The countdown-zero auto-send and a "Tap to send now" tap share ONE
+    /// idempotent trigger — a double-fire (tap racing the timer, or two taps)
+    /// still produces exactly one create POST.
+    func testConfirmSendFiresExactlyOnePOST() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-once", status: .requested))
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        service.confirmSend() // racing second signal — must be a no-op
+        await eventually { await api.createCount == 1 }
+        try? await Task.sleep(nanoseconds: 40_000_000)
+        let count = await api.createCount
+        XCTAssertEqual(count, 1, "the send trigger is idempotent — never a double POST")
+    }
+
+    /// Cancelling DURING the window discards locally with ZERO server calls (no
+    /// serverRideID exists yet) and clears the record — and the armed
+    /// countdown-zero timer must not fire a create after the cancel.
+    func testCancelDuringWindowMakesZeroAPICallsAndClearsRecord() async {
+        // A short window so we can prove the timer never fires a POST post-cancel.
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-win", status: .requested))
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false,
+                                             sendWindow: .milliseconds(20))
+
+        service.submit(Self.sampleInput())
+        service.cancel()
+        XCTAssertNil(service.activeRequest, "cancel-during-window clears the optimistic record")
+
+        // Wait past the original window: the disarmed timer must not send.
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        let createCount = await api.createCount
+        let cancelCount = await api.cancelCount
+        XCTAssertEqual(createCount, 0, "no create POST — the ride never reached the server")
+        XCTAssertEqual(cancelCount, 0, "no remote cancel — there is no serverRideID to cancel")
+    }
+
+    /// Reaching countdown zero (no tap) fires the deferred POST on its own and
+    /// keeps the request pending — the owner now receives it, at the END of the
+    /// grace window rather than the start.
+    func testCountdownZeroFiresSendAndKeepsPending() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-zero", status: .requested))
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false,
+                                             sendWindow: .milliseconds(20))
+
+        service.submit(Self.sampleInput())
+        let createdAtSubmit = await api.createCount
+        XCTAssertEqual(createdAtSubmit, 0, "nothing sent at submit time")
+
+        // No tap — the window elapses and the auto-send fires.
+        await eventually { await api.createCount == 1 }
+        XCTAssertEqual(service.activeRequest?.status, .pending, "the request stays pending after the auto-send")
     }
 
     // MARK: MYR-212 defect 3 (round 2) — classify create failures
@@ -83,6 +162,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
 
         service.submit(Self.liveInput())
         XCTAssertEqual(service.activeRequest?.status, .pending, "optimistic pending is visible synchronously")
+        service.confirmSend()
         await eventually { await api.createCount == 1 } // the refused POST fired
 
         // Declined affordance state set; the stuck pending is gone; no re-POST /
@@ -110,6 +190,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
         let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false, reconcilePolicy: Self.fastReconcile)
 
         service.submit(input)
+        service.confirmSend()
         await eventually { await api.createCount == 1 } // the failing POST fired
         await eventually { await api.rideListCount >= 1 } // reconcile polled the rider's list
 
@@ -133,6 +214,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
         let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false, reconcilePolicy: Self.fastReconcile)
 
         service.submit(Self.liveInput())
+        service.confirmSend()
         await eventually { await api.createCount == 1 }
         await eventually { await api.rideListCount >= 1 } // reconcile tried
 
@@ -151,6 +233,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
 
         // Seed a pending request (server id srv-4), then deliver the owner-accept frame.
         service.submit(Self.sampleInput())
+        service.confirmSend()
         await eventually { await api.createCount == 1 }
         await eventually { await socket.isListening } // event pump attached
 

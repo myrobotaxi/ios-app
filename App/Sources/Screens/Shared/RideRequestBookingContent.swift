@@ -165,7 +165,11 @@ struct RideRequestBookingContent: View {
                         .foregroundStyle(Color.mrtTextSec)
                 }
                 HStack(alignment: .firstTextBaseline) {
-                    Text(pickupLabel).font(.system(size: 15, weight: .semibold)).foregroundStyle(Color.mrtText).lineLimit(1)
+                    // MYR-218 defect 2: allow a long pickup name a second line
+                    // (the "N min away" note stays on the first line). Fixtures
+                    // fit one line — sim unchanged.
+                    Text(pickupLabel).font(.system(size: 15, weight: .semibold)).foregroundStyle(Color.mrtText)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
                     Text("\(pickupEtaMinutes) min away").font(.system(size: 12)).foregroundStyle(Color.mrtTextMuted).lineLimit(1)
                 }
@@ -192,7 +196,8 @@ struct RideRequestBookingContent: View {
                             .foregroundStyle(Color.mrtTextSec)
                     }
                     HStack(alignment: .firstTextBaseline) {
-                        Text(destinationLabel).font(.system(size: 15, weight: .semibold)).foregroundStyle(Color.mrtText).lineLimit(1)
+                        Text(destinationLabel).font(.system(size: 15, weight: .semibold)).foregroundStyle(Color.mrtText)
+                            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 8)
                         Text("\(String(format: "%.1f", tripMiles)) mi \u{00B7} \(tripMinutes) min")
                             .font(.system(size: 12)).foregroundStyle(Color.mrtTextMuted).lineLimit(1)
@@ -245,6 +250,10 @@ struct RideRequestBookingContent: View {
     private func sendingCTA(fillFraction: Double, secondsRemaining: Int) -> some View {
         Button {
             tapForceSent = true
+            // MYR-218 defect 1: "Tap to send now" is a REAL early send in live
+            // mode — fire the deferred create POST at this exact moment (no-op
+            // in sim). Idempotent with the countdown-zero auto-send.
+            rideRequestService.confirmSend()
         } label: {
             ZStack {
                 GeometryReader { geo in
@@ -288,6 +297,11 @@ struct RideRequestBookingContent: View {
         guard elapsedAtStart < RideRequestTiming.sendFillDuration + RideRequestTiming.sentHoldDuration else { return }
 
         if reduceMotion {
+            // Reduce Motion skips the 10s fill and shows "Request sent"
+            // immediately, so the live send must fire immediately too — keep the
+            // "sent" display and the actual POST in step (MYR-218 defect 1;
+            // no-op in sim).
+            rideRequestService.confirmSend()
             try? await Task.sleep(for: .seconds(RideRequestTiming.sentHoldDuration))
         } else {
             while !tapForceSent {

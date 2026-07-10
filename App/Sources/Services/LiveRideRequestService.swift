@@ -51,9 +51,29 @@ final class LiveRideRequestService: RideRequestService {
     /// Cached create-target vehicle (the caller's first owned vehicle).
     private var cachedVehicleID: String?
 
+    /// MYR-218 defect 1: the draft awaiting its DEFERRED create POST during the
+    /// booking grace window. Set by `submit`, consumed once by `fireSend` (the
+    /// countdown-zero timer OR a send-now tap — whichever lands first), and
+    /// cleared by `cancel`. Being non-nil is exactly "the send has not fired
+    /// yet", so it also serves as the single-fire guard against a tap racing
+    /// the timer.
+    private var pendingSend: RideRequestInput?
+    /// Countdown-zero auto-send timer, armed at `submit` for `sendWindow` and
+    /// disarmed on send-now / cancel / send. Owned by the service (not the
+    /// booking view) so a minimize-to-pending-pill mid-countdown still sends,
+    /// mirroring how `SimulatedRideRequestService` arms its fallback at submit.
+    /// `nonisolated(unsafe)` so the nonisolated `deinit` can cancel it — only
+    /// ever touched on the main actor otherwise (same precedent as `eventTask`).
+    private nonisolated(unsafe) var sendTask: Task<Void, Never>?
+
     private let api: any RideRequestAPI
     private let socket: any RideEventStreaming
     private let reconcilePolicy: ReconcilePolicy
+    /// Length of the booking grace window before the deferred create POST fires
+    /// on its own — the same 10s the rider's "Sending request" fill animates
+    /// over (`RideRequestTiming.sendFillDuration`). Injected so tests can drive
+    /// the countdown-zero auto-send in milliseconds.
+    private let sendWindow: Duration
     /// `nonisolated(unsafe)` so the nonisolated `deinit` can cancel it — only ever
     /// touched on the main actor otherwise (same precedent as
     /// `SimulatedRideRequestService`'s timers).
@@ -74,15 +94,18 @@ final class LiveRideRequestService: RideRequestService {
         api: any RideRequestAPI,
         socket: any RideEventStreaming,
         autoStart: Bool = true,
-        reconcilePolicy: ReconcilePolicy = .live
+        reconcilePolicy: ReconcilePolicy = .live,
+        sendWindow: Duration = .seconds(RideRequestTiming.sendFillDuration)
     ) {
         self.api = api
         self.socket = socket
         self.reconcilePolicy = reconcilePolicy
+        self.sendWindow = sendWindow
         if autoStart { start() }
     }
 
     deinit {
+        sendTask?.cancel()
         eventTask?.cancel()
         let socket = self.socket
         Task { await socket.disconnect() }
@@ -112,9 +135,48 @@ final class LiveRideRequestService: RideRequestService {
 
     func submit(_ input: RideRequestInput) {
         // Optimistic: the rider's Review→Booking transition reads `activeRequest`
-        // synchronously, so it must be pending the instant this returns.
+        // synchronously, so it must be pending the instant this returns. The
+        // countdown + real itinerary labels the Booking card animates over all
+        // read off this record.
         activeRequest = RideRequestRecord(input: input, status: .pending)
         serverRideID = nil
+
+        // MYR-218 defect 1: DEFER the create POST. The client's dual-simulator
+        // test caught the owner receiving the request while the rider's
+        // "Sending request 7s" fill was still running — because this method used
+        // to fire the POST here, at booking entry, making the countdown theater
+        // over an already-created server ride. Instead, hold the draft and arm a
+        // grace-window timer; the POST fires from `fireSend` at countdown zero,
+        // OR earlier if the rider taps "Tap to send now" (`confirmSend`). One
+        // idempotent send path either way.
+        pendingSend = input
+        sendTask?.cancel()
+        let window = sendWindow
+        sendTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: window)
+            guard !Task.isCancelled else { return }
+            self?.fireSend()
+        }
+    }
+
+    func confirmSend() {
+        // Rider tapped "Tap to send now" (or Reduce Motion flipped the card
+        // straight to "sent"). Route through the SAME `fireSend` the
+        // countdown-zero timer uses — idempotent, so a tap racing the timer
+        // still results in exactly one POST.
+        fireSend()
+    }
+
+    /// The single, idempotent send trigger (MYR-218 defect 1). Consumes
+    /// `pendingSend` — the FIRST caller (countdown-zero timer OR a send-now tap)
+    /// wins; any racing second caller finds it `nil` and no-ops, so there is
+    /// never a double POST. Carries the ORIGINAL create + MYR-216 failure
+    /// classification unchanged, just moved off the booking-entry moment.
+    private func fireSend() {
+        guard let input = pendingSend else { return }
+        pendingSend = nil
+        sendTask?.cancel()
+        sendTask = nil
         let api = self.api
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -249,6 +311,15 @@ final class LiveRideRequestService: RideRequestService {
     }
 
     func cancel() {
+        // MYR-218 defect 1: a cancel DURING the grace window (before the
+        // deferred POST fired) must make ZERO server calls — no ride exists yet.
+        // Disarm the auto-send and drop the held draft, then discard locally.
+        // `serverRideID` is still nil at that point, so the guard below no-ops
+        // the remote cancel; after the send it is set and cancel keeps its
+        // existing remote behavior.
+        sendTask?.cancel()
+        sendTask = nil
+        pendingSend = nil
         let id = serverRideID
         activeRequest = nil
         serverRideID = nil

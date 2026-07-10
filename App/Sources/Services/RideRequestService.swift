@@ -30,13 +30,27 @@ public protocol RideRequestService: AnyObject, Observable {
 
     /// Submits a new request — mirrors ride-request.jsx's `onSubmit`
     /// (`ReviewContent`'s primary CTA, ride-request.jsx:1234-1237): status
-    /// becomes `.pending` immediately (visible to the owner's
-    /// `IncomingRequestSheet` right away — the rider's own 10s "sending"
-    /// countdown, `PendingContent`, is a local flavor animation on top of
-    /// this, not a gate on when the owner sees it, see `RideRequestTiming`).
-    /// Arms the `minimizeToAutoAcceptDelay` fallback (ride-request.jsx:
-    /// 1112-1117) in case the owner never manually intervenes.
+    /// becomes `.pending` immediately so the rider's Review→Booking transition
+    /// reads the optimistic record synchronously. Arms the
+    /// `minimizeToAutoAcceptDelay` fallback (ride-request.jsx:1112-1117) in
+    /// case the owner never manually intervenes.
+    ///
+    /// MYR-218 defect 1: in LIVE mode the 10s "Sending request" countdown is a
+    /// REAL grace window — `submit` creates the local optimistic record but
+    /// does NOT yet hit the server. The create POST is deferred to the end of
+    /// the window (or to `confirmSend()` if the rider taps "Tap to send now"),
+    /// so the owner does not receive the request while the rider's fill is
+    /// still running. The sim service is unaffected (no network; its owner is
+    /// the same shared snapshot).
     func submit(_ input: RideRequestInput)
+
+    /// Signals the send moment inside the booking grace window — the rider
+    /// tapped "Tap to send now", or (under Reduce Motion) the booking card
+    /// flipped straight to "Request sent". LIVE mode fires the deferred create
+    /// POST here; the countdown-zero auto-send routes through the SAME path, so
+    /// there is exactly one idempotent send trigger. Sim is a no-op (its
+    /// `submit` already models the send — see the default implementation).
+    func confirmSend()
 
     /// Owner accepts (`IncomingRequestSheet`'s "Accept & send"/"Accept
     /// ride"). Cancels the auto-accept fallback, flips `status` to
@@ -57,6 +71,15 @@ public protocol RideRequestService: AnyObject, Observable {
     /// `RideHistoryStore` and resets `activeRequest` to `nil`. Returns `nil`
     /// if there's no request or it hasn't reached `trackProgress >= 0.999`.
     func completeAndReset() -> RequestedRide?
+}
+
+public extension RideRequestService {
+    /// Default: no send-window deferral. The simulated service (M1) has no
+    /// network — its `submit` already installs the full state machine, and the
+    /// owner is the same in-process snapshot — so there is nothing to send
+    /// later. Only `LiveRideRequestService` overrides this to fire the deferred
+    /// create POST (MYR-218 defect 1).
+    func confirmSend() {}
 }
 
 // MARK: - Timing constants (single source, per CLAUDE.md deliverable 2)
