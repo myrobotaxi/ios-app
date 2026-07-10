@@ -98,6 +98,10 @@ final class RiderLocationTests: XCTestCase {
     func testPinDropUsesRealRegionInLive() {
         let state = makeState(userLocation: FakeUserLocation(coordinate: dallas, authorized: true, label: "Elm St"))
         XCTAssertEqual(state.pinDropCoordinate.latitude, dallas.latitude, accuracy: 0.0001)
-        XCTAssertEqual(state.pinDropLabel, "Elm St")
+        // MYR-216-3b: before the pin's OWN geocode resolves, the label is the calm
+        // neutral — NOT the device label (which could be a street resolved for a
+        // spot away from the pin). The pin's street resolves on the entry settle
+        // (3a) via `pinDropCameraSettled`; see `PinDropAuthoritativeTests`.
+        XCTAssertEqual(state.pinDropLabel, SharedViewerState.pinNeutralLabel)
     }
 }

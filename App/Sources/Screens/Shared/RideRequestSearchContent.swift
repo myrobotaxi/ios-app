@@ -38,6 +38,10 @@ struct RideRequestSearchContent: View {
     @State private var pickedDestination: RidePlace?
     @FocusState private var destinationFieldFocused: Bool
 
+    /// MYR-216 deliverable 1 — the collapse trigger: true once a destination is
+    /// chosen (CTA state). Drives the animated sheet resize down/up.
+    private var isChoosing: Bool { pickedDestination != nil }
+
     // MYR-200 search-gap fix — measured heights that let the sheet size to its
     // content up to the 712pt cap (see `scrollRegionHeight`).
     @State private var headerHeight: CGFloat = 0
@@ -149,6 +153,12 @@ struct RideRequestSearchContent: View {
         .onPreferenceChange(SearchHeaderHeightKey.self) { headerHeight = $0 }
         .onPreferenceChange(SearchResultsHeightKey.self) { resultsHeight = $0 }
         .rideRequestSheetChrome()
+        // MYR-216 deliverable 1: one deliberate animated resize when the sheet
+        // collapses onto its content on selection (and expands back on
+        // edit/clear) — the same settle curve the phase transitions use
+        // (SharedViewerScreen, ride-request.jsx:1185). Keyed on the chosen-state
+        // so it never fires per keystroke while typing.
+        .animation(reduceMotion ? .easeOut(duration: 0.2) : .timingCurve(0.32, 0.72, 0, 1, duration: 0.42), value: isChoosing)
         .overlay {
             if scheduleSheetOpen {
                 scheduleSlideUpCard
@@ -478,11 +488,17 @@ struct RideRequestSearchContent: View {
     /// keeps outline-draw meaning the final request. "Continue" is the design
     /// system's advance verb (onboarding.jsx:398, tutorials.jsx:349).
     ///
-    /// In LIVE the CTA is pinned to the bottom of the SAME stable region the
-    /// results filled, so the sheet height is byte-identical to search-as-you-type
-    /// — the CTA appearing never jumps the sheet (defect 1 interaction). In SIM
-    /// the sheet hugs the CTA (the sanctioned height change on selection; the
-    /// pre-selection search scene stays pixel-identical).
+    /// MYR-216 deliverable 1 — POST-SELECTION COLLAPSE: once a destination is
+    /// chosen the sheet settles DOWN to hug its content (chips + trip card + CTA)
+    /// in BOTH sim and live, one deliberate animated resize (see the body's
+    /// `.animation(value: isChoosing)`). This intentionally overrides MYR-215,
+    /// which — to stop the CTA from jumping the live sheet — pinned this region to
+    /// the full stable typing envelope (`scrollRegionHeight`); the client
+    /// re-scoped that to a deliberate collapse. Editing/clearing the field returns
+    /// to the typing envelope (the results branch), so the no-per-keystroke-jump
+    /// invariant while TYPING is untouched. Sim was already hugging → unchanged.
+    /// Sanctioned diff: searchSelected collapses (camera/layout only, like the
+    /// pin-drop zoom deviation).
     @ViewBuilder
     private func proceedRegion(for place: RidePlace) -> some View {
         let cta = MRTButton("Continue", variant: .gold) {
@@ -490,16 +506,24 @@ struct RideRequestSearchContent: View {
         }
         .padding(.top, 8)
 
-        if viewerState.isLiveLocation {
+        if let height = Self.proceedRegionHeight(isLive: viewerState.isLiveLocation) {
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
                 cta
             }
-            .frame(height: scrollRegionHeight, alignment: .bottom)
+            .frame(height: height, alignment: .bottom)
         } else {
             cta
         }
     }
+
+    /// MYR-216 deliverable 1 (pure, testable) — the proceed (Continue) region's
+    /// fixed height, or `nil` to HUG its content. Always `nil` (both modes) so the
+    /// sheet COLLAPSES onto its content on selection; the `isLive` seam is kept so
+    /// the MYR-215 behavior it replaces (live pinned to the stable envelope) can be
+    /// re-instated in one place if ever re-scoped. The both-modes-hug guarantee is
+    /// the regression this locks in.
+    static func proceedRegionHeight(isLive: Bool) -> CGFloat? { nil }
 
     /// Enter a chosen destination into the field WITHOUT advancing (MYR-215
     /// deliverable 3): fill the field with the resolved place name, dismiss the

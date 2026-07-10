@@ -239,6 +239,15 @@ public enum MRTMetrics {
     /// jsx's own retired constant) is a reasonable stand-in for that sheet's
     /// actual auto-height (ride-request.jsx:51 `SHEET_HEIGHTS.pinDrop`).
     public static let rideRequestPinDropMapInset: CGFloat = 280
+    /// MYR-216 deliverable 4 — the bottom area the route-fitted trip sheets
+    /// (Review / Booking / Tracking) physically cover, plus a margin, used to
+    /// inset the route camera fit so both endpoints + the full polyline clear the
+    /// sheet (the destination endpoint used to hide behind it). These sheets size
+    /// to content ('auto'), so this is a generous representative cover height sized
+    /// for the tallest of them — over-insetting a shorter sheet only adds top
+    /// margin, it never hides an endpoint. (Summary is excluded: it's a
+    /// full-screen takeover, not a peek-above-a-bottom-sheet.)
+    public static let rideRequestRouteMapBottomInset: CGFloat = 430
     /// The vertical screen fraction (0 = top edge, 1 = bottom edge) at which the
     /// fixed pin-drop glyph is drawn over the map — it sits ABOVE the sheet so
     /// the rider can see the spot it marks. The confirmed pickup coordinate is the

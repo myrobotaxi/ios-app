@@ -94,6 +94,10 @@ struct VehicleMapView: View {
     // tolerates overlap: any camera-change event that lands before it is
     // ours, no matter which recenter call last set it.
     @State private var programmaticCameraUntil: Date = .distantPast
+    /// MYR-216 deliverable 3: one-shot guard so the pin-on-fix ENTRY correction
+    /// (below) applies once per pin-drop entry and never loops with its own
+    /// camera set. Re-armed on each fresh pin-drop entry / device-fix recenter.
+    @State private var pinDropCorrectionApplied = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var vehiclePosition: VehicleRoute.Position {
@@ -166,7 +170,33 @@ struct VehicleMapView: View {
                 // corrected by the next settle. Reported before the follow guard
                 // below, which is unrelated (recenter affordance).
                 if let pinDrop {
-                    pinDrop.onCoordinate(proxy.convert(pinDrop.glyphGlobalPoint, from: .global) ?? context.region.center)
+                    let glyphCoord = proxy.convert(pinDrop.glyphGlobalPoint, from: .global) ?? context.region.center
+                    // MYR-216 deliverable 3: on pin-drop ENTRY the camera centered
+                    // the fix at the map's optical center, but the glyph is drawn
+                    // ABOVE center (`ridePinDropGlyphScreenFraction`), so the glyph
+                    // read a coordinate a block off the blue dot — the pickup landed
+                    // south of the fix. Correct ONCE per entry: shift the camera by
+                    // the (fix − glyphCoord) delta so whatever the glyph reads moves
+                    // onto the fix (glyph coord == fix). Guarded by the flag + the
+                    // corrective set's own `return` so it can't loop; the corrected
+                    // settle then reports the on-fix coordinate + fires the geocode
+                    // (MYR-216-3a). Live only — `entryFix` is nil in sim (no dot to
+                    // align to), so the sim scene keeps its MYR-215 framing.
+                    if !pinDropCorrectionApplied {
+                        if let fix = pinDrop.entryFix,
+                           let corrected = Self.pinOnFixCorrection(cameraCenter: context.region.center, glyphCoordinate: glyphCoord, fix: fix) {
+                            pinDropCorrectionApplied = true
+                            programmaticCameraUntil = Date().addingTimeInterval(1.2)
+                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) {
+                                cameraPosition = .region(MKCoordinateRegion(center: corrected, span: context.region.span))
+                            }
+                            return
+                        }
+                        // Nothing to correct (already on the fix / no fix) — don't
+                        // re-check on later user-drag settles.
+                        pinDropCorrectionApplied = true
+                    }
+                    pinDrop.onCoordinate(glyphCoord)
                 }
                 guard Date() >= programmaticCameraUntil else { return }
                 // A real drag/pinch settled — the prototype's FloatingMapButton
@@ -188,6 +218,11 @@ struct VehicleMapView: View {
             // / device movement) — but never fight a user who has panned away.
             .onChange(of: centerOverrideKey) { _, _ in
                 guard centerOverride != nil, isFollowing else { return }
+                // MYR-216 d3: a fresh device fix arriving during pin-drop (while
+                // still following — a user drag turns following off) recenters on
+                // the new fix, so re-arm the pin-on-fix correction for it. A dragged
+                // pin is never re-corrected (guard `isFollowing`).
+                if isPinDropActive { pinDropCorrectionApplied = false }
                 recenter(animated: true)
             }
             // MYR-215 defect 2 ROOT CAUSE + FIX: this ONE `VehicleMapView` is
@@ -208,6 +243,7 @@ struct VehicleMapView: View {
             // transition it missed.
             .onChange(of: isPinDropActive) { _, active in
                 guard active else { return }
+                pinDropCorrectionApplied = false // re-arm the pin-on-fix correction (MYR-216 d3)
                 isFollowing = true
                 recenter(animated: true)
             }
@@ -221,6 +257,25 @@ struct VehicleMapView: View {
     /// (the resting position tuned in MYR-212, kept so the sim scene is pixel-identical).
     static func pinGlyphPoint(in size: CGSize) -> CGPoint {
         CGPoint(x: size.width / 2, y: size.height * MRTMetrics.ridePinDropGlyphScreenFraction)
+    }
+
+    /// MYR-216 deliverable 3 (pure, testable) — the corrected camera center that
+    /// places `fix` exactly under the pin glyph. On entry the glyph reads
+    /// `glyphCoordinate` (the coordinate rendered at the glyph's screen point)
+    /// while the camera is centered elsewhere; shifting the camera center by the
+    /// (fix − glyphCoordinate) delta moves whatever the glyph reads onto the fix.
+    /// Returns `nil` when the glyph is already on the fix within `epsilonDegrees`
+    /// (~a few meters) — so the correction never fires (or loops) once aligned.
+    static func pinOnFixCorrection(
+        cameraCenter: CLLocationCoordinate2D,
+        glyphCoordinate: CLLocationCoordinate2D,
+        fix: CLLocationCoordinate2D,
+        epsilonDegrees: Double = 0.00002 // ~2.2m latitude
+    ) -> CLLocationCoordinate2D? {
+        let dLat = fix.latitude - glyphCoordinate.latitude
+        let dLon = fix.longitude - glyphCoordinate.longitude
+        guard abs(dLat) > epsilonDegrees || abs(dLon) > epsilonDegrees else { return nil }
+        return CLLocationCoordinate2D(latitude: cameraCenter.latitude + dLat, longitude: cameraCenter.longitude + dLon)
     }
 
     @MapContentBuilder
@@ -302,4 +357,8 @@ struct PinDropOverlay {
     var glyphGlobalPoint: CGPoint
     /// The coordinate under the glyph, reported on every camera settle.
     var onCoordinate: (CLLocationCoordinate2D) -> Void
+    /// MYR-216 deliverable 3: the user's device fix (blue-dot coordinate) to seat
+    /// exactly under the glyph on entry. `nil` when there's no dot to align to
+    /// (sim, or unauthorized/no-fix live) — the entry correction then no-ops.
+    var entryFix: CLLocationCoordinate2D? = nil
 }

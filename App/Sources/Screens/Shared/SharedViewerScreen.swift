@@ -180,7 +180,10 @@ struct SharedViewerScreen: View {
                 pinDrop: isPinDrop
                     ? PinDropOverlay(
                         glyphGlobalPoint: glyphGlobalPoint,
-                        onCoordinate: { viewerState.pinDropCameraSettled(at: $0) }
+                        onCoordinate: { viewerState.pinDropCameraSettled(at: $0) },
+                        // MYR-216 d3: the blue-dot fix to seat under the glyph on
+                        // entry — the live device coordinate (nil in sim / no fix).
+                        entryFix: viewerState.userLocation.coordinate
                     )
                     : nil,
                 // MYR-213/215: pin-drop opens at a street-level span (~440m, a few
@@ -192,10 +195,14 @@ struct SharedViewerScreen: View {
                 regionSpanDelta: pinDropRegionSpanDelta
             )
         case .review, .booking:
-            RideRequestRouteMap(route: requestRoute)
+            // MYR-216 d4: inset the fit for the trip sheet so both endpoints +
+            // the full polyline sit above it (the destination used to hide behind).
+            RideRequestRouteMap(route: requestRoute, bottomInset: MRTMetrics.rideRequestRouteMapBottomInset)
         case .tracking:
-            RideRequestRouteMap(route: requestRoute, progress: rideRequestService.activeRequest?.trackProgress ?? 0, showVehicle: true)
+            RideRequestRouteMap(route: requestRoute, progress: rideRequestService.activeRequest?.trackProgress ?? 0, showVehicle: true, bottomInset: MRTMetrics.rideRequestRouteMapBottomInset)
         case .summary:
+            // Summary is a full-screen takeover (its own hero-map layout), not a
+            // peek above a bottom sheet — no inset (MYR-216 d4).
             RideRequestRouteMap(route: requestRoute)
         }
     }
