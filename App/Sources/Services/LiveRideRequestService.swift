@@ -44,6 +44,11 @@ import Observation
 final class LiveRideRequestService: RideRequestService {
     private(set) var activeRequest: RideRequestRecord?
 
+    /// MYR-220: the latest session/connection failure of the create POST (auth
+    /// died mid-session — 401 / auth-shaped 403). Observed by the rider's
+    /// `SharedViewerScreen` to surface a calm retry, never a decline.
+    private(set) var sessionFailure: RideSessionFailure?
+
     /// The server-assigned ride id for the active request (distinct from the
     /// local `activeRequest.id`, which for a rider-submitted ride is a client
     /// UUID until the create POST returns). Mutations target this id.
@@ -216,7 +221,23 @@ final class LiveRideRequestService: RideRequestService {
                 //    rider's own ride list over a blind re-POST (a re-POST
                 //    duplicates rides). Found → adopt the server id; nothing after
                 //    the window → fall through to the DEFINITIVE path.
-                if Self.isDefinitiveCreateFailure(error) {
+                //
+                //  SESSION/CONNECTION (MYR-220) — a typed AUTH rejection: the
+                //    HS256 backend token expired mid-session (no client refresh
+                //    until MYR-193), so the DEFERRED create POST came back 401
+                //    (or an auth-shaped 403 carrying `auth_failed`/`auth_timeout`).
+                //    The MYR-216 tree above wrongly counted this as a DEFINITIVE
+                //    4xx and dropped the rider into `.declined` — "Alex can't take
+                //    this ride right now" for a DEAD SESSION (no ride was ever
+                //    created). Split it out FIRST (it is a 4xx, so it must be
+                //    caught before the definitive branch): keep the request OUT of
+                //    `.declined`, clear the stuck optimistic pending, and raise
+                //    `sessionFailure` so the rider lands back on a retryable state
+                //    with the draft intact + a calm notice. Branch on the TYPED
+                //    case (FR-7.1), never the message.
+                if Self.isSessionFailure(error) {
+                    self.failCreateSessionError()
+                } else if Self.isDefinitiveCreateFailure(error) {
                     self.failCreateDefinitively()
                 } else {
                     await self.reconcileCreate(input: input)
@@ -239,6 +260,19 @@ final class LiveRideRequestService: RideRequestService {
         return (400..<500).contains(status)
     }
 
+    /// MYR-220: True when a create failure is an AUTH/SESSION rejection rather
+    /// than a semantic refusal — a bare HTTP 401, or a typed auth code
+    /// (`auth_failed`/`auth_timeout`, which the backend also carries on an
+    /// auth-shaped 403; `RestError.isAuthFailure` matches these). This means the
+    /// SESSION is dead (expired token), not that the owner declined — so it must
+    /// NOT become `.declined`. Checked BEFORE `isDefinitiveCreateFailure` because
+    /// a 401 is itself a 4xx. A generic 403 (`permission_denied`) is NOT auth-
+    /// shaped and stays on the definitive path. Branches on the typed case only.
+    private static func isSessionFailure(_ error: Error) -> Bool {
+        guard let rest = error as? RestError else { return false }
+        return rest.isAuthFailure || rest.httpStatus == 401
+    }
+
     /// DEFINITIVE create failure: the optimistic pending describes a ride that
     /// does not (and won't) exist. Transition it to `.declined` so the rider's
     /// `SharedViewerScreen` reacts through the SAME reactive path as an
@@ -250,6 +284,21 @@ final class LiveRideRequestService: RideRequestService {
         request.status = .declined
         activeRequest = request
         serverRideID = nil
+    }
+
+    /// MYR-220 SESSION/CONNECTION create failure: the token died mid-session, so
+    /// the create POST was rejected before any ride was created — this is NOT an
+    /// owner decline. Clear the stuck optimistic pending (no false "Ride declined"
+    /// card, no frozen "Waiting…") WITHOUT touching `.declined`, and raise a fresh
+    /// `sessionFailure` for the rider's `SharedViewerScreen` to surface a calm
+    /// retry notice + drop back to a retryable state. The rider's DRAFT lives in
+    /// `SharedViewerState` and is untouched, so the retry re-uses the same trip.
+    /// No-op if the request was cancelled or already moved on.
+    private func failCreateSessionError() {
+        guard let request = activeRequest, request.status == .pending else { return }
+        activeRequest = nil
+        serverRideID = nil
+        sessionFailure = RideSessionFailure()
     }
 
     /// INDETERMINATE create failure: discover whether the server actually created

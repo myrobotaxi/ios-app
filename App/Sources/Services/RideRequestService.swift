@@ -28,6 +28,15 @@ public protocol RideRequestService: AnyObject, Observable {
     /// scope, matches the prototype's single `requestState`/`requestDest`.
     var activeRequest: RideRequestRecord? { get }
 
+    /// MYR-220: the most recent SESSION/CONNECTION failure of a mutation (a
+    /// create POST whose auth died mid-session — 401 / auth-shaped 403 — not an
+    /// owner refusal). Bumps to a fresh value on each failure so the rider's
+    /// `SharedViewerScreen` can react through `.onChange` even on a repeat, land
+    /// the rider back in a retryable state with the draft intact, and surface a
+    /// CALM retry notice rather than the declined affordance. `nil`/never-set in
+    /// sim (no network) — see the default implementation.
+    var sessionFailure: RideSessionFailure? { get }
+
     /// Submits a new request — mirrors ride-request.jsx's `onSubmit`
     /// (`ReviewContent`'s primary CTA, ride-request.jsx:1234-1237): status
     /// becomes `.pending` immediately so the rider's Review→Booking transition
@@ -74,6 +83,11 @@ public protocol RideRequestService: AnyObject, Observable {
 }
 
 public extension RideRequestService {
+    /// Default: the simulated service (M1) has no network, so a mutation can
+    /// never fail a live session — it never signals a session failure. Only
+    /// `LiveRideRequestService` overrides this (MYR-220).
+    var sessionFailure: RideSessionFailure? { nil }
+
     /// Default: no send-window deferral. The simulated service (M1) has no
     /// network — its `submit` already installs the full state machine, and the
     /// owner is the same in-process snapshot — so there is nothing to send
@@ -127,6 +141,18 @@ public enum RideRequestStatus: String, Sendable, Equatable {
     case pending
     case accepted
     case declined
+}
+
+/// MYR-220: a mutation failed because the SESSION died (the token expired
+/// mid-session → the deferred create POST got 401 / an auth-shaped 403), NOT
+/// because the owner refused. Distinct from `.declined` so the rider's flow can
+/// route to a calm retry instead of the owner-decline affordance. Carries a
+/// fresh `id` per occurrence so a repeat failure still fires the observing
+/// `.onChange` (two identical decline-shaped failures must not coalesce and drop
+/// the retry notice).
+public struct RideSessionFailure: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public init(id: UUID = UUID()) { self.id = id }
 }
 
 public struct RideSchedule: Sendable, Equatable {
