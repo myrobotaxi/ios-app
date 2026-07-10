@@ -78,6 +78,16 @@ struct VehicleMapView: View {
     /// screen point (`Self.pinGlyphPoint`) in one coordinate space, so they can
     /// never desync. `nil` at every non-pin-drop call site.
     var pinDrop: PinDropOverlay? = nil
+    /// MYR-217: the SINGLE camera owner for the pin-drop phase (see
+    /// `PinDropCameraController`'s header for the four-round recurrence it
+    /// closes). Non-nil wherever `pinDrop` can ever become non-nil (the rider
+    /// call site passes it unconditionally so exit is observable when `pinDrop`
+    /// drops back to nil); `nil` on the owner Home map, which has no pin-drop.
+    /// While `pinDrop != nil`, EVERY programmatic camera write flows through
+    /// this controller — the legacy writers below are gated off by
+    /// `cameraWritePermitted` — and each write it emits carries the street
+    /// span, so no interleaving can re-assert a wide span at entry again.
+    var pinDropCamera: PinDropCameraController? = nil
     /// The map camera's region span (degrees, lat+lon) used when (re)centering.
     /// Defaults to the neighborhood overview (`mapRegionSpanDelta`, ~6.6km) for
     /// the owner Home map + the rider idle/search map; the LIVE pin-drop passes a
@@ -94,10 +104,6 @@ struct VehicleMapView: View {
     // tolerates overlap: any camera-change event that lands before it is
     // ours, no matter which recenter call last set it.
     @State private var programmaticCameraUntil: Date = .distantPast
-    /// MYR-216 deliverable 3: one-shot guard so the pin-on-fix ENTRY correction
-    /// (below) applies once per pin-drop entry and never loops with its own
-    /// camera set. Re-armed on each fresh pin-drop entry / device-fix recenter.
-    @State private var pinDropCorrectionApplied = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var vehiclePosition: VehicleRoute.Position {
@@ -163,40 +169,42 @@ struct VehicleMapView: View {
                 // MYR-213: ground-truth pickup — no assumed screen fraction or
                 // region-center model. Convert the pin GLYPH's actual rendered
                 // screen point to the coordinate MapKit renders there: whatever is
-                // under the glyph IS the confirmed pickup, on every settle
-                // (programmatic seed AND user drag). `proxy.convert` returns nil only
-                // before the map has laid out (the glyph point is always in-bounds)
-                // — the raw region center is the documented transient fallback,
-                // corrected by the next settle. Reported before the follow guard
-                // below, which is unrelated (recenter affordance).
+                // under the glyph IS the confirmed pickup, on every settle. `proxy
+                // .convert` returns nil only before the map has laid out (the glyph
+                // point is always in-bounds) — the raw region center is the
+                // documented transient fallback, corrected by the next settle.
+                //
+                // MYR-217: while pin-drop is up, the settle is fed to the ONE
+                // camera owner, which decides everything (refine the seating /
+                // done / user took over). The MYR-216 in-place one-shot correction
+                // — whose `span: context.region.span` write re-asserted a stale
+                // wide span when a pre-entry settle hijacked it (the four-round
+                // recurrence) — is deleted in its favor. The coordinate is NOT
+                // reported while seating is still converging (`.refine`) so the
+                // label pipeline never geocodes a transient framing.
                 if let pinDrop {
                     let glyphCoord = proxy.convert(pinDrop.glyphGlobalPoint, from: .global) ?? context.region.center
-                    // MYR-216 deliverable 3: on pin-drop ENTRY the camera centered
-                    // the fix at the map's optical center, but the glyph is drawn
-                    // ABOVE center (`ridePinDropGlyphScreenFraction`), so the glyph
-                    // read a coordinate a block off the blue dot — the pickup landed
-                    // south of the fix. Correct ONCE per entry: shift the camera by
-                    // the (fix − glyphCoord) delta so whatever the glyph reads moves
-                    // onto the fix (glyph coord == fix). Guarded by the flag + the
-                    // corrective set's own `return` so it can't loop; the corrected
-                    // settle then reports the on-fix coordinate + fires the geocode
-                    // (MYR-216-3a). Live only — `entryFix` is nil in sim (no dot to
-                    // align to), so the sim scene keeps its MYR-215 framing.
-                    if !pinDropCorrectionApplied {
-                        if let fix = pinDrop.entryFix,
-                           let corrected = Self.pinOnFixCorrection(cameraCenter: context.region.center, glyphCoordinate: glyphCoord, fix: fix) {
-                            pinDropCorrectionApplied = true
-                            programmaticCameraUntil = Date().addingTimeInterval(1.2)
-                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) {
-                                cameraPosition = .region(MKCoordinateRegion(center: corrected, span: context.region.span))
-                            }
-                            return
-                        }
-                        // Nothing to correct (already on the fix / no fix) — don't
-                        // re-check on later user-drag settles.
-                        pinDropCorrectionApplied = true
+                    guard let camera = pinDropCamera else {
+                        pinDrop.onCoordinate(glyphCoord) // defensive: no owner composed
+                        return
                     }
-                    pinDrop.onCoordinate(glyphCoord)
+                    switch camera.cameraSettled(
+                        glyphCoordinate: glyphCoord,
+                        cameraCenter: context.region.center,
+                        cameraLatitudeDelta: context.region.span.latitudeDelta
+                    ) {
+                    case .refine(let write):
+                        applyOwnerWrite(write)
+                    case .seated, .report:
+                        pinDrop.onCoordinate(glyphCoord)
+                    case .userTookOver:
+                        // The user's drag/zoom wins — the owner stands down for
+                        // this entry, and follow mode is off (same affordance
+                        // semantics as the non-pin-drop branch below).
+                        isFollowing = false
+                        pinDrop.onCoordinate(glyphCoord)
+                    }
+                    return
                 }
                 guard Date() >= programmaticCameraUntil else { return }
                 // A real drag/pinch settled — the prototype's FloatingMapButton
@@ -204,7 +212,17 @@ struct VehicleMapView: View {
                 // "appears when user has panned away").
                 isFollowing = false
             }
-            .onAppear { recenter(animated: false) }
+            .onAppear {
+                // MYR-217: a COLD pin-drop mount (`pinDrop` scene launch) enters
+                // through the same single owner as the warm in-session transition
+                // below — one code path, closing the cold-probe-passes /
+                // real-path-fails verification gap that MYR-213/215/216 fell into.
+                if isPinDropActive {
+                    enterPinDropCamera(animated: false)
+                } else {
+                    recenter(animated: false)
+                }
+            }
             .onChange(of: progressBucket) { _, _ in
                 // MYR-199 fix: a static `centerOverride` never re-centers on the
                 // ticking vehicle telemetry — see that property's header comment.
@@ -216,37 +234,83 @@ struct VehicleMapView: View {
             }
             // MYR-211: re-center when the live location override changes (first fix
             // / device movement) — but never fight a user who has panned away.
+            // MYR-217: during pin-drop the fresh fix (from `enterPinDrop()`'s
+            // `refresh()`, or the device moving) goes to the camera OWNER, which
+            // re-seats the fix under the glyph — or refuses, if the user has
+            // already taken the camera over. `recenter` is hard-gated off during
+            // pin-drop either way (`cameraWritePermitted`).
             .onChange(of: centerOverrideKey) { _, _ in
-                guard centerOverride != nil, isFollowing else { return }
-                // MYR-216 d3: a fresh device fix arriving during pin-drop (while
-                // still following — a user drag turns following off) recenters on
-                // the new fix, so re-arm the pin-on-fix correction for it. A dragged
-                // pin is never re-corrected (guard `isFollowing`).
-                if isPinDropActive { pinDropCorrectionApplied = false }
+                guard centerOverride != nil else { return }
+                if isPinDropActive {
+                    if let camera = pinDropCamera, let fix = pinDrop?.entryFix,
+                       let write = camera.fixChanged(fix) {
+                        applyOwnerWrite(write)
+                    }
+                    return
+                }
+                guard isFollowing else { return }
                 recenter(animated: true)
             }
-            // MYR-215 defect 2 ROOT CAUSE + FIX: this ONE `VehicleMapView` is
-            // reused (same SwiftUI view identity) across the rider's
-            // idle/search/pinDrop phases — only the `regionSpanDelta` prop swaps
-            // to the street value on pin-drop entry. But `.onAppear` (the sole
-            // place that span reached the camera) does NOT re-run on a phase
-            // change, and no other recenter fires on the idle/search → pinDrop
-            // transition, so the camera kept its wide idle/search span and
-            // MYR-213's street span silently never applied in a live session
-            // (it only ever worked when the `pinDrop` scene was launched cold,
-            // hitting `onAppear` with the street span already set). Fix: force a
-            // fresh re-frame whenever pin-drop turns on — re-enter follow mode so
-            // the freshest device fix (from `enterPinDrop()`'s `refresh()`, which
-            // lands via `centerOverrideKey` above) also re-centers, and recenter
-            // now at the street span. First-render pin-drop (cold scene launch)
-            // still re-frames via `onAppear`; `.onChange` covers the in-session
-            // transition it missed.
+            // MYR-217 (supersedes the MYR-215 defect-2 re-frame + MYR-216 d3
+            // re-arm): the in-session idle/search → pinDrop transition hands the
+            // camera to the single owner, which frames street-span with the fix
+            // under the glyph in ONE write; leaving pin-drop releases it.
             .onChange(of: isPinDropActive) { _, active in
-                guard active else { return }
-                pinDropCorrectionApplied = false // re-arm the pin-on-fix correction (MYR-216 d3)
-                isFollowing = true
-                recenter(animated: true)
+                if active {
+                    isFollowing = true
+                    enterPinDropCamera(animated: true)
+                } else {
+                    pinDropCamera?.exit()
+                }
             }
+        }
+    }
+
+    // MARK: - MYR-217 single-owner camera plumbing
+
+    /// Every programmatic camera write goes through this permission gate: while
+    /// pin-drop is up, ONLY the owner may write; outside it, only the legacy
+    /// recenter writers. Pure + static so the invariant is pinned by
+    /// `PinDropCameraOwnershipTests` — the regression this table exists to
+    /// prevent is a legacy writer (follow tick, fix recenter, appear framing)
+    /// mutating the camera mid-pin-drop again.
+    enum CameraWriteSource {
+        case pinDropOwner
+        case legacyRecenter
+    }
+
+    static func cameraWritePermitted(source: CameraWriteSource, isPinDropActive: Bool) -> Bool {
+        switch source {
+        case .pinDropOwner: isPinDropActive
+        case .legacyRecenter: !isPinDropActive
+        }
+    }
+
+    /// Route a pin-drop entry through the single owner (cold `onAppear` and the
+    /// warm in-session transition share this one path).
+    private func enterPinDropCamera(animated: Bool) {
+        guard let pinDrop, let camera = pinDropCamera else { return }
+        let write = camera.enter(
+            fix: pinDrop.entryFix,
+            fallbackCenter: centerOverride ?? vehiclePosition.coordinate,
+            viewportSize: pinDrop.viewportSize,
+            animated: animated
+        )
+        applyOwnerWrite(write)
+    }
+
+    /// Apply an owner-issued camera write — the ONLY site that mutates the
+    /// camera during pin-drop. Stamps the same rolling programmatic window the
+    /// legacy writers use so nothing misattributes the resulting settle.
+    private func applyOwnerWrite(_ write: PinDropCameraController.Write) {
+        guard Self.cameraWritePermitted(source: .pinDropOwner, isPinDropActive: isPinDropActive) else { return }
+        programmaticCameraUntil = Date().addingTimeInterval(1.2)
+        if write.animated, !reduceMotion {
+            withAnimation(.easeInOut(duration: 0.35)) {
+                cameraPosition = .region(write.region)
+            }
+        } else {
+            cameraPosition = .region(write.region)
         }
     }
 
@@ -257,25 +321,6 @@ struct VehicleMapView: View {
     /// (the resting position tuned in MYR-212, kept so the sim scene is pixel-identical).
     static func pinGlyphPoint(in size: CGSize) -> CGPoint {
         CGPoint(x: size.width / 2, y: size.height * MRTMetrics.ridePinDropGlyphScreenFraction)
-    }
-
-    /// MYR-216 deliverable 3 (pure, testable) — the corrected camera center that
-    /// places `fix` exactly under the pin glyph. On entry the glyph reads
-    /// `glyphCoordinate` (the coordinate rendered at the glyph's screen point)
-    /// while the camera is centered elsewhere; shifting the camera center by the
-    /// (fix − glyphCoordinate) delta moves whatever the glyph reads onto the fix.
-    /// Returns `nil` when the glyph is already on the fix within `epsilonDegrees`
-    /// (~a few meters) — so the correction never fires (or loops) once aligned.
-    static func pinOnFixCorrection(
-        cameraCenter: CLLocationCoordinate2D,
-        glyphCoordinate: CLLocationCoordinate2D,
-        fix: CLLocationCoordinate2D,
-        epsilonDegrees: Double = 0.00002 // ~2.2m latitude
-    ) -> CLLocationCoordinate2D? {
-        let dLat = fix.latitude - glyphCoordinate.latitude
-        let dLon = fix.longitude - glyphCoordinate.longitude
-        guard abs(dLat) > epsilonDegrees || abs(dLon) > epsilonDegrees else { return nil }
-        return CLLocationCoordinate2D(latitude: cameraCenter.latitude + dLat, longitude: cameraCenter.longitude + dLon)
     }
 
     @MapContentBuilder
@@ -324,6 +369,12 @@ struct VehicleMapView: View {
     }
 
     private func recenter(animated: Bool) {
+        // MYR-217: legacy recenters are subordinated during pin-drop — the ONE
+        // owner (`PinDropCameraController`) holds the camera. This gate is the
+        // runtime enforcement of the ownership invariant, so an `.onChange`
+        // writer firing mid-pin-drop (fix stream, follow re-engage, progress
+        // tick) can never mutate the camera underneath the owner again.
+        guard Self.cameraWritePermitted(source: .legacyRecenter, isPinDropActive: isPinDropActive) else { return }
         // Covers the 0.8s animation plus slack for `.onEnd`'s async delivery.
         programmaticCameraUntil = Date().addingTimeInterval(1.2)
         let region = MKCoordinateRegion(
@@ -355,10 +406,16 @@ struct PinDropOverlay {
     /// The glyph's point in the GLOBAL coordinate space — the exact on-screen spot
     /// the glyph is drawn at, converted to a coordinate on every camera settle.
     var glyphGlobalPoint: CGPoint
-    /// The coordinate under the glyph, reported on every camera settle.
+    /// The coordinate under the glyph, reported on every camera settle (once the
+    /// owner's seating has converged — never for a transient mid-seat framing).
     var onCoordinate: (CLLocationCoordinate2D) -> Void
     /// MYR-216 deliverable 3: the user's device fix (blue-dot coordinate) to seat
     /// exactly under the glyph on entry. `nil` when there's no dot to align to
-    /// (sim, or unauthorized/no-fix live) — the entry correction then no-ops.
+    /// (sim, or unauthorized/no-fix live) — the owner then frames the fallback
+    /// center and settles on the first settle (no seating target).
     var entryFix: CLLocationCoordinate2D? = nil
+    /// MYR-217: the screen size the glyph geometry lives in — feeds the owner's
+    /// aspect-aware analytic entry framing (verified against MapProxy ground
+    /// truth on settle, so it only needs to be approximately right).
+    var viewportSize: CGSize = .zero
 }

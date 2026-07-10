@@ -11,9 +11,11 @@ import XCTest
 // geocoder:
 //   1. post-selection sheet collapse  (RideRequestSearchContent.proceedRegionHeight)
 //   2. pin-drop back affordance        (SharedViewerState.returnFromPinDropToSearch)
-//   3. pin-on-fix + label pipeline     (VehicleMapView.pinOnFixCorrection,
-//                                       SharedViewerState.resolvedLabelSurvivesSettle,
-//                                       LivePinLabeler.label(from:snappedLocation:pin:))
+//   3. pin-on-fix + label pipeline     (SharedViewerState.resolvedLabelSurvivesSettle,
+//                                       LivePinLabeler.label(from:snappedLocation:pin:);
+//                                       the MYR-216 pinOnFixCorrection was replaced by
+//                                       PinDropCameraController in MYR-217 — see
+//                                       PinDropCameraOwnershipTests)
 //   4. route-preview sheet inset       (VehicleRoute.insetRegion / fittedRegion)
 
 // MARK: deliverable 1 — post-selection collapse
@@ -70,33 +72,15 @@ final class PinDropBackAffordanceTests: XCTestCase {
 }
 
 // MARK: deliverable 3 — pin-on-fix entry correction
-
-final class PinOnFixCorrectionTests: XCTestCase {
-    private let fix = CLLocationCoordinate2D(latitude: 33.086114, longitude: -96.851844)
-
-    // The glyph reads a coordinate NORTH of the fix (drawn above optical center);
-    // the correction shifts the camera by (fix − glyph) so the glyph lands on fix.
-    func testCorrectionShiftsCameraByFixMinusGlyphDelta() {
-        let camera = fix // camera was centered on the fix at optical center
-        let glyph = CLLocationCoordinate2D(latitude: fix.latitude + 0.0012, longitude: fix.longitude) // glyph above center
-        let corrected = VehicleMapView.pinOnFixCorrection(cameraCenter: camera, glyphCoordinate: glyph, fix: fix)
-        let unwrapped = try! XCTUnwrap(corrected)
-        // corrected = camera + (fix - glyph) → moved south by 0.0012.
-        XCTAssertEqual(unwrapped.latitude, camera.latitude - 0.0012, accuracy: 1e-9)
-        XCTAssertEqual(unwrapped.longitude, camera.longitude, accuracy: 1e-9)
-
-        // Sanity: applying the same shift to the glyph lands it on the fix.
-        let glyphAfter = CLLocationCoordinate2D(latitude: glyph.latitude - 0.0012, longitude: glyph.longitude)
-        XCTAssertEqual(glyphAfter.latitude, fix.latitude, accuracy: 1e-9)
-    }
-
-    // Already on the fix (within epsilon) → no correction, so it never loops.
-    func testNoCorrectionWhenGlyphAlreadyOnFix() {
-        let glyph = CLLocationCoordinate2D(latitude: fix.latitude + 0.000005, longitude: fix.longitude - 0.000005)
-        XCTAssertNil(VehicleMapView.pinOnFixCorrection(cameraCenter: fix, glyphCoordinate: glyph, fix: fix),
-                     "a sub-few-meter delta is treated as on-fix (loop guard)")
-    }
-}
+//
+// MYR-217 REPLACED the MYR-216 in-place one-shot (`VehicleMapView
+// .pinOnFixCorrection`, deleted) with the single camera owner: its
+// `span: context.region.span` write was the four-round recurrence (a stale
+// wide pre-entry settle hijacked it and re-asserted the wide span at entry).
+// The fix-under-glyph seating behavior — including the (fix − glyph) delta
+// shift these tests used to pin — now lives in `PinDropCameraController` and
+// is covered, against the REAL entry interleaving, by
+// `PinDropCameraOwnershipTests`.
 
 // MARK: deliverable 3b — staleness guard
 

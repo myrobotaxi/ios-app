@@ -29,6 +29,13 @@ struct SharedViewerScreen: View {
 
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var isFollowing = true
+    /// MYR-217: the ONE camera owner for the pin-drop phase — every programmatic
+    /// camera write while the pin is up flows through it (see
+    /// `PinDropCameraController`'s header for the MYR-213/215/216 recurrence it
+    /// closes). Owned here (not in `VehicleMapView`, a per-render struct) so the
+    /// state machine survives view updates, and passed unconditionally so the
+    /// map can release it when the phase exits.
+    @State private var pinDropCamera = PinDropCameraController()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -46,7 +53,7 @@ struct SharedViewerScreen: View {
                 y: geo.frame(in: .global).minY + glyphLocal.y
             )
             ZStack {
-                backgroundMap(glyphGlobalPoint: glyphGlobal)
+                backgroundMap(glyphGlobalPoint: glyphGlobal, viewportSize: geo.size)
                     .ignoresSafeArea()
 
                 sheetContent(totalHeight: geo.size.height)
@@ -81,7 +88,24 @@ struct SharedViewerScreen: View {
             value: viewerState.showDeclinedNotice
         )
         .mrtBottomNav(selection: $sharedTab, tabs: MRTTab.sharedTabs, hidden: hideBottomNav)
-        .onAppear { viewerState.startTelemetry() }
+        .onAppear {
+            viewerState.startTelemetry()
+            #if DEBUG
+            // MYR-217 real-path probe: replay the ACTUAL idle → search →
+            // choose+Continue → pinDrop sequence (with live updates flowing)
+            // through the same state methods the taps call — the entry
+            // interleaving the cold `pinDrop` scene can never exercise.
+            if DebugScene.current?.replaysRealPinDropPath == true {
+                Task {
+                    try? await Task.sleep(for: .seconds(3))
+                    viewerState.sheetPhase = .search
+                    try? await Task.sleep(for: .seconds(3))
+                    viewerState.chooseDestination(DebugScene.realPathDestination)
+                    viewerState.proceedFromSearch()
+                }
+            }
+            #endif
+        }
         .onChange(of: isPinDrop) { _, entering in
             // MYR-212 defect 2: force a fresh device fix + re-seed the pin when
             // the pin-drop phase mounts (no-op in sim).
@@ -151,7 +175,7 @@ struct SharedViewerScreen: View {
     // pairing (see that file's own header comment).
 
     @ViewBuilder
-    private func backgroundMap(glyphGlobalPoint: CGPoint) -> some View {
+    private func backgroundMap(glyphGlobalPoint: CGPoint, viewportSize: CGSize) -> some View {
         switch viewerState.sheetPhase {
         case .idle, .search, .pinDrop:
             VehicleMapView(
@@ -183,15 +207,21 @@ struct SharedViewerScreen: View {
                         onCoordinate: { viewerState.pinDropCameraSettled(at: $0) },
                         // MYR-216 d3: the blue-dot fix to seat under the glyph on
                         // entry — the live device coordinate (nil in sim / no fix).
-                        entryFix: viewerState.userLocation.coordinate
+                        entryFix: viewerState.userLocation.coordinate,
+                        // MYR-217: feeds the owner's analytic entry framing.
+                        viewportSize: viewportSize
                     )
                     : nil,
-                // MYR-213/215: pin-drop opens at a street-level span (~440m, a few
-                // blocks) instead of the 0.06° neighborhood overview the client's
-                // round-2 capture showed ("Legacy Dr to Parker Rd in one view").
-                // MYR-215 applies it in BOTH live and sim (client-approved
-                // deviation — see `pinDropRegionSpanDelta`). `VehicleMapView`
-                // re-frames to this span on pin-drop entry (MYR-215 defect 2 fix).
+                // MYR-217: the single pin-drop camera owner (passed even outside
+                // pin-drop so the map can release it on phase exit). During
+                // pin-drop it writes the street span (~440m) with the fix under
+                // the glyph — the MYR-213/215 client-approved street-level entry,
+                // now issued by exactly one writer in both live and sim.
+                pinDropCamera: pinDropCamera,
+                // Non-pin-drop framing span (idle/search overview). During
+                // pin-drop the legacy recenter is gated off entirely, so the
+                // street-vs-overview choice (`mapSpanDelta`, MYR-215) is kept
+                // only as the documented product constant pair.
                 regionSpanDelta: pinDropRegionSpanDelta
             )
         case .review, .booking:
