@@ -22,6 +22,10 @@ struct RideRequestTrackingContent: View {
     /// (`isLiveLocation == false`), so the tracking card falls back to the
     /// record's fixture fleet member exactly as before — sim unchanged.
     private var fleetMember: FleetMember { viewerState.liveFleetMember ?? request?.input.fleetMember ?? RideRequestFixtures.fleet[0] }
+    /// True when the live vehicle backs this ride — the plate chip then carries a
+    /// VIN last-4 rather than a real license plate (see `rideRow`'s defect-c note).
+    /// Same signal `RideRequestReviewContent.isLiveVehicle` uses.
+    private var isLiveVehicle: Bool { viewerState.liveFleetMember != nil }
     private var passenger: RidePassenger? { request?.input.passenger }
     private var destination: RidePlace { request?.input.destination ?? RideRequestFixtures.recentPlaces[0] }
     private var pickupLabel: String { request?.input.pickup.label ?? "Current location" }
@@ -100,23 +104,29 @@ struct RideRequestTrackingContent: View {
                     RideEyebrowText(text: statusWord, color: .mrtGold, size: 11)
                 }
                 // MYR-218 defect 2: a long pickup/drop-off name ("Bell
-                // Southstone Yards") used to tail-truncate on one line. Allow
-                // the place-name run a second line — `.firstTextBaseline` keeps
-                // the "Picking you up at" prefix aligned to the name's first
-                // line, and `.fixedSize` lets the name wrap in place instead of
-                // truncating. Short fixture names ("Current location") still fit
-                // one line, so the sim scenes are unchanged.
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(atPickup ? "Dropping you off at" : "Picking you up at")
-                        .font(.system(size: 13.5))
-                        .foregroundStyle(Color.mrtTextSec)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text(atPickup ? destination.label : pickupLabel)
-                        .font(.system(size: 13.5, weight: .semibold))
-                        .foregroundStyle(Color.mrtText)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                // Southstone Yards") used to tail-truncate on one line — MYR-218
+                // let the place-name wrap to a second line instead.
+                //
+                // MYR-219 defect a: MYR-218 built the wrap as a two-`Text` HStack
+                // (prefix + name), which pinned the prefix to line 1 and let ONLY
+                // the name wrap — so the continuation ("Yards") hung indented under
+                // the NAME's start ("Bell"), reading as center-/mid-aligned rather
+                // than aligned to the block's leading edge. The design renders this
+                // as a SINGLE left-aligned paragraph (ride-request.jsx:882-884:
+                // `'Picking you up at '<span bold>{name}</span>`), so the
+                // continuation wraps back under "Picking". Ported as one
+                // concatenated `Text` with `.multilineTextAlignment(.leading)`.
+                // A one-line fixture name renders identically (single line, no
+                // wrap), so the sim scenes are unchanged.
+                (Text(atPickup ? "Dropping you off at " : "Picking you up at ")
+                    .font(.system(size: 13.5))
+                    .foregroundStyle(Color.mrtTextSec)
+                 + Text(atPickup ? destination.label : pickupLabel)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(Color.mrtText))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 5) {
@@ -257,14 +267,33 @@ struct RideRequestTrackingContent: View {
                 Text(fleetMember.model + (passenger?.name.isEmpty == false ? " \u{00B7} for \(passenger!.name)" : ""))
                     .font(.system(size: 12.5))
                     .foregroundStyle(Color.mrtTextSec)
+                    .lineLimit(1) // design subline is nowrap+ellipsis (ride-request.jsx:690)
             }
-            Spacer(minLength: 0)
+            // MYR-219 defect b: the client saw the LOOK FOR chip drift off the
+            // card's trailing edge in live mode. The design's `RideRow`
+            // (ride-request.jsx:683-692) makes the text `flex:1, minWidth:0`
+            // (fills the row + truncates) and the plate chip `flexShrink:0`, which
+            // pins the chip to the card's trailing padding for ANY vehicle-name
+            // length. Mirror that: fill + truncate the text column, chip stays put.
+            // A short fixture name occupies the same left slot with the chip at the
+            // same trailing edge, so the sim scene is unchanged.
+            .frame(maxWidth: .infinity, alignment: .leading)
             // MYR-218 defect 3: mirror Booking's live-vehicle plate degrade —
             // live telemetry has no plate, so the chip carries the VIN last-4
             // when known and is HIDDEN entirely when empty (never a blank box).
             // Fixture plates are non-empty, so sim always shows the chip.
             if !fleetMember.plate.isEmpty {
-                if emphasize {
+                // MYR-219 defect c: the emphasized "spot the car" chip
+                // (`emphasizedPlateChip`, 18pt shimmering gold) is sized for a real
+                // 8-char plate like "RBO-2046". In LIVE mode there is no plate —
+                // only a VIN last-4 ("VIN ····3795", 12 glyphs) — so that giant
+                // chip rendered disproportionately large and crowded the trailing
+                // edge. A VIN isn't a spot-it-across-the-lot plate, so the live
+                // variant reuses the design-spec `RidePlateChip` (the same
+                // RBO-2046-proportioned pill Booking/Summary use — 14pt, quiet):
+                // reuse the chip, only the text differs. The fixture keeps the
+                // emphasized chip (`isLiveVehicle == false`), so sim is unchanged.
+                if emphasize && !isLiveVehicle {
                     emphasizedPlateChip
                 } else {
                     RidePlateChip(plate: fleetMember.plate)

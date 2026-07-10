@@ -57,8 +57,11 @@ extension TelemetrySocket: RideEventStreaming {}
 //    a live record reuses `RideRequestFixtures.fleet[0]` for those display-only
 //    fields. Names/plates in a live capture are therefore fixture stand-ins.
 //  • Distance / duration: the wire `RidePlace` has no miles/minutes (those are a
-//    routing concern, MYR-176/177). They map to 0; the sheets show "0 mi / ~0 min"
-//    for a live ride. No crash — `pickupCut` clamps the divisor to ≥1.
+//    routing concern, MYR-176/177). `place(_:)` maps them to 0; `record(from:)`
+//    then fills the DESTINATION's estimate client-side from the pickup→dropoff
+//    coordinates via `TripEstimate` (MYR-219 deliverable 1 — the same closed-form
+//    the rider's Review/Booking already uses through `enterReview()`), so the
+//    owner incoming card no longer shows "DISTANCE 0.0 mi / DRIVE TIME ~0 min".
 enum RideRequestContractMapping {
 
     static func place(_ wire: MyRobotaxiContracts.RidePlace) -> RidePlace {
@@ -110,9 +113,18 @@ enum RideRequestContractMapping {
     /// no local draft for. Returns `nil` for a terminal/cancelled wire status.
     static func record(from ride: RideRequest) -> RideRequestRecord? {
         guard let appStatus = status(ride.status) else { return nil }
+        let pickup = place(ride.pickup)
         let input = RideRequestInput(
-            pickup: place(ride.pickup),
-            destination: place(ride.dropoff),
+            pickup: pickup,
+            // MYR-219 deliverable 1: the wire dropoff carries no miles/minutes
+            // (routing is MYR-176/177), so `place(_:)` maps them to 0 — which made
+            // the owner incoming card's DISTANCE/DRIVE TIME read "0.0 mi / ~0 min"
+            // for a live request. Fill the estimate from the pickup→dropoff
+            // coordinates client-side. `TripEstimate.applied` gates on
+            // `minutes == 0`, so it only fires for this live wire path; the
+            // fixture/sim records (built with baked miles/minutes and never routed
+            // through this mapping) are untouched.
+            destination: TripEstimate.applied(to: place(ride.dropoff), pickup: pickup.coordinate),
             fleetMemberID: RideRequestFixtures.fleet[0].id, // display-only fallback — see enum header
             passenger: passenger(ride),
             schedule: schedule(from: ride.scheduledFor)
