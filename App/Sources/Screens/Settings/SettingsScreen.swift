@@ -13,6 +13,13 @@ struct SettingsScreen: View {
     @Bindable var shareState: OwnerShareState
     @Bindable var vehiclesState: OwnerVehiclesState
     @Binding var ownerTab: String
+    /// MYR-224 — the real signed-in identity on the LIVE path, else nil (SIM →
+    /// the fixture "Alex Cole"). When non-nil, the Profile section shows real
+    /// name/email and the "Switch to Rider" row appears.
+    var liveProfile: UserProfile? = nil
+    /// MYR-224 — flip to the rider shell. Only invoked from the switch row, which
+    /// renders only when `liveProfile != nil`.
+    var onSwitchMode: () -> Void = {}
     let onSignOut: () -> Void
 
     private struct NotificationToggles {
@@ -21,6 +28,9 @@ struct SettingsScreen: View {
         var chargingComplete = false
         var viewerJoined = true
     }
+
+    /// Scroll anchor for the DEBUG `ownerSettings` capture scene (see below).
+    private static let bottomAnchorID = "mrt-settings-bottom"
 
     @State private var toggles = NotificationToggles()
     @State private var vehicleDetail: Vehicle?
@@ -53,24 +63,42 @@ struct SettingsScreen: View {
             Color.mrtBg.ignoresSafeArea()
             VStack(spacing: 0) {
                 header
-                ScrollView {
-                    VStack(spacing: 0) {
-                        profileSection
-                        divider
-                        teslaAccountHeader
-                        vehiclesList
-                        addTeslaRow
-                        divider
-                        sharedWithHeader
-                        viewersList
-                        inviteSomeoneRow
-                        divider
-                        notificationsSection
-                        divider
-                        signOutRow
-                        footer
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            profileSection
+                            divider
+                            teslaAccountHeader
+                            vehiclesList
+                            addTeslaRow
+                            divider
+                            sharedWithHeader
+                            viewersList
+                            inviteSomeoneRow
+                            divider
+                            notificationsSection
+                            divider
+                            if liveProfile != nil {
+                                switchModeRow
+                                divider
+                            }
+                            signOutRow
+                            footer
+                                .id(Self.bottomAnchorID)
+                        }
+                        .padding(.bottom, MRTMetrics.shareContentBottomPadding)
                     }
-                    .padding(.bottom, MRTMetrics.shareContentBottomPadding)
+                    #if DEBUG
+                    // Capture-only: the MYR-224 owner "Switch to Rider" row sits at
+                    // the bottom of this long scroll. The `ownerSettings` drift-gate
+                    // scene starts scrolled to it so it is captured full-frame
+                    // (headless simctl has no scroll gesture). No effect otherwise.
+                    .onAppear {
+                        if DebugScene.current == .ownerSettings {
+                            proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+                        }
+                    }
+                    #endif
                 }
             }
             .ignoresSafeArea(.container, edges: .top)
@@ -119,23 +147,45 @@ struct SettingsScreen: View {
 
     // MARK: Profile (screens.jsx:402-406)
 
+    // MYR-224 — real identity in LIVE mode. `nil` liveProfile (SIM) keeps the
+    // fixture "Alex Cole" / "alex@cole.run" so the sim scene is pixel-identical.
+    // Live: real name (or a calm generic when the account has no name) + real
+    // email (or a muted "email absent" line — Apple only returns email on first
+    // sign-in, and a pre-native row may carry none).
+    private var profileName: String {
+        liveProfile?.settingsDisplayName ?? "Alex Cole"
+    }
+
+    private var profileEmail: String? {
+        guard liveProfile != nil else { return "alex@cole.run" }
+        return liveProfile?.email
+    }
+
     private var profileSection: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("Profile")
                 .mrtTextStyle(.label())
                 .foregroundStyle(Color.mrtTextMuted)
                 .padding(.bottom, 10)
-            Text("Alex Cole")
+            Text(profileName)
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(Color.mrtText)
-            // `Text(verbatim:)`, not a string literal — a literal here gets
-            // Markdown-parsed and auto-linked (email-shaped text renders in
-            // the accent color, ignoring `.foregroundStyle`) — see
-            // InvitesScreen's `emailRow` comment for the full story.
-            Text(verbatim: "alex@cole.run")
-                .font(.system(size: 13))
-                .foregroundStyle(Color.mrtTextSec)
-                .padding(.top, 2)
+            if let email = profileEmail {
+                // `Text(verbatim:)`, not a string literal — a literal here gets
+                // Markdown-parsed and auto-linked (email-shaped text renders in
+                // the accent color, ignoring `.foregroundStyle`) — see
+                // InvitesScreen's `emailRow` comment for the full story.
+                Text(verbatim: email)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.mrtTextSec)
+                    .padding(.top, 2)
+            } else {
+                // Live account with no email on file — a calm absent state.
+                Text("Email not shared")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.mrtTextMuted)
+                    .padding(.top, 2)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, MRTMetrics.pageGutter)
@@ -302,6 +352,35 @@ struct SettingsScreen: View {
             Spacer(minLength: 0)
             MRTToggle(isOn: isOn)
         }
+        .padding(.vertical, 12)
+    }
+
+    // MARK: Switch view mode (MYR-224 — client-approved chooser companion)
+    //
+    // A Settings action row that flips the owner shell to the rider shell. Row
+    // anatomy mirrors the sign-out row (screens.jsx:488-493) + the `plusRow`
+    // (gold leading glyph + label) — an icon, a label, and a trailing chevron in
+    // the same gutter/tap-target as every other Settings row. Only present on the
+    // live signed-in path (the mode chooser's companion); absent in SIM.
+    private var switchModeRow: some View {
+        Button(action: onSwitchMode) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.left.arrow.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.mrtGold)
+                Text("Switch to Rider")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Color.mrtText)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.mrtTextMuted)
+            }
+            .frame(minHeight: MRTMetrics.minTapTarget)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, MRTMetrics.pageGutter)
         .padding(.vertical, 12)
     }
 

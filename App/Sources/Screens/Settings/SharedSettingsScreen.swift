@@ -14,6 +14,13 @@ import DesignSystem
 struct SharedSettingsScreen: View {
     @Binding var sharedTab: String
     var riderName: String = "Sam" // shared-screens.jsx:451 `tweaks.riderName` devtool; M1 has no tweaks panel.
+    /// MYR-224 — the real signed-in identity on the LIVE path, else nil (SIM →
+    /// the fixture "Sam Rivera"). When non-nil, the profile card shows real
+    /// name/email and the "Switch to Owner" row appears.
+    var liveProfile: UserProfile? = nil
+    /// MYR-224 — flip to the owner shell. Only invoked from the switch row, which
+    /// renders only when `liveProfile != nil`.
+    var onSwitchMode: () -> Void = {}
     let onAddCode: () -> Void
     let onSignOut: () -> Void
 
@@ -43,6 +50,22 @@ struct SharedSettingsScreen: View {
 
     private var email: String { "\(firstName.lowercased()).rivera@gmail.com" }
 
+    // MYR-224 — the values actually rendered: real identity in LIVE mode, the
+    // fixture "Sam Rivera" derivation in SIM (`liveProfile` nil → pixel-identical).
+    private var displayFullName: String {
+        liveProfile?.settingsDisplayName ?? fullName
+    }
+
+    /// The email line, or `nil` for a live account with no email on file → a
+    /// calm absent state. SIM always has the fixture email.
+    private var displayEmail: String? {
+        liveProfile != nil ? liveProfile?.email : email
+    }
+
+    private var avatarInitial: String {
+        liveProfile?.avatarInitial ?? String(firstName.prefix(1)).uppercased()
+    }
+
     /// shared-screens.jsx:456-459 `sharedWith` — a local literal array in the
     /// prototype (not a hoisted fixture like `VIEWERS`), ported the same way.
     private struct SharedVehicleAccess: Identifiable {
@@ -71,6 +94,9 @@ struct SharedSettingsScreen: View {
                         sharedWithCard
                         notificationsLabel
                         notificationsCard
+                        if liveProfile != nil {
+                            switchModeCard
+                        }
                         signOutButton
                         footer
                     }
@@ -111,19 +137,25 @@ struct SharedSettingsScreen: View {
                         endRadius: 24
                     )
                 )
-                Text(firstName.prefix(1).uppercased())
+                Text(avatarInitial)
                     .font(.system(size: 19, weight: .semibold))
                     .foregroundStyle(Color.mrtGoldButtonLabel)
             }
             .frame(width: 48, height: 48)
             VStack(alignment: .leading, spacing: 2) {
-                Text(fullName)
+                Text(displayFullName)
                     .font(.system(size: 17, weight: .semibold))
                     .tracking(-0.3)
                     .foregroundStyle(Color.mrtText)
-                Text(email)
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(Color.mrtTextSec)
+                if let displayEmail {
+                    Text(displayEmail)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Color.mrtTextSec)
+                } else {
+                    Text("Email not shared")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Color.mrtTextMuted)
+                }
             }
             Spacer(minLength: 0)
             Text("Guest")
@@ -259,6 +291,42 @@ struct SharedSettingsScreen: View {
                 Rectangle().fill(Color.mrtBorder).frame(height: MRTMetrics.hairline)
             }
         }
+    }
+
+    // MARK: Switch view mode (MYR-224 — client-approved chooser companion)
+    //
+    // Flips the rider shell to the owner shell. Reuses the rider Settings card
+    // row anatomy verbatim (the `addCodeRow` / `sharedWithRow` shape,
+    // shared-screens.jsx:709-730): a gold badge-fill icon circle + label +
+    // trailing chevron inside a `mrtSurface(.card)`. Only present on the live
+    // signed-in path; absent in SIM.
+    private var switchModeCard: some View {
+        Button(action: onSwitchMode) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle().fill(Color.mrtGoldBadgeFill)
+                    Image(systemName: "arrow.left.arrow.right")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Color.mrtGold)
+                }
+                .frame(width: 32, height: 32)
+                Text("Switch to Owner")
+                    .font(.system(size: 14, weight: .semibold))
+                    .tracking(-0.1)
+                    .foregroundStyle(Color.mrtText)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.mrtTextMuted)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 13)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .mrtSurface(.card)
+        .padding(.horizontal, MRTMetrics.pageGutter)
+        .padding(.bottom, 22)
     }
 
     // MARK: Sign out + footer (shared-screens.jsx:748-756)

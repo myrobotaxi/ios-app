@@ -58,6 +58,16 @@ enum DebugScene: String, CaseIterable {
     case scheduledRequested
     case scheduledConfirmCancel
 
+    // MYR-224 — the owner/rider view chooser (drift-gate capture). Runs in the
+    // simulator, where the session carries no real account, so `RootView` renders
+    // it with a representative fixture profile (`chooserProfile`).
+    case modeChooser
+    // MYR-224 — Settings with a real signed-in identity + the "Switch mode" row.
+    // Those only render on the live path (`liveProfile != nil`), so these capture
+    // scenes make `RootView` thread the DEBUG sample profile into Settings.
+    case ownerSettings
+    case riderSettings
+
     // Owner side (HomeScreen → IncomingRequestSheet)
     case ownerHome         // plain owner Live Map, nothing seeded (live-telemetry captures)
     case ownerDrives       // owner Drives tab, nothing seeded (live-drives captures)
@@ -95,6 +105,7 @@ enum DebugScene: String, CaseIterable {
 
     static var initialScreen: AppScreen {
         switch current {
+        case .modeChooser: return .modeChooser
         case .some(let scene) where scene.isOwner: return .ownerHome
         case .some: return .sharedHome
         case nil: return .signIn
@@ -107,12 +118,32 @@ enum DebugScene: String, CaseIterable {
 
     static var initialSharedTab: String {
         guard let current, !current.isOwner else { return "shared" }
+        if current == .riderSettings { return "sharedSettings" }
         return current.isScheduled ? "rideHistory" : "shared"
     }
 
-    static var initialOwnerTab: String { current == .ownerDrives ? "drives" : "home" }
+    static var initialOwnerTab: String {
+        switch current {
+        case .ownerDrives: return "drives"
+        case .ownerSettings: return "settings"
+        default: return "home"
+        }
+    }
 
-    private var isOwner: Bool { self == .ownerHome || self == .ownerDrives || self == .ownerIncoming || self == .ownerScheduled }
+    /// MYR-224 — the DEBUG sample identity `RootView` threads into the chooser and
+    /// the `ownerSettings`/`riderSettings` capture scenes (the sim session carries
+    /// no real account). Matches the client's real name so captures are realistic.
+    static var sampleProfile: UserProfile {
+        UserProfile(id: "debug", name: "Thomas Nandola", email: "thomas@myrobotaxi.app")
+    }
+
+    /// Whether Settings should render with the DEBUG live identity + switch row.
+    var showsLiveSettings: Bool { self == .ownerSettings || self == .riderSettings }
+
+    private var isOwner: Bool {
+        self == .ownerHome || self == .ownerDrives || self == .ownerIncoming
+            || self == .ownerScheduled || self == .ownerSettings
+    }
 
     private var isScheduled: Bool {
         switch self {
@@ -252,9 +283,10 @@ enum DebugScene: String, CaseIterable {
             viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
             viewer.sheetPhase = .summary
-        case .scheduledDetails, .scheduledReschedule, .scheduledRequested, .scheduledConfirmCancel,
+        case .modeChooser, .ownerSettings, .riderSettings,
+             .scheduledDetails, .scheduledReschedule, .scheduledRequested, .scheduledConfirmCancel,
              .ownerHome, .ownerDrives, .ownerIncoming, .ownerScheduled:
-            break // rider live-map / owner scenes don't drive the viewer sheet
+            break // chooser / settings / rider live-map / owner scenes don't drive the viewer sheet
         }
     }
 }

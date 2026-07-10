@@ -43,6 +43,17 @@ public actor SessionTokenProvider: TokenProvider {
     private var accessToken: String?
     private var accessTokenExpiry: Date?
 
+    /// The user identity from the most recent token response (`/api/auth/apple`
+    /// on sign-in, `/api/auth/refresh` on every silent resume — both return the
+    /// same `{ id, name?, email? }` shape, rest-api.md §7.10.1/§7.10.2). Memory
+    /// only, like the access token: it is re-derived from the refresh response on
+    /// each cold launch. The app's ``AuthSession`` reads it via ``sessionUser()``
+    /// so a session established BEFORE the profile was persisted locally (a
+    /// returning user upgrading into a build that stores identity) still recovers
+    /// its name/email — there is no `/api/auth/me` endpoint, so the refresh
+    /// response is the recovery source (see the PR body's codegen/`/me` note).
+    private var latestUser: AuthUser?
+
     /// The single in-flight refresh, so concurrent callers coalesce (see above).
     private var refreshTask: Task<AuthTokenResponse, Error>?
 
@@ -120,6 +131,14 @@ public actor SessionTokenProvider: TokenProvider {
         ((try? store.read()) ?? nil) != nil
     }
 
+    /// The user identity from the most recent token response, if any. `nil`
+    /// before the first `completeAppleSignIn`/`token()` of the process (the
+    /// access token is memory-only). After a silent resume — where `token()`
+    /// refreshes from the stored refresh token — this carries the server's
+    /// current `{ id, name?, email? }`, so the app can restore identity for a
+    /// session that predates local profile persistence.
+    public func sessionUser() -> AuthUser? { latestUser }
+
     // MARK: - Refresh core
 
     private func refreshAccessToken() async throws -> String {
@@ -167,12 +186,14 @@ public actor SessionTokenProvider: TokenProvider {
     private func adopt(_ response: AuthTokenResponse) throws {
         accessToken = response.accessToken
         accessTokenExpiry = now().addingTimeInterval(TimeInterval(response.expiresIn))
+        latestUser = response.user
         try store.write(response.refreshToken)
     }
 
     private func clearSession() {
         accessToken = nil
         accessTokenExpiry = nil
+        latestUser = nil
         try? store.clear()
     }
 }

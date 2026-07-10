@@ -26,6 +26,11 @@ struct SharedViewerScreen: View {
     var rideRequestService: any RideRequestService
     var historyStore: RideHistoryStore
     var riderName: String = "Sam" // screens.jsx:1857 `riderName = 'Sam'`; M1 has no tweaks panel.
+    /// MYR-224 — the real signed-in rider on the LIVE path, else nil. When nil
+    /// (SIM), the greeting + summary keep the fixture `riderName` ("Sam") so the
+    /// sim scenes stay pixel-identical; when set, they render the real first
+    /// name (or a calm generic if the account has no name).
+    var liveProfile: UserProfile? = nil
 
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var isFollowing = true
@@ -188,7 +193,7 @@ struct SharedViewerScreen: View {
         case .tracking:
             RideRequestTrackingContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
         case .summary:
-            RideRequestSummaryContent(viewerState: viewerState, rideRequestService: rideRequestService, historyStore: historyStore, riderName: riderName)
+            RideRequestSummaryContent(viewerState: viewerState, rideRequestService: rideRequestService, historyStore: historyStore, riderName: riderName, liveProfile: liveProfile)
         }
     }
 
@@ -448,6 +453,14 @@ struct SharedViewerScreen: View {
             ?? RideRequestFixtures.fleet[0].owner
     }
 
+    /// MYR-224 — the name shown in the greeting. LIVE: the real first name, or
+    /// `nil` when the account has no name (→ a calm generic "Good morning" with
+    /// no trailing name). SIM (`liveProfile` nil): the fixture "Sam", unchanged.
+    private var greetingFirstName: String? {
+        if let profile = liveProfile { return profile.firstName }
+        return riderName
+    }
+
     // MARK: Idle sheet (screens.jsx:2064-2207, ride-request.jsx:1165-1218)
     //
     // Fixed height, no drag handle — the jsx only shows a grab handle on the
@@ -487,7 +500,7 @@ struct SharedViewerScreen: View {
             if let active = rideRequestService.activeRequest, active.status == .pending {
                 pendingPill(active)
             } else {
-                GreetingHero(riderName: riderName)
+                GreetingHero(firstName: greetingFirstName)
                     .padding(.bottom, 16)
                 searchBar
                 quickPlaces
@@ -687,7 +700,11 @@ struct SharedViewerScreen: View {
 /// (`mrt-greet-glow`, 0.12s delay). Reduce Motion → both render at their
 /// final resting state immediately, no animation.
 private struct GreetingHero: View {
-    let riderName: String
+    /// The rider's first name, or `nil` for a name-less account — then the line
+    /// is the greeting ALONE ("Good morning"), never "Good morning, " + empty
+    /// (MYR-224). Apple only returns a name on first sign-in; a row created
+    /// before native sign-in may carry none.
+    let firstName: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// One-shot reveal trigger. A trigger-less `KeyframeAnimator` repeats
     /// forever — the greeting flashed in a loop and its subtree churn also
@@ -769,12 +786,18 @@ private struct GreetingHero: View {
 
     private func line(_ value: RevealValue) -> some View {
         HStack(spacing: 4) {
-            Text("\(greeting),")
-                .foregroundStyle(Color.mrtText)
-            Text(riderName)
-                .foregroundStyle(Color.mrtGold)
-                .fontWeight(.semibold)
-                .shadow(color: glowColor(value.glowIntensity), radius: value.glowRadius)
+            if let firstName {
+                Text("\(greeting),")
+                    .foregroundStyle(Color.mrtText)
+                Text(firstName)
+                    .foregroundStyle(Color.mrtGold)
+                    .fontWeight(.semibold)
+                    .shadow(color: glowColor(value.glowIntensity), radius: value.glowRadius)
+            } else {
+                // No name → the greeting stands alone, no trailing comma/name.
+                Text(greeting)
+                    .foregroundStyle(Color.mrtText)
+            }
         }
         .font(.system(size: 21, weight: .medium))
         .tracking(value.tracking)
