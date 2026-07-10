@@ -45,4 +45,17 @@ final class LiveFleetMemberMappingTests: XCTestCase {
         let member = LiveFleetMemberMapping.fleetMember(from: summary(name: ""))
         XCTAssertEqual(member.owner, "Model Y") // nickname empty → model name
     }
+
+    // MARK: MYR-214 — nickname is the row's primary identity, model is separate
+
+    /// The Review vehicle row names the live car by its nickname as the PRIMARY
+    /// line ("Lunar") and keeps the model ("Model Y") as a separate field for the
+    /// subline — never the possessive "Lunar's Model Y" (client QA, MYR-214). The
+    /// mapping supplies both as distinct fields so the view can render two lines.
+    func testNicknameAndModelAreDistinctFieldsForTheRow() {
+        let member = LiveFleetMemberMapping.fleetMember(from: summary(name: "Lunar"))
+        XCTAssertEqual(member.owner, "Lunar")  // primary line
+        XCTAssertEqual(member.name, "Model Y") // subline model — not folded into a possessive
+        XCTAssertNotEqual(member.owner, "\(member.owner)\u{2019}s \(member.name)")
+    }
 }

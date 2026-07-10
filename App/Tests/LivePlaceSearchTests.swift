@@ -63,8 +63,12 @@ final class LivePlaceSearchTests: XCTestCase {
         func release(_ title: String) { gates.removeValue(forKey: title)?.resume() }
     }
 
-    private func makeSearch(engine: FakeEngine, table: [String: CLLocationCoordinate2D]) -> LivePlaceSearch {
-        LivePlaceSearch(engine: engine, resolveItem: resolver(table), debounce: .milliseconds(1))
+    private func makeSearch(
+        engine: FakeEngine,
+        table: [String: CLLocationCoordinate2D],
+        savedPlaces: [RidePlace] = []
+    ) -> LivePlaceSearch {
+        LivePlaceSearch(engine: engine, resolveItem: resolver(table), savedPlaces: savedPlaces, debounce: .milliseconds(1))
     }
 
     // MARK: Bias region reaches the engine
@@ -133,23 +137,51 @@ final class LivePlaceSearchTests: XCTestCase {
         XCTAssertEqual(search.results?.first?.label, "Fern St")
     }
 
-    // MARK: Saved places rank first, ahead of live suggestions
+    // MARK: MYR-214 — live search omits fixture saved places
 
-    func testSavedPlacesRankAheadOfLiveResults() async {
+    /// The live composition path (`PlaceSearchComposition.make`) builds
+    /// `LivePlaceSearch(savedPlaces: [])`, so the SF fixture "Home · 221 Folsom
+    /// St" can NEVER surface in a live ride's destination search — a live rider
+    /// in Frisco tapping the fixture "Home" produced a cross-country route
+    /// (client QA, MYR-214). Only the MapKit suggestion remains.
+    func testLiveSearchOmitsFixtureSavedPlaces() async {
         let engine = FakeEngine()
-        // "Home Depot" is a live suggestion; the saved "Home" must precede it.
+        // `makeSearch` defaults to EMPTY saved places (the live intent).
         let search = makeSearch(engine: engine, table: [
             "Home Depot": CLLocationCoordinate2D(latitude: 33.10, longitude: -96.80),
         ])
         search.update(query: "home", regionCenter: frisco)
         await eventually { !engine.updates.isEmpty }
         engine.emit([AutocompleteSuggestion(title: "Home Depot", subtitle: "Frisco, TX")])
+        await eventually { search.results?.count == 1 }
+
+        let results = search.results!
+        // ONLY the MapKit suggestion — no fixture "Home" row.
+        XCTAssertEqual(results.map(\.label), ["Home Depot"])
+        XCTAssertFalse(results.contains { $0.id == "home" }, "fixture saved 'Home' must never appear in live results")
+    }
+
+    /// The saved-first ranking mechanism itself is intact for when real saved
+    /// places arrive (accounts, MYR-193): an INJECTED saved place still ranks
+    /// ahead of the live suggestions.
+    func testInjectedSavedPlacesRankAheadOfLiveResults() async {
+        let engine = FakeEngine()
+        let savedHome = RidePlace(id: "home", label: "Home", subtitle: "221 Folsom St, San Francisco",
+                                  miles: 4.2, minutes: 18, icon: "house.fill", coordinate: DriveFixtures.home)
+        let search = makeSearch(
+            engine: engine,
+            table: ["Home Depot": CLLocationCoordinate2D(latitude: 33.10, longitude: -96.80)],
+            savedPlaces: [savedHome]
+        )
+        search.update(query: "home", regionCenter: frisco)
+        await eventually { !engine.updates.isEmpty }
+        engine.emit([AutocompleteSuggestion(title: "Home Depot", subtitle: "Frisco, TX")])
         await eventually { search.results?.count == 2 }
 
         let results = search.results!
-        // Saved "Home" (fixture id/miles) first, then the live suggestion.
+        // Injected saved "Home" first, then the live suggestion.
         XCTAssertEqual(results[0].id, "home")
-        XCTAssertEqual(results[0].miles, 4.2, accuracy: 0.0001) // untouched saved fixture
+        XCTAssertEqual(results[0].miles, 4.2, accuracy: 0.0001) // untouched saved place
         XCTAssertEqual(results[1].label, "Home Depot")
     }
 

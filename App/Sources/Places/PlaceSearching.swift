@@ -144,10 +144,19 @@ enum RidePlaceMapper {
 
     /// Saved places whose label/subtitle contain the query — ranked FIRST in the
     /// live results (MYR-211 deliverable 2, "saved places rank first, always").
-    static func matchingSavedPlaces(query: String) -> [RidePlace] {
+    ///
+    /// MYR-214: the saved-place list is now a PARAMETER (was a hardwired read of
+    /// `RideRequestFixtures.savedPlaces`). The live search passes an EMPTY list
+    /// so the SF fixture places ("Home · 221 Folsom St") can never surface in a
+    /// live ride's destination search — a rider in Frisco tapping the fixture
+    /// "Home" produced a cross-country route (client QA, MYR-214). Real saved
+    /// places arrive with accounts (MYR-193); until then live = MapKit-only. The
+    /// default stays the fixtures so the pure `matchingSavedPlaces` helper (and
+    /// its unit tests) keep exercising the ranking predicate unchanged.
+    static func matchingSavedPlaces(query: String, in savedPlaces: [RidePlace] = RideRequestFixtures.savedPlaces) -> [RidePlace] {
         let q = query.lowercased()
         guard !q.isEmpty else { return [] }
-        return RideRequestFixtures.savedPlaces.filter {
+        return savedPlaces.filter {
             $0.label.lowercased().contains(q) || ($0.subtitle?.lowercased().contains(q) ?? false)
         }
     }

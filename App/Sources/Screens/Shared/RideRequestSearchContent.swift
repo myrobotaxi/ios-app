@@ -420,6 +420,15 @@ struct RideRequestSearchContent: View {
                     ForEach(filteredResults) { destRow($0) }
                 }
             }
+        } else if viewerState.isLiveLocation {
+            // MYR-214: live mode must not surface the SF fixture Saved / Recent /
+            // Nearby places pre-typing (same cross-country poisoning as a live
+            // search would hit — a Frisco rider tapping the fixture "Home" or
+            // "SFO · Terminal 2"). No real saved places until accounts (MYR-193)
+            // and no session-recents store yet, so the pre-typing list is empty:
+            // the sheet hugs the route card + "Where to?" field — a calm empty
+            // state, no new UI. Sim keeps every fixture section (below).
+            EmptyView()
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 sectionLabel("Saved").padding(.top, 6)
