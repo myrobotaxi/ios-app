@@ -3,53 +3,71 @@ import DesignSystem
 import Foundation
 import MapKit
 
-// MARK: - PinDropCameraController (MYR-217 — the ONE camera owner during pin-drop)
+// MARK: - PinDropCameraController (MYR-217 — the ONE camera owner during pin-drop;
+// re-designed MYR-222 — seat ONCE per entry, no wall clock)
 //
 // WHY THIS EXISTS (the MYR-213/215/216 recurrence): the rider-map camera had
-// SIX independent programmatic writers (`VehicleMapView`: onAppear framing, the
-// progress-tick follow recenter, the follow re-engage recenter, the device-fix
-// recenter, the MYR-215 pin-drop entry re-frame, and the MYR-216 pin-on-fix
-// one-shot correction) racing each other and the user across async boundaries.
-// The killer interleaving: the MYR-216 correction wrote
-// `span: context.region.span` — the span of WHATEVER SETTLE TRIGGERED IT. On
-// the real entry path (idle → search → Continue → pinDrop) the map arrives
-// with pre-entry motion still in flight, so the first `.onEnd` settle after
-// entry carries the WIDE idle/search span; the correction fired on it,
-// interrupted the in-flight street-span entry animation, and re-asserted the
-// stale span while seating the fix under the glyph — pin on the dot, label
-// right, city-scale zoom (the client's 7:41 AM evidence). Cold probe launches
-// have no pre-entry motion, which is why four rounds of probes passed while
-// the client kept regressing.
+// SIX independent programmatic writers racing each other and the user across
+// async boundaries; MYR-217 subordinated them all to this single owner and
+// pinned every write to the street span. See `PinDropCameraOwnershipTests` for
+// the full history.
 //
-// THE FIX: while the pin-drop phase is up, this controller is the ONLY thing
-// allowed to write the camera. Every write it emits carries the street span
-// (`MRTMetrics.pinDropStreetSpanDelta`) — a span can NEVER be inherited from a
-// settle context again, so no interleaving can produce a wide entry. All other
-// programmatic writers are subordinated (see `VehicleMapView
-// .cameraWritePermitted`); the user's own zoom/pan wins the moment a settle
-// arrives outside the controller's write window (`.userControlled` — the owner
-// then never writes again for that entry).
+// WHY IT WAS RE-DESIGNED (MYR-222, the client's streaming-GPS feedback loop):
+// MYR-217 was verified — four rounds deep — against a STATIC simulated fix.
+// Real devices STREAM fixes (~1Hz, MYR-221 made devices default to live), and
+// two MYR-217 decisions turned that stream into a camera feedback loop:
 //
-// It is a small explicit state machine, pure enough to unit-test the REAL
-// entry interleaving (stale wide settles, async fix updates, user gestures)
-// without mounting a map — see `PinDropCameraOwnershipTests`.
+//   1. `fixChanged` re-armed a FULL re-seat (fresh budget, back to `.seating`)
+//      on EVERY fix, from `.settled` too — so "seated" lasted at most one GPS
+//      tick. Each re-seat wrote the analytic first guess, whose estimate error
+//      (~130m: `visibleLatitudeDelta` models MapKit's inset fitting only
+//      approximately) was then corrected by a refinement — TWO opposing
+//      camera writes per second, forever. That is the client's "pin bounces
+//      back and forth".
+//   2. User takeover was inferred from a WALL-CLOCK write window
+//      (`writeWindowUntil`, 1.2s) that every write extended. With writes
+//      arriving faster than the window lapses, the window never expired —
+//      the user's drag settles were consumed as seating refinements and
+//      snapped back. `.userControlled` was UNREACHABLE under a streaming fix.
+//      (Backgrounding "healed" the app precisely by starving the loop: no
+//      fixes while suspended → the window finally lapsed → the first settle
+//      after resume classified as the user's → the owner stood down.)
 //
-//   inactive ──enter()──▶ seating ──aligned settle──▶ settled
+// THE MYR-222 DESIGN (client-approved):
+//   • ONE seating sequence per ENTRY: `enter()` arms a single bounded pass
+//     (entry write + at most `refinementBudgetPerSeat` further writes — refine
+//     AND re-aim writes all draw from the same per-entry budget). Once
+//     `.settled`, GPS fixes move the blue-dot annotation only — ZERO camera
+//     writes, ZERO pin movement, at any fix rate. The only exception is a
+//     LATE FIRST FIX: an entry that had no fix at all (cold authorize, fix
+//     not yet delivered) completes its one real seat when the first fix
+//     lands — once. A fix-seated entry is done for good.
+//   • NO wall clock: settle attribution is token accounting
+//     (`CameraSettleLedger`) — every owner write registers its expected
+//     settle; a settle matching an outstanding expectation is ours, anything
+//     else in `.settled` is the user (`.userTookOver`, owner stands down for
+//     the entry). During the brief `.seating` pass an unmatched settle is
+//     treated as pre-entry churn and refined over (budget-bounded, so it
+//     always terminates); real gestures mid-seat are caught immediately by
+//     `userGestureBegan()` (the map's gesture recognizers), which wins from
+//     ANY phase.
+//   • Background/foreground is handled BY DESIGN: `sceneWillBackground()`
+//     drops expectations whose settles will never arrive; if the app was
+//     suspended mid-seat, `sceneDidForeground()` re-arms ONE clean re-seat.
+//     `.settled` / `.userControlled` survive a background round-trip
+//     untouched — backgrounding is a no-op, not a healing ritual.
+//
+// Every write still carries the street span (`MRTMetrics.pinDropStreetSpanDelta`)
+// — a span can NEVER be inherited from a settle context (the MYR-216 bug) —
+// and MapProxy remains the authoritative source of the CONFIRMED pickup
+// coordinate: seating is a courtesy, never a correctness requirement.
+//
+//   inactive ──enter()──▶ seating ──matched settle──▶ settled
 //                            │  ▲                        │
-//                            │  └─fixChanged (re-seat)───┘
-//                            └──late settle / user pan──▶ userControlled
-//
-// Seating strategy (replaces the MYR-216 layered one-shot): the entry write is
-// an ANALYTIC first guess — the region whose center puts the fix under the
-// glyph at the street span (aspect-aware; the glyph sits above the map's
-// optical center by `ridePinDropGlyphScreenFraction`). Each programmatic
-// settle is then VERIFIED against MapKit's ground truth (`MapProxy.convert` of
-// the glyph's real rendered point, reported by `VehicleMapView`): if the glyph
-// coordinate is off the fix, the controller emits ONE bounded refinement
-// (street span, never the settle's span), up to `refinementBudget` times, then
-// accepts. MapProxy remains the authoritative source of the CONFIRMED pickup
-// coordinate — seating is a courtesy (open on the rider), never a correctness
-// requirement.
+//                            │  └── late FIRST fix ──────┘        (once)
+//                            └──userGestureBegan / unmatched ──▶ userControlled
+//                               settle while settled               (terminal
+//                                                                   for entry)
 @MainActor
 @Observable
 final class PinDropCameraController {
@@ -59,9 +77,9 @@ final class PinDropCameraController {
     enum Phase: Equatable {
         /// Not in pin-drop — the controller owns nothing.
         case inactive
-        /// Entry/re-seat write issued; verifying the glyph lands on the fix.
+        /// The one bounded seating pass is converging on the fix.
         case seating
-        /// Framing verified (or accepted) — reporting-only from here.
+        /// Seated (or accepted) — reporting-only; fixes move the blue dot only.
         case settled
         /// A user gesture moved the camera — the owner NEVER writes again for
         /// this pin-drop entry ("user zoom/pan wins", no fighting).
@@ -91,8 +109,8 @@ final class PinDropCameraController {
         case refine(Write)
         /// Seating finished — report the glyph coordinate as the pickup.
         case seated
-        /// Settle outside the owner's write window — the user panned/zoomed.
-        /// Report the coordinate; the owner stands down for this entry.
+        /// A settle the owner didn't write — the user panned/zoomed. Report
+        /// the coordinate; the owner stands down for this entry.
         case userTookOver
         /// Nothing for the owner to do — just report the glyph coordinate.
         case report
@@ -106,31 +124,17 @@ final class PinDropCameraController {
     let streetSpanDelta: Double
     /// The glyph's vertical screen fraction (above the optical center).
     let glyphScreenFraction: Double
-    /// Rolling write window: settles landing within it are attributed to the
-    /// owner's own writes; later ones are the user's (same tolerance the
-    /// legacy follow logic used — 0.8s animation + `.onEnd` delivery slack).
-    let writeWindow: TimeInterval
     /// Glyph-on-fix tolerance (degrees) — ~2m latitude, matches MYR-216.
     let alignmentEpsilonDegrees: Double
 
-    /// Verified refinements allowed per seating pass. Three covers the worst
-    /// case: a couple of queued stale wide settles re-issuing the analytic
-    /// target, then one exact delta-shift at street geometry.
+    /// Camera writes allowed per entry AFTER the entry write itself — refine
+    /// and re-aim writes all draw from this one budget, so a seating pass can
+    /// never loop (MYR-222: the budget is per-ENTRY; the MYR-217 design reset
+    /// it on every fix, which is what let a streaming fix re-arm seating
+    /// forever). Three covers the worst case: a stale pre-entry settle
+    /// re-issuing the analytic target, a mid-seat fix re-aim, then one exact
+    /// delta-shift at street geometry.
     private static let refinementBudgetPerSeat = 3
-
-    /// A settle whose latitude span is within this factor of the street span
-    /// is at STREET-SCALE geometry (our own write — insets/aspect stretch the
-    /// visible span up to ~2.6× the requested one on a portrait phone with the
-    /// pin-drop sheet inset, empirically ~0.010° for the 0.004° request), so
-    /// the observed (fix − glyph) residual delta-shifts exactly. Anything
-    /// wider is a stale pre-entry settle (idle/search span is 15×) — its
-    /// deltas are measured at the wrong zoom and are NOT trusted; the analytic
-    /// street target is re-issued instead. Deliberately NOT derived from the
-    /// analytic visible-span estimate: the estimate can't model MapKit's
-    /// inset-fitting exactly, and mis-classifying our own settle as "wide"
-    /// loops the analytic target without ever converging (found empirically
-    /// in the MYR-217 real-path probe).
-    static let streetScaleFactor: Double = 4
 
     // MARK: Per-entry state
 
@@ -138,92 +142,110 @@ final class PinDropCameraController {
     private var fallbackCenter = CLLocationCoordinate2D()
     private var viewportSize = CGSize.zero
     private var refinementBudget = 0
-    private var writeWindowUntil = Date.distantPast
+    /// Token accounting for the owner's own writes — no wall clock (MYR-222).
+    private var ledger = CameraSettleLedger()
 
     init(
         streetSpanDelta: Double = MRTMetrics.pinDropStreetSpanDelta,
         glyphScreenFraction: Double = Double(MRTMetrics.ridePinDropGlyphScreenFraction),
-        writeWindow: TimeInterval = 1.2,
         alignmentEpsilonDegrees: Double = 0.00002
     ) {
         self.streetSpanDelta = streetSpanDelta
         self.glyphScreenFraction = glyphScreenFraction
-        self.writeWindow = writeWindow
         self.alignmentEpsilonDegrees = alignmentEpsilonDegrees
     }
 
     // MARK: Events
 
     /// Pin-drop entered (warm `.onChange` transition or cold `onAppear` mount —
-    /// ONE shared path, closing the MYR-215 cold-vs-warm split). Returns the
-    /// entry write: street span, fix under the glyph (analytic first guess),
-    /// or the fallback center when there is no fix (sim / unauthorized).
+    /// ONE shared path, closing the MYR-215 cold-vs-warm split). Arms the
+    /// single per-entry seating pass and returns the entry write: street span,
+    /// fix under the glyph (analytic first guess), or the fallback center when
+    /// there is no fix (sim / unauthorized).
     func enter(
         fix: CLLocationCoordinate2D?,
         fallbackCenter: CLLocationCoordinate2D,
         viewportSize: CGSize,
-        animated: Bool,
-        now: Date = Date()
+        animated: Bool
     ) -> Write {
         entryFix = fix
         self.fallbackCenter = fallbackCenter
         self.viewportSize = viewportSize
         refinementBudget = Self.refinementBudgetPerSeat
         phase = .seating
-        writeWindowUntil = now.addingTimeInterval(writeWindow)
-        return Write(region: analyticRegion(), animated: animated)
+        ledger.clear()
+        return expected(Write(region: analyticRegion(), animated: animated))
     }
 
     /// Pin-drop exited — the owner releases the camera.
     func exit() {
         phase = .inactive
         entryFix = nil
+        ledger.clear()
     }
 
-    /// A fresh device fix arrived during pin-drop (`enterPinDrop()`'s
-    /// `refresh()`, or the device moved). Re-seat on it ONLY while the owner
-    /// still holds the camera — a user who has taken over is never fought.
-    func fixChanged(_ fix: CLLocationCoordinate2D, now: Date = Date()) -> Write? {
+    /// A device fix arrived during pin-drop. MYR-222: fixes NEVER re-arm a
+    /// finished seat — after `.settled` they move the blue-dot annotation
+    /// only. The two cases that still write, both bounded by the per-entry
+    /// budget:
+    ///   • mid-seat (`.seating`): re-aim the in-flight pass at the fresh fix
+    ///     (the `enterPinDrop()` `refresh()` fix routinely lands here);
+    ///   • late FIRST fix: the entry had no fix at all, so the fallback
+    ///     framing settled without ever seating a fix — the first fix to
+    ///     arrive completes the entry's one real seat, once.
+    func fixChanged(_ fix: CLLocationCoordinate2D) -> Write? {
         switch phase {
         case .inactive, .userControlled:
             return nil
-        case .seating, .settled:
+        case .seating:
+            entryFix = fix
+            guard refinementBudget > 0 else { return nil }
+            refinementBudget -= 1
+            return expected(Write(region: analyticRegion(), animated: true))
+        case .settled:
+            // Seated on a fix → done for good; fixes are blue-dot-only now.
+            guard entryFix == nil else { return nil }
+            // Late first fix: the one real seat this entry never got.
             entryFix = fix
             refinementBudget = Self.refinementBudgetPerSeat
             phase = .seating
-            writeWindowUntil = now.addingTimeInterval(writeWindow)
-            return Write(region: analyticRegion(), animated: true)
+            return expected(Write(region: analyticRegion(), animated: true))
         }
+    }
+
+    /// The user's finger moved the map (gesture recognizer, not settle
+    /// inference) — the user wins from ANY phase, immediately and permanently
+    /// for this entry. Mid-seat this aborts the pass outright: no budget
+    /// fighting, no waiting for a settle to classify.
+    func userGestureBegan() {
+        guard phase == .seating || phase == .settled else { return }
+        phase = .userControlled
+        ledger.clear()
     }
 
     /// A camera settle during pin-drop. `glyphCoordinate` is MapKit's ground
     /// truth for the glyph's rendered point (`MapProxy.convert`);
     /// `cameraCenter`/`cameraLatitudeDelta` are the settle context's region.
-    /// NOTE the settle context's span is used ONLY to pick a refinement
-    /// strategy — it never flows into a write (the MYR-216 bug).
+    /// NOTE the settle context's span is used ONLY for ledger matching — it
+    /// never flows into a write (the MYR-216 bug).
     func cameraSettled(
         glyphCoordinate: CLLocationCoordinate2D,
         cameraCenter: CLLocationCoordinate2D,
-        cameraLatitudeDelta: Double,
-        now: Date = Date()
+        cameraLatitudeDelta: Double
     ) -> SettleOutcome {
         switch phase {
-        case .inactive:
-            return .report
-        case .userControlled:
+        case .inactive, .userControlled:
             return .report
         case .settled:
-            if now > writeWindowUntil {
-                phase = .userControlled
-                return .userTookOver
+            if ledger.classifySettle(center: cameraCenter, latitudeDelta: cameraLatitudeDelta) {
+                return .report // our own trailing/duplicate settle
             }
-            return .report
+            // A settle the owner didn't write — the user moved the map.
+            phase = .userControlled
+            ledger.clear()
+            return .userTookOver
         case .seating:
-            guard now <= writeWindowUntil else {
-                // A settle the owner didn't cause — the user moved the map.
-                phase = .userControlled
-                return .userTookOver
-            }
+            let isOwnWrite = ledger.classifySettle(center: cameraCenter, latitudeDelta: cameraLatitudeDelta)
             guard let fix = entryFix else {
                 // No fix to seat (sim / no authorization): the entry framing
                 // itself is the destination — done on the first settle.
@@ -242,13 +264,12 @@ final class PinDropCameraController {
                 return .seated
             }
             refinementBudget -= 1
-            writeWindowUntil = now.addingTimeInterval(writeWindow)
             let region: MKCoordinateRegion
-            if cameraLatitudeDelta < streetSpanDelta * Self.streetScaleFactor {
-                // Geometry is already street-scale: shift the center by the
-                // observed (fix − glyph) residual. Exact for a fixed geometry
-                // (the write requests the same street span the camera already
-                // has, so the projection doesn't change under the shift).
+            if isOwnWrite {
+                // OUR street-geometry settle: shift the center by the observed
+                // (fix − glyph) residual. Exact for a fixed geometry (the write
+                // requests the same street span the camera already has, so the
+                // projection doesn't change under the shift).
                 region = MKCoordinateRegion(
                     center: CLLocationCoordinate2D(
                         latitude: cameraCenter.latitude + (fix.latitude - glyphCoordinate.latitude),
@@ -257,20 +278,53 @@ final class PinDropCameraController {
                     span: streetSpan // NEVER the settle's span
                 )
             } else {
-                // A stale settle from pre-entry (wide) geometry hijacked the
-                // pass — re-issue the analytic street-span target instead of
-                // trusting deltas measured at the wrong zoom. THIS branch is
-                // the structural fix for the four-round recurrence.
+                // A settle we didn't write, mid-seat: pre-entry camera motion
+                // still landing (the MYR-217 four-round interleaving) or an
+                // unrecognized layout re-fit. Its deltas are measured at an
+                // unknown geometry and are NOT trusted — re-issue the analytic
+                // street-span target. Budget-bounded, so churn can never loop
+                // the pass; a real user gesture lands as `userGestureBegan()`
+                // (immediate) or, at the latest, as the first unmatched settle
+                // after `.settled`.
                 region = analyticRegion()
             }
-            return .refine(Write(region: region, animated: true))
+            return .refine(expected(Write(region: region, animated: true)))
         }
+    }
+
+    // MARK: Scene lifecycle (MYR-222 — background/foreground safe BY DESIGN)
+
+    /// The app is being suspended. Settles for in-flight writes may never
+    /// arrive (MapKit stops delivering while backgrounded) — drop the
+    /// expectations so they can't misattribute anything after resume.
+    /// `.settled` / `.userControlled` carry no expectations and are untouched:
+    /// a background round-trip in those phases is a designed no-op.
+    func sceneWillBackground() {
+        guard phase == .seating else { return }
+        ledger.clear()
+    }
+
+    /// The app returned to the foreground. If suspension interrupted the
+    /// seating pass, re-arm ONE clean re-seat (fresh budget, un-animated —
+    /// the user is looking at a fresh appearance, not a camera move); in any
+    /// other phase this is a no-op — the states survive the round-trip.
+    func sceneDidForeground() -> Write? {
+        guard phase == .seating else { return nil }
+        refinementBudget = Self.refinementBudgetPerSeat
+        ledger.clear()
+        return expected(Write(region: analyticRegion(), animated: false))
     }
 
     // MARK: Geometry (pure, unit-tested)
 
     private var streetSpan: MKCoordinateSpan {
         MKCoordinateSpan(latitudeDelta: streetSpanDelta, longitudeDelta: streetSpanDelta)
+    }
+
+    /// Register the write's expected settle before handing it out.
+    private func expected(_ write: Write) -> Write {
+        ledger.expect(center: write.region.center, spanDelta: write.region.span.latitudeDelta)
+        return write
     }
 
     private func analyticRegion() -> MKCoordinateRegion {

@@ -118,15 +118,44 @@ public final class SharedViewerState {
     public var snapshot: VehicleTelemetrySnapshot { telemetrySource.snapshot }
 
     public func startTelemetry() {
+        telemetryStarted = true
         telemetrySource.start()
         userLocation.start()
         liveVehicleLocator?.start()
     }
 
     public func stopTelemetry() {
+        telemetryStarted = false
         telemetrySource.stop()
         userLocation.stop()
         liveVehicleLocator?.stop()
+    }
+
+    // MARK: MYR-222 — scene lifecycle, by design
+    //
+    // The rider's location stream is explicitly stopped on suspend and
+    // restarted on resume (mirroring `OwnerHomeState.handleBackground/
+    // Foreground` for the owner fleet). iOS would starve a when-in-use
+    // `CLLocationManager` anyway while suspended — but that accident was
+    // exactly what used to "heal" the MYR-222 camera feedback loop, so the
+    // lifecycle is now owned, not incidental: no fixes are DELIVERED in the
+    // background, and the camera states (`PinDropCameraController.Phase`,
+    // `isFollowing`) are designed to survive the round-trip untouched.
+    //
+    // Gated on `telemetryStarted` so a foreground transition BEFORE the rider
+    // map ever mounted (cold launch on Sign-In) can't start location — and
+    // with it the when-in-use permission prompt — prematurely.
+
+    @ObservationIgnored private var telemetryStarted = false
+
+    public func handleBackground() {
+        guard telemetryStarted else { return }
+        userLocation.stop()
+    }
+
+    public func handleForeground() {
+        guard telemetryStarted else { return }
+        userLocation.start()
     }
 
     // MARK: MYR-211 — region biasing + current-location pickup

@@ -79,3 +79,28 @@ A `-MRT_SCENE <name>` launch **argument** is accepted as a fallback for tooling 
 - Owner side: `ownerHome`, `ownerDrives` (Drives tab, `initialOwnerTab` "drives"), `ownerIncoming`, `ownerScheduled`.
 
 Booking/pending/tracking scenes are seeded WITHOUT arming any timers, so they hold still for a screenshot instead of auto-advancing.
+
+### Streaming-fix camera probe (MYR-222)
+
+Devices STREAM GPS fixes (~1Hz) — a static simulated fix can NEVER catch a
+camera feedback loop (four MYR-213…217 rounds passed static probes; the
+streaming loop shipped anyway). Any camera/follow/pin-drop change MUST be
+probed under a moving fix:
+
+```sh
+xcrun simctl privacy <udid> grant location app.myrobotaxi.ios
+xcrun simctl location <udid> start --speed=15 --interval=1 \
+  37.7871,-122.3971 37.7920,-122.3999 37.7960,-122.4040 37.7990,-122.4090
+xcrun simctl spawn <udid> log stream --level=info \
+  --predicate 'subsystem == "app.myrobotaxi.ios" AND category == "camera"' &
+xcrun simctl launch <udid> app.myrobotaxi.ios -MRT_TELEMETRY live -MRT_SCENE pinDropRealPath
+```
+
+Every programmatic camera write and settle classification is logged (DEBUG
+only, `VehicleMapView.mrtCameraTrace`). Healthy pin-drop: ONE bounded seating
+burst (`WRITE owner` ≤4), then `fixChanged … phase=settled` with NO further
+writes at any fix rate; healthy idle: `WRITE recenter` per fix only until a
+gesture logs `follow off`, then zero. Repeating write/settle pairs per fix =
+the MYR-222 loop class. Probe idle the same way with `-MRT_SCENE idle`.
+`simctl location clear` when done (leftover streams corrupt the static
+drift-gate scenes).
