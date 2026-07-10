@@ -22,17 +22,17 @@ import MyRoboTaxiKit
 enum RideRequestComposition {
 
     @MainActor
-    static func makeService() -> any RideRequestService {
+    static func makeService(sessionTokenProvider: SessionTokenProvider? = nil) -> any RideRequestService {
         #if DEBUG
-        if let live = makeLiveService() { return live }
+        if let live = makeLiveService(sessionTokenProvider: sessionTokenProvider) { return live }
         #endif
         return SimulatedRideRequestService() // the default
     }
 
     #if DEBUG
     @MainActor
-    static func makeLiveService() -> LiveRideRequestService? {
-        guard let config = TelemetryComposition.liveConfigFromEnvironment() else { return nil }
+    static func makeLiveService(sessionTokenProvider: SessionTokenProvider? = nil) -> LiveRideRequestService? {
+        guard let config = TelemetryComposition.liveConfigFromEnvironment(sessionTokenProvider: sessionTokenProvider) else { return nil }
         let http = config.http ?? URLSession(configuration: RestClient.defaultConfiguration())
         let rest = RestClient(environment: config.environment, tokenProvider: config.tokenProvider, http: http)
         let socket = TelemetrySocket(

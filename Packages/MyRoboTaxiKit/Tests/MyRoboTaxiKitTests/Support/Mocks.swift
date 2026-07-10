@@ -42,6 +42,107 @@ actor CountingTokenProvider: TokenProvider {
     func callCount() -> Int { count }
 }
 
+// MARK: - Refresh-token store (fake Keychain)
+
+/// In-memory ``RefreshTokenStore`` for the session state-machine tests — no
+/// Keychain. Thread-safe via a lock so it stays `Sendable` across the actor.
+final class InMemoryRefreshTokenStore: RefreshTokenStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: String?
+    /// Count of writes, so tests can assert rotation actually persisted.
+    private(set) var writeCount = 0
+
+    init(seed: String? = nil) { self.stored = seed }
+
+    func read() throws -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return stored
+    }
+
+    func write(_ token: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        stored = token
+        writeCount += 1
+    }
+
+    func clear() throws {
+        lock.lock(); defer { lock.unlock() }
+        stored = nil
+    }
+}
+
+// MARK: - Authentication endpoint (scripted)
+
+/// Scripted ``AuthenticationEndpoint`` for the session tests. Each method
+/// replays a queued result and records how many times it was called (so the
+/// single-use-rotation coalescing can be asserted: exactly one refresh network
+/// call for N concurrent `token()` callers).
+actor MockAuthEndpoint: AuthenticationEndpoint {
+    enum Result {
+        case success(AuthTokenResponse)
+        case failure(RestError)
+    }
+
+    private var appleResults: [Result]
+    private var refreshResults: [Result]
+    private(set) var appleCallCount = 0
+    private(set) var refreshCallCount = 0
+    private(set) var revokeCallCount = 0
+    /// When set, `refreshSession` suspends on this before returning, so a test
+    /// can hold multiple callers inside one in-flight refresh.
+    private var refreshGate: (@Sendable () async -> Void)?
+
+    init(apple: [Result] = [], refresh: [Result] = []) {
+        self.appleResults = apple
+        self.refreshResults = refresh
+    }
+
+    func setRefreshGate(_ gate: @escaping @Sendable () async -> Void) { refreshGate = gate }
+
+    func signInWithApple(_ body: AppleSignInRequest) async throws -> AuthTokenResponse {
+        appleCallCount += 1
+        return try unwrap(appleResults.isEmpty ? nil : appleResults.removeFirst())
+    }
+
+    func refreshSession(_ body: RefreshTokenRequest) async throws -> AuthTokenResponse {
+        refreshCallCount += 1
+        let result = refreshResults.isEmpty ? nil : refreshResults.removeFirst()
+        if let refreshGate { await refreshGate() }
+        return try unwrap(result)
+    }
+
+    func revokeSession(_ body: RefreshTokenRequest) async throws {
+        revokeCallCount += 1
+    }
+
+    func counts() -> (apple: Int, refresh: Int, revoke: Int) {
+        (appleCallCount, refreshCallCount, revokeCallCount)
+    }
+
+    private func unwrap(_ result: Result?) throws -> AuthTokenResponse {
+        switch result {
+        case .success(let response): return response
+        case .failure(let error): throw error
+        case .none: throw RestError.invalidResponse
+        }
+    }
+}
+
+/// A movable clock for the proactive-refresh tests.
+final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: Date
+    init(_ start: Date = Date(timeIntervalSince1970: 1_000_000)) { self.current = start }
+    var now: Date {
+        lock.lock(); defer { lock.unlock() }
+        return current
+    }
+    func advance(_ interval: TimeInterval) {
+        lock.lock(); defer { lock.unlock() }
+        current += interval
+    }
+}
+
 // MARK: - HTTP transport
 
 /// Deterministic `HTTPPerforming` — replays a scripted response sequence and

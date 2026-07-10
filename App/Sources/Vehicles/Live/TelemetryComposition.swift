@@ -26,10 +26,12 @@ import MyRoboTaxiKit
 enum TelemetryComposition {
 
     /// Build the owner-home state with the fleet the launch environment selects.
+    /// `sessionTokenProvider` (MYR-164) is the real Sign in with Apple session
+    /// from `AuthComposition`; used in live mode when no static token overrides it.
     @MainActor
-    static func makeOwnerHomeState() -> OwnerHomeState {
+    static func makeOwnerHomeState(sessionTokenProvider: SessionTokenProvider? = nil) -> OwnerHomeState {
         #if DEBUG
-        if let config = liveConfigFromEnvironment() {
+        if let config = liveConfigFromEnvironment(sessionTokenProvider: sessionTokenProvider) {
             return OwnerHomeState(fleet: LiveVehicleFleet(config: config))
         }
         #endif
@@ -37,15 +39,38 @@ enum TelemetryComposition {
     }
 
     #if DEBUG
+    /// The static dev/live-scene token (`MRT_BACKEND_TOKEN`), or nil when unset.
+    /// When present it OVERRIDES session auth (MYR-164 env-override precedence).
+    static func staticBackendToken() -> String? { value(for: "MRT_BACKEND_TOKEN") }
+
+    /// The live `BackendEnvironment` when `MRT_TELEMETRY=live` is set, else nil.
+    /// Shared by `AuthComposition` so the auth RestClient targets the same host.
+    static func liveBackendEnvironment() -> BackendEnvironment? {
+        guard value(for: "MRT_TELEMETRY")?.lowercased() == "live" else { return nil }
+        return backendEnvironment(from: value(for: "MRT_BACKEND_URL"))
+    }
+
     /// Returns a live-fleet config only when `MRT_TELEMETRY=live` is set (env or
     /// `-MRT_TELEMETRY live` launch arg); otherwise `nil` (simulated default).
-    static func liveConfigFromEnvironment() -> LiveVehicleFleet.Config? {
-        guard value(for: "MRT_TELEMETRY")?.lowercased() == "live" else { return nil }
-        guard let environment = backendEnvironment(from: value(for: "MRT_BACKEND_URL")) else { return nil }
-        let token = value(for: "MRT_BACKEND_TOKEN") ?? ""
+    ///
+    /// Token precedence (MYR-164): the static `MRT_BACKEND_TOKEN` OVERRIDES when
+    /// present (dev / live-scene launches — the existing path, kept working);
+    /// otherwise the real Sign in with Apple `sessionTokenProvider` authenticates
+    /// the fleet; with neither, an empty static token → REST 401 → the graceful
+    /// "Sign-in required" state (unchanged).
+    static func liveConfigFromEnvironment(sessionTokenProvider: SessionTokenProvider? = nil) -> LiveVehicleFleet.Config? {
+        guard let environment = liveBackendEnvironment() else { return nil }
+        let tokenProvider: any TokenProvider
+        if let token = staticBackendToken() {
+            tokenProvider = StaticTokenProvider(token)
+        } else if let sessionTokenProvider {
+            tokenProvider = sessionTokenProvider
+        } else {
+            tokenProvider = StaticTokenProvider("")
+        }
         return LiveVehicleFleet.Config(
             environment: environment,
-            tokenProvider: StaticTokenProvider(token)
+            tokenProvider: tokenProvider
         )
     }
 

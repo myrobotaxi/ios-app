@@ -1,0 +1,6 @@
+{
+  "accessToken": "eyJhbGciOiJFUzI1NiIsImtpZCI6InRodW1icHJpbnQifQ.eyJzdWIiOiJjbW1ncjRiMXAwMDA1bDEwNGlmcGN0bGc4IiwiaXNzIjoibXlyb2JvdGF4aSIsImF1ZCI6InRlbGVtZXRyeSJ9.signature-rotated",
+  "expiresIn": 3600,
+  "refreshToken": "rt_opaque_rotated_0000000000000000000000000000002",
+  "user": { "id": "cmmgr4b1p0005l104ifpctlg8" }
+}

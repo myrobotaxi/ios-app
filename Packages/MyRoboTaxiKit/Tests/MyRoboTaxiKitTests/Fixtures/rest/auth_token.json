@@ -1,0 +1,6 @@
+{
+  "accessToken": "eyJhbGciOiJFUzI1NiIsImtpZCI6InRodW1icHJpbnQifQ.eyJzdWIiOiJjbW1ncjRiMXAwMDA1bDEwNGlmcGN0bGc4IiwiaXNzIjoibXlyb2JvdGF4aSIsImF1ZCI6InRlbGVtZXRyeSJ9.signature-first",
+  "expiresIn": 3600,
+  "refreshToken": "rt_opaque_first_00000000000000000000000000000001",
+  "user": { "id": "cmmgr4b1p0005l104ifpctlg8", "name": "Ada Lovelace", "email": "ada@example.com" }
+}
