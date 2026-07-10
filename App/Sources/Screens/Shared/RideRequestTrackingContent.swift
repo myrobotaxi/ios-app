@@ -15,7 +15,13 @@ struct RideRequestTrackingContent: View {
     var totalHeight: CGFloat?
 
     private var request: RideRequestRecord? { rideRequestService.activeRequest }
-    private var fleetMember: FleetMember { request?.input.fleetMember ?? RideRequestFixtures.fleet[0] }
+    /// MYR-218 defect 3: the LOOK FOR / Your-ride card must name the LIVE
+    /// vehicle in live mode — same source MYR-212 threaded through Review and
+    /// Booking (`viewerState.liveFleetMember`: nickname primary, model subline,
+    /// VIN-last-4 chip, hidden when empty), not the fixture fleet. `nil` in sim
+    /// (`isLiveLocation == false`), so the tracking card falls back to the
+    /// record's fixture fleet member exactly as before — sim unchanged.
+    private var fleetMember: FleetMember { viewerState.liveFleetMember ?? request?.input.fleetMember ?? RideRequestFixtures.fleet[0] }
     private var passenger: RidePassenger? { request?.input.passenger }
     private var destination: RidePlace { request?.input.destination ?? RideRequestFixtures.recentPlaces[0] }
     private var pickupLabel: String { request?.input.pickup.label ?? "Current location" }
@@ -93,15 +99,24 @@ struct RideRequestTrackingContent: View {
                     Circle().fill(Color.mrtGold).frame(width: 6, height: 6).shadow(color: .mrtGoldGlow, radius: 4)
                     RideEyebrowText(text: statusWord, color: .mrtGold, size: 11)
                 }
-                HStack(spacing: 4) {
+                // MYR-218 defect 2: a long pickup/drop-off name ("Bell
+                // Southstone Yards") used to tail-truncate on one line. Allow
+                // the place-name run a second line — `.firstTextBaseline` keeps
+                // the "Picking you up at" prefix aligned to the name's first
+                // line, and `.fixedSize` lets the name wrap in place instead of
+                // truncating. Short fixture names ("Current location") still fit
+                // one line, so the sim scenes are unchanged.
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text(atPickup ? "Dropping you off at" : "Picking you up at")
                         .font(.system(size: 13.5))
                         .foregroundStyle(Color.mrtTextSec)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(atPickup ? destination.label : pickupLabel)
                         .font(.system(size: 13.5, weight: .semibold))
                         .foregroundStyle(Color.mrtText)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .lineLimit(1)
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 5) {
@@ -170,7 +185,11 @@ struct RideRequestTrackingContent: View {
                 Text(clock).font(.system(size: 13, weight: .medium)).monospacedDigit().foregroundStyle(Color.mrtTextSec)
             }
             HStack(alignment: .firstTextBaseline) {
-                Text(place).font(.system(size: 15, weight: .semibold)).foregroundStyle(Color.mrtText).lineLimit(1)
+                // MYR-218 defect 2: allow a long place name a second line in the
+                // itinerary rows too (the trailing miles/min note stays on the
+                // first line). Fixture names fit one line, so sim is unchanged.
+                Text(place).font(.system(size: 15, weight: .semibold)).foregroundStyle(Color.mrtText)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
                 Text(note).font(.system(size: 12)).foregroundStyle(Color.mrtTextMuted).lineLimit(1)
             }
@@ -240,10 +259,16 @@ struct RideRequestTrackingContent: View {
                     .foregroundStyle(Color.mrtTextSec)
             }
             Spacer(minLength: 0)
-            if emphasize {
-                emphasizedPlateChip
-            } else {
-                RidePlateChip(plate: fleetMember.plate)
+            // MYR-218 defect 3: mirror Booking's live-vehicle plate degrade —
+            // live telemetry has no plate, so the chip carries the VIN last-4
+            // when known and is HIDDEN entirely when empty (never a blank box).
+            // Fixture plates are non-empty, so sim always shows the chip.
+            if !fleetMember.plate.isEmpty {
+                if emphasize {
+                    emphasizedPlateChip
+                } else {
+                    RidePlateChip(plate: fleetMember.plate)
+                }
             }
         }
         .padding(.horizontal, emphasize ? 14 : 13)
