@@ -18,6 +18,12 @@ final class TrackingLegTests: XCTestCase {
         XCTAssertEqual(TrackingLeg.forProgress(0.16, pickupCut: 0.16), .inRide, "at the cut, we've reached pickup")
         XCTAssertEqual(TrackingLeg.forProgress(0.6, pickupCut: 0.16), .inRide)
     }
+
+    // MYR-234 — the polyline/pin active/inactive split reads off this one value.
+    func testActiveLegFollowsPhase() {
+        XCTAssertTrue(TrackingLeg.toPickup.isLeg1Active, "heading to pickup → leg 1 (car→pickup) is the active route")
+        XCTAssertFalse(TrackingLeg.inRide.isLeg1Active, "in the ride → leg 2 (pickup→destination) is the active route, leg 1 subdued")
+    }
 }
 
 @MainActor

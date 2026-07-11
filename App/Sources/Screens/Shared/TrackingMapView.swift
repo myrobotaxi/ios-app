@@ -176,25 +176,29 @@ struct TrackingMapView: View {
             UserAnnotation()
         }
 
-        // The OTHER leg's route, dimmed (RouteLine dim alpha 0.30) — drawn but
-        // never fitted by the camera. Leg 1: the pickup→destination trip is a
-        // faint preview. Leg 2: the completed car→pickup approach fades back.
-        switch leg {
-        case .toPickup:
-            dimmedRoute(leg2Route)
-            activeRoute(leg1Route)
-        case .inRide:
-            dimmedRoute(leg1Route)
-            activeRoute(leg2Route)
+        // Leg-differentiated route (MYR-234): the ACTIVE leg the rider is
+        // traversing renders full-strength gold; the OTHER leg renders subdued
+        // (`mrtRouteInactive`) so "the active route to pickup vs the rest of the
+        // trip" reads apart — the client's ask. The split is driven by the ONE
+        // `leg` phase input, so MYR-231's `in_ride` status flips it in one line.
+        // The inactive leg is always drawn first so the active leg + its glow sit
+        // on top.
+        if leg.isLeg1Active {
+            routeLeg(leg2Route, active: false)
+            routeLeg(leg1Route, active: true)
+        } else {
+            routeLeg(leg1Route, active: false)
+            routeLeg(leg2Route, active: true)
         }
 
-        // Endpoints — pickup + destination dots (the design's `MRTEndpointDot`).
-        Annotation("Pickup", coordinate: pickupCoordinate) {
-            MRTEndpointDot(color: .mrtDriving, size: 11)
+        // Endpoints — proper pickup (○) + destination (□) pins (MYR-234). Anchored
+        // at the pin tip so the planted contact dot sits on the coordinate.
+        Annotation("Pickup", coordinate: pickupCoordinate, anchor: .bottom) {
+            MRTMapPin(kind: .pickup)
         }
         if let destinationCoordinate {
-            Annotation("Destination", coordinate: destinationCoordinate) {
-                MRTEndpointDot(color: .mrtGold, size: 13)
+            Annotation("Destination", coordinate: destinationCoordinate, anchor: .bottom) {
+                MRTMapPin(kind: .destination)
             }
         }
 
@@ -204,28 +208,32 @@ struct TrackingMapView: View {
         }
     }
 
-    /// The active leg: solid gold with a bright travelled segment + glow underlay
-    /// (the existing `RouteLine` recipe), the ahead segment dim gold.
+    /// One route leg, rendered per its `active` phase (MYR-234) — the single
+    /// active/inactive code path both legs flow through, so the ACTIVE-leg accent
+    /// follows the `leg` phase input wherever it points.
+    ///
+    ///   • active — full-strength gold end to end (the client's "active route to
+    ///     pickup" must NOT be the same shade as the rest of the trip): the whole
+    ///     leg draws at a strong gold, with the travelled portion getting the glow
+    ///     underlay + a solid-gold bright pass so in-leg progress still reads.
+    ///   • inactive — a single subdued same-hue line (`mrtRouteInactive`), so the
+    ///     remaining trip is visibly dimmed against the live leg.
     @MapContentBuilder
-    private func activeRoute(_ route: [CLLocationCoordinate2D]) -> some MapContent {
+    private func routeLeg(_ route: [CLLocationCoordinate2D], active: Bool) -> some MapContent {
         if route.count > 1 {
-            MapPolyline(coordinates: route)
-                .stroke(Color.mrtGold.opacity(0.3), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
-            let travelled = VehicleRoute.travelledCoordinates(along: route, progress: legProgress)
-            MapPolyline(coordinates: travelled)
-                .stroke(Color.mrtGoldGlowSoft, style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
-            MapPolyline(coordinates: travelled)
-                .stroke(Color.mrtGold.opacity(0.95), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
-        }
-    }
-
-    /// The inactive leg: a single dim gold line (no new hex — the same 0.30
-    /// dim token the full-route underlay uses).
-    @MapContentBuilder
-    private func dimmedRoute(_ route: [CLLocationCoordinate2D]) -> some MapContent {
-        if route.count > 1 {
-            MapPolyline(coordinates: route)
-                .stroke(Color.mrtGold.opacity(0.3), style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+            if active {
+                // Whole leg at full strength — ahead segment included.
+                MapPolyline(coordinates: route)
+                    .stroke(Color.mrtGold.opacity(0.85), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                let travelled = VehicleRoute.travelledCoordinates(along: route, progress: legProgress)
+                MapPolyline(coordinates: travelled)
+                    .stroke(Color.mrtGoldGlowSoft, style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
+                MapPolyline(coordinates: travelled)
+                    .stroke(Color.mrtGold, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+            } else {
+                MapPolyline(coordinates: route)
+                    .stroke(Color.mrtRouteInactive, style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+            }
         }
     }
 }
