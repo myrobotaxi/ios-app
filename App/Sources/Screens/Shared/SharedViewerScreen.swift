@@ -227,7 +227,16 @@ struct SharedViewerScreen: View {
                 try? await Task.sleep(for: .seconds(6))
             }
         }
+        .onChange(of: viewerState.rideRouteStore.leg2.count) { _, n in
+            #if DEBUG
+            print("ETCH \(Date().timeIntervalSince1970) leg2-arrived points=\(n) phase=\(viewerState.sheetPhase)")
+            #endif
+        }
         .onChange(of: viewerState.draftDestination) { _, destination in
+            #if DEBUG
+            print("ETCH \(Date().timeIntervalSince1970) draftDestination-changed resolved=\(destination.map { !RidePlaceMapper.isUnresolved($0) } ?? false)")
+            #endif
+
             // MYR-237: PREFETCH the real route the moment a destination is
             // chosen in Search (before "Continue"), so the etch usually starts
             // the instant Review opens instead of after a visible MKDirections
@@ -356,7 +365,9 @@ struct SharedViewerScreen: View {
     private var searchPreviewPickup: CLLocationCoordinate2D? {
         rideRequestService.activeRequest?.input.pickup.coordinate
             ?? viewerState.draftPickup?.coordinate
-            ?? viewerState.userLocation.coordinate
+            // The ANCHOR, never the live fix: GPS jitter must not re-key the
+            // route (MYR-237 device trace — the collapse/refetch loop).
+            ?? viewerState.previewPickupAnchor
     }
 
     @ViewBuilder

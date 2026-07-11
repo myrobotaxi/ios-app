@@ -277,6 +277,9 @@ struct RideRequestRouteMap: View {
     private static let etchLog = Logger(subsystem: "app.myrobotaxi.ios", category: "etch")
     private func trace(_ message: String) {
         Self.etchLog.info("\(message, privacy: .public) route=\(self.route.count) phase=\(String(describing: self.phase), privacy: .public) etch=\(self.etch) loading=\(self.loading)")
+        // devicectl --console captures STDOUT only (Logger goes to the unified
+        // log, invisible there) — mirror to print for tethered sessions.
+        print("ETCH \(Date().timeIntervalSince1970) \(message) route=\(route.count) phase=\(phase) etch=\(etch) loading=\(loading)")
     }
     #else
     private func trace(_ message: String) {}

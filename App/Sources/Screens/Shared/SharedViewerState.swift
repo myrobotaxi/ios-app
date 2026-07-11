@@ -221,6 +221,7 @@ public final class SharedViewerState {
     /// unchanged (no fix ⇒ pin-drop over the fixture region, as before).
     public func selectDestination(_ place: RidePlace) {
         draftDestination = place
+        capturePreviewPickupAnchor()
         resolveDraftDestinationIfNeeded()
         if draftPickup != nil {
             enterReview()
@@ -248,7 +249,20 @@ public final class SharedViewerState {
     /// stays on `.search` to set chips before proceeding (deliverable 3).
     public func chooseDestination(_ place: RidePlace) {
         draftDestination = place
+        capturePreviewPickupAnchor()
         resolveDraftDestinationIfNeeded()
+    }
+
+    /// MYR-237 device trace: the route preview's pickup must NOT track the live
+    /// GPS fix — every jitter changed the route-cache key, collapsing the etched
+    /// route back to loading in a visible ~2s loop. The fix is anchored ONCE
+    /// when a destination is chosen and only replaced by an explicit pickup.
+    public private(set) var previewPickupAnchor: CLLocationCoordinate2D?
+    private func capturePreviewPickupAnchor() {
+        guard draftPickup == nil else { previewPickupAnchor = nil; return }
+        if previewPickupAnchor == nil {
+            previewPickupAnchor = userLocation.coordinate
+        }
     }
 
     /// MYR-237 (device QA): a picked live suggestion may be an UNRESOLVED row —
@@ -291,6 +305,7 @@ public final class SharedViewerState {
     /// returning the sheet to search-as-you-type (deliverable 3).
     public func clearChosenDestination() {
         draftDestination = nil
+        previewPickupAnchor = nil
     }
 
     /// Advance from the search sheet once the rider taps "Continue" — identical
