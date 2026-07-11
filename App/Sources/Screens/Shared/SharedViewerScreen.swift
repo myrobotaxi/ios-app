@@ -58,7 +58,6 @@ struct SharedViewerScreen: View {
             // handed to `VehicleMapView`, which converts it to the coordinate MapKit
             // renders there. Deriving both from `glyphLocal` means the drawn glyph
             // and the confirmed pickup can never desync.
-            let _ = NSLog("MRT226 geo=%@ w=%.1f h=%.1f", geo.size.width.isFinite ? "FIN" : "INF", geo.size.width, geo.size.height)
             let glyphLocal = VehicleMapView.pinGlyphPoint(in: geo.size)
             let glyphGlobal = CGPoint(
                 x: geo.frame(in: .global).minX + glyphLocal.x,
@@ -69,7 +68,6 @@ struct SharedViewerScreen: View {
                     .ignoresSafeArea()
 
                 sheetContent(totalHeight: geo.size.height)
-                    .background(GeometryReader { sg in Color.clear.onAppear { NSLog("MRT226 sheetBG w=%.1f h=%.1f", sg.size.width, sg.size.height) } })
                     .animation(
                         reduceMotion ? .easeOut(duration: 0.2) : .timingCurve(0.32, 0.72, 0, 1, duration: 0.42), // ride-request.jsx:1185
                         value: viewerState.sheetPhase
@@ -770,21 +768,17 @@ private struct GreetingHero: View {
                 line(value)
             } keyframes: { _ in
                 KeyframeTrack(\.opacity) {
-                    LinearKeyframe(0, duration: 0)
                     LinearKeyframe(1, duration: 0.4675, timingCurve: Self.curve)
                     LinearKeyframe(1, duration: 0.3825)
                 }
                 KeyframeTrack(\.offsetY) {
-                    LinearKeyframe(8, duration: 0)
                     LinearKeyframe(0, duration: 0.85, timingCurve: Self.curve)
                 }
                 KeyframeTrack(\.blur) {
-                    LinearKeyframe(8, duration: 0)
                     LinearKeyframe(0, duration: 0.4675, timingCurve: Self.curve)
                     LinearKeyframe(0, duration: 0.3825)
                 }
                 KeyframeTrack(\.tracking) {
-                    LinearKeyframe(0.6, duration: 0)
                     LinearKeyframe(-0.4, duration: 0.85, timingCurve: Self.curve)
                 }
                 KeyframeTrack(\.glowRadius) {
@@ -803,6 +797,27 @@ private struct GreetingHero: View {
     }
 
     private func line(_ value: RevealValue) -> some View {
+        // MYR-227 — the KeyframeAnimator's interpolation produced a transient
+        // non-finite sample on device (zero-duration keyframes divide by zero),
+        // sending `tracking` infinite: the greeting Text then reported an
+        // INFINITE ideal width, which cascaded NaN through the sheet's layout
+        // and crashed ("view origin is invalid … (inf, 860)"). The poisonous
+        // keyframes are gone (initialValue pins the start values), and this
+        // clamp is the hard guarantee: no animated sample reaches text layout
+        // (tracking), CALayer geometry (blur/glow radius), or placement
+        // (offset) unless it is finite.
+        let sanitized = RevealValue(
+            opacity: value.opacity.isFinite ? value.opacity : 1,
+            offsetY: value.offsetY.isFinite ? value.offsetY : 0,
+            blur: value.blur.isFinite ? value.blur : 0,
+            tracking: value.tracking.isFinite ? value.tracking : Self.restingReveal.tracking,
+            glowRadius: value.glowRadius.isFinite ? value.glowRadius : Self.restingReveal.glowRadius,
+            glowIntensity: value.glowIntensity.isFinite ? value.glowIntensity : 0
+        )
+        return line(sanitized: sanitized)
+    }
+
+    private func line(sanitized value: RevealValue) -> some View {
         HStack(spacing: 4) {
             if let firstName {
                 Text("\(greeting),")
