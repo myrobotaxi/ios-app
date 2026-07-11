@@ -118,7 +118,14 @@ struct RideGrabHandle: View {
             .gesture(
                 DragGesture(minimumDistance: 6)
                     .onEnded { value in
-                        guard value.translation.height > Self.dismissThreshold else { return }
+                        // Project the flick from release velocity (MYR-236,
+                        // shared `SheetPhysics`) so a fast downward flick
+                        // dismisses even on small displacement — the same
+                        // velocity-aware release the detent sheet uses, no
+                        // fork. Both terms are screen-space (down = positive).
+                        let projected = value.translation.height
+                            + SheetPhysics.projection(velocity: value.velocity.height)
+                        guard projected > Self.dismissThreshold else { return }
                         onDragDismiss?()
                     }
             )
