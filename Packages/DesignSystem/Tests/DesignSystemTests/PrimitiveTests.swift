@@ -111,6 +111,25 @@ final class PrimitiveTests: XCTestCase {
         XCTAssertEqual(MRTTab.sharedTabs.map(\.activeIcon), ["map.fill", "clock.fill", "gearshape.fill"])
     }
 
+    // MARK: MYR-235 — map pins
+
+    /// The two Tesla-style pin kinds stay distinct and render without trapping.
+    func testMapPinKindsAreDistinct() {
+        XCTAssertNotEqual(MRTMapPin.Kind.pickup, MRTMapPin.Kind.destination)
+        _ = MRTMapPin(kind: .pickup).body
+        _ = MRTMapPin(kind: .destination).body
+    }
+
+    /// The teardrop silhouette builds a closed path with its tip at the bottom
+    /// center (the ground-contact / coordinate point under `.bottom` anchoring).
+    func testTeardropTipAtBottomCenter() {
+        let rect = CGRect(x: 0, y: 0, width: 15, height: 22)
+        let path = Teardrop().path(in: rect)
+        XCTAssertFalse(path.isEmpty)
+        XCTAssertEqual(path.currentPoint?.x ?? -1, rect.midX, accuracy: 0.01)
+        XCTAssertEqual(path.boundingRect.maxY, rect.maxY, accuracy: 0.5)
+    }
+
     // MARK: Route polyline
 
     func testRoutePolylineShapeBuildsOpenPath() {
