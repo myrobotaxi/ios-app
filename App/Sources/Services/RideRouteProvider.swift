@@ -38,14 +38,30 @@ struct StraightLineRideRouteProvider: RideRouteProvider {
 /// failure it returns the straight `[from, to]` fallback, so callers are never
 /// left without a route.
 struct AppleRideRouteProvider: RideRouteProvider {
+    /// MKDirections can HANG (or sit in Apple's per-device throttle) far past
+    /// UX patience — the client hit an endless loading sweep. The fetch races
+    /// this deadline; losing it degrades to the straight fallback like any
+    /// other failure (a later retry can still upgrade the route).
+    static let deadline: Duration = .seconds(8)
+
     func route(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) async -> [CLLocationCoordinate2D] {
         let request = MKDirections.Request()
         request.transportType = .automobile
         request.source = MKMapItem(placemark: MKPlacemark(coordinate: from))
         request.destination = MKMapItem(placemark: MKPlacemark(coordinate: to))
         let directions = MKDirections(request: request)
-        guard let response = try? await directions.calculate(),
-              let polyline = response.routes.first?.polyline else {
+        let response = await withTaskGroup(of: MKDirections.Response?.self) { group -> MKDirections.Response? in
+            group.addTask { try? await directions.calculate() }
+            group.addTask {
+                try? await Task.sleep(for: Self.deadline)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            directions.cancel()
+            return first
+        }
+        guard let polyline = response?.routes.first?.polyline else {
             return [from, to]
         }
         let count = polyline.pointCount
@@ -114,6 +130,10 @@ final class RideRouteStore {
     @ObservationIgnored private let provider: RideRouteProvider
     @ObservationIgnored private let deviationThresholdMeters: Double
     @ObservationIgnored private var leg2Key: String?
+    /// When the last leg-2 fetch for `leg2Key` STARTED — the retry cooldown
+    /// clock for a fallback (2-point) result (MYR-237: a throttled MKDirections
+    /// must not lock the straight fallback in forever).
+    @ObservationIgnored private var leg2AttemptAt: Date?
     @ObservationIgnored private var leg1Origin: CLLocationCoordinate2D?
     @ObservationIgnored private var leg1Task: Task<Void, Never>?
     @ObservationIgnored private var leg2Task: Task<Void, Never>?
@@ -131,15 +151,27 @@ final class RideRouteStore {
     /// (both are fixed for the ride). Cheap to call on every fix — a no-op once
     /// the pair is cached. Needed in BOTH legs (drawn dimmed in leg 1, solid in
     /// leg 2), so the caller reconciles it in either leg.
+    /// Retry cooldown for a fallback leg-2 result (throttled/failed
+    /// MKDirections): a repeat `ensureLeg2` for the SAME pair refetches after
+    /// this long, so the straight fallback is never permanent (MYR-237).
+    static let fallbackRetryCooldown: TimeInterval = 8
+
     func ensureLeg2(pickup: CLLocationCoordinate2D, destination: CLLocationCoordinate2D) {
         let l2Key = Self.key(pickup, destination)
-        guard leg2Key != l2Key else { return }
+        if leg2Key == l2Key {
+            // Same pair: done if a REAL route is cached or a fetch is running;
+            // a cached 2-point fallback retries after the cooldown.
+            guard leg2Task == nil, leg2.count <= 2 else { return }
+            if let last = leg2AttemptAt, Date().timeIntervalSince(last) < Self.fallbackRetryCooldown { return }
+        }
         leg2Key = l2Key
+        leg2AttemptAt = Date()
         leg2Task?.cancel()
         leg2Task = Task { [weak self, provider] in
             let route = await provider.route(from: pickup, to: destination)
             guard !Task.isCancelled else { return }
             self?.leg2 = route
+            self?.leg2Task = nil
         }
     }
 
@@ -159,12 +191,26 @@ final class RideRouteStore {
         }
     }
 
+    /// The pickup → destination polyline IFF it is currently cached for EXACTLY
+    /// this pair (else `nil`). Matches on the same requested-coordinate key
+    /// `ensureLeg2` fetches by — no snapping tolerance — so a caller (the MYR-237
+    /// review etch) can avoid drawing a STALE prior-trip route under a new
+    /// pickup/destination while the new fetch is still in flight (the store only
+    /// `reset()`s on Tracking exit, so `leg2` can hold a previous trip's polyline
+    /// across a "Change trip"). Returns the straight `[from, to]` fallback too
+    /// (the provider's honest degradation) — the caller decides whether a
+    /// 2-point route is "real" enough to etch.
+    func leg2Route(pickup: CLLocationCoordinate2D, destination: CLLocationCoordinate2D) -> [CLLocationCoordinate2D]? {
+        guard leg2Key == Self.key(pickup, destination), leg2.count > 1 else { return nil }
+        return leg2
+    }
+
     /// Drop all cached routes and cancel in-flight fetches (ride ended / screen
     /// released).
     func reset() {
         leg1Task?.cancel(); leg1Task = nil
         leg2Task?.cancel(); leg2Task = nil
         leg1 = []; leg2 = []
-        leg1Origin = nil; leg2Key = nil
+        leg1Origin = nil; leg2Key = nil; leg2AttemptAt = nil
     }
 }

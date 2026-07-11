@@ -221,6 +221,7 @@ public final class SharedViewerState {
     /// unchanged (no fix ⇒ pin-drop over the fixture region, as before).
     public func selectDestination(_ place: RidePlace) {
         draftDestination = place
+        resolveDraftDestinationIfNeeded()
         if draftPickup != nil {
             enterReview()
         } else {
@@ -247,6 +248,43 @@ public final class SharedViewerState {
     /// stays on `.search` to set chips before proceeding (deliverable 3).
     public func chooseDestination(_ place: RidePlace) {
         draftDestination = place
+        resolveDraftDestinationIfNeeded()
+    }
+
+    /// MYR-237 (device QA): a picked live suggestion may be an UNRESOLVED row —
+    /// its placeholder coordinate is the rider's own location, so every
+    /// consumer downstream (trip estimate, route preview, the eventual create)
+    /// would silently use pickup≈destination (0.0mi trips, pickup→pickup
+    /// route requests). Selection therefore re-resolves the real coordinate
+    /// (bounded retries for Apple's throttle) and swaps it into the draft —
+    /// recomputing the Review estimate if the rider already advanced.
+    /// Re-kick a stalled destination resolution (MYR-237 device QA: when the
+    /// first bounded attempts all lost to Apple's throttle, NOTHING retried —
+    /// the flow sat on the breathing head forever). Called by the route
+    /// preview's retry loop on its cadence; a no-op when the destination is
+    /// resolved or a resolve task is already in flight.
+    public func retryDestinationResolutionIfNeeded() {
+        guard destinationResolveInFlight == false else { return }
+        resolveDraftDestinationIfNeeded()
+    }
+
+    @ObservationIgnored private var destinationResolveTask: Task<Void, Never>?
+    @ObservationIgnored private var destinationResolveInFlight = false
+    private func resolveDraftDestinationIfNeeded() {
+        guard let place = draftDestination, RidePlaceMapper.isUnresolved(place) else { return }
+        destinationResolveTask?.cancel()
+        let bias = userLocation.coordinate ?? draftPickup?.coordinate ?? mapRegionCenter
+        destinationResolveInFlight = true
+        destinationResolveTask = Task { [weak self] in
+            defer { self?.destinationResolveInFlight = false }
+            guard let resolved = await SelectionPlaceResolver.resolve(place, near: bias) else { return }
+            guard !Task.isCancelled, let self, self.draftDestination?.id == place.id else { return }
+            if let pickup = self.draftPickup, self.sheetPhase == .review || self.sheetPhase == .booking {
+                self.draftDestination = TripEstimate.applied(to: resolved, pickup: pickup.coordinate)
+            } else {
+                self.draftDestination = resolved
+            }
+        }
     }
 
     /// Clear a search-sheet destination choice (the field was edited or cleared),
@@ -484,6 +522,10 @@ public final class SharedViewerState {
         if let pickup = draftPickup, let destination = draftDestination {
             draftDestination = TripEstimate.applied(to: destination, pickup: pickup.coordinate)
         }
+        // Re-kick a still-unresolved destination (MYR-237) — the estimate just
+        // computed from the placeholder gets recomputed when the coordinate
+        // lands (see resolveDraftDestinationIfNeeded).
+        resolveDraftDestinationIfNeeded()
         sheetPhase = .review
     }
 

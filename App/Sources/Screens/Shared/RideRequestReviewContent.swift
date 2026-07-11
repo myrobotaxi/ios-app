@@ -34,12 +34,21 @@ struct RideRequestReviewContent: View {
     private var tripMiles: Double { destination?.miles ?? 14 }
     private var pickupMinutes: Int { fleetMember.etaMin }
 
+    /// MYR-237 (device QA): the picked destination may still be resolving its
+    /// REAL coordinate (throttled search). Until it lands, every number derived
+    /// from the placeholder coordinate is wrong (0.0mi trips) — render calm
+    /// placeholders instead; the resolution swap recomputes the estimate.
+    private var destinationResolving: Bool {
+        destination.map(RidePlaceMapper.isUnresolved) ?? false
+    }
+
     private var pickupAt: String {
         if let schedule { return schedule.time }
         return RideRequestClock.fromNow(minutes: pickupMinutes)
     }
 
     private var arriveAt: String {
+        if destinationResolving { return "—" }
         if let schedule { return RideRequestClock.adding(tripMinutes, to: schedule.time) }
         return RideRequestClock.fromNow(minutes: pickupMinutes + tripMinutes)
     }
@@ -49,7 +58,8 @@ struct RideRequestReviewContent: View {
     }
 
     private var arriveSub: String {
-        "\(tripMinutes) min \u{00B7} \(String(format: "%.1f", tripMiles)) mi trip"
+        if destinationResolving { return "Finding route\u{2026}" }
+        return "\(tripMinutes) min \u{00B7} \(String(format: "%.1f", tripMiles)) mi trip"
     }
 
     var body: some View {

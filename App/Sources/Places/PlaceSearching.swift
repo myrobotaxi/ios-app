@@ -120,6 +120,26 @@ enum RidePlaceMapper {
         )
     }
 
+    /// Map a suggestion whose coordinate is already KNOWN (the selection-time
+    /// cache, MYR-237) to a `RidePlace` — same shape as `ridePlace(from:)`
+    /// minus the POI category (not cached; the generic pin icon is used).
+    static func ridePlace(
+        at coordinate: CLLocationCoordinate2D,
+        title: String,
+        subtitle: String?,
+        regionCenter: CLLocationCoordinate2D
+    ) -> RidePlace {
+        RidePlace(
+            id: "live|\(title)|\(subtitle ?? "")",
+            label: title,
+            subtitle: (subtitle?.isEmpty == false) ? subtitle : nil,
+            miles: straightLineMiles(from: regionCenter, to: coordinate),
+            minutes: 0,
+            icon: "mappin",
+            coordinate: coordinate
+        )
+    }
+
     /// A suggestion whose coordinate couldn't be resolved (failed/slow
     /// `MKLocalSearch`) — kept as a row from the completer's title/subtitle so a
     /// batch never collapses to the empty state (MYR-211 defect A3). Distance is
@@ -140,6 +160,16 @@ enum RidePlaceMapper {
             icon: "mappin",
             coordinate: regionCenter
         )
+    }
+
+    /// Whether a place is a live suggestion whose coordinate was NEVER resolved
+    /// (the `unresolvedPlace` placeholder — its "coordinate" is the region
+    /// center, i.e. the rider's own location, NOT the place). Selection MUST
+    /// re-resolve these before any distance/route math trusts the coordinate
+    /// (MYR-237 device QA: an unresolved pick produced a 0.0mi trip and a
+    /// pickup→pickup route request).
+    static func isUnresolved(_ place: RidePlace) -> Bool {
+        place.id.hasPrefix("live-unresolved|")
     }
 
     /// Saved places whose label/subtitle contain the query — ranked FIRST in the
