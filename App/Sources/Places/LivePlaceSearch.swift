@@ -313,6 +313,13 @@ enum SelectionPlaceResolver {
         for attempt in 0..<attempts {
             if attempt > 0 { try? await Task.sleep(for: retrySpacing) }
             guard !Task.isCancelled else { return nil }
+            // Later attempts fall back to the TITLE alone: query-type rows carry
+            // marker subtitles ("Search Nearby") that can poison the query (the
+            // Applebee's device trace — resolution failed twice on the combined
+            // string).
+            if attempt == 1 {
+                request.naturalLanguageQuery = place.label
+            }
             if let item = (try? await MKLocalSearch(request: request).start())?.mapItems.first {
                 return RidePlaceMapper.ridePlace(
                     from: item,

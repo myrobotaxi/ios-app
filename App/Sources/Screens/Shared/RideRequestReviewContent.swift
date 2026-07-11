@@ -121,6 +121,11 @@ struct RideRequestReviewContent: View {
                 vehicleRow.padding(.bottom, 16)
 
                 MRTButton(schedule != nil ? "Schedule with \(fleetMember.owner)" : "Request from \(fleetMember.owner)", variant: .outlineDraw, action: confirm)
+                    // MYR-237: inert while the destination's real coordinate is
+                    // still resolving ("Finding route…" shows above) — a
+                    // placeholder submit books a 0.0mi ride to yourself.
+                    .allowsHitTesting(!destinationResolving)
+                    .opacity(destinationResolving ? 0.55 : 1)
 
                 Text(helperText)
                     .font(.system(size: 11.5))
@@ -325,6 +330,11 @@ struct RideRequestReviewContent: View {
 
     private func confirm() {
         guard let pickup = viewerState.draftPickup, let destination = viewerState.draftDestination else { return }
+        // MYR-237 device trace: an UNRESOLVED destination's coordinate is the
+        // rider's own location — submitting it books a 0.0mi ride to yourself
+        // (it happened). The CTA is disabled while resolving; this is the
+        // last-line guard.
+        guard !RidePlaceMapper.isUnresolved(destination) else { return }
         let input = RideRequestInput(
             // MYR-211 defect B: the pickup is always an explicit spot — the
             // pin-drop-confirmed coordinate (captured from the rider's live
