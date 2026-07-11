@@ -47,10 +47,10 @@ struct RideRequestRouteMap: View {
     var etch: Bool = false
     /// MYR-237 — the real route is still being fetched from MKDirections (the
     /// caller's leg-2 cache is empty for this pickup/destination). While true the
-    /// map shows the straight `[pickup, destination]` placeholder with a sweeping
-    /// gold pulse so the wait reads as work-in-progress rather than a dead
-    /// straight line; when the real route lands the caller flips this false and
-    /// the etch plays. Ignored unless `etch` is set.
+    /// map draws NO line (client: "straight line should not be the loading
+    /// placeholder") — just the etch head's glow breathing at the pickup as the
+    /// working cue; when the real route lands the etch draws it. Ignored unless
+    /// `etch` is set.
     var loading: Bool = false
     /// MYR-237 — identity of the PAGE hosting this preview (the sheet phase).
     /// When it changes (Search → Review, Review → back to Search, …) the etch
@@ -97,8 +97,6 @@ struct RideRequestRouteMap: View {
     private static let etchHeadFraction: CGFloat = 0.05
     /// The overlay → settled-map crossfade once the pass completes.
     private static let settleFade: TimeInterval = 0.25
-    /// One loading-sweep pass along the straight placeholder.
-    private static let loadingPeriod: TimeInterval = 1.4
     /// The settled-route SHINE loop (client: "the route should pulse the same
     /// shine/glow as the etch laser head and the Request from {Owner} button
     /// outline animation glow"): one bright window travels the route per
@@ -106,8 +104,6 @@ struct RideRequestRouteMap: View {
     /// trace, with the same trace stops. Runs only while the Review screen's
     /// etch presentation is active; Booking/Summary stay static.
     private static let pulsePeriod: TimeInterval = 2.6
-    /// The traveling shine window's length as a fraction of the route.
-    private static let pulseWindowFraction: CGFloat = 0.16
 
     /// How the route is presented right now. `.etching`/`.pulsing` draw the
     /// motion in screen space; everything else is plain map-space content.
@@ -124,8 +120,6 @@ struct RideRequestRouteMap: View {
     /// Driven 0 → 1 by `withAnimation`; the overlay shapes interpolate their
     /// trim endpoints from it (never sampled in body mid-flight).
     @State private var etchProgress: CGFloat = 0
-    /// The loading sweep's animated window position (0 → 1, repeatForever).
-    @State private var sweepPhase: CGFloat = 0
     /// The settled route's whole-line breathing glow intensity (0.15 ⇄ 1,
     /// autoreversing — "pulse glow all as one").
     @State private var glowPulse: CGFloat = 0.15
@@ -218,14 +212,6 @@ struct RideRequestRouteMap: View {
                 }
                 restartPresentation()
             }
-            .onChange(of: loading) { _, isLoading in
-                // A FAILED MKDirections fetch resolves to the same 2-point
-                // straight route (identical `routeKey`), so only `loading`
-                // flips — retire the sweep to the honest settled straight line.
-                if !isLoading, phase == .loading {
-                    restartPresentation()
-                }
-            }
             .task(id: etchRun) { await runPass() }
         }
     }
@@ -255,13 +241,15 @@ struct RideRequestRouteMap: View {
     /// Decide the presentation for the CURRENT route and (re)start its pass.
     private func restartPresentation() {
         etchProgress = 0
-        sweepPhase = 0
         overlayOpacity = 1
         glowPulse = 0
-        if etch, !reduceMotion, !isRealRoute, loading {
-            phase = .loading
-        } else if etch, !reduceMotion, isRealRoute {
+        if etch, !reduceMotion, isRealRoute {
             phase = .etching
+        } else if etch, !reduceMotion {
+            // No real road route yet — in flight, throttled, or failed. NEVER
+            // draw the straight fallback in etch mode (client rule): breathe
+            // the head at the pickup until the caller's retry lands a route.
+            phase = .loading
         } else {
             phase = .settled
         }
@@ -275,25 +263,14 @@ struct RideRequestRouteMap: View {
         case .settled:
             return
         case .loading:
-            // Two frames so the placeholder + projection are on screen before
-            // the repeating sweep arms (animating a value set in the same
-            // transaction as its first render can skip the animation).
+            // Two frames so the projection is on screen before the breathing
+            // arms (animating a value set in the same transaction as its first
+            // render can skip the animation).
             try? await Task.sleep(for: .milliseconds(32))
             guard !Task.isCancelled, phase == .loading else { return }
-            withAnimation(.linear(duration: Self.loadingPeriod).repeatForever(autoreverses: false)) {
-                sweepPhase = 1
+            withAnimation(.easeInOut(duration: Self.pulsePeriod / 2).repeatForever(autoreverses: true)) {
+                glowPulse = 1
             }
-            // Honest cap (client hit an endless sweep when MKDirections hung/
-            // was throttled): if the real route hasn't arrived after 10s, stop
-            // sweeping and settle the straight line — the provider's fallback
-            // path will still upgrade it if a route eventually lands.
-            try? await Task.sleep(for: .seconds(10))
-            guard !Task.isCancelled, phase == .loading else { return }
-            withAnimation(.easeOut(duration: 0.3)) { overlayOpacity = 0 }
-            try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled, phase == .loading else { return }
-            phase = .settled
-            overlayOpacity = 1
         case .etching:
             // Two frames for the (animation-disabled) camera write to land so
             // the overlay projects from the settled frame.
@@ -351,10 +328,9 @@ struct RideRequestRouteMap: View {
                     // drawing the map-space route too would pre-reveal it.
                     EmptyMapContent()
                 case .loading:
-                    // Dim placeholder so the trip is always legible (never a
-                    // blank map); the bright pulse sweeps in the overlay.
-                    MapPolyline(coordinates: route)
-                        .stroke(Color.mrtGold.opacity(0.32), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                    // NO line while the route is in flight (client rule); the
+                    // overlay breathes the etch head at the pickup instead.
+                    EmptyMapContent()
                 case .settling, .pulsing, .settled:
                     // Settled solid route: the etch's final state (with the
                     // shine loop above it in `.pulsing`), Booking's static real
@@ -431,7 +407,9 @@ struct RideRequestRouteMap: View {
                 case .pulsing:
                     RouteGlowPulse(points: points, intensity: glowPulse)
                 case .loading:
-                    RouteShine(points: points, phase: sweepPhase, windowFraction: Self.pulseWindowFraction)
+                    // The etch head, idling at the pickup, breathing while
+                    // MKDirections works — no line yet.
+                    HeadIdlePulse(points: points, intensity: glowPulse)
                 case .settled:
                     EmptyView()
                 }
@@ -596,30 +574,25 @@ private struct RouteGlowPulse: View {
     }
 }
 
-/// The MKDirections-in-flight sweep on the straight placeholder: the etch
-/// head's glow point traveling the line so the wait reads as the route being
-/// computed, with a short comet tail so the direction of travel reads.
-private struct RouteShine: View {
+/// The etch head idling at the PICKUP while MKDirections is in flight — the
+/// same glow point the etch travels with, breathing gently in place (no line
+/// is drawn while loading; client rule). Uses `PolylineHeadDot` at fraction 0
+/// so the loading cue and the etch head are literally the same mark.
+private struct HeadIdlePulse: View {
     let points: [CGPoint]
-    var phase: CGFloat
-    let windowFraction: CGFloat
+    var intensity: CGFloat
 
     var body: some View {
-        let tailFrom = max(0, phase - windowFraction)
         ZStack {
-            // Short comet tail behind the glow point.
-            TrimmedPolylineShape(points: points, from: tailFrom, to: phase)
-                .stroke(Color.mrtGoldTrace.opacity(0.55), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
-                .blur(radius: 2)
-            // The glow point — same layers as the etch head, slightly smaller.
-            PolylineHeadDot(points: points, progress: phase, radius: 20)
+            PolylineHeadDot(points: points, progress: 0, radius: 20)
                 .fill(Color.mrtGold.opacity(0.30))
                 .blur(radius: 14)
-            PolylineHeadDot(points: points, progress: phase, radius: 9)
+            PolylineHeadDot(points: points, progress: 0, radius: 9)
                 .fill(Color.mrtGoldTrace.opacity(0.65))
                 .blur(radius: 5)
-            PolylineHeadDot(points: points, progress: phase, radius: 3.5)
+            PolylineHeadDot(points: points, progress: 0, radius: 3.5)
                 .fill(Color.mrtGoldTraceBright)
         }
+        .opacity(0.35 + 0.65 * Double(intensity.isFinite ? min(1, max(0, intensity)) : 1))
     }
 }

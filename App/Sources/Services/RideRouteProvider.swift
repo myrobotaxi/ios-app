@@ -130,6 +130,10 @@ final class RideRouteStore {
     @ObservationIgnored private let provider: RideRouteProvider
     @ObservationIgnored private let deviationThresholdMeters: Double
     @ObservationIgnored private var leg2Key: String?
+    /// When the last leg-2 fetch for `leg2Key` STARTED — the retry cooldown
+    /// clock for a fallback (2-point) result (MYR-237: a throttled MKDirections
+    /// must not lock the straight fallback in forever).
+    @ObservationIgnored private var leg2AttemptAt: Date?
     @ObservationIgnored private var leg1Origin: CLLocationCoordinate2D?
     @ObservationIgnored private var leg1Task: Task<Void, Never>?
     @ObservationIgnored private var leg2Task: Task<Void, Never>?
@@ -147,15 +151,27 @@ final class RideRouteStore {
     /// (both are fixed for the ride). Cheap to call on every fix — a no-op once
     /// the pair is cached. Needed in BOTH legs (drawn dimmed in leg 1, solid in
     /// leg 2), so the caller reconciles it in either leg.
+    /// Retry cooldown for a fallback leg-2 result (throttled/failed
+    /// MKDirections): a repeat `ensureLeg2` for the SAME pair refetches after
+    /// this long, so the straight fallback is never permanent (MYR-237).
+    static let fallbackRetryCooldown: TimeInterval = 12
+
     func ensureLeg2(pickup: CLLocationCoordinate2D, destination: CLLocationCoordinate2D) {
         let l2Key = Self.key(pickup, destination)
-        guard leg2Key != l2Key else { return }
+        if leg2Key == l2Key {
+            // Same pair: done if a REAL route is cached or a fetch is running;
+            // a cached 2-point fallback retries after the cooldown.
+            guard leg2Task == nil, leg2.count <= 2 else { return }
+            if let last = leg2AttemptAt, Date().timeIntervalSince(last) < Self.fallbackRetryCooldown { return }
+        }
         leg2Key = l2Key
+        leg2AttemptAt = Date()
         leg2Task?.cancel()
         leg2Task = Task { [weak self, provider] in
             let route = await provider.route(from: pickup, to: destination)
             guard !Task.isCancelled else { return }
             self?.leg2 = route
+            self?.leg2Task = nil
         }
     }
 
@@ -195,6 +211,6 @@ final class RideRouteStore {
         leg1Task?.cancel(); leg1Task = nil
         leg2Task?.cancel(); leg2Task = nil
         leg1 = []; leg2 = []
-        leg1Origin = nil; leg2Key = nil
+        leg1Origin = nil; leg2Key = nil; leg2AttemptAt = nil
     }
 }

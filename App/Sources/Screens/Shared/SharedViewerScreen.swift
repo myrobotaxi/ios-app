@@ -209,6 +209,18 @@ struct SharedViewerScreen: View {
                 reconcileReviewRoute()
             }
         }
+        .task(id: routePreviewActive) {
+            // MYR-237: while the route preview is up without a REAL road route
+            // (MKDirections throttled/failed — the client hit a locked straight
+            // line), keep re-asking on the store's cooldown until one lands.
+            // The store no-ops these once a real route is cached.
+            while !Task.isCancelled, routePreviewActive {
+                if (reviewRealRoute?.count ?? 0) <= 2 {
+                    reconcileReviewRoute(prefetch: true)
+                }
+                try? await Task.sleep(for: .seconds(RideRouteStore.fallbackRetryCooldown))
+            }
+        }
         .onChange(of: viewerState.draftDestination) { _, destination in
             // MYR-237: PREFETCH the real route the moment a destination is
             // chosen in Search (before "Continue"), so the etch usually starts
