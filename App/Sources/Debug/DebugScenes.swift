@@ -161,6 +161,17 @@ enum DebugScene: String, CaseIterable {
     func apply(viewer: SharedViewerState, service: SimulatedRideRequestService) {
         seed(viewer: viewer)
         if let record = seededRecord { service.debugSeed(record) }
+        // MYR-177: stream the car for the leg-fit camera probe when requested.
+        if DebugScene.armsTracking { service.debugArmTracking() }
+    }
+
+    /// MYR-177 streaming-fix probe flag (`MRT_ARM_TRACKING=1` env or
+    /// `-MRT_ARM_TRACKING 1` arg): arm the tracking ticker so the car moves.
+    static var armsTracking: Bool {
+        if ProcessInfo.processInfo.environment["MRT_ARM_TRACKING"] == "1" { return true }
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-MRT_ARM_TRACKING"), i + 1 < args.count { return args[i + 1] == "1" }
+        return false
     }
 
     // MARK: Sub-mode hooks (read by the individual phase views on appear)

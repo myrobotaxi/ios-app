@@ -52,6 +52,16 @@ public final class SimulatedRideRequestService: RideRequestService {
     func debugSeed(_ record: RideRequestRecord) {
         activeRequest = record
     }
+
+    /// MYR-177 streaming-fix camera probe: arm the tracking progress ticker on a
+    /// seeded accepted ride so the car actually STREAMS along its route (the
+    /// disarmed screenshot scenes hold still — a static car can never expose a
+    /// re-fit feedback loop, exactly the MYR-222 lesson). Gated by
+    /// `MRT_ARM_TRACKING=1`; DEBUG-only.
+    func debugArmTracking() {
+        guard let request = activeRequest, request.status == .accepted, request.trackProgress != nil else { return }
+        startProgressTicking()
+    }
     #endif
 
     public func accept() {

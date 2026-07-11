@@ -111,6 +111,20 @@ struct SharedViewerScreen: View {
                     }
                     .ignoresSafeArea(edges: .bottom)
                 }
+
+                // MYR-177: the SAME recenter affordance on the live tracking map —
+                // appears once the rider pans/pinches away (follow off) and
+                // re-engages the leg-fit camera (`TrackingMapView`'s
+                // `.onChange(of: isFollowing)` → `TrackingCameraController.recenter`).
+                if isTrackingPhase {
+                    FloatingMapButton(
+                        bottom: MRTMetrics.trackingRecenterButtonBottom,
+                        hidden: isFollowing
+                    ) {
+                        isFollowing = true
+                    }
+                    .ignoresSafeArea(edges: .bottom)
+                }
             }
         }
         .background(Color.mrtBg)
@@ -140,6 +154,9 @@ struct SharedViewerScreen: View {
             // never reflected. Fold the current status + progress through the same
             // mapping, idempotently and without animating the first layout.
             reconcileMountedPhase()
+            // MYR-177: if we mounted straight into tracking (cold scene / adopted
+            // ride), prime the route cache so the leg-fit map has real geometry.
+            if isTrackingPhase { isFollowing = true; reconcileTrackingRoutes() }
             #if DEBUG
             // MYR-217 real-path probe: replay the ACTUAL idle → search →
             // choose+Continue → pinDrop sequence (with live updates flowing)
@@ -166,6 +183,23 @@ struct SharedViewerScreen: View {
         }
         .onChange(of: rideRequestService.activeRequest?.trackProgress) { _, progress in
             handleProgressChange(progress)
+            // MYR-177: as the ride advances, keep the route cache reconciled
+            // (leg flip fetches leg 1 / draws leg 2 solid). The store no-ops
+            // unless the pair/car-origin actually changed — no per-fix network.
+            reconcileTrackingRoutes()
+        }
+        .onChange(of: viewerState.sheetPhase) { oldPhase, newPhase in
+            // MYR-177: manage the tracking leg-fit camera + route cache lifecycle
+            // around the phase. Entering tracking: reset follow so the leg fit
+            // engages cleanly and prime the routes. Leaving: release the single
+            // owner + drop the cache so the next ride starts fresh.
+            if newPhase == .tracking {
+                isFollowing = true
+                reconcileTrackingRoutes()
+            } else if oldPhase == .tracking {
+                viewerState.trackingCamera.exit()
+                viewerState.rideRouteStore.reset()
+            }
         }
         .onChange(of: rideRequestService.sessionFailure) { _, failure in
             // MYR-220: an auth/session failure of the create POST is NOT an owner
@@ -303,7 +337,23 @@ struct SharedViewerScreen: View {
             // the attribution above the sheet — one source of truth.
             RideRequestRouteMap(route: requestRoute, bottomInset: mapBottomInset)
         case .tracking:
-            RideRequestRouteMap(route: requestRoute, progress: rideRequestService.activeRequest?.trackProgress ?? 0, showVehicle: true, bottomInset: mapBottomInset)
+            // MYR-177: the LIVE leg-fit tracking map (replaces the old static
+            // straight-line preview). Frames car→pickup (leg 1) / pickup→
+            // destination (leg 2) with real routes + an Uber-style heading marker,
+            // all through the single camera owner.
+            TrackingMapView(
+                leg: trackingLeg,
+                leg1Route: trackingLeg1Route,
+                leg2Route: trackingLeg2Route,
+                carCoordinate: trackingCarPosition.coordinate,
+                carHeading: trackingCarPosition.headingDegrees,
+                legProgress: trackingLegProgress,
+                bottomInset: mapBottomInset,
+                cameraPosition: $cameraPosition,
+                isFollowing: $isFollowing,
+                controller: viewerState.trackingCamera,
+                showsUserLocation: viewerState.userLocation.showsUserLocationDot
+            )
         case .summary:
             // Summary is a full-screen takeover (its own hero-map layout), not a
             // peek above a bottom sheet — no inset (MYR-216 d4).
@@ -337,8 +387,12 @@ struct SharedViewerScreen: View {
             return MRTMetrics.rideRequestSearchSheetHeight
         case .pinDrop:
             return MRTMetrics.rideRequestPinDropMapInset
-        case .review, .booking, .tracking:
+        case .review, .booking:
             return MRTMetrics.rideRequestRouteMapBottomInset
+        case .tracking:
+            // MYR-177: the tracking sheet is shorter than Review/Booking — its
+            // own real cover height so the leg-fit map fills the visible band.
+            return MRTMetrics.trackingMapBottomInset
         case .summary:
             return 0
         }
@@ -385,6 +439,71 @@ struct SharedViewerScreen: View {
             return [DriveFixtures.financialDistrict, DriveFixtures.embarcaderoCenter]
         }
         return [pickup, destination]
+    }
+
+    // MARK: MYR-177 — live tracking geometry
+    //
+    // The active ride's pickup/destination and the derived leg + car position.
+    // Until MYR-231's two-leg dispatch statuses land, the leg is derived from
+    // `trackProgress` vs the record's `pickupCut` (see `TrackingLeg`), and the
+    // car position is interpolated along the active leg's real route by the
+    // per-leg progress. When a rider-side live vehicle stream lands, the car
+    // coordinate/heading are overridden with telemetry — the map view already
+    // takes them as plain inputs, so nothing above changes.
+
+    private var trackingPickup: CLLocationCoordinate2D { requestRoute[0] }
+    private var trackingDestination: CLLocationCoordinate2D { requestRoute[1] }
+
+    /// The origin the car started its approach from (leg 1). Live: the car's
+    /// last-known coordinate (cold snapshot via the locator). Sim / no-fix: a
+    /// short hop from pickup so leg 1 has a real approach to frame (~0.8 mi).
+    private var trackingCarOrigin: CLLocationCoordinate2D {
+        if viewerState.isLiveLocation, let live = viewerState.liveVehicleLocator?.coordinate { return live }
+        return CLLocationCoordinate2D(latitude: trackingPickup.latitude + 0.0075, longitude: trackingPickup.longitude - 0.011)
+    }
+
+    private var trackingLeg: TrackingLeg {
+        TrackingLeg.forProgress(rideRequestService.activeRequest?.trackProgress ?? 0,
+                                pickupCut: rideRequestService.activeRequest?.pickupCut ?? 0.2)
+    }
+
+    /// The two leg polylines, falling back to a straight segment until the
+    /// provider resolves (so the map always has geometry to draw + fit).
+    private var trackingLeg1Route: [CLLocationCoordinate2D] {
+        viewerState.rideRouteStore.leg1.count > 1 ? viewerState.rideRouteStore.leg1 : [trackingCarOrigin, trackingPickup]
+    }
+    private var trackingLeg2Route: [CLLocationCoordinate2D] {
+        viewerState.rideRouteStore.leg2.count > 1 ? viewerState.rideRouteStore.leg2 : [trackingPickup, trackingDestination]
+    }
+
+    /// Progress WITHIN the current leg (0…1) from the whole-trip `trackProgress`.
+    private var trackingLegProgress: Double {
+        let progress = rideRequestService.activeRequest?.trackProgress ?? 0
+        let cut = rideRequestService.activeRequest?.pickupCut ?? 0.2
+        switch trackingLeg {
+        case .toPickup: return cut > 0 ? min(1, max(0, progress / cut)) : 0
+        case .inRide: return (1 - cut) > 0 ? min(1, max(0, (progress - cut) / (1 - cut))) : 0
+        }
+    }
+
+    /// The car's current coordinate + heading, interpolated along the active
+    /// leg's route by the per-leg progress (route tangent for heading).
+    private var trackingCarPosition: VehicleRoute.Position {
+        let route = trackingLeg == .toPickup ? trackingLeg1Route : trackingLeg2Route
+        return VehicleRoute.position(along: route, progress: trackingLegProgress)
+    }
+
+    private var isTrackingPhase: Bool { viewerState.sheetPhase == .tracking }
+
+    /// Reconcile the route cache for the active ride — leg 2 always (drawn dimmed
+    /// in leg 1, solid in leg 2), leg 1 only while heading to pickup. Cheap: the
+    /// store issues network work only when the pair/car-origin actually changed.
+    private func reconcileTrackingRoutes() {
+        guard isTrackingPhase else { return }
+        viewerState.rideRouteStore.ensureLeg2(pickup: trackingPickup, destination: trackingDestination)
+        if trackingLeg == .toPickup {
+            viewerState.rideRouteStore.ensureLeg1(carPosition: trackingCarOrigin, pickup: trackingPickup)
+        }
     }
 
     // MARK: Reactive sync (ride-request.jsx:1098-1117)
