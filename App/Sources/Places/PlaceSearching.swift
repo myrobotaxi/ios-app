@@ -120,6 +120,26 @@ enum RidePlaceMapper {
         )
     }
 
+    /// Map a suggestion whose coordinate is already KNOWN (the selection-time
+    /// cache, MYR-237) to a `RidePlace` — same shape as `ridePlace(from:)`
+    /// minus the POI category (not cached; the generic pin icon is used).
+    static func ridePlace(
+        at coordinate: CLLocationCoordinate2D,
+        title: String,
+        subtitle: String?,
+        regionCenter: CLLocationCoordinate2D
+    ) -> RidePlace {
+        RidePlace(
+            id: "live|\(title)|\(subtitle ?? "")",
+            label: title,
+            subtitle: (subtitle?.isEmpty == false) ? subtitle : nil,
+            miles: straightLineMiles(from: regionCenter, to: coordinate),
+            minutes: 0,
+            icon: "mappin",
+            coordinate: coordinate
+        )
+    }
+
     /// A suggestion whose coordinate couldn't be resolved (failed/slow
     /// `MKLocalSearch`) — kept as a row from the completer's title/subtitle so a
     /// batch never collapses to the empty state (MYR-211 defect A3). Distance is

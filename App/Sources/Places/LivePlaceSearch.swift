@@ -113,6 +113,14 @@ final class LivePlaceSearch: PlaceSearching {
     @ObservationIgnored private var regionCenter = CLLocationCoordinate2D(latitude: 0, longitude: 0)
     @ObservationIgnored private var query = ""
     @ObservationIgnored private var debounceTask: Task<Void, Never>?
+    /// Resolved coordinates by suggestion identity (MYR-237): each keystroke
+    /// batch re-ranked the SAME suggestions and re-resolved every one — one
+    /// `MKLocalSearch` per row per batch (typing a word cost ~30 requests),
+    /// which is what tripped Apple's throttle and produced unresolved rows.
+    /// A resolved coordinate is stable for a session; cache it.
+    @ObservationIgnored private var coordinateCache: [String: CLLocationCoordinate2D] = [:]
+
+    nonisolated private static func cacheKey(_ s: AutocompleteSuggestion) -> String { "\(s.title)|\(s.subtitle ?? "")" }
     @ObservationIgnored private var resolveTask: Task<Void, Never>?
     /// The last suggestion batch + the fragment it answered — re-resolved with
     /// the new center on a same-query re-bias (guarantee 1 above).
@@ -203,40 +211,66 @@ final class LivePlaceSearch: PlaceSearching {
         }
 
         let resolveItem = self.resolveItem
+        // Cache hits build their rows with NO network (MYR-237 throttle fix);
+        // only genuinely new suggestions go to `MKLocalSearch`.
+        let cache = coordinateCache
+        var prefilled: [(Int, RidePlace)] = []
+        var pending: [(Int, AutocompleteSuggestion)] = []
+        for (index, suggestion) in top.enumerated() {
+            if let cached = cache[Self.cacheKey(suggestion)] {
+                prefilled.append((index, RidePlaceMapper.ridePlace(
+                    at: cached,
+                    title: suggestion.title,
+                    subtitle: suggestion.subtitle,
+                    regionCenter: center
+                )))
+            } else {
+                pending.append((index, suggestion))
+            }
+        }
+        let seed = prefilled
         resolveTask = Task { [weak self] in
-            var resolved: [(Int, RidePlace)] = []
-            await withTaskGroup(of: (Int, RidePlace).self) { group in
-                for (index, suggestion) in top.enumerated() {
+            var resolved: [(Int, RidePlace)] = seed
+            var learned: [(String, CLLocationCoordinate2D)] = []
+            await withTaskGroup(of: (Int, RidePlace, String?).self) { group in
+                for (index, suggestion) in pending {
                     group.addTask {
                         if let item = await resolveItem(suggestion) {
-                            return (index, RidePlaceMapper.ridePlace(
+                            let place = RidePlaceMapper.ridePlace(
                                 from: item,
                                 title: suggestion.title,
                                 subtitle: suggestion.subtitle,
                                 regionCenter: center
-                            ))
+                            )
+                            return (index, place, Self.cacheKey(suggestion))
                         }
                         // Degrade, never drop (MYR-211 defect A3): a failed/slow
                         // `MKLocalSearch` resolution must NOT delete the row — a
                         // batch that resolved to zero rows renders the empty "No
                         // results" state even though the completer had matches.
                         // Keep the completer's title/subtitle (distance hidden,
-                        // coordinate resolved on selection).
+                        // coordinate resolved on SELECTION — SelectionPlaceResolver).
                         return (index, RidePlaceMapper.unresolvedPlace(
                             title: suggestion.title,
                             subtitle: suggestion.subtitle,
                             regionCenter: center
-                        ))
+                        ), nil)
                     }
                 }
-                for await pair in group {
-                    resolved.append(pair)
+                for await (index, place, key) in group {
+                    resolved.append((index, place))
+                    if let key { learned.append((key, place.coordinate)) }
                 }
             }
             guard !Task.isCancelled else { return }
             let live = resolved.sorted { $0.0 < $1.0 }.map(\.1)
+            let learnedPairs = learned
             await MainActor.run { [weak self] in
-                guard let self, self.query == queryAtDispatch else { return }
+                guard let self else { return }
+                for (key, coordinate) in learnedPairs {
+                    self.coordinateCache[key] = coordinate
+                }
+                guard self.query == queryAtDispatch else { return }
                 self.results = savedMatches + live
             }
         }

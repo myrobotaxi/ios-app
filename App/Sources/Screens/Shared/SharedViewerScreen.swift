@@ -335,6 +335,16 @@ struct SharedViewerScreen: View {
             && (rideRequestService.activeRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate) != nil
     }
 
+    /// The route preview map's `loading` input: true while the real road route
+    /// (or the destination's real coordinate) is still being resolved.
+    private var reviewPreviewLoading: Bool {
+        if let draft = viewerState.draftDestination, RidePlaceMapper.isUnresolved(draft),
+           rideRequestService.activeRequest == nil {
+            return true
+        }
+        return reviewRouteLoading
+    }
+
     /// The preview's pickup coordinate: explicit request/draft pickup, else
     /// the live "Current location" fix.
     private var searchPreviewPickup: CLLocationCoordinate2D? {
@@ -359,7 +369,7 @@ struct SharedViewerScreen: View {
                     ? Self.mapBottomInset(phase: .review, isPendingPill: false)
                     : mapBottomInset,
                 etch: viewerState.sheetPhase != .booking,
-                loading: viewerState.sheetPhase != .booking && reviewRouteLoading,
+                loading: viewerState.sheetPhase != .booking && reviewPreviewLoading,
                 replayKey: String(describing: viewerState.sheetPhase)
             )
         } else {
@@ -552,6 +562,13 @@ struct SharedViewerScreen: View {
     /// straight fallback (non-nil), so a permanent failure shows the honest static
     /// straight line, never an endless loading pulse.
     private var reviewRealRoute: [CLLocationCoordinate2D]? {
+        // An UNRESOLVED destination's coordinate is a placeholder (the rider's
+        // own location) — never route against it (MYR-237 device QA: it drew a
+        // "random route around my pickup"). nil = the loading breathing head.
+        if let draft = viewerState.draftDestination, RidePlaceMapper.isUnresolved(draft),
+           rideRequestService.activeRequest == nil {
+            return nil
+        }
         let pickup = searchPreviewPickup
         let destination = rideRequestService.activeRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate
         guard let pickup, let destination else { return nil }
@@ -569,6 +586,13 @@ struct SharedViewerScreen: View {
     private func reconcileReviewRoute(prefetch: Bool = false) {
         guard prefetch || viewerState.sheetPhase == .review || viewerState.sheetPhase == .booking
             || viewerState.sheetPhase == .search else { return }
+        // Never spend a (throttle-budgeted) MKDirections call on an unresolved
+        // destination's placeholder coordinate — the resolution swap re-fires
+        // this via the draftDestination onChange (MYR-237 device QA).
+        if let draft = viewerState.draftDestination, RidePlaceMapper.isUnresolved(draft),
+           rideRequestService.activeRequest == nil {
+            return
+        }
         let pickup = searchPreviewPickup
         let destination = rideRequestService.activeRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate
         guard let pickup, let destination else { return }
