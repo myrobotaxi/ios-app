@@ -32,13 +32,6 @@ struct IncomingRequestSheet: View {
     @State private var sent = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// ride-request.jsx's `requesterName` prop defaults to a placeholder,
-    /// but `RideRequestInput` (RideRequestService.swift) carries no
-    /// rider-name field — M1 ships no rider-name customization, every
-    /// request is from "Sam" (see this issue's spec + the Tweaks panel's
-    /// fixed "Rider name: Sam" field in the prototype).
-    private static let requesterName = "Sam"
-
     var body: some View {
         ZStack(alignment: .bottom) {
             if let request {
@@ -138,7 +131,7 @@ struct IncomingRequestSheet: View {
                 )
                 .frame(width: 48, height: 48)
                 .overlay(
-                    Text(Self.requesterName.prefix(1))
+                    Text(request.requesterDisplayName.prefix(1))
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(.white)
                 )
@@ -155,10 +148,14 @@ struct IncomingRequestSheet: View {
         }
     }
 
+    /// MYR-229: `request.requesterDisplayName` is the real requester on the
+    /// live path (contracts v0.11.0's `requesterName`, "Rider" fallback if
+    /// the wire omits it) and the fixture "Sam" in SIM/DEBUG scenes — see
+    /// that property's doc comment.
     private func headerTitle(_ request: RideRequestRecord) -> String {
         request.input.passenger != nil
-            ? "\(Self.requesterName) requested a ride"
-            : "\(Self.requesterName) wants a ride"
+            ? "\(request.requesterDisplayName) requested a ride"
+            : "\(request.requesterDisplayName) wants a ride"
     }
 
     private func headerSubtitle(_ request: RideRequestRecord) -> String {

@@ -197,12 +197,33 @@ public struct RideRequestRecord: Identifiable, Sendable, Equatable {
     /// `nil` until `.accepted`. `>= 0.999` is "arrived" (ride-request.jsx:
     /// 1125,1245 `isSummary`).
     public var trackProgress: Double?
+    /// MYR-229: the real requester's display name, threaded from contracts
+    /// v0.11.0's `RideRequest.requesterName` / the WS `ride_request_created`
+    /// / `ride_status_changed` payloads (server-side "first name -> email
+    /// local-part -> Rider" fallback) by `RideRequestContractMapping
+    /// .record(from:)`. `nil` for every SIMULATED/fixture record — neither
+    /// `SimulatedRideRequestService` nor the DEBUG scene table ever sets it —
+    /// so `requesterDisplayName` below falls back to the fixture "Sam" and
+    /// the drift-gate captures stay pixel-identical. A LIVE record is never
+    /// `nil` here: the mapping folds in "Rider" even if the wire omitted the
+    /// field, per CLAUDE.md's "no fixtures on the live path" rule.
+    public var requesterName: String?
 
-    public init(id: String = UUID().uuidString, input: RideRequestInput, status: RideRequestStatus = .pending, requestedAt: Date = Date()) {
+    public init(id: String = UUID().uuidString, input: RideRequestInput, status: RideRequestStatus = .pending, requestedAt: Date = Date(), requesterName: String? = nil) {
         self.id = id
         self.input = input
         self.status = status
         self.requestedAt = requestedAt
+        self.requesterName = requesterName
+    }
+
+    /// Owner-facing requester name — the real name when present (live),
+    /// else the fixture "Sam" (SIM / DEBUG scenes only — see `requesterName`'s
+    /// doc comment). The ONE place that literal fixture persona is spelled
+    /// for the ride-request flow, so `IncomingRequestSheet` and the owner's
+    /// scheduled-accept card (`HomeScreen.handleAccept`) can't drift apart.
+    public var requesterDisplayName: String {
+        requesterName ?? "Sam"
     }
 
     /// `pickupMins / (pickupMins + tripMins)` — the leg split

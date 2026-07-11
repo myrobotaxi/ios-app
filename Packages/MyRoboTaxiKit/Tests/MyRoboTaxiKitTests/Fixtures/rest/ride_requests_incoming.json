@@ -13,6 +13,7 @@
       "pickup": { "lat": 37.7793, "lng": -122.3937, "label": "Current location" },
       "dropoff": { "lat": 37.6156, "lng": -122.3900, "label": "SFO · Terminal 2", "address": "San Francisco International" },
       "status": "requested",
+      "requesterName": "Thomas",
       "createdAt": "2026-07-09T18:04:11.482Z",
       "updatedAt": "2026-07-09T18:04:11.482Z"
     },

@@ -178,10 +178,17 @@ struct HomeScreen: View {
         let destination = request.input.destination
 
         if let schedule = request.input.schedule {
+            // MYR-229: the real requester on the live path (contracts
+            // v0.11.0's `requesterName`, "Rider" fallback), the fixture
+            // "Sam" in SIM/DEBUG scenes — see `requesterDisplayName`'s doc
+            // comment. Both the Drives → Upcoming card ("For {rider}",
+            // `DrivesScreen.UpcomingRow`) and the toast subtitle name the
+            // requester, so both read the same value.
+            let requesterDisplayName = request.requesterDisplayName
             drivesState.addUpcoming(
                 UpcomingRide(
                     id: "ou-" + request.id,
-                    rider: "Sam",
+                    rider: requesterDisplayName,
                     destination: .init(
                         label: destination.label,
                         subtitle: destination.subtitle ?? "",
@@ -195,7 +202,7 @@ struct HomeScreen: View {
             )
             routeSentToast = RouteSentToastContent(
                 title: "Ride scheduled \u{00B7} \(schedule.day) \(schedule.time)",
-                subtitle: "Sam \u{00B7} \(destination.label) \u{00B7} \(fleetMember.name) reserved",
+                subtitle: "\(requesterDisplayName) \u{00B7} \(destination.label) \u{00B7} \(fleetMember.name) reserved",
                 isScheduled: true
             )
         } else if let passenger = request.input.passenger {
