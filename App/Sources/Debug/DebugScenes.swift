@@ -273,6 +273,10 @@ enum DebugScene: String, CaseIterable {
             // MYR-215 deliverable 3: a destination is chosen but the flow hasn't
             // advanced — the search sheet reflects it as filled + "Continue"
             // (RideRequestSearchContent.onAppear picks up this draft).
+            // MYR-237: pickup seeded too so the Search route preview (etch +
+            // glow behind the sheet; the live path resolves it from the
+            // location fix) is exercisable in this scene.
+            viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
             viewer.sheetPhase = .search
         case .pinDrop:

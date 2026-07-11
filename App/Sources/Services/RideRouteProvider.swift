@@ -38,14 +38,30 @@ struct StraightLineRideRouteProvider: RideRouteProvider {
 /// failure it returns the straight `[from, to]` fallback, so callers are never
 /// left without a route.
 struct AppleRideRouteProvider: RideRouteProvider {
+    /// MKDirections can HANG (or sit in Apple's per-device throttle) far past
+    /// UX patience — the client hit an endless loading sweep. The fetch races
+    /// this deadline; losing it degrades to the straight fallback like any
+    /// other failure (a later retry can still upgrade the route).
+    static let deadline: Duration = .seconds(8)
+
     func route(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) async -> [CLLocationCoordinate2D] {
         let request = MKDirections.Request()
         request.transportType = .automobile
         request.source = MKMapItem(placemark: MKPlacemark(coordinate: from))
         request.destination = MKMapItem(placemark: MKPlacemark(coordinate: to))
         let directions = MKDirections(request: request)
-        guard let response = try? await directions.calculate(),
-              let polyline = response.routes.first?.polyline else {
+        let response = await withTaskGroup(of: MKDirections.Response?.self) { group -> MKDirections.Response? in
+            group.addTask { try? await directions.calculate() }
+            group.addTask {
+                try? await Task.sleep(for: Self.deadline)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            directions.cancel()
+            return first
+        }
+        guard let polyline = response?.routes.first?.polyline else {
             return [from, to]
         }
         let count = polyline.pointCount
@@ -157,6 +173,20 @@ final class RideRouteStore {
             self?.leg1 = route
             self?.leg1Task = nil
         }
+    }
+
+    /// The pickup → destination polyline IFF it is currently cached for EXACTLY
+    /// this pair (else `nil`). Matches on the same requested-coordinate key
+    /// `ensureLeg2` fetches by — no snapping tolerance — so a caller (the MYR-237
+    /// review etch) can avoid drawing a STALE prior-trip route under a new
+    /// pickup/destination while the new fetch is still in flight (the store only
+    /// `reset()`s on Tracking exit, so `leg2` can hold a previous trip's polyline
+    /// across a "Change trip"). Returns the straight `[from, to]` fallback too
+    /// (the provider's honest degradation) — the caller decides whether a
+    /// 2-point route is "real" enough to etch.
+    func leg2Route(pickup: CLLocationCoordinate2D, destination: CLLocationCoordinate2D) -> [CLLocationCoordinate2D]? {
+        guard leg2Key == Self.key(pickup, destination), leg2.count > 1 else { return nil }
+        return leg2
     }
 
     /// Drop all cached routes and cancel in-flight fetches (ride ended / screen

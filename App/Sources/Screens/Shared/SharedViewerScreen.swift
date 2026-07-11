@@ -157,6 +157,9 @@ struct SharedViewerScreen: View {
             // MYR-177: if we mounted straight into tracking (cold scene / adopted
             // ride), prime the route cache so the leg-fit map has real geometry.
             if isTrackingPhase { isFollowing = true; reconcileTrackingRoutes() }
+            // MYR-237: mounted into Review/Booking (DEBUG scene / retryable
+            // session-failure return) — prime the real Apple route to draw/etch.
+            reconcileReviewRoute()
             #if DEBUG
             // MYR-217 real-path probe: replay the ACTUAL idle → search →
             // choose+Continue → pinDrop sequence (with live updates flowing)
@@ -199,6 +202,22 @@ struct SharedViewerScreen: View {
             } else if oldPhase == .tracking {
                 viewerState.trackingCamera.exit()
                 viewerState.rideRouteStore.reset()
+            }
+            // MYR-237: entering Review/Booking — fetch the real Apple route so it
+            // draws (and, on Review, etches) instead of the straight placeholder.
+            if newPhase == .review || newPhase == .booking {
+                reconcileReviewRoute()
+            }
+        }
+        .onChange(of: viewerState.draftDestination) { _, destination in
+            // MYR-237: PREFETCH the real route the moment a destination is
+            // chosen in Search (before "Continue"), so the etch usually starts
+            // the instant Review opens instead of after a visible MKDirections
+            // wait (client: "the animation starts after a few seconds"). The
+            // leg-2 cache is keyed per pickup/destination pair, so this is a
+            // no-op if Review re-requests the same pair.
+            if destination != nil {
+                reconcileReviewRoute(prefetch: true)
             }
         }
         .onChange(of: rideRequestService.sessionFailure) { _, failure in
@@ -280,8 +299,64 @@ struct SharedViewerScreen: View {
     // content-injection seam and is scoped to a different vehicle/telemetry
     // pairing (see that file's own header comment).
 
+    /// MYR-237 (client): the route preview renders on SEARCH too, the moment
+    /// both endpoints are known — "when I put in the route it should
+    /// automatically display the route polyline in the same way the following
+    /// page would". Hoisted ABOVE the phase switch so search-preview → Review →
+    /// Booking is ONE view identity: the etch plays once (at destination
+    /// selection), then persists as the breathing glow through "Continue"
+    /// instead of replaying per phase.
+    private var routePreviewActive: Bool {
+        switch viewerState.sheetPhase {
+        case .review, .booking: return true
+        case .search: return draftRouteEndpointsKnown
+        default: return false
+        }
+    }
+
+    /// Both preview endpoints resolvable while still on Search (a destination
+    /// has been chosen). "Current location" pickup has NO draft — it resolves
+    /// from the live fix, so the fix coordinate is the pickup fallback here
+    /// (same coordinate the request would materialize at Continue).
+    private var draftRouteEndpointsKnown: Bool {
+        searchPreviewPickup != nil
+            && (rideRequestService.activeRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate) != nil
+    }
+
+    /// The preview's pickup coordinate: explicit request/draft pickup, else
+    /// the live "Current location" fix.
+    private var searchPreviewPickup: CLLocationCoordinate2D? {
+        rideRequestService.activeRequest?.input.pickup.coordinate
+            ?? viewerState.draftPickup?.coordinate
+            ?? viewerState.userLocation.coordinate
+    }
+
     @ViewBuilder
     private func backgroundMap(glyphGlobalPoint: CGPoint, viewportSize: CGSize) -> some View {
+        if routePreviewActive {
+            // MYR-216 d4 / MYR-223 d2 / MYR-237 — see the .review case notes
+            // below (this is that same map, now also serving Search's preview).
+            RideRequestRouteMap(
+                route: reviewRoute,
+                // Search's own inset is the EXPANDED 712pt search sheet
+                // (SHEET_HEIGHTS.search) — the destination-selected state that
+                // hosts this preview renders the compact sheet (~review-sized),
+                // so the preview fits with the REVIEW inset in both phases
+                // (also keeps the framing continuous through "Continue").
+                bottomInset: viewerState.sheetPhase == .search
+                    ? Self.mapBottomInset(phase: .review, isPendingPill: false)
+                    : mapBottomInset,
+                etch: viewerState.sheetPhase != .booking,
+                loading: viewerState.sheetPhase != .booking && reviewRouteLoading,
+                replayKey: String(describing: viewerState.sheetPhase)
+            )
+        } else {
+            backgroundMapByPhase(glyphGlobalPoint: glyphGlobalPoint, viewportSize: viewportSize)
+        }
+    }
+
+    @ViewBuilder
+    private func backgroundMapByPhase(glyphGlobalPoint: CGPoint, viewportSize: CGSize) -> some View {
         switch viewerState.sheetPhase {
         case .idle, .search, .pinDrop:
             VehicleMapView(
@@ -331,11 +406,11 @@ struct SharedViewerScreen: View {
                 regionSpanDelta: pinDropRegionSpanDelta
             )
         case .review, .booking:
-            // MYR-216 d4: inset the fit for the trip sheet so both endpoints +
-            // the full polyline sit above it (the destination used to hide behind).
-            // MYR-223 d2: the SAME per-phase inset (`mapBottomInset`) also keeps
-            // the attribution above the sheet — one source of truth.
-            RideRequestRouteMap(route: requestRoute, bottomInset: mapBottomInset)
+            // Unreachable: `routePreviewActive` intercepts Review/Booking (and
+            // Search once endpoints are known) above, so the route-preview map
+            // keeps ONE identity across those phases (MYR-237 — the etch plays
+            // once and the glow persists through "Continue").
+            EmptyView()
         case .tracking:
             // MYR-177: the LIVE leg-fit tracking map (replaces the old static
             // straight-line preview). Frames car→pickup (leg 1) / pickup→
@@ -433,12 +508,59 @@ struct SharedViewerScreen: View {
     /// submitted `activeRequest` once it exists, else the still-in-progress
     /// draft (Review is reached before `submit(_:)` is ever called).
     private var requestRoute: [CLLocationCoordinate2D] {
-        let pickup = rideRequestService.activeRequest?.input.pickup.coordinate ?? viewerState.draftPickup?.coordinate
+        let pickup = searchPreviewPickup
         let destination = rideRequestService.activeRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate
         guard let pickup, let destination else {
             return [DriveFixtures.financialDistrict, DriveFixtures.embarcaderoCenter]
         }
         return [pickup, destination]
+    }
+
+    // MARK: MYR-237 — real Apple Maps route for Review/Booking
+    //
+    // Reuses MYR-177's route service verbatim: `viewerState.rideRouteStore`
+    // (`AppleRideRouteProvider` → MKDirections) already fetches the pickup →
+    // destination polyline exactly once per pair via `ensureLeg2`, so Review
+    // primes leg 2 early and Tracking inherits the warm cache (no extra fetch).
+
+    /// The route drawn on Review/Booking: the REAL leg-2 road polyline once it has
+    /// resolved FOR THE CURRENT pickup/destination pair, else the straight
+    /// `[pickup, destination]` — the honest loading placeholder while MKDirections
+    /// is in flight and the permanent fallback if it fails. The endpoint-match
+    /// guard prevents a stale route (a prior trip's leg 2, still cached because the
+    /// store only resets on Tracking exit) from flashing under a new trip's
+    /// pickup/destination after "Change trip".
+    private var reviewRoute: [CLLocationCoordinate2D] {
+        reviewRealRoute ?? requestRoute
+    }
+
+    /// The MKDirections route for the current review pickup/destination pair, or
+    /// `nil` while it is still being fetched (leg 2 empty for this pair) — the
+    /// skeleton-loading signal. A resolved-but-failed fetch yields the 2-point
+    /// straight fallback (non-nil), so a permanent failure shows the honest static
+    /// straight line, never an endless loading pulse.
+    private var reviewRealRoute: [CLLocationCoordinate2D]? {
+        let pickup = searchPreviewPickup
+        let destination = rideRequestService.activeRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate
+        guard let pickup, let destination else { return nil }
+        return viewerState.rideRouteStore.leg2Route(pickup: pickup, destination: destination)
+    }
+
+    /// True while the real route for the current pair has not resolved yet — drives
+    /// the review map's skeleton loader so the wait feels intentional.
+    private var reviewRouteLoading: Bool { reviewRealRoute == nil }
+
+    /// Prime the pickup → destination route while on Review/Booking (no-op once the
+    /// pair is cached — cheap to call on every entry). MKDirections runs in the
+    /// Simulator too (the store uses `AppleRideRouteProvider` in every mode,
+    /// MYR-177), so the etch draws a real road route in sim and on device alike.
+    private func reconcileReviewRoute(prefetch: Bool = false) {
+        guard prefetch || viewerState.sheetPhase == .review || viewerState.sheetPhase == .booking
+            || viewerState.sheetPhase == .search else { return }
+        let pickup = searchPreviewPickup
+        let destination = rideRequestService.activeRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate
+        guard let pickup, let destination else { return }
+        viewerState.rideRouteStore.ensureLeg2(pickup: pickup, destination: destination)
     }
 
     // MARK: MYR-177 — live tracking geometry
