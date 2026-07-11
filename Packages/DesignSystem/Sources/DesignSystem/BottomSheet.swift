@@ -143,18 +143,33 @@ public enum MRTSheetDetent: Sendable, Equatable {
     case half
 }
 
-/// The draggable home-map sheet (components.jsx `BottomSheet`): drag the
-/// handle between peek and half; release snaps to the nearest detent with
+/// The draggable home-map sheet (components.jsx `BottomSheet`): drag anywhere
+/// on the sheet between peek and half; release projects the throw from its
+/// release velocity and snaps to the nearest detent with
 /// `.spring(response: 0.42, dampingFraction: 0.86)` (Handoff §8 sheet snap).
+///
+/// Fluid-drag contract (MYR-236 — all decision math lives in `SheetPhysics`):
+///   1. **1:1 tracking** — the finger drives `sheetHeight` inside an
+///      animation-disabled transaction, so the surface never lags/fights.
+///   2. **Rubber-banding** past either detent (`SheetPhysics.rubberBand`),
+///      not a hard clamp.
+///   3. **Velocity-projected release** (`SheetPhysics.projection` +
+///      `nearestDetent`) — a fast flick crosses detents on small displacement.
+///   4. **Interruptible** — a new grab reads the sheet's *live* laid-out
+///      height (measured via a background reader that reflects the in-flight
+///      spring) and picks up from there, so there is no jump mid-settle.
+///   5. **Inner-scroll handoff** — the whole sheet drags while the inner
+///      content isn't scrollable (peek); a `ScrollView` caller keeps its own
+///      `.scrollDisabled(detent == .peek)`, so at half the body scrolls and
+///      the handle still collapses it (matching the prototype's handle-drag).
+///   6. **Reduce Motion** snaps without spring theatrics.
 ///
 /// Place it inside the container it should measure (it fills its parent and
 /// bottom-aligns itself), e.g. layered over the map in a `ZStack`. Keep any
 /// floating tab bar *outside* that container or inset the container's bottom,
-/// mirroring the prototype's `navHeight` offset. Content scrolling is the
-/// caller's concern (wrap in `ScrollView` for the half state).
+/// mirroring the prototype's `navHeight` offset.
 ///
-/// Programmatic detent changes animate if the caller wraps them in
-/// `withAnimation`.
+/// Programmatic detent changes animate to the new resting height.
 public struct MRTDetentSheet<Content: View>: View {
     @Binding private var detent: MRTSheetDetent
     private let peekHeight: CGFloat
@@ -162,8 +177,17 @@ public struct MRTDetentSheet<Content: View>: View {
     private let halfHeightFraction: CGFloat
     private let content: Content
 
-    /// Live drag delta in points (positive = taller than the resting detent).
-    @State private var dragOffset: CGFloat = 0
+    /// The rendered sheet height — the single source of truth. `nil` until the
+    /// first layout resolves the resting height (avoids sizing to 0 on the
+    /// first frame).
+    @State private var sheetHeight: CGFloat?
+    /// The sheet's *actual* laid-out height, measured every frame — reflects
+    /// the interpolated value while the settle spring is in flight, so a
+    /// re-grab can pick the sheet up from exactly where it is (interruptible,
+    /// no jump).
+    @State private var liveHeight: CGFloat = 0
+    /// Resting height captured at drag start; `nil` when not dragging.
+    @State private var dragAnchor: CGFloat?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
@@ -183,22 +207,30 @@ public struct MRTDetentSheet<Content: View>: View {
         self.content = content()
     }
 
+    /// Snap spring — Handoff §8 "Sheet snap `.spring(response:0.42,
+    /// dampingFraction:0.86)`". SwiftUI springs are interruptible, so a grab
+    /// mid-flight blends in without gating the gesture.
+    private var settleAnimation: Animation {
+        reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.42, dampingFraction: 0.86)
+    }
+
     public var body: some View {
         GeometryReader { geo in
             let half = halfHeight ?? geo.size.height * halfHeightFraction
-            let base = detent == .peek ? peekHeight : half
-            // Rubber-band 30pt past either detent, like the prototype.
-            let height = min(half + 30, max(peekHeight - 30, base + dragOffset))
+            let resting = detent == .peek ? peekHeight : half
+            // `.isFinite` guard before layout (MYR-227): never let a stray
+            // NaN/∞ reach `.frame(height:)`.
+            let rawHeight = sheetHeight ?? resting
+            let height = rawHeight.isFinite ? max(0, rawHeight) : resting
+
             VStack(spacing: 0) {
                 MRTGrabHandle()
-                    // The 20pt handle strip drags; expand to a 44pt hit band.
                     .contentShape(Rectangle().inset(by: -12))
-                    .gesture(dragGesture(peek: peekHeight, half: half, base: base))
                     .accessibilityLabel("Sheet handle")
                     .accessibilityAdjustableAction { direction in
                         switch direction {
-                        case .increment: detent = .half
-                        case .decrement: detent = .peek
+                        case .increment: setDetent(.half, peek: peekHeight, half: half)
+                        case .decrement: setDetent(.peek, peek: peekHeight, half: half)
                         @unknown default: break
                         }
                     }
@@ -208,7 +240,29 @@ public struct MRTDetentSheet<Content: View>: View {
             .frame(height: height)
             .frame(maxWidth: .infinity)
             .mrtSurface(.sheet, fill: .mrtBgSecondary)
+            // Whole-sheet drag: the handle AND the body both grab the sheet.
+            // At half the inner `ScrollView` (caller-owned, `.scrollDisabled`
+            // off) wins for body touches, so this yields to scrolling there;
+            // the handle strip lives outside that scroll view and always drags.
+            .contentShape(Rectangle())
+            .gesture(dragGesture(peek: peekHeight, half: half))
+            // Measure the true laid-out height (interpolated during the
+            // spring) so a re-grab is jump-free.
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(key: SheetLiveHeightKey.self, value: proxy.size.height)
+                }
+            )
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .onPreferenceChange(SheetLiveHeightKey.self) { liveHeight = $0 }
+            .onAppear { if sheetHeight == nil { sheetHeight = resting } }
+            // External detent flips (accessibility action) and peek-height
+            // changes (driving↔parked) animate to the new resting height —
+            // but skip when a drag just committed the same target (its own
+            // `onEnded` already ran the settle), keyed on `sheetHeight`
+            // already equalling the resting value.
+            .onChange(of: detent) { settleToRestingIfNeeded(resting) }
+            .onChange(of: resting) { settleToRestingIfNeeded(resting) }
         }
         // Full-bleed geometry (CLAUDE.md "Hard rules"): components.jsx
         // `BottomSheet` is called with `navHeight={0}` (screens.jsx:429) —
@@ -222,23 +276,91 @@ public struct MRTDetentSheet<Content: View>: View {
         .ignoresSafeArea(edges: .bottom)
     }
 
-    private func dragGesture(peek: CGFloat, half: CGFloat, base: CGFloat) -> some Gesture {
+    private func dragGesture(peek: CGFloat, half: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 1)
             .onChanged { value in
-                dragOffset = -value.translation.height
+                if dragAnchor == nil {
+                    // Pick the sheet up from wherever it visually is right now
+                    // — including mid-settle — and freeze the in-flight spring
+                    // at that position (no jump, requirement 4).
+                    let anchor = liveHeight > 0 ? liveHeight : (sheetHeight ?? peek)
+                    dragAnchor = anchor
+                    setHeight(anchor, animated: false)
+                    #if DEBUG
+                    MRTSheetTrace.log("grab @\(Int(anchor))")
+                    #endif
+                }
+                let raw = (dragAnchor ?? peek) + (-value.translation.height)
+                // 1:1 tracking with logarithmic overscroll past either detent.
+                let banded = SheetPhysics.rubberBand(raw, lowerBound: peek, upperBound: half)
+                setHeight(banded, animated: false)
             }
             .onEnded { value in
-                // Snap to the detent nearest the projected height.
-                let projected = base - value.predictedEndTranslation.height
-                let target: MRTSheetDetent = projected > (peek + half) / 2 ? .half : .peek
-                withAnimation(
-                    reduceMotion
-                        ? .easeOut(duration: 0.2)
-                        : .spring(response: 0.42, dampingFraction: 0.86)
-                ) {
-                    detent = target
-                    dragOffset = 0
-                }
+                let releaseHeight = liveHeight > 0 ? liveHeight : (sheetHeight ?? peek)
+                // Project the throw from release VELOCITY (up = positive), then
+                // snap to the detent nearest the projected endpoint — a fast
+                // flick crosses detents even on small displacement.
+                let projected = releaseHeight + SheetPhysics.projection(velocity: -value.velocity.height)
+                let target = SheetPhysics.nearestDetent(
+                    toProjectedHeight: projected, peekHeight: peek, halfHeight: half
+                )
+                #if DEBUG
+                MRTSheetTrace.log("release @\(Int(releaseHeight)) proj \(Int(projected)) → \(target == .peek ? "peek" : "half")")
+                #endif
+                dragAnchor = nil
+                detent = target
+                setHeight(target == .peek ? peek : half, animated: true)
             }
     }
+
+    /// Programmatic detent change (accessibility) — commit + settle.
+    private func setDetent(_ target: MRTSheetDetent, peek: CGFloat, half: CGFloat) {
+        detent = target
+        setHeight(target == .peek ? peek : half, animated: true)
+    }
+
+    /// Animate to `resting` unless the sheet is already settling there (the
+    /// drag's own `onEnded` handles that case) or a drag is active.
+    private func settleToRestingIfNeeded(_ resting: CGFloat) {
+        guard dragAnchor == nil else { return }
+        guard let current = sheetHeight, current != resting else { return }
+        setHeight(resting, animated: true)
+    }
+
+    private func setHeight(_ value: CGFloat, animated: Bool) {
+        let safe = value.isFinite ? value : (sheetHeight ?? peekHeight)
+        if animated {
+            withAnimation(settleAnimation) { sheetHeight = safe }
+        } else {
+            var txn = Transaction()
+            txn.disablesAnimations = true
+            withTransaction(txn) { sheetHeight = safe }
+        }
+    }
 }
+
+/// Reports the sheet's live (interpolated) laid-out height up to the sheet
+/// view so a re-grab can read the true current position.
+private struct SheetLiveHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        let next = nextValue()
+        if next > 0 { value = next }
+    }
+}
+
+#if DEBUG
+import os
+
+/// DEBUG-only drag trace (MYR-236) — mirrors the camera-trace convention
+/// (`VehicleMapView.mrtCameraTrace`). Off unless `MRT_SHEET_TRACE=1`, so it
+/// never spams the drift-gate log streams. Release builds don't compile it.
+enum MRTSheetTrace {
+    private static let enabled = ProcessInfo.processInfo.environment["MRT_SHEET_TRACE"] == "1"
+    private static let logger = Logger(subsystem: "app.myrobotaxi.ios", category: "sheet")
+    static func log(_ message: String) {
+        guard enabled else { return }
+        logger.info("\(message, privacy: .public)")
+    }
+}
+#endif
