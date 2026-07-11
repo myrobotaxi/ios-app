@@ -104,16 +104,12 @@ struct RideRequestPinDropContent: View {
         // MYR-211/212: the confirmed pickup is the AUTHORITATIVE pin position —
         // in live mode the map's settled center (wherever the rider dragged to)
         // with its reverse-geocoded street label, and the fixture point in sim.
-        // See `SharedViewerState.pinDropCoordinate`/`pinDropLabel`.
-        viewerState.draftPickup = RidePlace(
-            id: "pin",
-            label: viewerState.pinDropLabel,
-            subtitle: nil,
-            miles: 0,
-            minutes: 0,
-            icon: "mappin.circle.fill",
-            coordinate: viewerState.pinDropCoordinate
-        )
+        // MYR-239: `confirmPickup()` owns the label plumbing so a pin confirmed
+        // while its street is still resolving never persists the "Finding
+        // address…" transient onto the Search pickup row (it takes the calm
+        // "Current location" fallback + one bounded re-resolution instead). See
+        // `SharedViewerState.confirmPickup`/`pinDropCoordinate`/`pinDropLabel`.
+        viewerState.confirmPickup()
         switch returnTo {
         case .search: viewerState.sheetPhase = .search
         // MYR-212 defect 5: enter Review through the estimate seam so the trip

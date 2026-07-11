@@ -1,5 +1,8 @@
 import SwiftUI
 import DesignSystem
+#if canImport(UIKit)
+import UIKit
+#endif
 
 // MYR-200 search-gap fix — height probes so the sheet can hug its content up
 // to the 712pt cap (see `RideRequestSearchContent.scrollRegionHeight`).
@@ -123,7 +126,10 @@ struct RideRequestSearchContent: View {
                 // MYR-199 fix: drag-down-to-dismiss — ride-request.jsx:1150
                 // `d > 36 && phase === 'search'` → `closeToIdle()` (full draft
                 // reset back to the greeting sheet).
-                RideGrabHandle(onDragDismiss: { viewerState.resetDraftToIdle() })
+                RideGrabHandle(onDragDismiss: {
+                    dismissKeyboardBeforeLeaving() // MYR-239 defect 2
+                    viewerState.resetDraftToIdle()
+                })
                 chipRow
                     .padding(.bottom, viewerState.draftSchedule != nil ? 8 : 12)
                 if let schedule = viewerState.draftSchedule {
@@ -188,6 +194,11 @@ struct RideRequestSearchContent: View {
             viewerState.updateSearch(query: query)
         }
         .onAppear {
+            // MYR-239 defect 2 — re-entering Search (back from pin-drop/review)
+            // must NOT restore the destination field's first responder mid-
+            // transition: keep focus down so the keyboard only returns when the
+            // rider taps the field, after the sheet has finished laying out.
+            destinationFieldFocused = false
             forSomeoneElse = viewerState.draftPassenger != nil
             if let schedule = viewerState.draftSchedule {
                 schedDay = schedule.day
@@ -396,13 +407,14 @@ struct RideRequestSearchContent: View {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
                     RideEyebrowText(text: "Pickup")
-                    Text(viewerState.draftPickup?.label ?? "Current location")
+                    Text(viewerState.draftPickup?.label ?? SharedViewerState.pickupFallbackLabel)
                         .font(.system(size: 14.5, weight: .medium))
                         .foregroundStyle(Color.mrtText)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
                 Button {
+                    dismissKeyboardBeforeLeaving() // MYR-239 defect 2
                     viewerState.pinReturn = .search
                     viewerState.sheetPhase = .pinDrop(returnTo: .search)
                 } label: {
@@ -509,6 +521,7 @@ struct RideRequestSearchContent: View {
     @ViewBuilder
     private func proceedRegion(for place: RidePlace) -> some View {
         let cta = MRTButton("Continue", variant: .gold) {
+            dismissKeyboardBeforeLeaving() // MYR-239 defect 2 — drop focus before the phase transition
             viewerState.proceedFromSearch()
         }
         .padding(.top, 8)
@@ -541,6 +554,24 @@ struct RideRequestSearchContent: View {
         viewerState.chooseDestination(place)
         query = place.label // programmatic fill; onChange keeps the pick (label matches)
         destinationFieldFocused = false
+    }
+
+    /// MYR-239 defect 2 — FOCUS DISCIPLINE on leaving Search. The client hit a
+    /// frame where the keyboard was fully up over a mid-animation sheet with NO
+    /// content laid out above it (map + etched route visible behind QuickType):
+    /// the destination field's first responder was still live when the phase
+    /// transition (Continue → pinDrop/review, or drag-dismiss → idle) started, so
+    /// the keyboard stranded as an orphan while the sheet animated out. Drop the
+    /// SwiftUI focus binding AND force-resign first responder BEFORE mutating the
+    /// phase, so the keyboard is committed to dismissing as the sheet transitions
+    /// — never left hanging over an empty sheet. On re-entering Search the field
+    /// is not re-focused (no `.focused` write sets it true), so the keyboard only
+    /// ever returns when the rider taps the field, after the transition settles.
+    private func dismissKeyboardBeforeLeaving() {
+        destinationFieldFocused = false
+        #if canImport(UIKit)
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        #endif
     }
 
     // MARK: Results
