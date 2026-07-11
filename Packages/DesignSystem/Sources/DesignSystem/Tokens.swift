@@ -233,6 +233,14 @@ public extension Color {
     static let mrtGoldBorderSoft = Color(hex: Hex.gold, alpha: Double(0x55) / 255.0)
     /// Ambient glow under the outline-draw CTA — rgba(201,168,76,0.14).
     static let mrtGoldGlowFaint = Color(hex: Hex.gold, alpha: 0.14)
+    /// MYR-234 — the SUBDUED route leg on the live tracking map: the leg the
+    /// rider is NOT currently traversing (pickup→destination while still heading
+    /// to pickup) renders dimmed so the ACTIVE leg (full-strength `mrtGold`)
+    /// reads as the live route — the client's "active route to pickup vs the rest
+    /// of the trip" ask. Same gold hue, low alpha (desaturates against the dark
+    /// map); no new hex. Which leg gets this treatment is driven by ONE phase
+    /// input (`TrackingLeg`), so MYR-231's `in_ride` status flips it in one line.
+    static let mrtRouteInactive = Color(hex: Hex.gold, alpha: 0.26)
 
     // Overlays (Handoff §7)
     /// Confirm-dialog card fill — `#1a1a1c`.

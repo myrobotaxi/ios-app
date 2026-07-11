@@ -21,6 +21,14 @@ enum TrackingLeg: Equatable {
     static func forProgress(_ progress: Double, pickupCut: Double) -> TrackingLeg {
         progress >= pickupCut ? .inRide : .toPickup
     }
+
+    /// MYR-234 — whether leg 1 (car → pickup) is the ACTIVE route leg for this
+    /// phase. The tracking map's polyline + pin treatment split on this ONE
+    /// value: the active leg renders full-strength gold, the other subdued. It is
+    /// the single phase input the client asked for ("active route to pickup vs
+    /// the rest of the trip"); MYR-231's `in_ride` status flips it in one line by
+    /// flipping the `TrackingLeg` itself.
+    var isLeg1Active: Bool { self == .toPickup }
 }
 
 // MARK: - TrackingCameraController (MYR-177 — the ONE camera owner for tracking)
