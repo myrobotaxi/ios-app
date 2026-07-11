@@ -29,12 +29,24 @@ import DesignSystem
 struct RideHistoryScreen: View {
     @Binding var sharedTab: String
     @Bindable var historyStore: RideHistoryStore
+    /// MYR-228 — LIVE seeds the scheduled list empty (no scheduled-ride backend);
+    /// the Scheduled tab then shows its honest "No scheduled rides" empty state
+    /// rather than the fixture reservations. SIM keeps the fixtures so every
+    /// simulated/DEBUG scene (scheduledDetails/Reschedule/…) stays pixel-identical.
+    var isLive: Bool = false
 
     private enum Tab: String { case completed, scheduled }
 
     @State private var tab: Tab = .completed
-    @State private var scheduled: [ScheduledRide] = RideHistoryFixtures.scheduledRides
+    @State private var scheduled: [ScheduledRide]
     @State private var activeRideID: String?
+
+    init(sharedTab: Binding<String>, historyStore: RideHistoryStore, isLive: Bool = false) {
+        _sharedTab = sharedTab
+        self.historyStore = historyStore
+        self.isLive = isLive
+        _scheduled = State(initialValue: isLive ? [] : RideHistoryFixtures.scheduledRides)
+    }
 
     private var completedRides: [RequestedRide] { historyStore.completedRides }
     private var completedCount: Int { completedRides.count }

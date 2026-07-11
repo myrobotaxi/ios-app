@@ -295,33 +295,40 @@ struct RideRequestSearchContent: View {
             }
             .padding(.bottom, 10)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(RideRequestFixtures.recentPassengers) { contact in
-                        let active = passengerPhone == contact.phone
-                        Button {
-                            setPassenger(name: contact.name, phone: contact.phone)
-                        } label: {
-                            HStack(spacing: 8) {
-                                Circle().fill(Color.mrtElevated).frame(width: 24, height: 24)
-                                    .overlay(Text(initials(contact.name)).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Color.mrtText))
-                                Text(contact.name)
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .tracking(-0.1)
-                                    .foregroundStyle(active ? Color.mrtGold : Color.mrtText)
+            // MYR-228 — the recent-passenger chips render fixture PEOPLE
+            // (`RideRequestFixtures.recentPassengers`). There is no contacts /
+            // recent-passengers backend, so in live mode hide the chip row
+            // entirely — the rider types a name + number manually below (the
+            // honest, backend-free path). SIM keeps the chips (pixel-identical).
+            if !viewerState.isLiveLocation {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(RideRequestFixtures.recentPassengers) { contact in
+                            let active = passengerPhone == contact.phone
+                            Button {
+                                setPassenger(name: contact.name, phone: contact.phone)
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Circle().fill(Color.mrtElevated).frame(width: 24, height: 24)
+                                        .overlay(Text(initials(contact.name)).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Color.mrtText))
+                                    Text(contact.name)
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .tracking(-0.1)
+                                        .foregroundStyle(active ? Color.mrtGold : Color.mrtText)
+                                }
+                                .padding(.leading, 6)
+                                .padding(.trailing, 12)
+                                .padding(.vertical, 6)
+                                .background(active ? Color.mrtGoldTileFaint : Color.mrtRideChipFill, in: Capsule())
+                                .overlay(Capsule().strokeBorder(active ? Color.mrtGold.opacity(Double(0x66) / 255.0) : Color.mrtBorder, lineWidth: MRTMetrics.hairline))
                             }
-                            .padding(.leading, 6)
-                            .padding(.trailing, 12)
-                            .padding(.vertical, 6)
-                            .background(active ? Color.mrtGoldTileFaint : Color.mrtRideChipFill, in: Capsule())
-                            .overlay(Capsule().strokeBorder(active ? Color.mrtGold.opacity(Double(0x66) / 255.0) : Color.mrtBorder, lineWidth: MRTMetrics.hairline))
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
+                    .padding(.bottom, 2)
                 }
-                .padding(.bottom, 2)
+                .padding(.bottom, 11)
             }
-            .padding(.bottom, 11)
 
             VStack(spacing: 8) {
                 TextField("Passenger name", text: passengerNameBinding)

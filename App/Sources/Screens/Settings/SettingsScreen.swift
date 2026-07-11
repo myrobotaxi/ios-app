@@ -200,12 +200,18 @@ struct SettingsScreen: View {
                 .mrtTextStyle(.label())
                 .foregroundStyle(Color.mrtTextMuted)
             Spacer(minLength: 0)
-            HStack(spacing: 6) {
-                PulseDot(color: .mrtDriving, size: 6)
-                Text("Linked \u{00B7} synced 14s ago")
-                    .font(.system(size: 11))
-                    .tracking(0.2)
-                    .foregroundStyle(Color.mrtTextSec)
+            // MYR-228 — the "Linked · synced 14s ago" status is a fixture claim;
+            // show it only when there ARE linked vehicles. In live mode with no
+            // linked-vehicle backend the list is empty, so the honest header
+            // carries no false "synced" line.
+            if !vehiclesState.vehicles.isEmpty {
+                HStack(spacing: 6) {
+                    PulseDot(color: .mrtDriving, size: 6)
+                    Text("Linked \u{00B7} synced 14s ago")
+                        .font(.system(size: 11))
+                        .tracking(0.2)
+                        .foregroundStyle(Color.mrtTextSec)
+                }
             }
         }
         .padding(.horizontal, MRTMetrics.pageGutter)
@@ -213,10 +219,21 @@ struct SettingsScreen: View {
         .padding(.bottom, 8)
     }
 
+    @ViewBuilder
     private var vehiclesList: some View {
         VStack(spacing: 0) {
-            ForEach(Array(vehiclesState.vehicles.enumerated()), id: \.element.id) { index, vehicle in
-                vehicleRow(vehicle, isFirst: index == 0)
+            if vehiclesState.vehicles.isEmpty {
+                // MYR-228 — honest empty state (live, no linked-vehicle backend):
+                // never the fixture Teslas. "Add a Tesla" row still follows.
+                Text("No Tesla linked yet.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.mrtTextMuted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 12)
+            } else {
+                ForEach(Array(vehiclesState.vehicles.enumerated()), id: \.element.id) { index, vehicle in
+                    vehicleRow(vehicle, isFirst: index == 0)
+                }
             }
         }
         .padding(.horizontal, MRTMetrics.pageGutter)

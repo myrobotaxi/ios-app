@@ -22,9 +22,14 @@ public final class OwnerShareState {
     public var viewers: [Viewer]
     public var pending: [PendingInvite]
 
-    public init() {
-        viewers = ShareFixtures.viewers
-        pending = ShareFixtures.pending
+    /// MYR-228 — `live` seeds an EMPTY viewers/pending list: there is no live
+    /// sharing backend yet (no `/viewers` / `/invites` contract), so the live
+    /// path must render the screen's honest empty state ("No one has access
+    /// yet."), NEVER the fixture people ("Alex", "Sam", "Jordan"). SIM keeps the
+    /// `ShareFixtures` seed so every simulated/DEBUG scene stays pixel-identical.
+    public init(live: Bool = false) {
+        viewers = live ? [] : ShareFixtures.viewers
+        pending = live ? [] : ShareFixtures.pending
     }
 
     /// screens.jsx:1394 `setViewers(vs => vs.filter(x => x.email !== …))`.

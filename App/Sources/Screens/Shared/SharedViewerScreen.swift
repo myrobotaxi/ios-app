@@ -503,7 +503,15 @@ struct SharedViewerScreen: View {
                 GreetingHero(firstName: greetingFirstName)
                     .padding(.bottom, 16)
                 searchBar
-                quickPlaces
+                // MYR-228 — the Home/Work quick chips render fixture saved places
+                // (`RideRequestFixtures.savedPlaces`). There is no saved-places
+                // backend yet (real ones arrive with MYR-225), so in live mode the
+                // idle sheet must NOT surface them — hide the chips entirely (an
+                // honest empty affordance: the rider searches instead). SIM keeps
+                // them so the greeting sheet stays pixel-identical.
+                if !viewerState.isLiveLocation {
+                    quickPlaces
+                }
                 // MYR-199 fix: this `Spacer` is what actually enforces the
                 // fixed `sharedIdleSheetHeight` (286) below — it's the
                 // flexible child a VStack needs to consume the "extra"
@@ -637,7 +645,12 @@ struct SharedViewerScreen: View {
         } label: {
             HStack(spacing: 11) {
                 Image(systemName: "magnifyingglass").font(.system(size: 16)).foregroundStyle(Color.mrtGold)
-                RotatingPlaceholder(items: ["Where to?", "A ride is \(SharedViewerScreen.watchedVehicleETAMinutes) min away"])
+                // MYR-228 — the "A ride is 3 min away" placeholder is a HARDCODED
+                // fixture ETA (`watchedVehicleETAMinutes`, `FLEET[0].etaMin`), not a
+                // real signal. In live mode drop it and rotate nothing — just the
+                // static "Where to?" — until a real watched-vehicle ETA exists. SIM
+                // keeps both strings rotating (pixel-identical).
+                RotatingPlaceholder(items: searchPlaceholders)
                     .font(.system(size: 16))
                     .tracking(-0.2)
                     .foregroundStyle(Color.mrtTextSec)
@@ -704,6 +717,16 @@ struct SharedViewerScreen: View {
     /// screens.jsx:15-19 `FLEET[0].etaMin` (Alex's shared Model Y) — the
     /// rotating placeholder's second string.
     private static let watchedVehicleETAMinutes = 3
+
+    /// MYR-228 — the search bar's rotating placeholder items. LIVE: only the
+    /// static "Where to?" (the fixture ETA is dropped — no real watched-vehicle
+    /// ETA yet; a single-item `RotatingPlaceholder` never rotates). SIM: both
+    /// strings, unchanged.
+    private var searchPlaceholders: [String] {
+        viewerState.isLiveLocation
+            ? ["Where to?"]
+            : ["Where to?", "A ride is \(SharedViewerScreen.watchedVehicleETAMinutes) min away"]
+    }
 }
 
 // MARK: - Greeting hero (screens.jsx:1972-1976,2085-2090; `mrt-greet-in`/
