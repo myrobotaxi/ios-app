@@ -623,11 +623,12 @@ private struct FSDRing: View {
         // did (it was reading `celebrationGlow`'s `size + 20` instead of
         // `size`, rendering ~20% too large).
         .keyframeAnimator(initialValue: 1.0, trigger: celebrate) { content, scale in
-            content.scaleEffect(scale)
+            // MYR-227 — clamp animator samples to finite before they reach
+            // CALayer geometry (see GreetingHero's sanitized RevealValue).
+            content.scaleEffect(scale.isFinite ? scale : 1)
         } keyframes: { _ in
             // dsPop 0.8s: 0%→1, 24%→1.16, 48%→0.96, 70%→1.05, 100%→1.
             KeyframeTrack(\.self) {
-                LinearKeyframe(1.0, duration: 0)
                 LinearKeyframe(1.16, duration: 0.192, timingCurve: Self.popCurve)
                 LinearKeyframe(0.96, duration: 0.192, timingCurve: Self.popCurve)
                 LinearKeyframe(1.05, duration: 0.176, timingCurve: Self.popCurve)
@@ -672,16 +673,14 @@ private struct FSDRing: View {
             Circle()
                 .fill(RadialGradient(colors: [.mrtGoldGlowSoft, .clear], center: .center, startRadius: 0, endRadius: size * 0.62))
                 .frame(width: size + 20, height: size + 20)
-                .scaleEffect(value.scale)
-                .opacity(value.opacity)
+                .scaleEffect(value.scale.isFinite ? value.scale : 1)
+                .opacity(value.opacity.isFinite ? value.opacity : 0)
         } keyframes: { _ in
             KeyframeTrack(\.opacity) {
-                LinearKeyframe(0, duration: 0)
                 LinearKeyframe(0.9, duration: 0.3, timingCurve: .easeOut)
                 LinearKeyframe(0, duration: 0.7, timingCurve: .easeOut)
             }
             KeyframeTrack(\.scale) {
-                LinearKeyframe(0.7, duration: 0)
                 LinearKeyframe(1.9, duration: 1.0, timingCurve: .easeOut)
             }
         }
@@ -695,16 +694,14 @@ private struct FSDRing: View {
             Circle()
                 .strokeBorder(Color.mrtGold, lineWidth: 2)
                 .frame(width: size + 4, height: size + 4)
-                .scaleEffect(value.scale)
-                .opacity(value.opacity)
+                .scaleEffect(value.scale.isFinite ? value.scale : 1)
+                .opacity(value.opacity.isFinite ? value.opacity : 0)
         } keyframes: { _ in
             KeyframeTrack(\.opacity) {
-                LinearKeyframe(0, duration: 0)
                 LinearKeyframe(0.9, duration: 0.2125, timingCurve: Self.flashCurve)
                 LinearKeyframe(0, duration: 0.6375, timingCurve: Self.flashCurve)
             }
             KeyframeTrack(\.scale) {
-                LinearKeyframe(1, duration: 0)
                 LinearKeyframe(1.45, duration: 0.85, timingCurve: Self.flashCurve)
             }
         }
@@ -791,7 +788,9 @@ private struct ConfettiParticle: Identifiable {
                 rotation: Double.random(in: -1...1) * 600,
                 width: width, height: height, round: round,
                 color: colors[i % colors.count],
-                delay: Double.random(in: 0...0.2),
+                // MYR-227 — floored: a randomly-zero delay makes the leading
+                // hold a ZERO-DURATION keyframe, the interpolation-NaN source.
+                delay: Double.random(in: 0.001...0.2),
                 duration: 1.5 + Double.random(in: 0...0.6)
             )
         }
@@ -828,10 +827,11 @@ private struct ConfettiParticleView: View {
                 }
             }
             .frame(width: particle.width, height: particle.height)
-            .rotationEffect(.degrees(value.rotation))
-            .scaleEffect(value.scale)
-            .offset(x: value.x, y: value.y)
-            .opacity(value.opacity)
+            // MYR-227 — same finite clamp as the celebration animators.
+            .rotationEffect(.degrees(value.rotation.isFinite ? value.rotation : 0))
+            .scaleEffect(value.scale.isFinite ? value.scale : 1)
+            .offset(x: value.x.isFinite ? value.x : 0, y: value.y.isFinite ? value.y : 0)
+            .opacity(value.opacity.isFinite ? value.opacity : 0)
         } keyframes: { _ in
             // 0%→opacity 0; 10%→opacity 1 (arrival at mx/my); 70%→opacity 1
             // (hold); 100%→opacity 0 (fall to tx/ty). The leading zero-duration

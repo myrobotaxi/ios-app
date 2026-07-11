@@ -211,9 +211,11 @@ struct RootView: View {
     private func routeAfterAuth() {
         let user = session.currentUser
         let stored = user.flatMap { modeStore.mode(forUserID: $0.id) }
-        // MYR-226 BISECT (throwaway): force owner shell regardless of stored mode.
-        _ = stored
-        applyViewMode(.owner)
+        switch PostAuthRouter.destination(user: user, storedMode: stored) {
+        case .onboarding: screen = .emptyState
+        case .chooser: screen = .modeChooser
+        case .shell(let mode): applyViewMode(mode)
+        }
     }
 
     /// Apply a view-mode choice to the shell: pick the role, reset its landing
