@@ -13,9 +13,10 @@ import SwiftUI
 //     white stem, planted at the coordinate by a small GOLD contact dot ringed
 //     in white. (Tesla's contact dot was route-blue; our route accent is the
 //     sacred gold, so the contact dot is gold — CLAUDE.md tokens rule.)
-//   • DESTINATION (end) — a classic white TEARDROP map pin (rounded head
-//     tapering to a point) with a dark circular hole punched in the head and a
-//     small white donut at the ground contact just at the tip. No square.
+//   • DESTINATION (end) — a regular white drop-off map pin: a round bulbous
+//     head tapering to a sharp point, with a dark circular hole punched in the
+//     head. The tip itself is the ground contact (no separate ground marker —
+//     that read as a rocket nozzle). No square.
 //
 // The heads are monochrome white with dark cutouts (NOT gold), which reads them
 // apart from the gold car glyph (`TrackingCarMarker`) and the blue user dot at a
@@ -93,47 +94,51 @@ public struct MRTMapPin: View {
         }
     }
 
-    // MARK: Destination — teardrop
+    // MARK: Destination — regular drop-off pin
 
     private var destination: some View {
-        let headHeight = headSize * 1.5
-        return VStack(spacing: 0) {
-            Teardrop()
-                .fill(Color.mrtText)
-                .overlay(alignment: .top) {
-                    // Dark circular hole punched in the head.
-                    Circle()
-                        .fill(Color.mrtBg)
-                        .frame(width: headSize * 0.42, height: headSize * 0.42)
-                        // Center the hole on the teardrop head (≈0.32 down).
-                        .padding(.top, headHeight * 0.32 - headSize * 0.21)
-                }
-                .frame(width: headSize, height: headHeight)
-            // Ground donut: small white ring at the tip / ground contact.
-            Circle()
-                .strokeBorder(Color.mrtText, lineWidth: 1.6)
-                .background(Circle().fill(Color.mrtBg))
-                .frame(width: headSize * 0.42, height: headSize * 0.42)
-                // Nestle the ring up so the teardrop tip meets its center.
-                .padding(.top, -headSize * 0.21)
-        }
+        Teardrop()
+            .fill(Color.mrtText)
+            .overlay(alignment: .top) {
+                // Dark circular hole punched in the round head.
+                Circle()
+                    .fill(Color.mrtBg)
+                    .frame(width: headSize * 0.42, height: headSize * 0.42)
+                    // Centered on the head (head center is headSize/2 down).
+                    .padding(.top, headSize * 0.29)
+            }
+            // Round head (diameter = headSize) tapering to a point below; the
+            // tip is the frame's bottom edge, so `.bottom` anchoring plants it
+            // on the coordinate — no separate ground marker (that read as a
+            // rocket nozzle).
+            .frame(width: headSize, height: headSize * 1.4)
     }
 }
 
-/// A classic map-pin teardrop: a rounded head tapering to a point at the bottom
-/// (the tip lands on the coordinate under `.bottom` anchoring).
+/// A classic map-pin silhouette: a round bulbous head tapering to a sharp point
+/// at the bottom (the tip lands on the coordinate under `.bottom` anchoring).
 struct Teardrop: Shape {
     func path(in rect: CGRect) -> Path {
-        let w = rect.width, h = rect.height
-        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-            CGPoint(x: rect.minX + x * w, y: rect.minY + y * h)
-        }
+        let w = rect.width
+        let cx = rect.minX + w * 0.5
+        let r = w * 0.5              // head radius = half the width → circular head
+        let cy = rect.minY + r       // head center
+        let tip = CGPoint(x: cx, y: rect.maxY)
         var path = Path()
-        // Tip at the bottom center; two symmetric cubics bulge out to a round
-        // head and meet in a rounded point at the top.
-        path.move(to: p(0.5, 1.0))
-        path.addCurve(to: p(0.5, 0.0), control1: p(0.02, 0.72), control2: p(0.02, 0.10))
-        path.addCurve(to: p(0.5, 1.0), control1: p(0.98, 0.10), control2: p(0.98, 0.72))
+        // Two symmetric cubics: a near-circular head at the top drawing in to a
+        // sharp point at the tip. The 1.33·r horizontal control offset makes the
+        // upper head read as a true circle.
+        path.move(to: tip)
+        path.addCurve(
+            to: CGPoint(x: cx, y: rect.minY),
+            control1: CGPoint(x: cx - r * 1.33, y: cy + r * 0.55),
+            control2: CGPoint(x: cx - r * 1.33, y: cy - r * 0.95)
+        )
+        path.addCurve(
+            to: tip,
+            control1: CGPoint(x: cx + r * 1.33, y: cy - r * 0.95),
+            control2: CGPoint(x: cx + r * 1.33, y: cy + r * 0.55)
+        )
         path.closeSubpath()
         return path
     }
