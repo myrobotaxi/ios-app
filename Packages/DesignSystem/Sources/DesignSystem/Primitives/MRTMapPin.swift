@@ -70,13 +70,14 @@ public struct MRTMapPin: View {
 
     private var pickup: some View {
         VStack(spacing: 0) {
-            // Ring head: white disc with a dark punched center (donut).
+            // Skinny ring head: a thin white ring with a dark punched center
+            // (donut) — a wide hole keeps the white a slim ring, not a disc.
             Circle()
                 .fill(Color.mrtText)
                 .overlay(
                     Circle()
                         .fill(Color.mrtBg)
-                        .frame(width: headSize * 0.42, height: headSize * 0.42)
+                        .frame(width: headSize * 0.58, height: headSize * 0.58)
                 )
                 .frame(width: headSize, height: headSize)
             // Thin hairline white stem.
