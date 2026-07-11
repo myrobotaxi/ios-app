@@ -1,37 +1,46 @@
 import SwiftUI
 
-// MARK: - MRTMapPin (MYR-234 — pickup / destination map markers)
+// MARK: - MRTMapPin (MYR-235 — slim Tesla-style pickup / destination markers)
 //
-// Proper, recognizable pickup and destination pins for the live tracking map,
-// replacing the two look-alike `MRTEndpointDot`s that the client couldn't tell
-// apart from the blue user-location dot or the gold car glyph (Thomas, QA
-// 2026-07-11: "I want the pins to be a proper pick up pin and the destination
-// being a proper destination pin").
+// Slim, elegant map markers for the live tracking map, replacing the MYR-234
+// "fat" gold heads (circle/square on a tapered gold stem with a heavy gold glow
+// plate) the client rejected (Thomas, 2026-07-11: "I don't like the fat pins
+// you are using … the difference between start and end pins"). The reference is
+// the Tesla ride map's two-pin language:
 //
-// The two kinds carry the trip-card's ○ / □ language (the pickup→destination
-// connector rail in `RideRequestSearchContent.routeRail`): the PICKUP head is a
-// circle (○), the DESTINATION head is a square (□). Both are the sacred gold
-// accent — markers are gold (CLAUDE.md tokens rule) — so a single hue keeps
-// them on-brand while the head SHAPE + a dark inner glyph make them read apart
-// at a glance, and the planted STEM distinguishes them from the flat blue user
-// dot and the (stem-less, car-silhouette, pulsing) tracking car marker.
+//   • PICKUP (start) — a slim "donut lollipop": a small monochrome-white RING
+//     head (white disc with a dark punched center) floating on a thin hairline
+//     white stem, planted at the coordinate by a small GOLD contact dot ringed
+//     in white. (Tesla's contact dot was route-blue; our route accent is the
+//     sacred gold, so the contact dot is gold — CLAUDE.md tokens rule.)
+//   • DESTINATION (end) — a classic white TEARDROP map pin (rounded head
+//     tapering to a point) with a dark circular hole punched in the head and a
+//     small white donut at the ground contact just at the tip. No square.
 //
-// A "lollipop" silhouette — a gold head on a tapered stem ending in a small
-// contact dot — plants the marker at its coordinate. Render inside a MapKit
-// `Annotation(anchor: .bottom)` so the contact dot sits exactly on the
-// coordinate (the head floats above it), like a real dropped pin.
+// The heads are monochrome white with dark cutouts (NOT gold), which reads them
+// apart from the gold car glyph (`TrackingCarMarker`) and the blue user dot at a
+// glance; a single subtle scrim shadow — NOT the old glow plate — lifts them off
+// the dark Flat map. Every color is an existing DesignSystem token: white heads
+// = `mrtText`, dark cutouts = `mrtBg`, pickup contact = `mrtGold`.
+//
+// Render inside a MapKit `Annotation(anchor: .bottom)`: the pin's bottom-most
+// element (the pickup contact dot / the teardrop's ground donut) sits on the
+// coordinate, so the marker plants exactly at its point (MYR-213 glyph=coordinate
+// rule).
 public struct MRTMapPin: View {
     public enum Kind: Equatable {
-        /// Pickup — a circular (○) gold head, matching the trip-card pickup glyph.
+        /// Pickup — a slim white donut-lollipop with a gold contact dot.
         case pickup
-        /// Destination — a square (□) gold head, matching the trip-card drop-off glyph.
+        /// Destination — a classic white teardrop map pin.
         case destination
     }
 
     private let kind: Kind
+    /// Head diameter (pickup ring / teardrop head width). Slim by design — the
+    /// whole pin is a fraction of the MYR-234 marker's footprint.
     private let headSize: CGFloat
 
-    public init(kind: Kind, headSize: CGFloat = 26) {
+    public init(kind: Kind, headSize: CGFloat = 15) {
         self.kind = kind
         self.headSize = headSize
     }
@@ -44,82 +53,86 @@ public struct MRTMapPin: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            head
-            // Tapered stem + contact dot plant the pin on its coordinate.
-            stem
+        Group {
+            switch kind {
+            case .pickup: pickup
+            case .destination: destination
+            }
         }
+        // A single subtle scrim shadow lifts the white heads off the dark map —
+        // the old heavy gold glow plate (MYR-234) is gone.
+        .shadow(color: .mrtScrim, radius: 2.5, y: 1)
         .accessibilityElement()
         .accessibilityLabel(accessibilityLabel)
     }
 
-    // MARK: Head
+    // MARK: Pickup — donut lollipop
 
-    @ViewBuilder
-    private var head: some View {
-        ZStack {
-            switch kind {
-            case .pickup:
-                // ○ — circular head with a dark bullseye center.
-                Circle()
-                    .fill(Color.mrtGold)
-                    .overlay(Circle().strokeBorder(Color.mrtText, lineWidth: 1.5))
-                    .overlay(
-                        Circle()
-                            .fill(Color.mrtBg)
-                            .frame(width: headSize * 0.34, height: headSize * 0.34)
-                    )
-                    .frame(width: headSize, height: headSize)
-            case .destination:
-                // □ — square head with a dark square center.
-                let corner = headSize * 0.24
-                RoundedRectangle(cornerRadius: corner, style: .continuous)
-                    .fill(Color.mrtGold)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: corner, style: .continuous)
-                            .strokeBorder(Color.mrtText, lineWidth: 1.5)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: corner * 0.5, style: .continuous)
-                            .fill(Color.mrtBg)
-                            .frame(width: headSize * 0.34, height: headSize * 0.34)
-                    )
-                    .frame(width: headSize, height: headSize)
-            }
-        }
-        // Same gold glow family as the tracking car marker, so pins + car read
-        // as one map-marker system.
-        .shadow(color: .mrtGold, radius: 4)
-        .shadow(color: .mrtGoldGlow, radius: 9)
-    }
-
-    // MARK: Stem
-
-    private var stem: some View {
+    private var pickup: some View {
         VStack(spacing: 0) {
-            // A short tapered neck from the head down to the contact dot.
-            Trapezoid()
-                .fill(Color.mrtGold)
-                .overlay(Trapezoid().stroke(Color.mrtText, lineWidth: 1))
-                .frame(width: headSize * 0.30, height: headSize * 0.34)
+            // Ring head: white disc with a dark punched center (donut).
+            Circle()
+                .fill(Color.mrtText)
+                .overlay(
+                    Circle()
+                        .fill(Color.mrtBg)
+                        .frame(width: headSize * 0.42, height: headSize * 0.42)
+                )
+                .frame(width: headSize, height: headSize)
+            // Thin hairline white stem.
+            Capsule()
+                .fill(Color.mrtText)
+                .frame(width: 2, height: headSize * 1.05)
+            // Ground contact: small gold filled dot ringed in white, planted on
+            // the coordinate.
             Circle()
                 .fill(Color.mrtGold)
-                .overlay(Circle().strokeBorder(Color.mrtText, lineWidth: 1))
-                .frame(width: headSize * 0.22, height: headSize * 0.22)
+                .overlay(Circle().strokeBorder(Color.mrtText, lineWidth: 1.5))
+                .frame(width: headSize * 0.5, height: headSize * 0.5)
+        }
+    }
+
+    // MARK: Destination — teardrop
+
+    private var destination: some View {
+        let headHeight = headSize * 1.5
+        return VStack(spacing: 0) {
+            Teardrop()
+                .fill(Color.mrtText)
+                .overlay(alignment: .top) {
+                    // Dark circular hole punched in the head.
+                    Circle()
+                        .fill(Color.mrtBg)
+                        .frame(width: headSize * 0.42, height: headSize * 0.42)
+                        // Center the hole on the teardrop head (≈0.32 down).
+                        .padding(.top, headHeight * 0.32 - headSize * 0.21)
+                }
+                .frame(width: headSize, height: headHeight)
+            // Ground donut: small white ring at the tip / ground contact.
+            Circle()
+                .strokeBorder(Color.mrtText, lineWidth: 1.6)
+                .background(Circle().fill(Color.mrtBg))
+                .frame(width: headSize * 0.42, height: headSize * 0.42)
+                // Nestle the ring up so the teardrop tip meets its center.
+                .padding(.top, -headSize * 0.21)
         }
     }
 }
 
-/// A downward-tapering neck (wide at top, narrow at bottom) joining a pin head
-/// to its contact dot.
-private struct Trapezoid: Shape {
+/// A classic map-pin teardrop: a rounded head tapering to a point at the bottom
+/// (the tip lands on the coordinate under `.bottom` anchoring).
+struct Teardrop: Shape {
     func path(in rect: CGRect) -> Path {
+        let w = rect.width, h = rect.height
+        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * w, y: rect.minY + y * h)
+        }
         var path = Path()
-        let inset = rect.width * 0.34
-        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX - inset, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX + inset, y: rect.maxY))
+        // Tip at the bottom center; two symmetric cubics bulge out to a round
+        // head and meet in a rounded point at the top.
+        path.move(to: p(0.5, 1.0))
+        path.addCurve(to: p(0.5, 0.0), control1: p(0.02, 0.72), control2: p(0.02, 0.10))
+        path.addCurve(to: p(0.5, 1.0), control1: p(0.98, 0.10), control2: p(0.98, 0.72))
         path.closeSubpath()
         return path
     }

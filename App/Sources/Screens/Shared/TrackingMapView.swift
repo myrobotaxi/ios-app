@@ -191,8 +191,9 @@ struct TrackingMapView: View {
             routeLeg(leg2Route, active: true)
         }
 
-        // Endpoints — proper pickup (○) + destination (□) pins (MYR-234). Anchored
-        // at the pin tip so the planted contact dot sits on the coordinate.
+        // Endpoints — slim Tesla-style pickup (donut lollipop) + destination
+        // (teardrop) pins (MYR-235). Anchored at the pin tip so the planted
+        // contact dot / teardrop tip sits on the coordinate.
         Annotation("Pickup", coordinate: pickupCoordinate, anchor: .bottom) {
             MRTMapPin(kind: .pickup)
         }
