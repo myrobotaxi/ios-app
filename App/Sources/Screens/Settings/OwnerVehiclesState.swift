@@ -22,9 +22,15 @@ public final class OwnerVehiclesState {
     public var vehicles: [Vehicle]
     public var primaryID: String
 
-    public init() {
-        vehicles = VehicleFixtures.vehicles
-        primaryID = VehicleFixtures.vehicles[0].id
+    /// MYR-228 — `live` seeds an EMPTY linked-vehicle list: this Settings surface
+    /// is NOT wired to the live fleet, and set-primary / unlink have no backend
+    /// contract, so the live path must render an honest empty state rather than
+    /// the fixture Teslas ("Model Y", "Cybercab" with fake plates). Wiring it to
+    /// the live fleet's real vehicles (read-only) is a proposed follow-up. SIM
+    /// keeps the `VehicleFixtures` seed so simulated/DEBUG scenes are unchanged.
+    public init(live: Bool = false) {
+        vehicles = live ? [] : VehicleFixtures.vehicles
+        primaryID = live ? "" : VehicleFixtures.vehicles[0].id
     }
 
     /// screens.jsx:1747 `setPrimaryId(v.id)`.

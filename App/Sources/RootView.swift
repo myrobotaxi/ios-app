@@ -84,19 +84,26 @@ struct RootView: View {
     // sim-vs-live.
     @State private var ownerHomeState: OwnerHomeState
     @State private var ownerTab = "home"
+    /// MYR-228 — the ONE resolved live/sim flag, kept so `body` can seed the
+    /// screen-local scheduled-ride list (`RideHistoryScreen`) empty in live mode.
+    /// Every fixture-seeded state above/below is gated on this single decision.
+    private let isLiveMode: Bool
     /// MYR-169 — mirrors `ownerHomeState`'s reasoning: app.jsx keeps
     /// `ownerUpcoming` App-level, not local to `DrivesScreen`, so a
     /// cancelled reservation and an open drive summary both survive
-    /// switching to another tab and back.
-    @State private var ownerDrivesState = OwnerDrivesState()
+    /// switching to another tab and back. MYR-228 — seeded empty in live mode
+    /// (no reservation backend); see `OwnerDrivesState`'s header comment.
+    @State private var ownerDrivesState: OwnerDrivesState
     /// MYR-170 — shared between `InvitesScreen` and `SettingsScreen`; see
     /// `OwnerShareState`'s header comment for why this is lifted+shared
-    /// rather than forking the prototype's two independent copies.
-    @State private var ownerShareState = OwnerShareState()
+    /// rather than forking the prototype's two independent copies. MYR-228 —
+    /// seeded empty in live mode (no sharing backend).
+    @State private var ownerShareState: OwnerShareState
     /// MYR-170 — Settings' linked-vehicle list + primary designation; see
     /// `OwnerVehiclesState`'s header comment for its scope boundary vs.
-    /// `OwnerHomeState`.
-    @State private var ownerVehiclesState = OwnerVehiclesState()
+    /// `OwnerHomeState`. MYR-228 — seeded empty in live mode (not wired to the
+    /// live fleet; no set-primary/unlink backend).
+    @State private var ownerVehiclesState: OwnerVehiclesState
     @State private var sharedTab = "shared"
     @State private var inviteOrigin: InviteOrigin = .onboarding
     /// MYR-191 — mirrors `ownerHomeState`'s reasoning: lifted above the
@@ -115,8 +122,9 @@ struct RootView: View {
     @State private var rideRequestService: any RideRequestService = SimulatedRideRequestService()
     /// MYR-171 — see `RideHistoryStore`'s header comment: lifted the same way
     /// so a ride that finishes while the rider is on Live Map still lands in
-    /// Ride History.
-    @State private var rideHistoryStore = RideHistoryStore()
+    /// Ride History. MYR-228 — seeded empty in live mode (no ride-history
+    /// backend); a ride the rider completes THIS session still appends.
+    @State private var rideHistoryStore: RideHistoryStore
     /// MYR-204 — one session-lived place labeler (saved-place → POI/locality →
     /// address) for the owner Drive Summary header. Holds the per-drive label
     /// cache; sim summaries never invoke it (they keep their fixture labels).
@@ -139,6 +147,17 @@ struct RootView: View {
         // sim). Every composition below reads this single decision instead of each
         // re-reading `MRT_TELEMETRY`.
         let mode = AppMode.resolve()
+        // MYR-228 — the ONE live/sim flag every fixture-seeded state gates on.
+        // Live surfaces without a ready backend must render an honest empty state,
+        // never fixture data (see each state's `live:` init + CLAUDE.md's rule).
+        let isLive = mode.live != nil
+        isLiveMode = isLive
+        _ownerDrivesState = State(initialValue: OwnerDrivesState(live: isLive))
+        _ownerShareState = State(initialValue: OwnerShareState(live: isLive))
+        _ownerVehiclesState = State(initialValue: OwnerVehiclesState(live: isLive))
+        _rideHistoryStore = State(initialValue: RideHistoryStore(
+            seed: isLive ? [] : RideHistoryFixtures.requestedRides
+        ))
         // MYR-221 — a returning user with a stored refresh token skips SignInScreen:
         // start on the resolving splash and silently refresh in `.task` below.
         var startScreen: AppScreen = .signIn
@@ -457,7 +476,11 @@ struct RootView: View {
                             rideHistoryStore.openRideID = nil
                         }
                     } else {
-                        RideHistoryScreen(sharedTab: $sharedTab, historyStore: rideHistoryStore)
+                        // MYR-228 — scheduled rides are screen-local @State; seed
+                        // them empty in live mode (no scheduled-ride backend) so the
+                        // Scheduled tab shows its honest "No scheduled rides" state,
+                        // never the fixture reservations.
+                        RideHistoryScreen(sharedTab: $sharedTab, historyStore: rideHistoryStore, isLive: isLiveMode)
                     }
                 default:
                     SharedViewerScreen(

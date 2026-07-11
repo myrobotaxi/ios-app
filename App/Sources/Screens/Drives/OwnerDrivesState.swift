@@ -19,8 +19,13 @@ public final class OwnerDrivesState {
     /// any) is pushed on top of the list (screens.jsx `onOpenDrive`).
     public var openDriveID: String?
 
-    public init() {
-        upcoming = DriveFixtures.upcomingRides
+    /// MYR-228 — `live` seeds an EMPTY reservation list: there is no live
+    /// scheduled-ride / reservation backend yet, so the live Drives → Upcoming
+    /// tab must render its honest empty state ("No upcoming rides"), NEVER the
+    /// fixture reservations. A scheduled request the owner accepts THIS session
+    /// still appends via `addUpcoming`. SIM keeps the `DriveFixtures` seed.
+    public init(live: Bool = false) {
+        upcoming = live ? [] : DriveFixtures.upcomingRides
     }
 
     /// screens.jsx:726 `onCancelUpcoming={(id) => setOwnerUpcoming((u) => u.filter((x) => x.id !== id))}`.
