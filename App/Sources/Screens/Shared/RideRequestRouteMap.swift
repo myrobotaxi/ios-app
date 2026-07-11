@@ -1,6 +1,7 @@
 import SwiftUI
 import MapKit
 import DesignSystem
+import os
 
 // MARK: - RideRequestRouteMap (MYR-171)
 //
@@ -211,6 +212,28 @@ struct RideRequestRouteMap: View {
             .onMapCameraChange(frequency: .continuous) { _ in
                 projectionEpoch &+= 1
             }
+            .onChange(of: phase) { _, newPhase in
+                // MYR-237 device stall (client: "a screenshot triggers the route
+                // to render"): MapKit's SwiftUI subtree can DEFER applying
+                // content/overlay updates until something external wakes its
+                // render pipeline — invisible in the simulator. A camera write
+                // reliably wakes it, so re-assert the current fit one beat after
+                // every phase change (no visual effect: same region, animations
+                // disabled) and re-anchor the overlay projection.
+                guard newPhase != .settled else { return }
+                let fit = fittedRegion(height: geo.size.height)
+                Task {
+                    try? await Task.sleep(for: .milliseconds(150))
+                    guard phase == newPhase else { return }
+                    trace("wake-nudge")
+                    var tx = Transaction()
+                    tx.disablesAnimations = true
+                    withTransaction(tx) {
+                        camera = .region(fit)
+                        projectionEpoch &+= 1
+                    }
+                }
+            }
             .onChange(of: replayKey) { _, _ in
                 // A page change under the same route (Search → Review → back):
                 // re-fit for the new sheet inset instantly, then REPLAY the
@@ -248,11 +271,23 @@ struct RideRequestRouteMap: View {
 
     // MARK: Pass lifecycle
 
+    #if DEBUG
+    /// MYR-237 device-stall tracing (the MYR-227 console playbook): stream with
+    /// `log stream --predicate 'subsystem == "app.myrobotaxi.ios" AND category == "etch"'`.
+    private static let etchLog = Logger(subsystem: "app.myrobotaxi.ios", category: "etch")
+    private func trace(_ message: String) {
+        Self.etchLog.info("\(message, privacy: .public) route=\(self.route.count) phase=\(String(describing: self.phase), privacy: .public) etch=\(self.etch) loading=\(self.loading)")
+    }
+    #else
+    private func trace(_ message: String) {}
+    #endif
+
     /// Decide the presentation for the CURRENT route and (re)start its pass.
     /// Resets happen with animations DISABLED (a replay often fires inside the
     /// sheet's animated phase transition — inherited transactions must never
     /// animate a reset), and the driver task is started explicitly right here.
     private func restartPresentation() {
+        trace("restart")
         passTask?.cancel()
         var tx = Transaction()
         tx.disablesAnimations = true
