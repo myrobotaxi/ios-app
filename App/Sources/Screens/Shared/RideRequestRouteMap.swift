@@ -378,7 +378,10 @@ struct RideRequestRouteMap: View {
     /// honest, never blank.
     @ViewBuilder
     private func routeOverlay(proxy: MapProxy) -> some View {
-        if phase != .settled, route.count > 1 {
+        // `route.count == 1` is the resolving-destination state (pickup only):
+        // the breathing head must still render there, so the guard is on
+        // EMPTINESS, not on having a drawable line.
+        if phase != .settled, !route.isEmpty {
             GeometryReader { overlayGeo in
                 let origin = overlayGeo.frame(in: .global).origin
                 let projected = route.compactMap { coordinate -> CGPoint? in

@@ -258,12 +258,25 @@ public final class SharedViewerState {
     /// route requests). Selection therefore re-resolves the real coordinate
     /// (bounded retries for Apple's throttle) and swaps it into the draft —
     /// recomputing the Review estimate if the rider already advanced.
+    /// Re-kick a stalled destination resolution (MYR-237 device QA: when the
+    /// first bounded attempts all lost to Apple's throttle, NOTHING retried —
+    /// the flow sat on the breathing head forever). Called by the route
+    /// preview's retry loop on its cadence; a no-op when the destination is
+    /// resolved or a resolve task is already in flight.
+    public func retryDestinationResolutionIfNeeded() {
+        guard destinationResolveInFlight == false else { return }
+        resolveDraftDestinationIfNeeded()
+    }
+
     @ObservationIgnored private var destinationResolveTask: Task<Void, Never>?
+    @ObservationIgnored private var destinationResolveInFlight = false
     private func resolveDraftDestinationIfNeeded() {
         guard let place = draftDestination, RidePlaceMapper.isUnresolved(place) else { return }
         destinationResolveTask?.cancel()
         let bias = userLocation.coordinate ?? draftPickup?.coordinate ?? mapRegionCenter
+        destinationResolveInFlight = true
         destinationResolveTask = Task { [weak self] in
+            defer { self?.destinationResolveInFlight = false }
             guard let resolved = await SelectionPlaceResolver.resolve(place, near: bias) else { return }
             guard !Task.isCancelled, let self, self.draftDestination?.id == place.id else { return }
             if let pickup = self.draftPickup, self.sheetPhase == .review || self.sheetPhase == .booking {

@@ -215,10 +215,16 @@ struct SharedViewerScreen: View {
             // line), keep re-asking on the store's cooldown until one lands.
             // The store no-ops these once a real route is cached.
             while !Task.isCancelled, routePreviewActive {
-                if (reviewRealRoute?.count ?? 0) <= 2 {
+                if let draft = viewerState.draftDestination, RidePlaceMapper.isUnresolved(draft),
+                   rideRequestService.activeRequest == nil {
+                    // The destination's REAL coordinate is still missing — that
+                    // resolution is the thing to retry (the route fetch stays
+                    // gated until it lands).
+                    viewerState.retryDestinationResolutionIfNeeded()
+                } else if (reviewRealRoute?.count ?? 0) <= 2 {
                     reconcileReviewRoute(prefetch: true)
                 }
-                try? await Task.sleep(for: .seconds(RideRouteStore.fallbackRetryCooldown))
+                try? await Task.sleep(for: .seconds(6))
             }
         }
         .onChange(of: viewerState.draftDestination) { _, destination in
@@ -553,7 +559,17 @@ struct SharedViewerScreen: View {
     /// store only resets on Tracking exit) from flashing under a new trip's
     /// pickup/destination after "Change trip".
     private var reviewRoute: [CLLocationCoordinate2D] {
-        reviewRealRoute ?? requestRoute
+        if let real = reviewRealRoute { return real }
+        // Destination still resolving: hand the map ONLY the pickup, so the
+        // loading state frames the pickup street instead of fitting a
+        // placeholder pair (device QA: a metro-wide wrong fit) and no 2-point
+        // line can ever render from the placeholder.
+        if let draft = viewerState.draftDestination, RidePlaceMapper.isUnresolved(draft),
+           rideRequestService.activeRequest == nil,
+           let pickup = searchPreviewPickup {
+            return [pickup]
+        }
+        return requestRoute
     }
 
     /// The MKDirections route for the current review pickup/destination pair, or

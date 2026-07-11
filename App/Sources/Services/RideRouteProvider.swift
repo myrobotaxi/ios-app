@@ -154,7 +154,7 @@ final class RideRouteStore {
     /// Retry cooldown for a fallback leg-2 result (throttled/failed
     /// MKDirections): a repeat `ensureLeg2` for the SAME pair refetches after
     /// this long, so the straight fallback is never permanent (MYR-237).
-    static let fallbackRetryCooldown: TimeInterval = 12
+    static let fallbackRetryCooldown: TimeInterval = 8
 
     func ensureLeg2(pickup: CLLocationCoordinate2D, destination: CLLocationCoordinate2D) {
         let l2Key = Self.key(pickup, destination)
