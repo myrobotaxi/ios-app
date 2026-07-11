@@ -308,6 +308,114 @@ final class LiveRideRequestServiceTests: XCTestCase {
         XCTAssertNotNil(service.activeRequest?.trackProgress)
     }
 
+    // MARK: MYR-230 deliverable 2 — cold-launch adoption of the rider's open ride
+
+    /// A rider who force-quit mid-ride relaunches: `start()` GETs the rider's own
+    /// list and adopts the newest OPEN INSTANT ride, so the shell lands in the
+    /// correct tracking state (not the idle greeting) with mutations targeting the
+    /// server id.
+    func testColdLaunchAdoptsNewestOpenInstantRiderRide() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        await api.setRideList([Self.wireRide(id: "srv-open", status: .accepted, accepted: true)])
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.start() // runs the cold-launch adoption
+        await eventually { service.activeRequest?.status == .accepted }
+        XCTAssertNotNil(service.activeRequest?.trackProgress, "an adopted accepted ride seeds the tracking progress")
+
+        service.cancel() // targets the adopted server id
+        await eventually { await api.cancelCount == 1 }
+        let cancelID = await api.lastCancelID
+        XCTAssertEqual(cancelID, "srv-open", "cold-launch adoption wired the server id for mutations")
+    }
+
+    /// Scheduled reservations (a `scheduledFor` set) and terminal rides
+    /// (completed/declined/cancelled) are NOT adoptable open instant rides — a
+    /// cold launch over only those adopts nothing (stays on the idle greeting).
+    func testColdLaunchIgnoresScheduledAndTerminalRides() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        await api.setRideList([
+            Self.wireRide(id: "srv-sched", status: .requested, scheduledFor: "2026-07-11T06:30:00.000Z"),
+            Self.wireRide(id: "srv-done", status: .completed),
+        ])
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.start()
+        // Give the adoption + incoming seed a beat to run.
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        XCTAssertNil(service.activeRequest, "no open instant ride to adopt → idle greeting")
+    }
+
+    // MARK: MYR-230 deliverable 3 — 409 ride_active adopts the existing open ride
+
+    /// A create refused `409 ride_active` (the rider already holds an open instant
+    /// ride) ADOPTS the ride carried in the body instead of surfacing a decline:
+    /// the optimistic draft is replaced by the real open ride, never `.declined`,
+    /// and no reconcile GET runs (the server already handed us the ride).
+    func testRideActive409AdoptsReturnedRideNotDeclined() async {
+        let existing = Self.wireRide(id: "srv-existing", status: .accepted, accepted: true)
+        let api = StubRideAPI(
+            created: Self.wireRide(id: "unused", status: .requested),
+            createError: RestError.rideActive(active: existing)
+        )
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.liveInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 } // the refused create fired
+
+        await eventually { service.activeRequest?.id == "srv-existing" }
+        XCTAssertEqual(service.activeRequest?.status, .accepted, "adopts the returned open ride")
+        XCTAssertNotEqual(service.activeRequest?.status, .declined, "ride_active is never an owner decline")
+        XCTAssertNil(service.sessionFailure, "ride_active is not a session failure")
+        let listCount = await api.rideListCount
+        XCTAssertEqual(listCount, 0, "the body carried the ride — no reconcile GET needed")
+
+        service.cancel() // mutations now target the adopted server id
+        await eventually { await api.cancelCount == 1 }
+        let cancelID = await api.lastCancelID
+        XCTAssertEqual(cancelID, "srv-existing", "adoption wired the returned ride's server id for mutations")
+    }
+
+    /// The rare terminal-race body: `409 ride_active` with NO sibling. The service
+    /// re-syncs from the rider's own open list and adopts the newest open ride.
+    func testRideActive409MissingSiblingRefetchesOpenList() async {
+        let api = StubRideAPI(
+            created: Self.wireRide(id: "unused", status: .requested),
+            createError: RestError.rideActive(active: nil)
+        )
+        await api.setRideList([Self.wireRide(id: "srv-refetch", status: .accepted, accepted: true)])
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.liveInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        await eventually { await api.rideListCount >= 1 } // refetched the open list
+
+        await eventually { service.activeRequest?.id == "srv-refetch" }
+        XCTAssertEqual(service.activeRequest?.status, .accepted)
+    }
+
+    /// `409 ride_active` with no sibling AND nothing open on refetch (the blocking
+    /// ride reached a terminal state): drop the stuck optimistic pending rather
+    /// than strand the rider on a "Waiting…" card. Never `.declined`.
+    func testRideActive409MissingSiblingNoOpenClearsPending() async {
+        let api = StubRideAPI(
+            created: Self.wireRide(id: "unused", status: .requested),
+            createError: RestError.rideActive(active: nil)
+        )
+        // rideList stays empty.
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.liveInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        await eventually { await api.rideListCount >= 1 }
+
+        await eventually { service.activeRequest == nil }
+        XCTAssertNil(service.sessionFailure, "not a session failure")
+    }
+
     // MARK: - Builders
 
     private static func sampleInput() -> RideRequestInput {
@@ -338,6 +446,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
         id: String,
         status: MyRobotaxiContracts.RideRequestStatus,
         accepted: Bool = false,
+        scheduledFor: String? = nil,
         pickup: MyRobotaxiContracts.RidePlace = MyRobotaxiContracts.RidePlace(lat: 37.7793, lng: -122.3937, label: "Current location"),
         dropoff: MyRobotaxiContracts.RidePlace = MyRobotaxiContracts.RidePlace(lat: 37.6156, lng: -122.3900, label: "SFO · Terminal 2")
     ) -> RideRequest {
@@ -349,6 +458,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
             pickup: pickup,
             dropoff: dropoff,
             status: status,
+            scheduledFor: scheduledFor,
             createdAt: Self.isoNow(),
             updatedAt: Self.isoNow(),
             acceptedAt: accepted ? "2026-07-09T18:05:22.114Z" : nil

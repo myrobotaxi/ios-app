@@ -15,6 +15,15 @@ public enum RestError: Error, Sendable {
     /// A non-2xx HTTP response. `code` / `message` / `subCode` are populated from
     /// the error envelope (rest-api.md §4.1) when the body parsed.
     case http(status: Int, code: ErrorPayload.Code?, message: String?, subCode: ErrorPayload.SubCode?)
+    /// `POST /api/ride-requests` was refused `409 ride_active` (rest-api.md §7.8,
+    /// MYR-230): the rider already holds an OPEN instant ride, so the create was
+    /// rejected. Unlike every other error, this 409 body augments the standard
+    /// envelope with a sibling `activeRideRequest` — the rider's existing open
+    /// ride — so the client ADOPTS it into the pending/tracking UI rather than
+    /// surfacing a decline. `active` is that ride, or `nil` in the rare
+    /// terminal-race case where the server omits the sibling (or a contracts build
+    /// without the field) — the client then refetches its own open list (§7.8).
+    case rideActive(active: RideRequest?)
     /// The 2xx body failed to decode into the expected contracts type.
     case decoding(underlying: any Error)
     /// URLSession / connectivity failure before a response was formed.

@@ -131,6 +131,15 @@ struct SharedViewerScreen: View {
         .mrtBottomNav(selection: $sharedTab, tabs: MRTTab.sharedTabs, hidden: hideBottomNav)
         .onAppear {
             viewerState.startTelemetry()
+            // MYR-230 deliverable 1: reconcile the CURRENT active ride into the
+            // sheet phase on mount. The `.onChange` handlers below only fire for
+            // transitions that happen WHILE this screen is mounted, so an owner
+            // accept/decline (the client-reported bug: request → switch to Owner →
+            // accept → switch back to Rider, landing on the idle greeting instead
+            // of tracking) or a cold-launch adoption (deliverable 2) is otherwise
+            // never reflected. Fold the current status + progress through the same
+            // mapping, idempotently and without animating the first layout.
+            reconcileMountedPhase()
             #if DEBUG
             // MYR-217 real-path probe: replay the ACTUAL idle → search →
             // choose+Continue → pinDrop sequence (with live updates flowing)
@@ -394,26 +403,69 @@ struct SharedViewerScreen: View {
     // mounted anywhere in it (`grep -c "<OutcomeContent"` is 0) — it does not
     // belong in either transition.
 
+    // MARK: MYR-230 deliverable 1 — mount-time phase reconciliation
+    //
+    // `handleStatusChange` / `handleProgressChange` fire only via `.onChange`
+    // while this screen is mounted, so a status transition that happened while it
+    // was UNMOUNTED — the client bug: request a ride, switch to Owner mode, accept
+    // it there, switch back to Rider and land on the idle greeting instead of the
+    // tracking sheet — or a cold-launch adoption (deliverable 2 / a 409 adopt) is
+    // never folded into `sheetPhase`. On appear, run the CURRENT active request's
+    // status + progress through the SAME mapping, idempotently: a ride+status
+    // already reflected is a no-op because each transition guards on its source
+    // phase (an already-`.tracking` accepted ride does not re-enter tracking; a
+    // `.pending` ride leaves `sheetPhase` on `.idle`, where the pending pill shows).
+    //
+    // Applied WITHOUT animation during the first layout (MYR-227 postmortem: never
+    // let a mount-time adoption animate the sheet mid-first-layout) by disabling
+    // animations for this transaction — this also suppresses the `.animation(_:,
+    // value: sheetPhase)` sheet transition for the adopted change.
+    private func reconcileMountedPhase() {
+        guard let request = rideRequestService.activeRequest else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            handleStatusChange(request.status)
+            handleProgressChange(request.trackProgress)
+        }
+    }
+
     private func handleStatusChange(_ status: RideRequestStatus?) {
         guard let status, let request = rideRequestService.activeRequest else { return }
+        // A decline raises the small notice overlay in addition to moving to
+        // `.search` (the phase decision itself lives in the pure mapping below, so
+        // the reactive `.onChange` and the MYR-230 mount reconciliation stay in
+        // lockstep).
+        if status == .declined { viewerState.showDeclinedNotice = true }
+        if let phase = Self.reconciledPhase(status: status, hasSchedule: request.input.schedule != nil, current: viewerState.sheetPhase) {
+            viewerState.sheetPhase = phase
+        }
+    }
+
+    /// Pure status→phase decision shared by the reactive `.onChange` path and the
+    /// MYR-230 mount reconciliation. Returns the phase the sheet should move to, or
+    /// `nil` to leave it unchanged (IDEMPOTENCE: a ride+status already reflected in
+    /// `current` is a no-op). Extracted static so it is unit-testable without
+    /// mounting the view and so both entry points can never drift.
+    ///
+    /// - `.accepted`: jump straight into the live tracking sheet — but only for a
+    ///   "now" acceptance (`!hasSchedule`; a scheduled acceptance is a reservation,
+    ///   not a live trip — `SimulatedRideRequestService.accept()` never seeds
+    ///   `trackProgress` for these and ride-request.jsx's scheduled path never
+    ///   shows `TrackingContent`) and only FROM `.booking`/`.idle` (already
+    ///   tracking / summary / mid-request-flow → leave it, so a remount over an
+    ///   accepted ride does not thrash the phase).
+    /// - `.declined`: drop back to `.search` (the `DeclinedNotice` overlays there).
+    /// - `.pending`: no phase change — the idle sheet shows the pending pill.
+    static func reconciledPhase(status: RideRequestStatus, hasSchedule: Bool, current: RiderSheetPhase) -> RiderSheetPhase? {
         switch status {
         case .accepted:
-            // Scheduled acceptances are reservations for later, not a live
-            // trip to narrate right now — `SimulatedRideRequestService
-            // .accept()` never seeds `trackProgress` for these, and
-            // ride-request.jsx's own scheduled path never shows
-            // `TrackingContent` either (`ReviewContent.onConfirm` calls
-            // `onSchedule()` and returns straight to idle, ported at
-            // `RideRequestReviewContent.confirm()`). Only a "now" acceptance
-            // jumps into the live tracking sheet.
-            if request.input.schedule == nil, viewerState.sheetPhase == .booking || viewerState.sheetPhase == .idle {
-                viewerState.sheetPhase = .tracking
-            }
+            guard !hasSchedule, current == .booking || current == .idle else { return nil }
+            return .tracking
         case .declined:
-            viewerState.showDeclinedNotice = true
-            viewerState.sheetPhase = .search
+            return current == .search ? nil : .search
         case .pending:
-            break
+            return nil
         }
     }
 

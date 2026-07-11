@@ -337,15 +337,29 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint {
 
     private static func mapError(status: Int, data: Data) -> RestError {
         struct Envelope: Decodable { let error: ErrorPayload }
-        if let envelope = try? JSONDecoder().decode(Envelope.self, from: data) {
-            return .http(
-                status: status,
-                code: envelope.error.code,
-                message: envelope.error.message,
-                subCode: envelope.error.subCode
-            )
+        guard let envelope = try? JSONDecoder().decode(Envelope.self, from: data) else {
+            return .http(status: status, code: nil, message: nil, subCode: nil)
         }
-        return .http(status: status, code: nil, message: nil, subCode: nil)
+        // `409 ride_active` (rest-api.md §7.8, MYR-230) is the ONE error whose body
+        // augments the standard envelope with a sibling `activeRideRequest` — the
+        // rider's existing open instant ride — so the client ADOPTS it instead of
+        // surfacing a decline. The shared contracts `ErrorPayload.Code` enum does
+        // not yet carry `ride_active` (it decodes to `.unrecognized("ride_active")`),
+        // so match on the raw string — a later additive contracts entry keeps
+        // working unchanged. The sibling decodes tolerantly through a local wrapper
+        // over the contracts `RideRequest`; a body that omits it (terminal-race,
+        // §7.8) yields `.rideActive(active: nil)` and the caller refetches its list.
+        if status == 409, envelope.error.code.rawValue == "ride_active" {
+            struct RideActiveEnvelope: Decodable { let activeRideRequest: RideRequest? }
+            let active = (try? JSONDecoder().decode(RideActiveEnvelope.self, from: data))?.activeRideRequest
+            return .rideActive(active: active)
+        }
+        return .http(
+            status: status,
+            code: envelope.error.code,
+            message: envelope.error.message,
+            subCode: envelope.error.subCode
+        )
     }
 
     /// URLSession configuration per swift-lifecycle.md §4: waits for

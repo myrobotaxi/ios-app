@@ -125,6 +125,13 @@ final class LiveRideRequestService: RideRequestService {
         eventTask = Task { @MainActor [weak self] in
             await socket.connect()
             let stream = await socket.rideEvents()
+            // MYR-230 cold-launch adoption (deliverable 2): before pumping frames,
+            // adopt the rider's OWN open instant ride so a rider who force-quit
+            // mid-ride (or a fresh session that created nothing this run) relaunches
+            // back into the correct pending/tracking state — not the idle greeting.
+            // Rider-side takes priority; only if the rider holds no open ride does
+            // the owner incoming feed seed (its guard no-ops once this adopts one).
+            await self?.adoptOpenRiderRide()
             await self?.refreshIncoming()
             for await event in stream {
                 guard let self else { break }
@@ -235,7 +242,16 @@ final class LiveRideRequestService: RideRequestService {
                 //    `sessionFailure` so the rider lands back on a retryable state
                 //    with the draft intact + a calm notice. Branch on the TYPED
                 //    case (FR-7.1), never the message.
-                if Self.isSessionFailure(error) {
+                //  RIDE_ACTIVE (MYR-230, §7.8) — a typed `409 ride_active`: the
+                //    rider already holds an OPEN instant ride, so the server refused
+                //    this create and rode the existing ride back in the body. This is
+                //    NOT a decline and NOT a stuck pending — ADOPT the returned ride
+                //    (pending/tracking UI), discarding this draft. It is a 409/4xx,
+                //    so like the session split it MUST be caught BEFORE the definitive
+                //    branch (which would wrongly drop it into `.declined`).
+                if case RestError.rideActive(let active) = error {
+                    await self.adoptRideActive(active)
+                } else if Self.isSessionFailure(error) {
                     self.failCreateSessionError()
                 } else if Self.isDefinitiveCreateFailure(error) {
                     self.failCreateDefinitively()
@@ -426,6 +442,69 @@ final class LiveRideRequestService: RideRequestService {
 
     private func isCurrent(_ rideID: String) -> Bool {
         rideID == serverRideID || rideID == activeRequest?.id
+    }
+
+    // MARK: MYR-230 — adopt the rider's real open ride
+
+    /// Cold-launch adoption (deliverable 2): GET the rider's own ride list
+    /// (newest first) and adopt the newest OPEN INSTANT ride into `activeRequest`,
+    /// so a relaunch / fresh session lands back in the correct pending/tracking
+    /// state instead of the idle greeting. No-op if a request is already tracked
+    /// (a create this session, or a WS frame already adopted one).
+    private func adoptOpenRiderRide() async {
+        guard activeRequest == nil, serverRideID == nil else { return }
+        guard let open = await fetchOpenRiderRide(),
+              let record = RideRequestContractMapping.record(from: open) else { return }
+        activeRequest = record
+        serverRideID = open.id
+    }
+
+    /// 409 `ride_active` adoption (deliverable 3): the create was refused because
+    /// the rider already holds an OPEN instant ride, returned in the 409 body. Fold
+    /// it onto `activeRequest`, DISCARDING this draft — the rider's
+    /// `SharedViewerScreen` then reacts through its normal status→phase path (an
+    /// accepted ride → tracking; a still-requested ride → the pending pill), never
+    /// a decline. If the body omitted the sibling (rare terminal-race, or a
+    /// contracts build without the field — §7.8), re-sync from the rider's own open
+    /// list; if nothing is open after all, drop the stuck optimistic pending so the
+    /// rider is not stranded on a "Waiting…" card for a ride that no longer exists.
+    private func adoptRideActive(_ active: RideRequest?) async {
+        if let active, let record = RideRequestContractMapping.record(from: active) {
+            serverRideID = active.id
+            activeRequest = record
+            return
+        }
+        guard let open = await fetchOpenRiderRide(),
+              let record = RideRequestContractMapping.record(from: open) else {
+            activeRequest = nil
+            serverRideID = nil
+            return
+        }
+        serverRideID = open.id
+        activeRequest = record
+    }
+
+    /// GET the rider's own list (newest first) and return the newest OPEN INSTANT
+    /// ride, or nil. Shared by cold-launch adoption and the 409 missing-sibling
+    /// fallback.
+    private func fetchOpenRiderRide() async -> RideRequest? {
+        guard let page = try? await api.rideRequests(cursor: nil, limit: 20) else { return nil }
+        return page.items.first(where: { Self.isOpenInstant($0) })
+    }
+
+    /// A wire ride is an ADOPTABLE open instant ride when it carries no
+    /// `scheduledFor` (scheduled reservations are not a live ride to narrate and
+    /// are exempt from the single-active rule) and its status is non-terminal
+    /// (`requested`/`accepted`/`enroute`/`arrived`). `completed`/`declined`/
+    /// `cancelled` are terminal and never adopted. Matches the server's
+    /// `uq_go_ride_requests_active_instant_rider` open-state set (rest-api.md §7.8,
+    /// migration 0004).
+    static func isOpenInstant(_ ride: RideRequest) -> Bool {
+        guard ride.scheduledFor == nil else { return false }
+        switch ride.status {
+        case .requested, .accepted, .enroute, .arrived: return true
+        default: return false
+        }
     }
 
     /// Owner incoming feed seed (open requests already in flight at connect time).
