@@ -142,6 +142,16 @@ enum RidePlaceMapper {
         )
     }
 
+    /// Whether a place is a live suggestion whose coordinate was NEVER resolved
+    /// (the `unresolvedPlace` placeholder — its "coordinate" is the region
+    /// center, i.e. the rider's own location, NOT the place). Selection MUST
+    /// re-resolve these before any distance/route math trusts the coordinate
+    /// (MYR-237 device QA: an unresolved pick produced a 0.0mi trip and a
+    /// pickup→pickup route request).
+    static func isUnresolved(_ place: RidePlace) -> Bool {
+        place.id.hasPrefix("live-unresolved|")
+    }
+
     /// Saved places whose label/subtitle contain the query — ranked FIRST in the
     /// live results (MYR-211 deliverable 2, "saved places rank first, always").
     ///

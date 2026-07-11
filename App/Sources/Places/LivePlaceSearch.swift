@@ -253,3 +253,41 @@ final class LivePlaceSearch: PlaceSearching {
         }
     }
 }
+
+// MARK: - Selection-time coordinate resolution (MYR-237)
+//
+// The results list may carry `unresolvedPlace` rows (failed/slow per-batch
+// `MKLocalSearch`, common under Apple's throttle). Their placeholder
+// coordinate is the RIDER'S OWN location — selecting one and trusting that
+// coordinate produced a 0.0mi trip and a pickup→pickup route on device. This
+// resolver turns the row's title+subtitle back into a real coordinate at
+// selection time, with bounded retries spaced for the throttle.
+enum SelectionPlaceResolver {
+    static let attempts = 3
+    static let retrySpacing: Duration = .seconds(4)
+
+    /// The place with a REAL coordinate, or nil if every attempt failed.
+    static func resolve(_ place: RidePlace, near center: CLLocationCoordinate2D?) async -> RidePlace? {
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = [place.label, place.subtitle].compactMap { $0 }.joined(separator: " ")
+        if let center {
+            request.region = MKCoordinateRegion(
+                center: center,
+                span: MKCoordinateSpan(latitudeDelta: 0.35, longitudeDelta: 0.35)
+            )
+        }
+        for attempt in 0..<attempts {
+            if attempt > 0 { try? await Task.sleep(for: retrySpacing) }
+            guard !Task.isCancelled else { return nil }
+            if let item = (try? await MKLocalSearch(request: request).start())?.mapItems.first {
+                return RidePlaceMapper.ridePlace(
+                    from: item,
+                    title: place.label,
+                    subtitle: place.subtitle,
+                    regionCenter: center ?? item.placemark.coordinate
+                )
+            }
+        }
+        return nil
+    }
+}
