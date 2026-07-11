@@ -144,4 +144,71 @@ final class RideRequestEndpointTests: XCTestCase {
             XCTAssertEqual(code, .conflict, "branch on the typed code, never the message")
         }
     }
+
+    // MARK: - 409 ride_active (MYR-230, §7.8) — sibling activeRideRequest adoption
+
+    /// A create refused `409 ride_active` carries a sibling `activeRideRequest`
+    /// (byte-for-byte the `RideRequest` GET shape) alongside the standard error
+    /// envelope, so the client ADOPTS the rider's existing open ride rather than
+    /// surfacing a decline. It maps to the dedicated `.rideActive(active:)` case
+    /// with the ride decoded — NOT the generic `.http` path a `conflict` takes.
+    /// The contracts `ErrorPayload.Code` enum has no `ride_active` member yet, so
+    /// this also proves the tolerant raw-string match (`.unrecognized`) works.
+    func testRideActive409DecodesSiblingActiveRideRequestForAdoption() async throws {
+        let body = Data("""
+        {
+          "error": { "code": "ride_active", "message": "you already have an active ride request", "subCode": null },
+          "activeRideRequest": {
+            "id": "clride0000000000000007",
+            "riderId": "u-rider",
+            "ownerId": "u-rider",
+            "vehicleId": "clxyz1234567890abcdef",
+            "pickup": { "lat": 37.7793, "lng": -122.3937, "label": "Current location" },
+            "dropoff": { "lat": 37.6156, "lng": -122.3900, "label": "SFO · Terminal 2", "address": "San Francisco International" },
+            "status": "accepted",
+            "createdAt": "2026-07-10T18:00:00.000Z",
+            "updatedAt": "2026-07-10T18:04:00.000Z",
+            "acceptedAt": "2026-07-10T18:04:00.000Z"
+          }
+        }
+        """.utf8)
+        let (client, _) = client([.init(status: 409, body: body)])
+
+        do {
+            _ = try await client.createRideRequest(RideRequestCreateRequest(
+                vehicleId: "clxyz1234567890abcdef",
+                pickup: RidePlace(lat: 37.7793, lng: -122.3937, label: "Current location"),
+                dropoff: RidePlace(lat: 37.6156, lng: -122.3900, label: "SFO · Terminal 2")
+            ))
+            XCTFail("expected RestError.rideActive")
+        } catch let error as RestError {
+            guard case .rideActive(let active) = error else { return XCTFail("wrong case: \(error)") }
+            let adopted = try XCTUnwrap(active, "the sibling activeRideRequest must decode for adoption")
+            XCTAssertEqual(adopted.id, "clride0000000000000007")
+            XCTAssertEqual(adopted.status, .accepted)
+            XCTAssertEqual(adopted.dropoff.label, "SFO · Terminal 2")
+        }
+    }
+
+    /// The rare terminal-race body (§7.8): `409 ride_active` with NO
+    /// `activeRideRequest` sibling. It still maps to `.rideActive`, with
+    /// `active == nil` so the caller re-syncs from its own open list.
+    func testRideActive409WithoutSiblingYieldsNilActive() async throws {
+        let body = Data("""
+        { "error": { "code": "ride_active", "message": "you already have an active ride request", "subCode": null } }
+        """.utf8)
+        let (client, _) = client([.init(status: 409, body: body)])
+
+        do {
+            _ = try await client.createRideRequest(RideRequestCreateRequest(
+                vehicleId: "clxyz1234567890abcdef",
+                pickup: RidePlace(lat: 37.7793, lng: -122.3937, label: "Current location"),
+                dropoff: RidePlace(lat: 37.6156, lng: -122.3900, label: "SFO · Terminal 2")
+            ))
+            XCTFail("expected RestError.rideActive")
+        } catch let error as RestError {
+            guard case .rideActive(let active) = error else { return XCTFail("wrong case: \(error)") }
+            XCTAssertNil(active, "missing sibling → nil, caller refetches its open list")
+        }
+    }
 }
