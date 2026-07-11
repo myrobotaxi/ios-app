@@ -370,6 +370,11 @@ public final class SharedViewerState {
     /// short 1s→2s ladder recovers the common burst-throttle without leaving the
     /// pin "Finding address…" indefinitely.
     static let pinLabelRetryBackoffs: [Duration] = [.seconds(1), .seconds(2)]
+    /// MYR-239 — the calm neutral pickup fallback: the same string the Search
+    /// pickup row shows with no confirmed pickup ("Current location"). A pin
+    /// confirmed while its street was still in flight takes this (never the
+    /// "Finding address…" transient) until a bounded re-resolution upgrades it.
+    public static let pickupFallbackLabel = "Current location"
 
     /// Pin-drop pickup coordinate: in live mode the map's settled center (the
     /// authoritative pin position the rider dragged to), falling back to the
@@ -513,6 +518,94 @@ public final class SharedViewerState {
         return LivePinLabeler.distanceMeters(previous, newCenter) <= pinLabelStalenessMeters
     }
 
+    // MARK: MYR-239 — confirmed-pickup label (never a stuck transient)
+    //
+    // The pin-drop sheet's in-flight "Finding address…" (`pinLabelState ==
+    // .resolving`) is a TRANSIENT owned by the pin-drop phase — its labeler only
+    // runs while dropping the pin (`pinDropCameraSettled`). Baking that transient
+    // into the confirmed `draftPickup.label` (the pre-MYR-239 `confirm()` did
+    // exactly this) leaked it onto the Search pickup row with nothing left to
+    // finish it — it read "Finding address…" forever and persisted across further
+    // searches (client device QA IMG_2192/2193/2194). Confirm therefore NEVER
+    // persists the transient: a pin confirmed mid-resolution takes the calm
+    // "Current location" fallback and ONE bounded re-resolution (the same throttle
+    // backoff ladder) upgrades it to the real street if the geocoder recovers,
+    // else it stays the fallback — deterministic on every re-entry into Search.
+
+    /// MYR-239 (pure, testable) — the label to PERSIST for a confirmed pickup,
+    /// given the pin-drop label state at confirm time. Never the in-flight
+    /// transient: a still-`.resolving` pin persists the calm fallback (a bounded
+    /// re-resolution then upgrades it), a resolved street persists as-is, and a
+    /// genuinely-neutral pin keeps "Pinned location".
+    static func confirmedPickupLabel(for state: PinLabelDisplayState) -> String {
+        switch state {
+        case .resolved(let label): return label
+        case .neutral: return pinNeutralLabel
+        case .resolving: return pickupFallbackLabel
+        }
+    }
+
+    @ObservationIgnored private var confirmedPickupLabelTask: Task<Void, Never>?
+
+    /// Confirm the pin-drop pickup as the authoritative `draftPickup` — the
+    /// MYR-211/212 coordinate with a MYR-239 DETERMINISTIC label. In sim the
+    /// fixture label is kept verbatim (every simulated pin-drop scene stays
+    /// pixel-identical). In live, a pin confirmed while its street was still
+    /// resolving persists the "Current location" fallback and kicks ONE bounded
+    /// re-resolution (see `resolveConfirmedPickupLabel`) — never the stuck
+    /// "Finding address…" transient.
+    public func confirmPickup() {
+        let coordinate = pinDropCoordinate
+        let label = isLiveLocation ? Self.confirmedPickupLabel(for: pinLabelState) : pinDropLabel
+        draftPickup = Self.pinPickup(label: label, coordinate: coordinate)
+        if isLiveLocation, pinLabelState == .resolving {
+            resolveConfirmedPickupLabel(for: coordinate)
+        }
+    }
+
+    /// The confirmed-pickup `RidePlace` shape (id "pin" + pin glyph), shared by
+    /// `confirmPickup` and its bounded re-resolution so a label swap preserves
+    /// every other field and the coordinate.
+    private static func pinPickup(label: String, coordinate: CLLocationCoordinate2D) -> RidePlace {
+        RidePlace(id: "pin", label: label, subtitle: nil, miles: 0, minutes: 0,
+                  icon: "mappin.circle.fill", coordinate: coordinate)
+    }
+
+    /// MYR-239 — ONE bounded re-resolution of a pickup confirmed mid-flight, with
+    /// the same throttle-backoff ladder as the pin-drop labeler. On success the
+    /// confirmed pickup's label upgrades from the "Current location" fallback to
+    /// the real street; a genuine no-result or exhausted retries leaves the
+    /// fallback — never a stuck transient. Cancelled/superseded if the pin is
+    /// re-dropped or the draft resets.
+    private func resolveConfirmedPickupLabel(for coordinate: CLLocationCoordinate2D) {
+        confirmedPickupLabelTask?.cancel()
+        let labeler = pinLabeler
+        confirmedPickupLabelTask = Task { [weak self] in
+            defer { self?.confirmedPickupLabelTask = nil }
+            var attempt = 0
+            while true {
+                guard !Task.isCancelled else { return }
+                let resolution = await labeler.resolve(for: coordinate)
+                guard !Task.isCancelled, let self else { return }
+                // Apply only while THIS pin is still the confirmed pickup (the
+                // rider hasn't re-dropped it or reset the draft).
+                guard let pin = self.draftPickup, pin.id == "pin",
+                      LivePinLabeler.distanceMeters(pin.coordinate, coordinate) < 1 else { return }
+                switch resolution {
+                case .resolved(let label):
+                    self.draftPickup = Self.pinPickup(label: label, coordinate: pin.coordinate)
+                    return
+                case .unresolved:
+                    return // keep the calm "Current location" fallback
+                case .failed:
+                    guard attempt < Self.pinLabelRetryBackoffs.count else { return }
+                    try? await Task.sleep(for: Self.pinLabelRetryBackoffs[attempt])
+                    attempt += 1
+                }
+            }
+        }
+    }
+
     /// Enter Review, computing the trip estimate once from the confirmed
     /// pickup → destination (MYR-212 defect 5). Only recomputes when the
     /// destination carries no estimate yet (`minutes == 0`, the live search /
@@ -567,6 +660,8 @@ public final class SharedViewerState {
     /// Resets the draft + returns to `.idle` — ride-request.jsx `closeToIdle`.
     public func resetDraftToIdle() {
         sheetPhase = .idle
+        confirmedPickupLabelTask?.cancel() // MYR-239 — no re-resolution outlives the draft
+        confirmedPickupLabelTask = nil
         draftPickup = nil
         draftDestination = nil
         draftFleetMemberID = RideRequestFixtures.fleet[0].id
