@@ -257,6 +257,14 @@ public enum MRTMetrics {
     /// margin, it never hides an endpoint. (Summary is excluded: it's a
     /// full-screen takeover, not a peek-above-a-bottom-sheet.)
     public static let rideRequestRouteMapBottomInset: CGFloat = 430
+    /// MYR-177 — the live tracking sheet is content-sized and noticeably SHORTER
+    /// than the Review/Booking sheets (`rideRequestRouteMapBottomInset` was tuned
+    /// for those). Reusing 430 for tracking over-reserved the bottom, floating
+    /// the leg fit up into the top third with dead map below it (client: "stuck
+    /// at the top … should fill screen") and the attribution mid-page. This is
+    /// the tracking sheet's real cover height, so the leg-fit camera fills the
+    /// true visible band and the attribution sits just above the sheet.
+    public static let trackingMapBottomInset: CGFloat = 312
     /// The vertical screen fraction (0 = top edge, 1 = bottom edge) at which the
     /// fixed pin-drop glyph is drawn over the map — it sits ABOVE the sheet so
     /// the rider can see the spot it marks. The confirmed pickup coordinate is the
@@ -282,4 +290,41 @@ public enum MRTMetrics {
     /// gated it to live to keep the sim scene pixel-identical to the prototype;
     /// that gate is intentionally lifted for pin-drop zoom.
     public static let pinDropStreetSpanDelta: Double = 0.004
+
+    // MARK: - Live ride tracking map (MYR-177)
+
+    /// Padding factor for the leg-fit tracking camera — grows the route's
+    /// bounding box just enough for breathing room so the car + pickup (leg 1)
+    /// or pickup + destination (leg 2) FILL the unobstructed area above the
+    /// sheet (client: "centered to fit and fill screen"), not a small island in
+    /// the middle. Tight — the fit already centers in the true visible rect
+    /// (top notch + bottom sheet insets), so it only needs a modest margin.
+    public static let trackingLegFitPadding: Double = 1.28
+
+    /// Re-fit trigger margin as a fraction of the fitted region's span: the
+    /// leg-fit camera re-frames only once the car crosses into the outer
+    /// `trackingRefitMarginFraction` band of the region it last framed (i.e. is
+    /// about to leave view), NOT on every fix. This is the anti-feedback-loop
+    /// knob (MYR-222): a car sitting well inside the frame produces ZERO camera
+    /// writes at any fix rate.
+    public static let trackingRefitMarginFraction: Double = 0.14
+
+    /// Material-deviation threshold (meters) for the cached ride route: the leg
+    /// route is refetched from the provider only when the car strays farther
+    /// than this from the cached polyline (it took a different road), never on a
+    /// timer. Well inside a city block, comfortably outside normal GPS jitter.
+    public static let rideRouteDeviationThresholdMeters: Double = 60
+
+    /// Top inset (points) the leg-fit tracking camera reserves for the device
+    /// top chrome (status bar / notch) when centering the route in the true
+    /// unobstructed rect — the full-bleed map draws under the notch, so the fit
+    /// keeps the car/pickup below it instead of hidden behind it (the MYR-212
+    /// "use the real visible rect" lesson, applied to the top edge). A fixed
+    /// device metric, like the other full-bleed physical-edge offsets (MYR-196).
+    public static let trackingFitTopInset: CGFloat = 88
+
+    /// Bottom offset for the rider recenter button on the live tracking map
+    /// (MYR-177) — floats just above the content-sized tracking sheet, mirroring
+    /// the idle map's `FloatingMapButton` placement/language.
+    public static let trackingRecenterButtonBottom: CGFloat = 340
 }

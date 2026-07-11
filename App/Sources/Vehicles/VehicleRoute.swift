@@ -89,6 +89,36 @@ public enum VehicleRoute {
         return result
     }
 
+    /// The route's coordinates FROM `progress` to the end, with the first point
+    /// interpolated at the current position — the "remaining" segment ahead of
+    /// the vehicle. Used by the MYR-177 leg-fit tracking camera to frame the
+    /// car → leg-destination portion (leg 1: car → pickup) so the view zooms in
+    /// as the car approaches instead of holding the whole origin→pickup box.
+    public static func remainingCoordinates(along route: [CLLocationCoordinate2D], progress: Double) -> [CLLocationCoordinate2D] {
+        guard route.count > 1 else { return route }
+        let points = route.map(MKMapPoint.init)
+        let segmentLengths = zip(points, points.dropFirst()).map { $0.distance(to: $1) }
+        let total = segmentLengths.reduce(0, +)
+        let clamped = min(1, max(0, progress))
+        let target = total * clamped
+
+        var accumulated: Double = 0
+        for i in 0..<segmentLengths.count {
+            let segLen = segmentLengths[i]
+            if accumulated + segLen >= target {
+                let t = segLen > 0 ? min(1, max(0, (target - accumulated) / segLen)) : 0
+                let a = points[i], b = points[i + 1]
+                let x = a.x + (b.x - a.x) * t
+                let y = a.y + (b.y - a.y) * t
+                var result = [MKMapPoint(x: x, y: y).coordinate]
+                result.append(contentsOf: route[(i + 1)...])
+                return result
+            }
+            accumulated += segLen
+        }
+        return [route[route.count - 1]]
+    }
+
     /// Total route length in miles — used by the Drives live-trip banner
     /// (MYR-169, screens.jsx:668 "28.4 mi") to derive "miles remaining" as
     /// `totalDistanceMiles * (1 - progress)` instead of hardcoding the jsx's
@@ -114,7 +144,8 @@ public enum VehicleRoute {
         for route: [CLLocationCoordinate2D],
         paddingFactor: Double = 1.6,
         bottomInset: CGFloat = 0,
-        viewHeight: CGFloat = 0
+        viewHeight: CGFloat = 0,
+        topInset: CGFloat = 0
     ) -> MKCoordinateRegion {
         guard let first = route.first else {
             return MKCoordinateRegion(
@@ -135,7 +166,7 @@ public enum VehicleRoute {
             latitudeDelta: max(0.02, (maxLat - minLat) * paddingFactor),
             longitudeDelta: max(0.02, (maxLon - minLon) * paddingFactor)
         )
-        return insetRegion(center: center, span: span, bottomInset: bottomInset, viewHeight: viewHeight)
+        return insetRegion(center: center, span: span, bottomInset: bottomInset, viewHeight: viewHeight, topInset: topInset)
     }
 
     /// MYR-216 deliverable 4 (pure, testable) — grow a fitted region so its route
@@ -145,14 +176,26 @@ public enum VehicleRoute {
     /// added span so the covered strip falls behind the sheet; longitude grows by
     /// the same factor (uniform zoom-out — never clips a horizontal endpoint).
     /// No-op for an unset / degenerate inset, so plain fits are unchanged.
-    static func insetRegion(center: CLLocationCoordinate2D, span: MKCoordinateSpan, bottomInset: CGFloat, viewHeight: CGFloat) -> MKCoordinateRegion {
-        guard bottomInset > 0, viewHeight > 0, bottomInset < viewHeight else {
+    ///
+    /// MYR-177: extended with `topInset` (the status-bar/notch band at the top)
+    /// so the route centers in the TRUE unobstructed rect — between the top
+    /// inset and the sheet — instead of riding up under the notch. With
+    /// `topInset == 0` this is byte-identical to the MYR-216 bottom-only inset
+    /// (every existing caller keeps its framing).
+    static func insetRegion(center: CLLocationCoordinate2D, span: MKCoordinateSpan, bottomInset: CGFloat, viewHeight: CGFloat, topInset: CGFloat = 0) -> MKCoordinateRegion {
+        guard viewHeight > 0, bottomInset >= 0, topInset >= 0, bottomInset + topInset < viewHeight,
+              bottomInset > 0 || topInset > 0 else {
             return MKCoordinateRegion(center: center, span: span)
         }
-        let visibleFraction = (Double(viewHeight) - Double(bottomInset)) / Double(viewHeight)
+        let visibleFraction = (Double(viewHeight) - Double(bottomInset) - Double(topInset)) / Double(viewHeight)
+        guard visibleFraction > 0 else { return MKCoordinateRegion(center: center, span: span) }
         let grownLat = span.latitudeDelta / visibleFraction
         let grownLon = span.longitudeDelta / visibleFraction
-        let southwardShift = (grownLat - span.latitudeDelta) / 2
+        // Shift the region center SOUTH by the net (bottom − top) obstruction so
+        // the route's own center lands at the visible band's center. When the
+        // insets are equal the shift is zero (perfectly centered).
+        let shiftFraction = (Double(bottomInset) - Double(topInset)) / 2 / Double(viewHeight)
+        let southwardShift = shiftFraction * grownLat
         return MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: center.latitude - southwardShift, longitude: center.longitude),
             span: MKCoordinateSpan(latitudeDelta: grownLat, longitudeDelta: grownLon)

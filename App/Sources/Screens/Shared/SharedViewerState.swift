@@ -113,9 +113,37 @@ public final class SharedViewerState {
         liveVehicleLocator = seams.liveVehicleLocator
         pinLabeler = seams.pinLabeler
         isLiveLocation = seams.isLive
+        // MYR-177 (client-approved): the tracking map draws REAL Apple Maps
+        // driving routes in BOTH sim and live — "the route should be calculated
+        // by Apple Maps until the Tesla integration", not the straight-line
+        // stopgap — so the demo/debug tracking scenes show road geometry too.
+        // MKDirections runs fine in the Simulator. `StraightLineRideRouteProvider`
+        // remains the provider's own on-failure fallback and the hermetic
+        // test-injection provider (unit tests never hit the network). When the
+        // Tesla route polyline lands, only this one line swaps.
+        rideRouteStore = RideRouteStore(provider: AppleRideRouteProvider())
     }
 
     public var snapshot: VehicleTelemetrySnapshot { telemetrySource.snapshot }
+
+    // MARK: MYR-177 — live ride tracking (route provider + leg-fit camera owner)
+    //
+    // Owned here (not in the per-render `SharedViewerScreen` struct) so the
+    // route cache + the single camera owner survive view updates and the
+    // idle↔tracking phase churn — the same reasoning `telemetrySource` and the
+    // pin-drop owner follow. `@ObservationIgnored` (stable references) — the
+    // `@Observable` route store's own `leg1`/`leg2` reads ARE tracked by any
+    // view that reads them.
+
+    /// Per-leg route cache for the active ride (MYR-177). Provider is Apple
+    /// MKDirections in live (client-approved TEMP until Tesla route polylines
+    /// land — swap the provider, nothing else) and the offline straight-line in
+    /// sim/tests so no network touches the sim path.
+    @ObservationIgnored let rideRouteStore: RideRouteStore
+
+    /// The single leg-fit camera owner for the tracking phase (MYR-177) — every
+    /// programmatic tracking-camera write flows through it.
+    @ObservationIgnored let trackingCamera = TrackingCameraController()
 
     public func startTelemetry() {
         telemetryStarted = true

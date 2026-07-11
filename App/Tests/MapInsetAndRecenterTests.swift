@@ -35,10 +35,13 @@ final class PerPhaseMapInsetTests: XCTestCase {
                        MRTMetrics.rideRequestSearchSheetHeight)
         XCTAssertEqual(SharedViewerScreen.mapBottomInset(phase: .pinDrop(returnTo: .search), isPendingPill: false),
                        MRTMetrics.rideRequestPinDropMapInset)
-        for phase in [RiderSheetPhase.review, .booking, .tracking] {
+        for phase in [RiderSheetPhase.review, .booking] {
             XCTAssertEqual(SharedViewerScreen.mapBottomInset(phase: phase, isPendingPill: false),
                            MRTMetrics.rideRequestRouteMapBottomInset)
         }
+        // MYR-177: tracking has its own (shorter) sheet-cover inset.
+        XCTAssertEqual(SharedViewerScreen.mapBottomInset(phase: .tracking, isPendingPill: false),
+                       MRTMetrics.trackingMapBottomInset)
     }
 
     func testSummaryIsFullScreenNoInset() {
