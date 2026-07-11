@@ -123,9 +123,19 @@ struct RideRequestRouteMap: View {
     /// The settled route's whole-line breathing glow intensity (0.15 ⇄ 1,
     /// autoreversing — "pulse glow all as one").
     @State private var glowPulse: CGFloat = 0.15
-    /// Bumped per pass so the `.task(id:)` driving a pass restarts cleanly on
-    /// route change and cancels on disappear.
-    @State private var etchRun = 0
+    /// The pass driver task — owned EXPLICITLY (not `.task(id:)`) so a replay
+    /// restarts it immediately and deterministically even when the restart
+    /// happens inside an animated sheet transition (MYR-237 device QA: passes
+    /// armed mid-transition never rendered until a hardware press forced a
+    /// commit).
+    @State private var passTask: Task<Void, Never>?
+    /// Arms the view-ATTACHED etch animation (see overlayLayers): attached
+    /// `.animation(value:)` is immune to the enclosing transition's
+    /// transaction — the fix for the mid-transition swallow — but must be
+    /// disarmed during resets so progress snapping back to 0 doesn't animate.
+    @State private var etchAnimating = false
+    /// Same, for the breathing glow loop (pulsing + loading).
+    @State private var glowAnimating = false
     /// The overlay's fade-out at the end of the pass (crossfade to map-space).
     @State private var overlayOpacity: Double = 1
     /// Bumped on every map camera-change event so the overlay's screen-space
@@ -212,7 +222,7 @@ struct RideRequestRouteMap: View {
                 }
                 restartPresentation()
             }
-            .task(id: etchRun) { await runPass() }
+            .onDisappear { passTask?.cancel() }
         }
     }
 
@@ -239,21 +249,31 @@ struct RideRequestRouteMap: View {
     // MARK: Pass lifecycle
 
     /// Decide the presentation for the CURRENT route and (re)start its pass.
+    /// Resets happen with animations DISABLED (a replay often fires inside the
+    /// sheet's animated phase transition — inherited transactions must never
+    /// animate a reset), and the driver task is started explicitly right here.
     private func restartPresentation() {
-        etchProgress = 0
-        overlayOpacity = 1
-        glowPulse = 0
-        if etch, !reduceMotion, isRealRoute {
-            phase = .etching
-        } else if etch, !reduceMotion {
-            // No real road route yet — in flight, throttled, or failed. NEVER
-            // draw the straight fallback in etch mode (client rule): breathe
-            // the head at the pickup until the caller's retry lands a route.
-            phase = .loading
-        } else {
-            phase = .settled
+        passTask?.cancel()
+        var tx = Transaction()
+        tx.disablesAnimations = true
+        withTransaction(tx) {
+            etchAnimating = false
+            glowAnimating = false
+            etchProgress = 0
+            overlayOpacity = 1
+            glowPulse = 0
+            if etch, !reduceMotion, isRealRoute {
+                phase = .etching
+            } else if etch, !reduceMotion {
+                // No real road route yet — in flight, throttled, or failed.
+                // NEVER draw the straight fallback in etch mode (client rule):
+                // breathe the head at the pickup until the retry lands a route.
+                phase = .loading
+            } else {
+                phase = .settled
+            }
         }
-        etchRun += 1
+        passTask = Task { await runPass() }
     }
 
     /// Drives one pass for the current phase. Runs under `.task(id: etchRun)`,
@@ -264,21 +284,18 @@ struct RideRequestRouteMap: View {
             return
         case .loading:
             // Two frames so the projection is on screen before the breathing
-            // arms (animating a value set in the same transaction as its first
-            // render can skip the animation).
+            // arms.
             try? await Task.sleep(for: .milliseconds(32))
             guard !Task.isCancelled, phase == .loading else { return }
-            withAnimation(.easeInOut(duration: Self.pulsePeriod / 2).repeatForever(autoreverses: true)) {
-                glowPulse = 1
-            }
+            glowAnimating = true
+            glowPulse = 1 // animated by the ATTACHED repeatForever (overlayLayers)
         case .etching:
             // Two frames for the (animation-disabled) camera write to land so
             // the overlay projects from the settled frame.
             try? await Task.sleep(for: .milliseconds(32))
             guard !Task.isCancelled, phase == .etching else { return }
-            withAnimation(.easeInOut(duration: Self.etchDuration)) {
-                etchProgress = 1
-            }
+            etchAnimating = true
+            etchProgress = 1 // animated by the ATTACHED easeInOut (overlayLayers)
             try? await Task.sleep(for: .seconds(Self.etchDuration))
             guard !Task.isCancelled, phase == .etching else { return }
             // SMOOTH handoff (client: "the pulsing should ease in smoothly
@@ -287,19 +304,20 @@ struct RideRequestRouteMap: View {
             // settled route beneath it, then (2) begin the whole-line breathing
             // glow FROM ZERO so the first breath eases in from nothing.
             phase = .settling
-            withAnimation(.easeOut(duration: Self.settleFade)) {
-                overlayOpacity = 0
-            }
+            overlayOpacity = 0 // animated by the ATTACHED settle fade
             try? await Task.sleep(for: .seconds(Self.settleFade))
             guard !Task.isCancelled, phase == .settling else { return }
-            phase = .pulsing
-            overlayOpacity = 1
-            glowPulse = 0
+            var tx = Transaction()
+            tx.disablesAnimations = true
+            withTransaction(tx) {
+                phase = .pulsing
+                overlayOpacity = 1
+                glowPulse = 0
+            }
             try? await Task.sleep(for: .milliseconds(32))
             guard !Task.isCancelled, phase == .pulsing else { return }
-            withAnimation(.easeInOut(duration: Self.pulsePeriod / 2).repeatForever(autoreverses: true)) {
-                glowPulse = 1
-            }
+            glowAnimating = true
+            glowPulse = 1 // animated by the ATTACHED repeatForever
         case .settling, .pulsing:
             // Reached only via `.etching` above (restartPresentation never
             // starts here); the sequence is already driving itself.
@@ -402,22 +420,32 @@ struct RideRequestRouteMap: View {
         let _ = projectionEpoch
         if points.count == route.count {
             Group {
+                // View-ATTACHED animations (`.animation(_:value:)`) rather than
+                // `withAnimation` from the driver task: attached animations are
+                // applied at render and survive being armed inside another
+                // transition's transaction — the MYR-237 "only renders after a
+                // hardware press" fix. Each is nil while disarmed so resets
+                // never animate.
                 switch phase {
                 case .etching, .settling:
                     // `.settling`: the finished trail (head included) fading out
                     // over the identical map-space settled route beneath it.
                     RouteEtchTrace(points: points, progress: etchProgress, headFraction: Self.etchHeadFraction)
+                        .animation(etchAnimating ? .easeInOut(duration: Self.etchDuration) : nil, value: etchProgress)
                 case .pulsing:
                     RouteGlowPulse(points: points, intensity: glowPulse)
+                        .animation(glowAnimating ? .easeInOut(duration: Self.pulsePeriod / 2).repeatForever(autoreverses: true) : nil, value: glowPulse)
                 case .loading:
                     // The etch head, idling at the pickup, breathing while
                     // MKDirections works — no line yet.
                     HeadIdlePulse(points: points, intensity: glowPulse)
+                        .animation(glowAnimating ? .easeInOut(duration: Self.pulsePeriod / 2).repeatForever(autoreverses: true) : nil, value: glowPulse)
                 case .settled:
                     EmptyView()
                 }
             }
             .opacity(overlayOpacity)
+            .animation(phase == .settling ? .easeOut(duration: Self.settleFade) : nil, value: overlayOpacity)
             .allowsHitTesting(false)
         }
     }
