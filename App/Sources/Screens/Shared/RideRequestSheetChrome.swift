@@ -116,7 +116,10 @@ struct RideGrabHandle: View {
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
             .gesture(
-                DragGesture(minimumDistance: 6)
+                // MYR-236 round 2 (suspect #1 — activation latency): was
+                // `minimumDistance: 6` (a dead zone that read as "sticky grab").
+                // The dismiss stays velocity- + 36pt-threshold-guarded below.
+                DragGesture(minimumDistance: 1)
                     .onEnded { value in
                         // Project the flick from release velocity (MYR-236,
                         // shared `SheetPhysics`) so a fast downward flick

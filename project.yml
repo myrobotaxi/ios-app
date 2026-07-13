@@ -90,6 +90,26 @@ targets:
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/MyRoboTaxi.app/MyRoboTaxi"
         BUNDLE_LOADER: "$(TEST_HOST)"
 
+  # MYR-236 round 2 — the sheet-feel measurement harness. A UI-test target
+  # (distinct from the unit-test target above, which can't synthesize touches)
+  # boots the `ownerHome` scene, performs a slow drag + fast flicks on the
+  # draggable detent sheet, and asserts it tracks / crosses detents. The app
+  # emits a per-frame (requested, rendered) height trace under
+  # `MRT_SHEET_TRACE=1` that the CI step parses into an objective tracking-error
+  # number for the PR body.
+  MyRoboTaxiUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - App/UITests
+    dependencies:
+      - target: MyRoboTaxi
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: app.myrobotaxi.ios.uitests
+        TEST_TARGET_NAME: MyRoboTaxi
+
 schemes:
   MyRoboTaxi:
     build:
@@ -98,5 +118,6 @@ schemes:
     test:
       targets:
         - MyRoboTaxiTests
+        - MyRoboTaxiUITests
     run:
       config: Debug
