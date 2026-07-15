@@ -97,6 +97,12 @@ final class RideRequestEndpointTests: XCTestCase {
         XCTAssertFalse(page.hasMore)
         XCTAssertNil(page.nextCursor, "null nextCursor => the final page")
         XCTAssertTrue(page.items.allSatisfy { $0.status == .requested }, "incoming feed is requested-only")
+        // MYR-229 (contracts v0.11.0): the owner incoming feed's requester
+        // identity decodes when the wire carries it...
+        XCTAssertEqual(page.items[0].requesterName, "Thomas")
+        // ...and stays nil (OPTIONAL/additive) when the wire omits it, so an
+        // older/unresolved record still decodes.
+        XCTAssertNil(page.items[1].requesterName)
 
         let requests = await http.capturedRequests()
         XCTAssertEqual(requests[0].url?.path, "/api/ride-requests/incoming")

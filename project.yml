@@ -19,7 +19,7 @@ packages:
   # product explicitly (same version the Kit resolves — SPM dedupes).
   contracts:
     url: https://github.com/myrobotaxi/contracts.git
-    from: 0.9.0
+    from: 0.11.0
 
 settings:
   base:

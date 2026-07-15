@@ -62,6 +62,14 @@ extension TelemetrySocket: RideEventStreaming {}
 //    coordinates via `TripEstimate` (MYR-219 deliverable 1 — the same closed-form
 //    the rider's Review/Booking already uses through `enterReview()`), so the
 //    owner incoming card no longer shows "DISTANCE 0.0 mi / DRIVE TIME ~0 min".
+//
+// MYR-229 fixes the one gap that WAS a fixture leak rather than a documented
+// v1 stand-in: pickup/destination `label`/`address` were already read off the
+// real wire `RidePlace` (`place(_:)` below), but the owner card's REQUESTER
+// name was hardcoded to the fixture "Sam" regardless of mode. `record(from:)`
+// now folds contracts v0.11.0's `RideRequest.requesterName` onto
+// `RideRequestRecord.requesterName` (defensive "Rider" fallback if the wire
+// omits it), so a live incoming request shows the real requester.
 enum RideRequestContractMapping {
 
     static func place(_ wire: MyRobotaxiContracts.RidePlace) -> RidePlace {
@@ -136,6 +144,13 @@ enum RideRequestContractMapping {
             requestedAt: parseISO(ride.createdAt) ?? Date()
         )
         record.acceptedAt = ride.acceptedAt.flatMap(parseISO)
+        // MYR-229: contracts v0.11.0's `requesterName` (server "first name ->
+        // email local-part -> Rider" fallback). Defensive fallback here too —
+        // even if the wire omits it (the field is OPTIONAL/additive), a LIVE
+        // record must never fall through to the fixture "Sam"
+        // (`RideRequestRecord.requesterDisplayName`'s doc comment, CLAUDE.md
+        // "no fixtures on the live path").
+        record.requesterName = ride.requesterName ?? "Rider"
         // v1 has no live-tracking progress (MYR-176/177). An accepted ride mounts
         // the tracking sheet at the static seed so it shows "heading to pickup"
         // without inventing a progress ticker.
