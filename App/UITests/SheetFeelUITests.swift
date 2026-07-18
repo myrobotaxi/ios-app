@@ -41,6 +41,30 @@ final class SheetFeelUITests: XCTestCase {
         return app.descendants(matching: .any)["mrt.detentSheet"]
     }
 
+    /// A grab point 12pt below the sheet's top edge — inside the handle strip
+    /// regardless of the element's frame height. (Round 3 made the frame a
+    /// constant surface height with the below-screen part clipped, so a
+    /// normalized fraction of it no longer lands on the handle reliably.)
+    private func handleGrab(on sheet: XCUIElement) -> XCUICoordinate {
+        sheet.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: 12))
+    }
+
+    /// The sheet's frame once its settle spring has finished — reading
+    /// `frame` immediately after a fast synthesized flick races the ~0.42s
+    /// snap animation and asserts against a mid-flight position. Polls until
+    /// two consecutive samples agree within half a point (max ~2.5s).
+    private func settledFrame(of element: XCUIElement) -> CGRect {
+        var last = element.frame
+        for _ in 0..<24 {
+            usleep(100_000)
+            let now = element.frame
+            if abs(now.minY - last.minY) < 0.5 { return now }
+            last = now
+        }
+        return last
+    }
+
     /// SLOW drag up (press-and-hold, ~20 sample frames) must track the finger
     /// and settle at the taller `half` detent — the sheet's top rises well
     /// above where it rested. During this drag the app logs the per-frame
@@ -51,14 +75,14 @@ final class SheetFeelUITests: XCTestCase {
         XCTAssertTrue(s.exists, "detent sheet should be on screen in ownerHome")
 
         let startFrame = s.frame
-        // Grab near the sheet's top (the handle strip) and drag toward the top
-        // of the screen. A long press duration makes the synthesized drag slow
-        // (many intermediate touch samples).
-        let grab = s.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.04))
+        // Grab the handle strip and drag toward the top of the screen. A long
+        // press duration makes the synthesized drag slow (many intermediate
+        // touch samples).
+        let grab = handleGrab(on: s)
         let target = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.28))
         grab.press(forDuration: 1.3, thenDragTo: target)
 
-        let endFrame = s.frame
+        let endFrame = settledFrame(of: s)
         NSLog("MRT_HARNESS slowDragUp startMinY=\(startFrame.minY) endMinY=\(endFrame.minY) startH=\(startFrame.height) endH=\(endFrame.height)")
         XCTAssertLessThan(
             endFrame.minY, startFrame.minY - 80,
@@ -77,11 +101,15 @@ final class SheetFeelUITests: XCTestCase {
         XCTAssertTrue(s.exists)
 
         let startFrame = s.frame
-        let grab = s.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.04))
         let up = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
-        grab.press(forDuration: 0.05, thenDragTo: up)
+        // Explicit fast velocity: the plain thenDragTo variant sometimes ends
+        // the synthesized gesture with a stationary hold, releasing at ~zero
+        // velocity and turning the "flick" into a slow drag (flaky).
+        handleGrab(on: s).press(
+            forDuration: 0.05, thenDragTo: up, withVelocity: .fast, thenHoldForDuration: 0
+        )
 
-        let endFrame = s.frame
+        let endFrame = settledFrame(of: s)
         NSLog("MRT_HARNESS flickUp startMinY=\(startFrame.minY) endMinY=\(endFrame.minY)")
         XCTAssertLessThan(
             endFrame.minY, startFrame.minY - 80,
@@ -98,15 +126,19 @@ final class SheetFeelUITests: XCTestCase {
         let peekFrame = s.frame
 
         // Get to half first (slow drag up), then flick down.
-        s.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.04))
+        handleGrab(on: s)
             .press(forDuration: 1.0, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.28)))
-        let halfFrame = s.frame
+        let halfFrame = settledFrame(of: s)
         XCTAssertLessThan(halfFrame.minY, peekFrame.minY - 80, "precondition: sheet is at half")
 
-        // Grab the now-taller sheet near its top and flick down fast.
-        s.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.04))
-            .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.92)))
-        let endFrame = s.frame
+        // Grab the handle of the now-raised sheet and flick down fast (explicit
+        // velocity — see testFastFlickUpCrossesToHalf).
+        handleGrab(on: s).press(
+            forDuration: 0.05,
+            thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.92)),
+            withVelocity: .fast, thenHoldForDuration: 0
+        )
+        let endFrame = settledFrame(of: s)
         NSLog("MRT_HARNESS flickDown peekMinY=\(peekFrame.minY) halfMinY=\(halfFrame.minY) endMinY=\(endFrame.minY)")
         XCTAssertLessThan(
             abs(endFrame.minY - peekFrame.minY), 30,
