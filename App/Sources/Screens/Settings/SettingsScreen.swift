@@ -20,6 +20,12 @@ struct SettingsScreen: View {
     /// MYR-224 — flip to the rider shell. Only invoked from the switch row, which
     /// renders only when `liveProfile != nil`.
     var onSwitchMode: () -> Void = {}
+    /// MYR-243 — the live fleet's read-only linked-vehicle source. Non-nil ONLY
+    /// on the true live path; when present, the Tesla Account section renders the
+    /// account's REAL vehicles (read-only) plus honest connecting/notice states,
+    /// instead of the fixture `vehiclesState`. `nil` on sim / DEBUG keeps that
+    /// fixture list pixel-identical (MYR-228).
+    var linkedVehicles: (any LinkedVehiclesReading)? = nil
     let onSignOut: () -> Void
 
     private struct NotificationToggles {
@@ -27,6 +33,39 @@ struct SettingsScreen: View {
         var driveCompleted = true
         var chargingComplete = false
         var viewerJoined = true
+    }
+
+    // MARK: Tesla Account — live-path display state (MYR-243)
+
+    /// What the read-only Tesla Account section shows on the LIVE path, derived
+    /// from the live fleet. A value type so the honest-state precedence is unit
+    /// tested without SwiftUI.
+    enum TeslaAccountLiveState: Equatable {
+        /// Fleet list still loading — a calm connecting line.
+        case connecting
+        /// An honest one-liner: empty account, auth required, or unreachable —
+        /// the fleet's own copy (never a fixture).
+        case notice(String)
+        /// The account's real linked vehicles (read-only).
+        case linked([Vehicle])
+    }
+
+    /// Map the live fleet's read model to the section state. Precedence: any
+    /// loaded vehicles WIN (show them the moment they arrive, even if a stale
+    /// notice lingers); else a still-loading fleet shows the connecting state;
+    /// else the fleet's honest notice, falling back to the Settings empty copy.
+    /// NEVER fixtures.
+    static func liveState(
+        vehicles: [Vehicle],
+        isConnecting: Bool,
+        statusMessage: String?
+    ) -> TeslaAccountLiveState {
+        if !vehicles.isEmpty { return .linked(vehicles) }
+        if isConnecting { return .connecting }
+        if let statusMessage, !statusMessage.trimmingCharacters(in: .whitespaces).isEmpty {
+            return .notice(statusMessage)
+        }
+        return .notice("No Tesla linked yet.")
     }
 
     /// Scroll anchor for the DEBUG `ownerSettings` capture scene (see below).
@@ -69,7 +108,7 @@ struct SettingsScreen: View {
                             profileSection
                             divider
                             teslaAccountHeader
-                            vehiclesList
+                            teslaVehiclesList
                             addTeslaRow
                             divider
                             sharedWithHeader
@@ -284,6 +323,92 @@ struct SettingsScreen: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    // MARK: Tesla Account — live read-only list (MYR-243)
+
+    /// Picks the source for the linked-vehicle rows: the live fleet (read-only)
+    /// when `linkedVehicles` is wired, else the fixture `vehiclesState` list
+    /// (sim / DEBUG), which stays pixel-identical.
+    @ViewBuilder
+    private var teslaVehiclesList: some View {
+        if let linkedVehicles {
+            liveVehiclesList(Self.liveState(
+                vehicles: linkedVehicles.vehicles,
+                isConnecting: linkedVehicles.isConnecting,
+                statusMessage: linkedVehicles.statusMessage
+            ))
+        } else {
+            vehiclesList
+        }
+    }
+
+    /// The read-only live list. Honest states only — a calm connecting line while
+    /// the fleet loads, the fleet's honest notice (empty account / auth /
+    /// unreachable) otherwise, and read-only rows once vehicles arrive. No
+    /// set-primary / unlink affordance (no backend contract, MYR-228); rows are
+    /// non-interactive (no detail sheet, no Primary badge — the live path has no
+    /// primary designation).
+    @ViewBuilder
+    private func liveVehiclesList(_ state: TeslaAccountLiveState) -> some View {
+        VStack(spacing: 0) {
+            switch state {
+            case .connecting:
+                liveNoticeRow("Connecting\u{2026}")
+            case .notice(let message):
+                liveNoticeRow(message)
+            case .linked(let vehicles):
+                ForEach(Array(vehicles.enumerated()), id: \.element.id) { index, vehicle in
+                    liveVehicleRow(vehicle, isFirst: index == 0)
+                }
+            }
+        }
+        .padding(.horizontal, MRTMetrics.pageGutter)
+        .padding(.bottom, 8)
+    }
+
+    private func liveNoticeRow(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 13))
+            .foregroundStyle(Color.mrtTextMuted)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 12)
+    }
+
+    /// A read-only linked-vehicle row: same icon tile + name + "model · plate" as
+    /// the fixture row, but no Primary badge, no chevron, and no tap target —
+    /// there is no set-primary / unlink on the live path.
+    private func liveVehicleRow(_ vehicle: Vehicle, isFirst: Bool) -> some View {
+        HStack(spacing: 13) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.mrtSurface)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline)
+                    )
+                Image(systemName: "car.fill")
+                    .font(.system(size: 19))
+                    .foregroundStyle(Color.mrtTextSec)
+            }
+            .frame(width: 40, height: 40)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(vehicle.name)
+                    .font(.system(size: 15, weight: .semibold))
+                    .tracking(-0.2)
+                    .foregroundStyle(Color.mrtText)
+                Text(vehicle.plate.isEmpty ? vehicle.model : "\(vehicle.model) \u{00B7} \(vehicle.plate)")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Color.mrtTextMuted)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 12)
+        .overlay(alignment: .top) {
+            if !isFirst {
+                Rectangle().fill(Color.mrtBorder).frame(height: MRTMetrics.hairline)
+            }
+        }
     }
 
     private var addTeslaRow: some View {

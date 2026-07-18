@@ -99,3 +99,22 @@ public final class OwnerHomeState {
     public func handleForeground() { fleet.handleForeground() }
     public func handleBackground() { fleet.handleBackground() }
 }
+
+// MARK: - Read-only linked-vehicles source (MYR-243)
+//
+// The narrow READ surface the Settings "Tesla Account" section consumes on the
+// LIVE path: the owner's real vehicles from the authoritative fleet REST list,
+// plus the honest connecting/notice signals — and nothing else. No mutation:
+// set-primary / unlink have no backend contract (MYR-228), so the live section
+// is display-only. `OwnerHomeState` already holds the started fleet for the
+// owner shell, so Settings reads the SAME list that drives Home rather than a
+// second fetch. `nil` on the sim / DEBUG path keeps the fixture-backed
+// `OwnerVehiclesState` section pixel-identical (MYR-228 rule).
+@MainActor
+protocol LinkedVehiclesReading: AnyObject, Observable {
+    var vehicles: [Vehicle] { get }
+    var isConnecting: Bool { get }
+    var statusMessage: String? { get }
+}
+
+extension OwnerHomeState: LinkedVehiclesReading {}

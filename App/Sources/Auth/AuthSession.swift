@@ -190,10 +190,31 @@ final class LiveAuthSession: AuthSession {
     }
 
     /// Adopt a fresh identity: publish it to `currentUser` and persist it.
+    ///
+    /// MYR-243 — MERGE, never blindly overwrite. `POST /api/auth/refresh`
+    /// returns only `{ id }` (no name/email — there is no `/api/auth/me`, see
+    /// `SessionTokenProvider.sessionUser()`), so on EVERY silent resume the
+    /// incoming `AuthUser` for a returning user is id-only. Adopting it verbatim
+    /// wiped the name/email a prior `/api/auth/apple` sign-in had persisted —
+    /// which is exactly why a signed-in owner's Settings collapsed to "Your
+    /// account" / "Email not shared" despite live data flowing. Keep the same
+    /// account's already-known name/email when the incoming response omits them;
+    /// only replace a field with a non-nil incoming value, and take the incoming
+    /// identity wholesale when it is a DIFFERENT account (no stale-email leak).
     private func adoptProfile(_ user: AuthUser) {
-        let profile = UserProfile(id: user.id, name: user.name, email: user.email)
-        currentUser = profile
-        profileStore.write(profile)
+        let incoming = UserProfile(id: user.id, name: user.name, email: user.email)
+        let merged: UserProfile
+        if let existing = currentUser, existing.id == incoming.id {
+            merged = UserProfile(
+                id: incoming.id,
+                name: incoming.name ?? existing.name,
+                email: incoming.email ?? existing.email
+            )
+        } else {
+            merged = incoming
+        }
+        currentUser = merged
+        profileStore.write(merged)
     }
 
     // MARK: Nonce

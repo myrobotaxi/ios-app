@@ -173,6 +173,46 @@ final class LiveAuthSessionIdentityTests: XCTestCase {
         XCTAssertEqual(profileStore.read()?.email, "thomas@example.com", "and persisted for the next launch")
     }
 
+    /// MYR-243 regression — the REAL backend `/api/auth/refresh` returns an
+    /// id-only user (no name/email; there is no `/api/auth/me`). A returning
+    /// owner whose sign-in had persisted a full profile must NOT be collapsed to
+    /// "Your account" / "Email not shared" when that id-only refresh lands on
+    /// silent resume: the stored name/email are preserved (merged), in memory
+    /// and in the store.
+    func testResumeDoesNotWipeStoredProfileWhenRefreshOmitsNameAndEmail() async {
+        let stored = UserProfile(id: "u1", name: "Thomas Nandola", email: "thomas@example.com")
+        let profileStore = FakeProfileStore(seed: stored)
+        // Real refresh shape: id only, name/email absent.
+        let auth = FakeAuthEndpoint(refresh: pair(id: "u1", name: nil, email: nil))
+        let provider = SessionTokenProvider(auth: auth, store: FakeRefreshTokenStore(seed: "rt1"))
+        let session = LiveAuthSession(sessionProvider: provider, profileStore: profileStore)
+
+        XCTAssertEqual(session.currentUser, stored, "eagerly loaded before resume")
+        let resumed = await session.resumeStoredSession()
+
+        XCTAssertTrue(resumed)
+        XCTAssertEqual(session.currentUser?.name, "Thomas Nandola", "id-only refresh must not wipe the name")
+        XCTAssertEqual(session.currentUser?.email, "thomas@example.com", "id-only refresh must not wipe the email")
+        XCTAssertEqual(profileStore.read(), stored, "and the store is not clobbered with an id-only profile")
+    }
+
+    /// The merge is guarded on id equality: when the adopted identity is a
+    /// DIFFERENT account than the stored one, its name/email are NOT inherited
+    /// (no cross-account leak). Exercised through resume, which can run headless.
+    func testAdoptingDifferentAccountDoesNotInheritPriorIdentity() async {
+        let profileStore = FakeProfileStore(seed: UserProfile(id: "u1", name: "Thomas Nandola", email: "thomas@example.com"))
+        // Refresh resolves to a DIFFERENT account (u2), id-only.
+        let auth = FakeAuthEndpoint(refresh: pair(id: "u2", name: nil, email: nil))
+        let provider = SessionTokenProvider(auth: auth, store: FakeRefreshTokenStore(seed: "rt1"))
+        let session = LiveAuthSession(sessionProvider: provider, profileStore: profileStore)
+
+        _ = await session.resumeStoredSession()
+
+        XCTAssertEqual(session.currentUser?.id, "u2")
+        XCTAssertNil(session.currentUser?.name, "no cross-account name leak")
+        XCTAssertNil(session.currentUser?.email, "no cross-account email leak")
+    }
+
     func testEagerlyLoadsPersistedProfileAtInit() {
         let stored = UserProfile(id: "u1", name: "Thomas Nandola", email: "thomas@example.com")
         let session = LiveAuthSession(

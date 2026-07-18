@@ -421,6 +421,11 @@ struct RootView: View {
                         // the "Switch to Rider" row renders only when non-nil.
                         liveProfile: settingsLiveProfile,
                         onSwitchMode: switchViewMode,
+                        // MYR-243 — on the LIVE path, read the Tesla Account
+                        // section from the same started fleet Home uses (read-only
+                        // real vehicles). `nil` in SIM / DEBUG keeps the fixture
+                        // `OwnerVehiclesState` list pixel-identical (MYR-228).
+                        linkedVehicles: isLiveMode ? ownerHomeState : nil,
                         onSignOut: {
                             // MYR-201 — release the live socket + streams before
                             // dropping the session (no-op for the simulated fleet).
