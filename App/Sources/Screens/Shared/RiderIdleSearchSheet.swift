@@ -66,9 +66,23 @@ struct RiderIdleSearchSheet<Idle: View, Search: View>: View {
             reduceMotion: reduceMotion,
             accessibilityIdentifier: "mrt.riderSheet",
             accessibilityLabel: "Ride request sheet",
-            onSettle: commitSettle
+            onSettle: commitSettle,
+            // MYR-236 round 5 — the greeting card and the search content are
+            // hosted SIMULTANEOUSLY as two crossfade layers; the engine drives
+            // their alphas from the drag progress at the UIKit layer (greeting
+            // 1→0, search 0→1), so the content transitions WITH the surface
+            // instead of popping at the settle commit. The phase machine still
+            // commits at settle (`commitSettle`); this is purely visual.
+            crossfade: PanSheetCrossfade(
+                low: { idleLayer },
+                high: { searchLayer }
+            )
         ) {
-            hostedContent
+            // Base layer — an ALWAYS-opaque sheet wash spanning the full
+            // envelope (incl. the overshoot band), so an upward rubber-band or a
+            // mid-crossfade frame never leaks the map beneath the lifted sheet.
+            // Non-interactive; the crossfade layers above carry all controls.
+            envelopeWash
         }
         // Full-bleed geometry (CLAUDE.md): the sheet runs flush to the PHYSICAL
         // bottom edge — the engine's container must span the whole screen, not
@@ -76,37 +90,40 @@ struct RiderIdleSearchSheet<Idle: View, Search: View>: View {
         .ignoresSafeArea(edges: .bottom)
     }
 
-    /// The current phase content, top-anchored, over a sheet-wash fill that
-    /// covers the overshoot band (an upward rubber-band past the search detent
-    /// never reveals the map under the lifted sheet). The content's own chrome
-    /// (rounded top + hairline + shadow) sits on top; the wash matches its top
-    /// corners so the sheet's rounded top reads correctly against the map.
-    @ViewBuilder
-    private var hostedContent: some View {
-        ZStack(alignment: .top) {
-            RideRequestSheetBackground()
-                .clipShape(UnevenRoundedRectangle(topLeadingRadius: MRTMetrics.sheetRadius, topTrailingRadius: MRTMetrics.sheetRadius, style: .continuous))
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .allowsHitTesting(false)
+    /// The persistent sheet-wash base filling the surface envelope (rounded top
+    /// to match both crossfade layers' own top corners). Never faded — it is
+    /// what keeps the overshoot band and every mid-crossfade frame opaque.
+    private var envelopeWash: some View {
+        RideRequestSheetBackground()
+            .clipShape(UnevenRoundedRectangle(topLeadingRadius: MRTMetrics.sheetRadius, topTrailingRadius: MRTMetrics.sheetRadius, style: .continuous))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .allowsHitTesting(false)
+    }
 
-            Group {
-                if isSearch { searchContent() } else { idleContent() }
-            }
-            .frame(maxWidth: .infinity, alignment: .top)
+    /// Crossfade layer visible at the idle detent (alpha 1→0 as the drag rises)
+    /// — the greeting card, self-contained (its own wash/corners/hairline).
+    private var idleLayer: some View {
+        idleContent()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    /// Crossfade layer visible at the search detent (alpha 0→1). Carries the
+    /// height probe that feeds the search detent (preserving MYR-200 no-dead-
+    /// zone / MYR-216 collapse), measured from the search content's own natural
+    /// height regardless of the current phase.
+    private var searchLayer: some View {
+        searchContent()
             .background(
                 GeometryReader { proxy in
                     Color.clear.preference(key: RiderSheetHeightKey.self, value: proxy.size.height)
                 }
             )
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .onPreferenceChange(RiderSheetHeightKey.self) { height in
-            // Only the search content feeds the search detent; the idle card's
-            // natural height is the fixed `idleHeight` the engine already holds.
-            if isSearch, height > 0, abs(height - measuredSearchHeight) > 0.5 {
-                measuredSearchHeight = height
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .onPreferenceChange(RiderSheetHeightKey.self) { height in
+                if height > 0, abs(height - measuredSearchHeight) > 0.5 {
+                    measuredSearchHeight = height
+                }
             }
-        }
     }
 
     /// Commit the settled detent to the phase machine — AFTER settle, never

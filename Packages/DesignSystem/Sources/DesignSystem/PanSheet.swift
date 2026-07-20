@@ -63,6 +63,23 @@ enum PanSheetSpring {
     }
 }
 
+/// Two SwiftUI layers hosted SIMULTANEOUSLY in the surface (MYR-236 round 5),
+/// crossfaded by the drag PROGRESS at the UIKit layer — `low` visible at the
+/// min detent, `high` at the max detent. The engine drives each layer's
+/// `UIView.alpha` per finger frame (`low` 1→0, `high` 0→1, ramped so the
+/// endpoints are clean); at rest the alphas are EXACTLY 0/1 so drift-gate
+/// stills are pixel-identical. Both are erased to `AnyView` because they are
+/// two different content types living side by side in one surface.
+public struct PanSheetCrossfade {
+    let low: AnyView
+    let high: AnyView
+
+    public init<Low: View, High: View>(@ViewBuilder low: () -> Low, @ViewBuilder high: () -> High) {
+        self.low = AnyView(low())
+        self.high = AnyView(high())
+    }
+}
+
 /// A UIKit-backed draggable bottom sheet. Hosts arbitrary SwiftUI `content`
 /// (laid out ONCE at the tallest detent + `overshootPad`, top-aligned so the
 /// grab handle leads) and drives its on-screen position with a pan recognizer
@@ -73,6 +90,21 @@ enum PanSheetSpring {
 /// commits a NEW index to the binding (and calls `onSettle`) only AFTER a
 /// settle, never mid-drag. A programmatic `selection` change animates via the
 /// same spring.
+///
+/// ROUND 5 (MYR-236) — content rides the surface:
+///   • `onDragProgress` — an OPTIONAL per-finger-frame hook, called from
+///     `applyVisibleHeight` with progress = (height − minDetent)/(maxDetent −
+///     minDetent) clamped 0…1. It runs on EVERY drag frame and MUST only mutate
+///     UIKit properties (`UIView.alpha` / `CALayer`) — NEVER SwiftUI state: a
+///     SwiftUI mutation per frame reintroduces exactly the per-frame SwiftUI
+///     work this whole engine exists to avoid.
+///   • `crossfade` — an OPTIONAL second/third hosted layer pair. The engine
+///     hosts `content` as an always-opaque BASE (the rider's sheet-wash, which
+///     covers the overshoot band so no map ever leaks through mid-drag) and
+///     crossfades the two `PanSheetCrossfade` layers over it by the same drag
+///     progress, at the UIKit layer. The settle animator drives the alphas to
+///     their endpoint alongside the transform (same duration), so the fade
+///     completes WITH the motion, not after it.
 public struct PanSheet<Content: View>: UIViewControllerRepresentable {
     let detentHeights: [CGFloat]
     @Binding var selection: Int
@@ -84,6 +116,13 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
     /// for a drag-release settle and a flick; NOT for a programmatic `selection`
     /// set (the caller already knows). Runs on the main actor.
     let onSettle: ((Int) -> Void)?
+    /// Per-frame drag-progress hook (0…1). UIKit-only mutations — see the type
+    /// doc. `nil` for sheets that don't crossfade content (the owner detent
+    /// sheet).
+    let onDragProgress: ((CGFloat) -> Void)?
+    /// Optional crossfade layer pair driven by the same progress (the rider
+    /// idle↔search sheet). `nil` → single-layer behavior (the owner sheet).
+    let crossfade: PanSheetCrossfade?
     let content: Content
 
     public init(
@@ -94,6 +133,8 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
         accessibilityIdentifier: String? = nil,
         accessibilityLabel: String? = nil,
         onSettle: ((Int) -> Void)? = nil,
+        onDragProgress: ((CGFloat) -> Void)? = nil,
+        crossfade: PanSheetCrossfade? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.detentHeights = detentHeights
@@ -103,6 +144,8 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
         self.accessibilityIdentifier = accessibilityIdentifier
         self.accessibilityLabel = accessibilityLabel
         self.onSettle = onSettle
+        self.onDragProgress = onDragProgress
+        self.crossfade = crossfade
         self.content = content()
     }
 
@@ -115,6 +158,7 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
             overshootPad: overshootPad,
             accessibilityIdentifier: accessibilityIdentifier,
             accessibilityLabel: accessibilityLabel,
+            onDragProgress: onDragProgress,
             onSettleCommit: { index in
                 // Push the settled detent back into SwiftUI AND notify the caller,
                 // both AFTER settle so no binding write happens mid-drag.
@@ -122,6 +166,9 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
                 onSettle?(index)
             }
         )
+        if let crossfade {
+            controller.installCrossfade(low: crossfade.low, high: crossfade.high)
+        }
         return controller
     }
 
@@ -129,6 +176,9 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
         // Content can change out from under the engine (the rider's phase swap
         // at settle commit) — refresh the hosted view without touching position.
         controller.updateContent(content)
+        if let crossfade {
+            controller.updateCrossfade(low: crossfade.low, high: crossfade.high)
+        }
         controller.update(
             detentHeights: sanitizedDetents,
             selection: selection,
@@ -152,6 +202,16 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
 public final class PanSheetController<Content: View>: UIViewController, UIGestureRecognizerDelegate {
     private let host: UIHostingController<Content>
     private let surface = PanSheetSurfaceView()
+
+    // MARK: Crossfade layers (MYR-236 round 5)
+    /// The two SwiftUI layers hosted OVER the always-opaque base `host`, their
+    /// alphas crossfaded by drag progress at the UIKit layer. `nil` unless the
+    /// caller installed a crossfade (only the rider idle↔search sheet does).
+    private var lowHost: UIHostingController<AnyView>?
+    private var highHost: UIHostingController<AnyView>?
+    private var hasCrossfade: Bool { lowHost != nil && highHost != nil }
+    /// Per-finger-frame progress hook — UIKit-only mutations (see `PanSheet`).
+    private var onDragProgress: ((CGFloat) -> Void)?
 
     private var detentHeights: [CGFloat] = [1]
     private var selection = 0
@@ -206,17 +266,51 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
         overshootPad: CGFloat,
         accessibilityIdentifier: String?,
         accessibilityLabel: String?,
+        onDragProgress: ((CGFloat) -> Void)?,
         onSettleCommit: @escaping (Int) -> Void
     ) {
         self.detentHeights = detentHeights
         self.selection = min(max(selection, 0), detentHeights.count - 1)
         self.reduceMotion = reduceMotion
         self.overshootPad = overshootPad
+        self.onDragProgress = onDragProgress
         self.onSettleCommit = onSettleCommit
         surface.accessibilityIdentifier = accessibilityIdentifier
         if let accessibilityLabel {
             surface.accessibilityLabel = accessibilityLabel
         }
+    }
+
+    // MARK: Crossfade install / update (MYR-236 round 5)
+
+    /// Host the two crossfade layers ABOVE the base `host`, filling the surface
+    /// envelope top-aligned exactly like the base. Called once, from
+    /// `makeUIViewController`. The base `host` stays the always-opaque wash that
+    /// covers the overshoot band; these two ride over it with driven alphas.
+    func installCrossfade(low: AnyView, high: AnyView) {
+        guard lowHost == nil, highHost == nil else {
+            updateCrossfade(low: low, high: high)
+            return
+        }
+        let lowVC = UIHostingController(rootView: low)
+        let highVC = UIHostingController(rootView: high)
+        for vc in [lowVC, highVC] {
+            addChild(vc)
+            vc.view.backgroundColor = .clear
+            vc.view.translatesAutoresizingMaskIntoConstraints = true
+            // Added AFTER the base host so they layer over the wash; `high`
+            // (search) on top so at max detent its opaque fill hides `low`.
+            surface.addSubview(vc.view)
+            vc.didMove(toParent: self)
+        }
+        lowHost = lowVC
+        highHost = highVC
+        if isViewLoaded { view.setNeedsLayout() }
+    }
+
+    func updateCrossfade(low: AnyView, high: AnyView) {
+        lowHost?.rootView = low
+        highHost?.rootView = high
     }
 
     public override func viewDidLoad() {
@@ -233,7 +327,10 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
         addChild(host)
         host.view.backgroundColor = .clear
         host.view.translatesAutoresizingMaskIntoConstraints = true
-        surface.addSubview(host.view)
+        // Insert at the BACK: any crossfade layers installed in
+        // `makeUIViewController` (before this runs) were already added to the
+        // surface, and the base must sit beneath them (MYR-236 round 5).
+        surface.insertSubview(host.view, at: 0)
         host.didMove(toParent: self)
 
         pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
@@ -266,6 +363,9 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
         surface.bounds = CGRect(x: 0, y: 0, width: bounds.width, height: h)
         surface.center = CGPoint(x: bounds.width / 2, y: bounds.height - h / 2)
         host.view.frame = surface.bounds
+        // Crossfade layers fill the same envelope, top-aligned over the base.
+        lowHost?.view.frame = surface.bounds
+        highHost?.view.frame = surface.bounds
         // Re-apply the current translation for the resting/live height.
         applyVisibleHeight(dragOwner == .sheet ? liveHeight : restingHeight)
     }
@@ -284,6 +384,50 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
         CATransaction.setDisableActions(true)
         surface.transform = CGAffineTransform(translationX: 0, y: offsetY)
         CATransaction.commit()
+        // MYR-236 round 5: content rides the surface. Drive the drag-progress
+        // hook + the crossfade alphas from the SAME transform update — UIKit
+        // only, zero SwiftUI work per frame.
+        driveProgress(forHeight: height, animatingAlphas: false)
+    }
+
+    // MARK: Drag progress + crossfade (MYR-236 round 5)
+
+    /// Progress of `height` between the min and max detents, clamped 0…1.
+    private func progress(forHeight height: CGFloat) -> CGFloat {
+        let lo = detentHeights.first ?? height
+        let hi = detentHeights.last ?? height
+        guard hi > lo, height.isFinite else { return 0 }
+        return min(1, max(0, (height - lo) / (hi - lo)))
+    }
+
+    /// Ramp the raw progress so the crossfade endpoints are clean — `low` is
+    /// fully opaque until 0.15 and `high` fully opaque past 0.85, so a resting
+    /// detent lands the alphas at EXACTLY 0/1 (drift-gate pixel-identity).
+    static func crossfadeRamp(_ p: CGFloat, low: CGFloat = 0.15, high: CGFloat = 0.85) -> CGFloat {
+        guard high > low else { return p >= high ? 1 : 0 }
+        return min(1, max(0, (p - low) / (high - low)))
+    }
+
+    /// Fire the progress hook and set the crossfade alphas for `height`. When
+    /// `animatingAlphas` is true the caller is INSIDE a `UIViewPropertyAnimator`
+    /// block (the settle) — only the animatable `alpha` writes belong there; the
+    /// non-animatable interaction flip is applied at the settle's completion.
+    private func driveProgress(forHeight height: CGFloat, animatingAlphas: Bool) {
+        let p = progress(forHeight: height)
+        onDragProgress?(p)
+        guard hasCrossfade else { return }
+        let r = Self.crossfadeRamp(p)
+        highHost?.view.alpha = r
+        lowHost?.view.alpha = 1 - r
+        if !animatingAlphas { setCrossfadeInteraction(ramped: r) }
+    }
+
+    /// The higher-alpha layer owns touches at rest so its taps (the search
+    /// field, the idle quick-places) land; flipped only at 0/1 endpoints in
+    /// practice (mid-drag the pan owns the gesture, no content taps happen).
+    private func setCrossfadeInteraction(ramped r: CGFloat) {
+        highHost?.view.isUserInteractionEnabled = r >= 0.5
+        lowHost?.view.isUserInteractionEnabled = r < 0.5
     }
 
     // MARK: SwiftUI-driven updates
@@ -469,6 +613,8 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
         restingHeight = targetHeight
         selection = clamped
 
+        let targetRamped = Self.crossfadeRamp(progress(forHeight: targetHeight))
+
         guard abs(distance) > 0.5 else {
             applyVisibleHeight(targetHeight)
             if commit { onSettleCommit?(clamped) }
@@ -494,12 +640,19 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
             self.liveHeight = targetHeight
             self.surface.mrtVisibleHeight = targetHeight
             self.surface.transform = CGAffineTransform(translationX: 0, y: self.surfaceHeight - targetHeight)
+            // MYR-236 round 5: crossfade the content alphas ALONGSIDE the settle
+            // transform (same animator/duration) so the fade completes WITH the
+            // motion, not after — `applyVisibleHeight` only fires during drags.
+            self.highHost?.view.alpha = targetRamped
+            self.lowHost?.view.alpha = 1 - targetRamped
         }
         animator.addCompletion { [weak self] position in
             guard let self else { return }
             if position == .end {
                 self.applyVisibleHeight(targetHeight)
             }
+            // Land the interaction ownership on the settled endpoint.
+            self.setCrossfadeInteraction(ramped: targetRamped)
             self.settleAnimator = nil
             if commit { self.onSettleCommit?(clamped) }
         }
