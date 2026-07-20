@@ -34,11 +34,29 @@ final class SheetFeelUITests: XCTestCase {
     }
 
     private func sheet(in app: XCUIApplication) -> XCUIElement {
-        let byId = app.otherElements["mrt.detentSheet"]
+        element(id: "mrt.detentSheet", in: app)
+    }
+
+    private func element(id: String, in app: XCUIApplication) -> XCUIElement {
+        let byId = app.otherElements[id]
         if byId.waitForExistence(timeout: 12) { return byId }
         // Fallback: some SwiftUI accessibility groupings surface the id on a
         // different element class.
-        return app.descendants(matching: .any)["mrt.detentSheet"]
+        return app.descendants(matching: .any)[id]
+    }
+
+    // MARK: Rider idle↔search engine (MYR-236 round 4)
+
+    private func launchRider(scene: String) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment["MRT_SCENE"] = scene
+        app.launchEnvironment["MRT_SHEET_TRACE"] = "1"
+        app.launch()
+        return app
+    }
+
+    private func riderSheet(in app: XCUIApplication) -> XCUIElement {
+        element(id: "mrt.riderSheet", in: app)
     }
 
     /// A grab point 12pt below the sheet's top edge — inside the handle strip
@@ -143,6 +161,52 @@ final class SheetFeelUITests: XCTestCase {
         XCTAssertLessThan(
             abs(endFrame.minY - peekFrame.minY), 30,
             "a fast down-flick should return the sheet to the peek detent"
+        )
+    }
+
+    /// From the `search` debug scene, a SLOW drag DOWN on the rider sheet tracks
+    /// continuously and settles to the idle greeting card — the sheet's top edge
+    /// (its `minY`) descends well below the tall search position. Proves the
+    /// continuous search→idle drag the client asked for (round 3: it "just re-
+    /// renders to the good-morning card" with no motion).
+    func testRiderSearchSlowDragDownCollapsesToIdle() {
+        let app = launchRider(scene: "search")
+        let s = riderSheet(in: app)
+        XCTAssertTrue(s.exists, "rider sheet should be on screen in the search scene")
+
+        let searchFrame = s.frame
+        // Grab the handle strip at the sheet's top edge and drag toward the
+        // bottom. A long press makes the synthesized drag slow (many samples).
+        let grab = handleGrab(on: s)
+        let target = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.92))
+        grab.press(forDuration: 1.3, thenDragTo: target)
+
+        let endFrame = settledFrame(of: s)
+        NSLog("MRT_HARNESS riderDragDown searchMinY=\(searchFrame.minY) endMinY=\(endFrame.minY)")
+        XCTAssertGreaterThan(
+            endFrame.minY, searchFrame.minY + 120,
+            "a slow drag down should collapse the search sheet to the idle card (top edge descends)"
+        )
+    }
+
+    /// From the `idle` debug scene, a drag UP on the greeting card reaches the
+    /// taller search height — the sheet's top edge rises well above the idle
+    /// resting position. Proves the continuous idle→search drag.
+    func testRiderIdleDragUpReachesSearch() {
+        let app = launchRider(scene: "idle")
+        let s = riderSheet(in: app)
+        XCTAssertTrue(s.exists, "rider sheet should be on screen in the idle scene")
+
+        let idleFrame = s.frame
+        let grab = handleGrab(on: s)
+        let target = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
+        grab.press(forDuration: 1.1, thenDragTo: target)
+
+        let endFrame = settledFrame(of: s)
+        NSLog("MRT_HARNESS riderDragUp idleMinY=\(idleFrame.minY) endMinY=\(endFrame.minY)")
+        XCTAssertLessThan(
+            endFrame.minY, idleFrame.minY - 120,
+            "a drag up from idle should reach the search height (top edge rises)"
         )
     }
 }

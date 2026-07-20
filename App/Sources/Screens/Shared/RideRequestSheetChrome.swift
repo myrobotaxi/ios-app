@@ -16,9 +16,17 @@ struct RideRequestSheetChrome: ViewModifier {
     /// drops the top rounding/hairline/border (ride-request.jsx:1166
     /// `borderTopLeftRadius: isSummary ? 0 : …`).
     var isSummary: Bool = false
+    /// MYR-236 round 4: when the search sheet is hosted inside the `PanSheet`
+    /// engine (rider idle↔search continuous drag), the ENGINE owns the bottom-
+    /// pinning + safe-area handling — the chrome then applies only the visual
+    /// recipe (wash + top corners + hairline + shadow) and does NOT pin itself
+    /// to the physical bottom (that would fight the engine's surface). `true`
+    /// (the default) keeps the standalone bottom-pinned behavior every other
+    /// phase relies on.
+    var pinned: Bool = true
 
     func body(content: Content) -> some View {
-        content
+        let styled = content
             .background(RideRequestSheetBackground())
             .clipShape(
                 UnevenRoundedRectangle(
@@ -33,7 +41,10 @@ struct RideRequestSheetChrome: ViewModifier {
                 }
             }
             .shadow(color: .black.opacity(0.5), radius: 20, y: -8) // '0 -16px 40px rgba(0,0,0,0.5)' (ride-request.jsx:1180)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+
+        if pinned {
+            styled
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             // MYR-198 fix 3: the Summary takeover (`isSummary: true`) is the
             // one phase that owns the FULL screen, not a partial bottom
             // sheet — its gold-tinted background must reach the physical
@@ -48,7 +59,16 @@ struct RideRequestSheetChrome: ViewModifier {
             // view's fixed/content-hugging sizing means a taller top-side
             // proposal has no visual effect on them anyway (they don't
             // stretch to fill it).
-            .ignoresSafeArea(edges: isSummary ? .all : .bottom)
+                .ignoresSafeArea(edges: isSummary ? .all : .bottom)
+        } else {
+            // Engine-hosted: no bottom-pin / safe-area handling here — the
+            // PanSheet surface positions this content and runs flush to the
+            // physical bottom edge itself. The content hugs its NATURAL height
+            // so the engine can adopt that as the search detent (no MYR-200 dead
+            // zone below the last row); `RiderIdleSearchSheet` fills the
+            // overshoot band with the sheet wash behind it.
+            styled
+        }
     }
 }
 
@@ -74,8 +94,8 @@ struct RideRequestSheetBackground: View {
 }
 
 extension View {
-    func rideRequestSheetChrome(isSummary: Bool = false) -> some View {
-        modifier(RideRequestSheetChrome(isSummary: isSummary))
+    func rideRequestSheetChrome(isSummary: Bool = false, pinned: Bool = true) -> some View {
+        modifier(RideRequestSheetChrome(isSummary: isSummary, pinned: pinned))
     }
 }
 
@@ -108,14 +128,21 @@ struct RideGrabHandle: View {
     private static let dismissThreshold: CGFloat = 36
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 2)
+        let handle = RoundedRectangle(cornerRadius: 2)
             .fill(Color.mrtElevated)
             .frame(width: 36, height: 4)
             .padding(.top, 8)
             .padding(.bottom, 6)
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
-            .gesture(
+
+        // MYR-236 round 4: when `onDragDismiss` is nil the handle is DECORATIVE
+        // (the search sheet hosted in the `PanSheet` engine — the engine's pan
+        // owns the drag-to-collapse, so a competing `DragGesture` here would
+        // fight it). Only the tracking/pending minimize path (non-nil dismiss)
+        // still wires the self-contained drag-down handle.
+        if let onDragDismiss {
+            handle.gesture(
                 // MYR-236 round 2 (suspect #1 — activation latency): was
                 // `minimumDistance: 6` (a dead zone that read as "sticky grab").
                 // The dismiss stays velocity- + 36pt-threshold-guarded below.
@@ -129,9 +156,12 @@ struct RideGrabHandle: View {
                         let projected = value.translation.height
                             + SheetPhysics.projection(velocity: value.velocity.height)
                         guard projected > Self.dismissThreshold else { return }
-                        onDragDismiss?()
+                        onDragDismiss()
                     }
             )
+        } else {
+            handle
+        }
     }
 }
 

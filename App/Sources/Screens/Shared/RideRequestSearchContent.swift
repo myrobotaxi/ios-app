@@ -25,6 +25,12 @@ private struct SearchResultsHeightKey: PreferenceKey {
 // here rather than forked.
 struct RideRequestSearchContent: View {
     @Bindable var viewerState: SharedViewerState
+    /// MYR-236 round 4: rendered inside the `PanSheet` engine (rider idle↔search
+    /// continuous drag). When true the engine owns the bottom-pin + the drag-to-
+    /// dismiss gesture, so the chrome is un-pinned and the grab handle is
+    /// decorative. When false (never, in the shipping app — search is always
+    /// engine-hosted now) it renders standalone exactly as before.
+    var hosted: Bool = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var query = ""
@@ -126,7 +132,11 @@ struct RideRequestSearchContent: View {
                 // MYR-199 fix: drag-down-to-dismiss — ride-request.jsx:1150
                 // `d > 36 && phase === 'search'` → `closeToIdle()` (full draft
                 // reset back to the greeting sheet).
-                RideGrabHandle(onDragDismiss: {
+                // MYR-236 round 4: engine-hosted → decorative handle (the
+                // PanSheet pan owns drag-to-collapse, which commits
+                // `resetDraftToIdle()` at settle). Standalone → the self-
+                // contained drag-down-to-dismiss handle (MYR-199).
+                RideGrabHandle(onDragDismiss: hosted ? nil : {
                     dismissKeyboardBeforeLeaving() // MYR-239 defect 2
                     viewerState.resetDraftToIdle()
                 })
@@ -158,7 +168,7 @@ struct RideRequestSearchContent: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .onPreferenceChange(SearchHeaderHeightKey.self) { headerHeight = $0 }
         .onPreferenceChange(SearchResultsHeightKey.self) { resultsHeight = $0 }
-        .rideRequestSheetChrome()
+        .rideRequestSheetChrome(pinned: !hosted)
         // MYR-216 deliverable 1: one deliberate animated resize when the sheet
         // collapses onto its content on selection (and expands back on
         // edit/clear) — the same settle curve the phase transitions use

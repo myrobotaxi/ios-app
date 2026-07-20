@@ -1,0 +1,588 @@
+import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
+
+// MARK: - PanSheet — UIKit-layer draggable bottom-sheet foundation (MYR-236 round 4)
+//
+// WHY UIKIT. Three SwiftUI-gesture rounds (MYR-236 r1 state/physics, r2
+// activation tuning, r3 transform-not-layout) each passed the M-series
+// simulator and each shipped still-janky at 120 Hz on the client's iPhone 17
+// Pro Max — "fights with me… glitches on the screen." The residual jank is
+// SwiftUI doing ANY work per drag frame: even r3's pure `GeometryEffect`
+// translation still routes every finger sample through SwiftUI's transaction /
+// diff / commit pipeline. A `UIPanGestureRecognizer` writing a `CALayer`
+// translation directly does ZERO SwiftUI work per frame — the same mechanism
+// UIKit's own sheets and FloatingPanel use. This is that engine, built once and
+// adopted by every draggable sheet (`MRTDetentSheet`, the rider idle↔search
+// sheet) so there is one drag foundation, not a per-screen fork
+// (CLAUDE.md "Reuse, don't fork").
+//
+// PRINCIPLES kept from round 3:
+//   • Lay out the surface ONCE at the tallest detent + an overshoot pad,
+//     bottom-anchored with the pad hanging off-screen; per-frame cost is a
+//     transform, never a layout/shadow re-render.
+//   • Rubber-band, velocity projection, and nearest-detent selection stay in
+//     the pure `SheetPhysics` (table-tested) — the coordinator only calls it.
+//   • Reduce Motion → a short easeOut instead of the settle spring.
+//
+// NEW in round 4 (only possible at the UIKit layer):
+//   • Interruptible settle — a grab mid-spring reads `layer.presentation()` for
+//     the true on-screen position and picks up 1:1 with no jump.
+//   • Scroll handoff — the pan recognizes simultaneously with any descendant
+//     `UIScrollView`'s pan and arbitrates per the FloatingPanel/UIKit-sheet
+//     standard (below max detent → sheet owns the pan, scroll offset pinned; at
+//     max detent → scroll owns it EXCEPT a downward pan while scrolled to the
+//     top, which the sheet takes over mid-gesture). This is the "fighting" fix.
+//   • Keyboard: `endEditing(true)` on drag start so a visible keyboard never
+//     fights the sheet.
+
+#if canImport(UIKit)
+
+/// The Handoff §8 sheet-snap spring, expressed as its `UIViewPropertyAnimator`
+/// timing so the settle matches `MRTDetentSheet`'s old SwiftUI
+/// `.spring(response: 0.42, dampingFraction: 0.86)` frame-for-frame.
+enum PanSheetSpring {
+    static let response: CGFloat = 0.42
+    static let dampingFraction: CGFloat = 0.86
+    /// Reduce Motion settle — the same short easeOut the SwiftUI version used.
+    static let reducedDuration: TimeInterval = 0.2
+
+    /// A critically-tuned spring timing parameters object matching a SwiftUI
+    /// `.spring(response:dampingFraction:)`. SwiftUI maps that to a
+    /// mass-spring-damper with `stiffness = (2π/response)²` and
+    /// `damping = 4π·dampingFraction/response`; `UISpringTimingParameters`
+    /// exposes exactly that via its mass/stiffness/damping initializer.
+    static func timing(initialVelocity: CGVector) -> UISpringTimingParameters {
+        let mass: CGFloat = 1
+        let stiffness = pow(2 * .pi / response, 2) * mass
+        let damping = 4 * .pi * dampingFraction / response * mass
+        return UISpringTimingParameters(
+            mass: mass, stiffness: stiffness, damping: damping, initialVelocity: initialVelocity
+        )
+    }
+}
+
+/// A UIKit-backed draggable bottom sheet. Hosts arbitrary SwiftUI `content`
+/// (laid out ONCE at the tallest detent + `overshootPad`, top-aligned so the
+/// grab handle leads) and drives its on-screen position with a pan recognizer
+/// writing a layer translation directly — no SwiftUI work per frame.
+///
+/// `detentHeights` are ascending on-screen visible heights (points from the
+/// physical bottom edge). `selection` is the resting detent index; the engine
+/// commits a NEW index to the binding (and calls `onSettle`) only AFTER a
+/// settle, never mid-drag. A programmatic `selection` change animates via the
+/// same spring.
+public struct PanSheet<Content: View>: UIViewControllerRepresentable {
+    let detentHeights: [CGFloat]
+    @Binding var selection: Int
+    let reduceMotion: Bool
+    let overshootPad: CGFloat
+    let accessibilityIdentifier: String?
+    let accessibilityLabel: String?
+    /// Called AFTER a settle commits a detent (index into `detentHeights`). Fires
+    /// for a drag-release settle and a flick; NOT for a programmatic `selection`
+    /// set (the caller already knows). Runs on the main actor.
+    let onSettle: ((Int) -> Void)?
+    let content: Content
+
+    public init(
+        detentHeights: [CGFloat],
+        selection: Binding<Int>,
+        reduceMotion: Bool,
+        overshootPad: CGFloat = 48,
+        accessibilityIdentifier: String? = nil,
+        accessibilityLabel: String? = nil,
+        onSettle: ((Int) -> Void)? = nil,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.detentHeights = detentHeights
+        _selection = selection
+        self.reduceMotion = reduceMotion
+        self.overshootPad = overshootPad
+        self.accessibilityIdentifier = accessibilityIdentifier
+        self.accessibilityLabel = accessibilityLabel
+        self.onSettle = onSettle
+        self.content = content()
+    }
+
+    public func makeUIViewController(context: Context) -> PanSheetController<Content> {
+        let controller = PanSheetController<Content>(rootView: content)
+        controller.configure(
+            detentHeights: sanitizedDetents,
+            selection: selection,
+            reduceMotion: reduceMotion,
+            overshootPad: overshootPad,
+            accessibilityIdentifier: accessibilityIdentifier,
+            accessibilityLabel: accessibilityLabel,
+            onSettleCommit: { index in
+                // Push the settled detent back into SwiftUI AND notify the caller,
+                // both AFTER settle so no binding write happens mid-drag.
+                if selection != index { self.selection = index }
+                onSettle?(index)
+            }
+        )
+        return controller
+    }
+
+    public func updateUIViewController(_ controller: PanSheetController<Content>, context: Context) {
+        // Content can change out from under the engine (the rider's phase swap
+        // at settle commit) — refresh the hosted view without touching position.
+        controller.updateContent(content)
+        controller.update(
+            detentHeights: sanitizedDetents,
+            selection: selection,
+            reduceMotion: reduceMotion
+        )
+    }
+
+    /// Never let a NaN/∞ or an unsorted/empty detent list reach layout
+    /// (MYR-227 standing rule). Finite, sorted ascending, at least one entry.
+    private var sanitizedDetents: [CGFloat] {
+        let finite = detentHeights.filter { $0.isFinite && $0 > 0 }.sorted()
+        return finite.isEmpty ? [1] : finite
+    }
+}
+
+// MARK: - The hosting controller
+
+/// Owns the container, the bottom-anchored surface, the `UIHostingController`
+/// child, and the pan recognizer + settle animator. All per-frame drag work
+/// happens here in `UIKit` with zero SwiftUI involvement.
+public final class PanSheetController<Content: View>: UIViewController, UIGestureRecognizerDelegate {
+    private let host: UIHostingController<Content>
+    private let surface = PanSheetSurfaceView()
+
+    private var detentHeights: [CGFloat] = [1]
+    private var selection = 0
+    private var reduceMotion = false
+    private var overshootPad: CGFloat = 48
+    private var onSettleCommit: ((Int) -> Void)?
+
+    /// The visible height the surface is currently RESTING at (the committed
+    /// detent's height), the anchor programmatic changes animate from.
+    private var restingHeight: CGFloat = 0
+    /// Live visible height during a drag; mirrors the on-screen position so a
+    /// mid-settle re-grab reads it (backed by `layer.presentation()`).
+    private var liveHeight: CGFloat = 0
+
+    private var settleAnimator: UIViewPropertyAnimator?
+    private var pan: UIPanGestureRecognizer!
+
+    // Drag session state.
+    private var dragAnchorHeight: CGFloat = 0
+    /// Which recognizer owns the current vertical pan — the sheet, or a
+    /// descendant scroll view. Re-evaluated as the gesture crosses the scroll's
+    /// top edge (the handoff).
+    private enum DragOwner { case undecided, sheet, scroll }
+    private var dragOwner: DragOwner = .undecided
+    private weak var activeScrollView: UIScrollView?
+    /// The scroll offset pinned while the SHEET owns the pan (so the inner list
+    /// can't scroll under the finger while the sheet is moving).
+    private var pinnedScrollOffsetY: CGFloat = 0
+    /// The finger translation captured at the moment ownership flipped to the
+    /// sheet, so the sheet picks up from that instant with no jump.
+    private var sheetOwnershipTranslationY: CGFloat = 0
+
+    init(rootView: Content) {
+        host = UIHostingController(rootView: rootView)
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    public override func loadView() {
+        // A passthrough container: touches that miss the surface (the map area
+        // above the sheet, and the off-screen pad) fall through to the SwiftUI
+        // views layered behind this representable in the ZStack.
+        view = PanSheetPassthroughView()
+    }
+
+    func configure(
+        detentHeights: [CGFloat],
+        selection: Int,
+        reduceMotion: Bool,
+        overshootPad: CGFloat,
+        accessibilityIdentifier: String?,
+        accessibilityLabel: String?,
+        onSettleCommit: @escaping (Int) -> Void
+    ) {
+        self.detentHeights = detentHeights
+        self.selection = min(max(selection, 0), detentHeights.count - 1)
+        self.reduceMotion = reduceMotion
+        self.overshootPad = overshootPad
+        self.onSettleCommit = onSettleCommit
+        surface.accessibilityIdentifier = accessibilityIdentifier
+        if let accessibilityLabel {
+            surface.accessibilityLabel = accessibilityLabel
+        }
+    }
+
+    public override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+        // The container never intercepts touches meant for the map/chrome behind
+        // the sheet: only the surface (and its content) is interactive.
+        view.isUserInteractionEnabled = true
+
+        surface.backgroundColor = .clear
+        surface.isUserInteractionEnabled = true
+        view.addSubview(surface)
+
+        addChild(host)
+        host.view.backgroundColor = .clear
+        host.view.translatesAutoresizingMaskIntoConstraints = true
+        surface.addSubview(host.view)
+        host.didMove(toParent: self)
+
+        pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        pan.delegate = self
+        // Recognize alongside a descendant scroll view's own pan so the handoff
+        // can arbitrate frame-by-frame instead of one blocking the other.
+        pan.cancelsTouchesInView = false
+        surface.addGestureRecognizer(pan)
+
+        restingHeight = detentHeights[selection]
+        liveHeight = restingHeight
+    }
+
+    public override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        layoutSurface()
+    }
+
+    /// The fixed surface layout — recomputed only on a bounds change, NEVER per
+    /// drag frame. Surface height = tallest detent + overshoot pad, bottom-
+    /// anchored so the pad hangs below the physical bottom edge (an upward
+    /// overshoot never reveals a gap under the lifted sheet).
+    private var surfaceHeight: CGFloat { (detentHeights.max() ?? 1) + overshootPad }
+
+    private func layoutSurface() {
+        let bounds = view.bounds
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        let h = surfaceHeight
+        // Untransformed frame: bottom edge flush with the container bottom.
+        surface.bounds = CGRect(x: 0, y: 0, width: bounds.width, height: h)
+        surface.center = CGPoint(x: bounds.width / 2, y: bounds.height - h / 2)
+        host.view.frame = surface.bounds
+        // Re-apply the current translation for the resting/live height.
+        applyVisibleHeight(dragOwner == .sheet ? liveHeight : restingHeight)
+    }
+
+    // MARK: Position
+
+    /// Translate the surface so `height` points of it show above the bottom edge.
+    /// A pure layer transform — no layout, no shadow re-render.
+    private func applyVisibleHeight(_ height: CGFloat) {
+        guard height.isFinite else { return }
+        liveHeight = height
+        surface.mrtVisibleHeight = height
+        let offsetY = surfaceHeight - height
+        // Disable implicit CA animations so the drag stays 1:1 with the finger.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        surface.transform = CGAffineTransform(translationX: 0, y: offsetY)
+        CATransaction.commit()
+    }
+
+    // MARK: SwiftUI-driven updates
+
+    func updateContent(_ content: Content) {
+        host.rootView = content
+    }
+
+    func update(detentHeights: [CGFloat], selection: Int, reduceMotion: Bool) {
+        self.reduceMotion = reduceMotion
+        let detentsChanged = detentHeights != self.detentHeights
+        self.detentHeights = detentHeights
+        let clamped = min(max(selection, 0), detentHeights.count - 1)
+
+        // A programmatic detent change (selection differs from what we settled
+        // to) animates to the new resting height with the same spring — unless a
+        // drag is in flight (its own release will settle).
+        let targetHeight = detentHeights[clamped]
+        if detentsChanged {
+            // Bounds/detent geometry moved — resize the surface, then re-seat.
+            view.setNeedsLayout()
+        }
+        if clamped != self.selection {
+            self.selection = clamped
+        }
+        guard dragOwner == .undecided, settleAnimator == nil else {
+            // Mid-drag or mid-settle: don't fight the gesture; the eventual
+            // commit reconciles.
+            return
+        }
+        if abs(restingHeight - targetHeight) > 0.5 {
+            animateSettle(to: clamped, initialVelocityHeightPerSec: 0, commit: false)
+        } else {
+            restingHeight = targetHeight
+            applyVisibleHeight(targetHeight)
+        }
+    }
+
+    // MARK: Pan handling
+
+    @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
+        switch recognizer.state {
+        case .began:
+            beginDrag()
+        case .changed:
+            updateDrag(translationY: recognizer.translation(in: view).y)
+        case .ended, .cancelled, .failed:
+            endDrag(velocityY: recognizer.velocity(in: view).y)
+        default:
+            break
+        }
+    }
+
+    private func beginDrag() {
+        // Interruption: a grab mid-settle reads the TRUE on-screen position from
+        // the presentation layer and picks up from there with zero jump.
+        let presented = surface.layer.presentation()?.transform ?? surface.layer.transform
+        let presentedOffsetY = CGFloat(presented.m42)
+        let presentedHeight = surfaceHeight - presentedOffsetY
+        let startHeight = presentedHeight.isFinite ? presentedHeight : restingHeight
+        settleAnimator?.stopAnimation(true)
+        settleAnimator = nil
+        // Freeze at the live position.
+        applyVisibleHeight(startHeight)
+        dragAnchorHeight = startHeight
+
+        // Keyboard must never fight the sheet (Handoff — endEditing on drag start).
+        view.window?.endEditing(true)
+
+        // Find the descendant scroll view lazily, on gesture begin.
+        activeScrollView = surface.mrtFirstScrollView()
+        dragOwner = .undecided
+        sheetOwnershipTranslationY = 0
+    }
+
+    private func updateDrag(translationY: CGFloat) {
+        // Decide/steer ownership between the sheet and a descendant scroll view.
+        let atMaxDetent = abs(dragAnchorHeight - (detentHeights.max() ?? 0)) < 1
+
+        if dragOwner == .undecided {
+            resolveInitialOwner(atMaxDetent: atMaxDetent, translationY: translationY)
+        }
+
+        switch dragOwner {
+        case .scroll:
+            // Scroll owns the gesture (at max detent, not scrolled to the top, or
+            // scrolling up). If a downward pan drives the scroll to its top, hand
+            // over to the sheet from that instant.
+            if let scroll = activeScrollView, translationY > 0, scroll.contentOffset.y <= topInset(of: scroll) {
+                // Handoff: pin the offset at the top and let the sheet take over,
+                // re-anchored so it starts moving from THIS instant (no jump).
+                dragOwner = .sheet
+                pinnedScrollOffsetY = topInset(of: scroll)
+                sheetOwnershipTranslationY = translationY
+                dragAnchorHeight = detentHeights.max() ?? dragAnchorHeight
+            }
+            // Otherwise leave the scroll view to scroll itself (simultaneous
+            // recognition means it already is).
+        case .sheet:
+            if let scroll = activeScrollView {
+                // Pin the inner list while the sheet moves.
+                scroll.contentOffset.y = pinnedScrollOffsetY
+            }
+            let delta = -(translationY - sheetOwnershipTranslationY)
+            let raw = dragAnchorHeight + delta
+            let lower = detentHeights.first ?? raw
+            let upper = detentHeights.last ?? raw
+            let banded = SheetPhysics.rubberBand(raw, lowerBound: lower, upperBound: upper)
+            applyVisibleHeight(banded)
+        case .undecided:
+            break
+        }
+    }
+
+    /// First-frame arbitration (the FloatingPanel/UIKit-sheet rule):
+    ///  • Below max detent → the SHEET owns every vertical pan (offset pinned).
+    ///  • At max detent → the SCROLL owns it, EXCEPT a downward pan while the
+    ///    list is already at its top, which the sheet owns (drag-to-collapse).
+    private func resolveInitialOwner(atMaxDetent: Bool, translationY: CGFloat) {
+        guard let scroll = activeScrollView else {
+            dragOwner = .sheet
+            sheetOwnershipTranslationY = 0
+            return
+        }
+        if !atMaxDetent {
+            dragOwner = .sheet
+            pinnedScrollOffsetY = scroll.contentOffset.y
+            sheetOwnershipTranslationY = 0
+            return
+        }
+        let atTop = scroll.contentOffset.y <= topInset(of: scroll) + 0.5
+        if atTop, translationY > 0 {
+            dragOwner = .sheet
+            pinnedScrollOffsetY = topInset(of: scroll)
+            sheetOwnershipTranslationY = translationY
+        } else {
+            dragOwner = .scroll
+        }
+    }
+
+    private func topInset(of scroll: UIScrollView) -> CGFloat { -scroll.adjustedContentInset.top }
+
+    private func endDrag(velocityY: CGFloat) {
+        defer {
+            dragOwner = .undecided
+            activeScrollView = nil
+            sheetOwnershipTranslationY = 0
+        }
+        guard dragOwner == .sheet else { return }
+        let releaseHeight = liveHeight
+        // Project the throw from release VELOCITY (height-space: up = positive),
+        // then snap to the detent nearest the projected endpoint — a fast flick
+        // crosses detents on small displacement (SheetPhysics, shared math).
+        let projected = releaseHeight + SheetPhysics.projection(velocity: -velocityY)
+        let targetIndex = nearestDetentIndex(toHeight: projected)
+        // Settle spring's initial velocity = the finger's, so the throw is
+        // continuous into the snap (no visible velocity discontinuity).
+        animateSettle(to: targetIndex, initialVelocityHeightPerSec: -velocityY, commit: true)
+    }
+
+    private func nearestDetentIndex(toHeight height: CGFloat) -> Int {
+        guard height.isFinite else { return selection }
+        var best = 0
+        var bestDist = CGFloat.greatestFiniteMagnitude
+        for (i, h) in detentHeights.enumerated() {
+            let d = abs(h - height)
+            if d < bestDist { bestDist = d; best = i }
+        }
+        return best
+    }
+
+    // MARK: Settle
+
+    private func animateSettle(to index: Int, initialVelocityHeightPerSec: CGFloat, commit: Bool) {
+        let clamped = min(max(index, 0), detentHeights.count - 1)
+        let targetHeight = detentHeights[clamped]
+        let fromHeight = liveHeight
+        let distance = targetHeight - fromHeight
+        settleAnimator?.stopAnimation(true)
+
+        // Commit the resting state up front so an interrupting re-grab and any
+        // programmatic update reconcile against the destination.
+        restingHeight = targetHeight
+        selection = clamped
+
+        guard abs(distance) > 0.5 else {
+            applyVisibleHeight(targetHeight)
+            if commit { onSettleCommit?(clamped) }
+            return
+        }
+
+        let animator: UIViewPropertyAnimator
+        if reduceMotion {
+            animator = UIViewPropertyAnimator(duration: PanSheetSpring.reducedDuration, curve: .easeOut)
+        } else {
+            // Convert the height-space velocity (pts/s) to the animator's
+            // normalized initial velocity along the travel (dx over unit time).
+            let normalized = distance != 0 ? initialVelocityHeightPerSec / distance : 0
+            let timing = PanSheetSpring.timing(initialVelocity: CGVector(dx: normalized, dy: 0))
+            animator = UIViewPropertyAnimator(duration: PanSheetSpring.response, timingParameters: timing)
+        }
+        animator.isInterruptible = true
+        animator.addAnimations { [weak self] in
+            guard let self else { return }
+            // Model transform jumps to the destination (presentation layer
+            // interpolates) — `mrtVisibleHeight`/`liveHeight` track the target so
+            // an on-demand accessibility-frame read settles to the final detent.
+            self.liveHeight = targetHeight
+            self.surface.mrtVisibleHeight = targetHeight
+            self.surface.transform = CGAffineTransform(translationX: 0, y: self.surfaceHeight - targetHeight)
+        }
+        animator.addCompletion { [weak self] position in
+            guard let self else { return }
+            if position == .end {
+                self.applyVisibleHeight(targetHeight)
+            }
+            self.settleAnimator = nil
+            if commit { self.onSettleCommit?(clamped) }
+        }
+        settleAnimator = animator
+        animator.startAnimation()
+    }
+
+    // MARK: UIGestureRecognizerDelegate
+
+    public func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool {
+        // Recognize alongside a descendant scroll view's pan so the handoff can
+        // arbitrate every frame (the "fighting" fix). Never simultaneously with
+        // unrelated recognizers.
+        guard gestureRecognizer === pan else { return false }
+        return other.view is UIScrollView || other is UIPanGestureRecognizer && other.view?.mrtIsInsideScrollView == true
+    }
+}
+
+// MARK: - Surface view
+
+/// The bottom-anchored draggable surface. Overrides `accessibilityFrame` to
+/// report its LIVE transformed position in screen coordinates so the XCUITest
+/// harness sees the element move as the drag/settle translates it — the round-3
+/// requirement, kept at the UIKit layer. `mrtVisibleHeight` is the last applied
+/// visible height (used for the a11y adjustable action bookkeeping).
+final class PanSheetSurfaceView: UIView {
+    var mrtVisibleHeight: CGFloat = 0
+
+    override var accessibilityFrame: CGRect {
+        get { UIAccessibility.convertToScreenCoordinates(bounds, in: self) }
+        set { /* derived from the live transform; ignore external sets */ }
+    }
+
+    /// Hit-test the surface itself but let touches OUTSIDE the visible band (the
+    /// off-screen pad, and the map area above the sheet) fall through to what's
+    /// behind — the surface's frame is the whole tall envelope, most of which is
+    /// either off-screen or transparent above the content.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        // Only claim touches that land on real content (the hosted view tree),
+        // never the empty translated envelope.
+        if hit === self { return nil }
+        return hit
+    }
+}
+
+/// The controller's root view: transparent to any touch that does not land on
+/// the sheet surface or its content, so the map/chrome behind the representable
+/// stay interactive.
+final class PanSheetPassthroughView: UIView {
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        return hit === self ? nil : hit
+    }
+}
+
+// MARK: - Scroll-view discovery + helpers
+
+extension UIView {
+    /// Lazily walk the view tree for the first descendant `UIScrollView` (the
+    /// inner list the handoff arbitrates against). Called on gesture begin, not
+    /// per frame.
+    func mrtFirstScrollView() -> UIScrollView? {
+        if let scroll = self as? UIScrollView, scroll.isScrollEnabled { return scroll }
+        for sub in subviews {
+            if let found = sub.mrtFirstScrollView() { return found }
+        }
+        return nil
+    }
+
+    /// Whether this view sits inside a `UIScrollView` (used to recognize a
+    /// scroll's pan simultaneously even when it's reported on an inner view).
+    var mrtIsInsideScrollView: Bool {
+        var node: UIView? = self
+        while let current = node {
+            if current is UIScrollView { return true }
+            node = current.superview
+        }
+        return false
+    }
+}
+
+#endif
