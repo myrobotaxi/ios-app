@@ -160,7 +160,12 @@ struct HomeScreen: View {
                     .padding(.top, 6) // screens.jsx:542 `padding: '6px 24px 100px'`
                     .padding(.bottom, MRTMetrics.homeSheetContentBottomPadding)
             }
-            .scrollDisabled(homeState.sheetDetent == .peek)
+            // MYR-236 round 4: no more `.scrollDisabled(detent == .peek)` — the
+            // PanSheet engine's scroll handoff governs instead (below max detent
+            // the sheet owns the pan and pins this offset; at half the list
+            // scrolls, and a downward pan from its top hands back to the sheet).
+            // Removing the flip also kills the round-3 "glitch" suspect: nothing
+            // hard-swaps when the detent binding commits at settle.
         }
     }
 
