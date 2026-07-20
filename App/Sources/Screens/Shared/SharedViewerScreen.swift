@@ -266,23 +266,49 @@ struct SharedViewerScreen: View {
 
     // MARK: Phase content (MYR-171)
 
+    /// MYR-236 round 4: the greeting card + search sheet ride the ONE `PanSheet`
+    /// engine (continuous idle↔search drag). The pending pill (an active request,
+    /// not a search starting point) keeps the old fixed idle sheet.
+    private var usesIdleSearchEngine: Bool {
+        switch viewerState.sheetPhase {
+        case .search: return true
+        case .idle: return !isPendingPill
+        default: return false
+        }
+    }
+
+    private var riderIdleSearchSheet: some View {
+        RiderIdleSearchSheet(
+            viewerState: viewerState,
+            idleHeight: MRTMetrics.sharedIdleSheetHeight,
+            idleContent: { idleGreetingCardHosted },
+            searchContent: { RideRequestSearchContent(viewerState: viewerState, hosted: true) }
+        )
+    }
+
     @ViewBuilder
     private func sheetContent(totalHeight: CGFloat) -> some View {
-        switch viewerState.sheetPhase {
-        case .idle:
-            idleSheet
-        case .search:
-            RideRequestSearchContent(viewerState: viewerState)
-        case .pinDrop(let returnTo):
-            RideRequestPinDropContent(viewerState: viewerState, returnTo: returnTo, totalHeight: totalHeight)
-        case .review:
-            RideRequestReviewContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
-        case .booking:
-            RideRequestBookingContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
-        case .tracking:
-            RideRequestTrackingContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
-        case .summary:
-            RideRequestSummaryContent(viewerState: viewerState, rideRequestService: rideRequestService, historyStore: historyStore, riderName: riderName, liveProfile: liveProfile)
+        if usesIdleSearchEngine {
+            // ONE persistent engine identity across the idle↔search drag so the
+            // surface/gesture aren't torn down mid-transition.
+            riderIdleSearchSheet
+        } else {
+            switch viewerState.sheetPhase {
+            case .idle:
+                idleSheet // pending pill only — greeting rides the engine above
+            case .search:
+                EmptyView() // unreachable: search always rides the engine
+            case .pinDrop(let returnTo):
+                RideRequestPinDropContent(viewerState: viewerState, returnTo: returnTo, totalHeight: totalHeight)
+            case .review:
+                RideRequestReviewContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
+            case .booking:
+                RideRequestBookingContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
+            case .tracking:
+                RideRequestTrackingContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
+            case .summary:
+                RideRequestSummaryContent(viewerState: viewerState, rideRequestService: rideRequestService, historyStore: historyStore, riderName: riderName, liveProfile: liveProfile)
+            }
         }
     }
 
@@ -903,6 +929,38 @@ struct SharedViewerScreen: View {
         .shadow(color: .black.opacity(0.5), radius: 20, y: -8) // '0 -16px 40px rgba(0,0,0,0.5)' (ride-request.jsx:1182)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .ignoresSafeArea(edges: .bottom)
+    }
+
+    // MARK: MYR-236 round 4 — engine-hosted greeting card (rider idle↔search)
+    //
+    // The greeting card, rendered for the `PanSheet` engine: identical visuals
+    // (wash + top corners + hairline + shadow) but NO bottom-pin / safe-area
+    // handling and NO fixed outer frame — it hugs its natural
+    // `sharedIdleSheetHeight`, which the engine adopts as the idle detent. The
+    // pending pill keeps the old fixed-height, bottom-pinned `idleSheet` (it is
+    // NOT part of the idle↔search drag — an active request isn't a place to
+    // start a new search from).
+    private var idleGreetingCardHosted: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            GreetingHero(firstName: greetingFirstName)
+                .padding(.bottom, 16)
+            searchBar
+            if !viewerState.isLiveLocation {
+                quickPlaces
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 14)
+        .padding(.bottom, 98)
+        .frame(height: MRTMetrics.sharedIdleSheetHeight)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(idleSheetBackground)
+        .clipShape(UnevenRoundedRectangle(topLeadingRadius: MRTMetrics.sheetRadius, topTrailingRadius: MRTMetrics.sheetRadius, style: .continuous))
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.mrtGoldSheetHairline).frame(height: MRTMetrics.hairline)
+        }
+        .shadow(color: .black.opacity(0.5), radius: 20, y: -8)
     }
 
     /// `backgroundColor:'#0A0A0A'` + `radial-gradient(130% 62% at 50% -14%,
