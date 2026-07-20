@@ -225,13 +225,22 @@ struct HomeScreen: View {
         // total (never rendered without a selection).
         let executor = homeState.selectedCommandExecutor
             ?? SimulatedVehicleCommandExecutor(driving: false, plate: vehicle.plate)
+        // MYR-236 round 5 — height the summary block reserves so the always-
+        // rendered route/controls begin at the PEEK FOLD (keeps the at-rest peek
+        // pixel-identical; see `HomeSheetContent` header). The sheet's peek shows
+        // `peekHeight` points from the top; subtract the grab handle (20) + the
+        // ScrollView content top pad (6) to get the fold in hero-content coords.
+        let peekHeight = snapshot.status == .driving
+            ? MRTMetrics.homePeekHeightDriving
+            : MRTMetrics.homePeekHeightParked
+        let peekRevealHeight = peekHeight - 26
         switch vehicle.activity {
         case .driving(let trip):
             DrivingHeroContent(
                 vehicle: vehicle,
                 trip: trip,
                 snapshot: snapshot,
-                expanded: homeState.sheetDetent == .half,
+                peekRevealHeight: peekRevealHeight,
                 executor: executor,
                 isEditingPlate: $isEditingPlate
             )
@@ -243,7 +252,7 @@ struct HomeScreen: View {
                 // Live: reflect the real wire status (parked/charging/offline/
                 // in_service→neutral) in the design badge. Simulated: `.parked`.
                 status: homeState.selectedBadgeStatus,
-                expanded: homeState.sheetDetent == .half,
+                peekRevealHeight: peekRevealHeight,
                 executor: executor,
                 isEditingPlate: $isEditingPlate
             )
