@@ -8,48 +8,41 @@ import DesignSystem
 // ParkedSheetContent`. Both append the real `VehicleControls` tile stack
 // (MYR-168).
 //
-// MYR-236 round 5 — CONTENT RIDES THE SHEET. Round 4 gated the route + controls
-// on the COMMITTED detent (`expanded: sheetDetent == .half`), so at peek only
-// the summary rendered and the whole route/controls block POPPED in at the
-// settle commit (the client's "the rendering of the content is not fluid"; the
-// gated model left a mid-drag VOID until the commit).
-// Now the FULL content is ALWAYS laid out: the engine lays the surface out once
-// at the max detent + overshoot pad, so at the peek detent the extra content
-// simply sits BELOW the fold and dragging up REVEALS it continuously (the Apple
-// Maps model). `expanded` gated PRESENCE only (never a compact-vs-expanded
-// variant), so dropping it leaves ONE stable layout across both detents.
+// MYR-236 round 5.3 — CROSSFADE MODEL, NO RESERVE BAND. Rounds 4/5 shipped a
+// "peek-fold reserve" (`peekRevealHeight`/`collapseReserve`) that anchored the
+// controls at a fold and collapsed the band only at the half settle-commit.
+// That produced the two client bugs this round fixes: (a) a mid-drag gap that
+// snapped closed at settle ("weird gap as soon as I drag… then correct
+// immediately after"), and (b) fold-math letting the controls poke above the
+// physical bottom at peek ("widgets of the lock, trunk… poking up right below
+// the floating menu").
 //
-// PEEK PIXEL-IDENTITY (hard requirement). The summary is SHORTER than the peek,
-// so the prototype/main leave an empty band beneath it at peek (measured: the
-// prototype gates `Route` OFF at peek — `screens.jsx:432-433` — and it appears
-// only at the half commit at content-offset ~183pt, which is INSIDE the 280pt
-// peek window). A naive always-render therefore pokes the Route header into
-// that band above the fold. To keep the at-rest peek pixel-identical, the
-// summary block reserves that band via `peekRevealHeight` (= peekHeight − the
-// handle+top-pad reserve), so the always-rendered route/controls begin exactly
-// at the peek FOLD: at rest-peek the band is the same empty space as main
-// (identical above the fold), and a drag reveals the content riding up from the
-// first pixel (no mid-drag void). The trade-off — the one deliberate deviation
-// — is that the SAME reserved band reads as breathing room above the route at
-// the half detent (the stable-layout cost of not re-flowing between detents;
-// the re-flow is exactly what popped). Drift-gated: peek identical, half shows
-// the band. See the PR body.
+// The reserve model is GONE. The sheet now rides the shared `PanSheet`
+// crossfade engine exactly like the rider idle↔search sheet
+// (`RiderIdleSearchSheet`): two layers are hosted simultaneously and the engine
+// crossfades their alphas from the drag PROGRESS at the UIKit layer.
+//   • LOW layer (peek): the summary hero ONLY (`DrivingSummary`/`ParkedSummary`)
+//     — laid out at the top, nothing beneath it. At rest-peek the high layer is
+//     at alpha 0, so nothing pokes below the summary (bug (a) fixed).
+//   • HIGH layer (half): the FULL dense content (summary + divider/route +
+//     controls…), ONE scrollable block, no reserved band anywhere (bug about
+//     the awkward half gap fixed).
+// The summary renders at the SAME position in both layers (identical pixels,
+// identical padding), so the crossfade reads as "controls fade in beneath a
+// stationary summary," not a content swap — and because the alphas ride the
+// drag from the first pixel, the controls fade in continuously with no gap that
+// snaps shut at settle (bug (b) fixed). See `MRTDetentSheet`'s crossfade
+// initializer and `HomeScreen`'s peek/expanded builders.
 
-/// screens.jsx:439-499 `DrivingSheetContent`.
-struct DrivingHeroContent: View {
+// MARK: - Summary heroes (the LOW crossfade layer / peek)
+
+/// screens.jsx:439-499 `DrivingSheetContent` summary — the status row +
+/// destination/speed/ETA + progress bar. This is the peek hero AND the top of
+/// the dense half layout (same pixels in both).
+struct DrivingSummary: View {
     let vehicle: Vehicle
     let trip: DrivingTrip
     let snapshot: VehicleTelemetrySnapshot
-    /// Height reserved for the summary + its below-the-fold band so the
-    /// always-rendered route/controls begin at the peek fold (see header).
-    let peekRevealHeight: CGFloat
-    /// True at the half detent: the reserve collapses (animated at the settle
-    /// commit) so the half layout is dense — no dead band above the route
-    /// (client feedback, Jul 23). False at peek: the reserve keeps the at-rest
-    /// peek pixel-identical and the drag reveals content from the fold.
-    var collapseReserve: Bool = false
-    let executor: any VehicleCommandExecutor
-    @Binding var isEditingPlate: Bool
 
     private var rangeMi: Int { Int(((snapshot.batteryPercent / 100) * 272).rounded()) }
 
@@ -61,80 +54,155 @@ struct DrivingHeroContent: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Summary + its below-the-fold band. `minHeight` reserves the empty
-            // band the peek shows beneath the summary so the route/controls
-            // below begin at the peek fold (pixel-identical peek; see header).
-            VStack(alignment: .leading, spacing: 22) {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        HStack(spacing: 7) {
-                            Circle()
-                                .fill(Color.mrtDriving)
-                                .frame(width: 7, height: 7)
-                                .shadow(color: .mrtDriving.opacity(2.0 / 3.0), radius: 3.5)
-                            Text("Driving")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(Color.mrtText)
-                            Text("· \(vehicle.name)")
-                                .font(.system(size: 13))
-                                .foregroundStyle(Color.mrtTextMuted)
-                        }
-                        Spacer()
-                        HStack(spacing: 6) {
-                            MiniBattery(pct: snapshot.batteryPercent)
-                            (Text("\(rangeMi)")
-                                .foregroundStyle(Color.mrtTextSec)
-                                + Text(" mi").foregroundStyle(Color.mrtTextMuted))
-                                .font(.system(size: 13, weight: .medium))
-                                .monospacedDigit()
-                        }
+        VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(Color.mrtDriving)
+                            .frame(width: 7, height: 7)
+                            .shadow(color: .mrtDriving.opacity(2.0 / 3.0), radius: 3.5)
+                        Text("Driving")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.mrtText)
+                        Text("· \(vehicle.name)")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Color.mrtTextMuted)
                     }
-
-                    VStack(spacing: 10) {
-                        HStack(alignment: .lastTextBaseline) {
-                            Text(trip.destinationName)
-                                .font(.system(size: 28, weight: .semibold))
-                                .tracking(-0.8)
-                                .foregroundStyle(Color.mrtText)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                            Spacer(minLength: 12)
-                            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                                Text("\(snapshot.speedMPH)")
-                                    .font(.system(size: 27, weight: .semibold))
-                                    .tracking(-0.8)
-                                    .monospacedDigit()
-                                    .foregroundStyle(Color.mrtText)
-                                Text("mph")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(Color.mrtTextMuted)
-                            }
-                            .fixedSize()
-                        }
-                        HStack(alignment: .firstTextBaseline) {
-                            (Text("Arriving in ")
-                                .foregroundStyle(Color.mrtTextSec)
-                                + Text("\(snapshot.etaMinutes) min")
-                                .foregroundStyle(Color.mrtText)
-                                .fontWeight(.semibold))
-                                .font(.system(size: 15))
-                            Spacer()
-                            Text("ETA \(arrivalTime)")
-                                .font(.system(size: 14))
-                                .monospacedDigit()
-                                .foregroundStyle(Color.mrtTextMuted)
-                        }
+                    Spacer()
+                    HStack(spacing: 6) {
+                        MiniBattery(pct: snapshot.batteryPercent)
+                        (Text("\(rangeMi)")
+                            .foregroundStyle(Color.mrtTextSec)
+                            + Text(" mi").foregroundStyle(Color.mrtTextMuted))
+                            .font(.system(size: 13, weight: .medium))
+                            .monospacedDigit()
                     }
                 }
 
-                TripProgressBar(progress: snapshot.progress, compact: true)
+                VStack(spacing: 10) {
+                    HStack(alignment: .lastTextBaseline) {
+                        Text(trip.destinationName)
+                            .font(.system(size: 28, weight: .semibold))
+                            .tracking(-0.8)
+                            .foregroundStyle(Color.mrtText)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 12)
+                        HStack(alignment: .firstTextBaseline, spacing: 3) {
+                            Text("\(snapshot.speedMPH)")
+                                .font(.system(size: 27, weight: .semibold))
+                                .tracking(-0.8)
+                                .monospacedDigit()
+                                .foregroundStyle(Color.mrtText)
+                            Text("mph")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(Color.mrtTextMuted)
+                        }
+                        .fixedSize()
+                    }
+                    HStack(alignment: .firstTextBaseline) {
+                        (Text("Arriving in ")
+                            .foregroundStyle(Color.mrtTextSec)
+                            + Text("\(snapshot.etaMinutes) min")
+                            .foregroundStyle(Color.mrtText)
+                            .fontWeight(.semibold))
+                            .font(.system(size: 15))
+                        Spacer()
+                        Text("ETA \(arrivalTime)")
+                            .font(.system(size: 14))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.mrtTextMuted)
+                    }
+                }
             }
-            .frame(minHeight: collapseReserve ? nil : peekRevealHeight, alignment: .top)
-            .animation(.easeOut(duration: 0.25), value: collapseReserve)
 
-            // Always laid out, beginning at the peek fold — rides up on the drag
-            // (MYR-236 round 5; see this file's header comment).
+            TripProgressBar(progress: snapshot.progress, compact: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// screens.jsx:522-599 `ParkedSheetContent` summary — name/badge/battery/
+/// address. The peek hero AND the top of the dense half layout.
+struct ParkedSummary: View {
+    let vehicle: Vehicle
+    let location: ParkedLocation
+    let snapshot: VehicleTelemetrySnapshot
+    /// The design badge state for the status row. Defaults to `.parked` so the
+    /// simulated M1 hero is unchanged; the live path (MYR-201) passes the real
+    /// wire status so a charging/offline vehicle shows the matching badge.
+    var status: MRTVehicleStatus = .parked
+
+    private var parkedDuration: String {
+        let seconds = max(0, Date().timeIntervalSince(location.parkedSince))
+        let hours = Int(seconds) / 3600
+        let minutes = (Int(seconds) % 3600) / 60
+        return hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                HStack(spacing: 10) {
+                    Text(vehicle.name)
+                        .font(.system(size: 18, weight: .semibold))
+                        .tracking(-0.3)
+                        .foregroundStyle(Color.mrtText)
+                    StatusBadge(status)
+                }
+                Spacer()
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text("\(Int(snapshot.batteryPercent.rounded()))")
+                        .font(.system(size: 18))
+                        .monospacedDigit()
+                        .tracking(-0.3)
+                        .foregroundStyle(Color.mrtText)
+                    Text("%")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.mrtTextMuted)
+                }
+            }
+            BatteryBar(pct: snapshot.batteryPercent)
+            HStack {
+                Text(location.label)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.mrtText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 8)
+                Text(parkedDuration)
+                    .font(.system(size: 12))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.mrtTextMuted)
+                    .fixedSize()
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - Dense heroes (the HIGH crossfade layer / half)
+
+/// screens.jsx:439-499 `DrivingSheetContent` — the summary followed by the
+/// route + `VehicleControls`, one dense scrollable block (no reserve band).
+struct DrivingHeroContent: View {
+    let vehicle: Vehicle
+    let trip: DrivingTrip
+    let snapshot: VehicleTelemetrySnapshot
+    let executor: any VehicleCommandExecutor
+    @Binding var isEditingPlate: Bool
+
+    var body: some View {
+        // Outer gap 22 (screens.jsx:449 `gap: 22`) between the summary block and
+        // the route/controls reveal block; the reveal block itself is gap 0 with
+        // the `Divider pad={8}` supplying the inner spacing (screens.jsx:490-497).
+        VStack(alignment: .leading, spacing: 22) {
+            // Summary — rendered identically to the peek `DrivingSummary` so the
+            // crossfade reads as a stationary summary with controls fading in
+            // beneath it (MYR-236 round 5.3).
+            DrivingSummary(vehicle: vehicle, trip: trip, snapshot: snapshot)
+
             VStack(alignment: .leading, spacing: 0) {
                 Divider().overlay(Color.mrtBorder).padding(.vertical, 8)
                 Text("Route").mrtTextStyle(.label()).foregroundStyle(Color.mrtTextMuted).padding(.bottom, 8)
@@ -161,7 +229,8 @@ struct DrivingHeroContent: View {
 
 /// screens.jsx:522-599 `ParkedSheetContent`, `style: 'floating'` branch only
 /// — the app's single shipped `parkedStyle` (see `VehicleFixtures.swift`
-/// header comment and Metrics.swift `homePeekHeightParked`).
+/// header comment and Metrics.swift `homePeekHeightParked`). Summary followed
+/// by `VehicleControls`, one dense block (no reserve band).
 struct ParkedHeroContent: View {
     let vehicle: Vehicle
     let location: ParkedLocation
@@ -170,68 +239,18 @@ struct ParkedHeroContent: View {
     /// simulated M1 hero is unchanged; the live path (MYR-201) passes the real
     /// wire status so a charging/offline vehicle shows the matching badge.
     var status: MRTVehicleStatus = .parked
-    /// Height reserved for the summary + its below-the-fold band so the
-    /// always-rendered controls begin at the peek fold (see header).
-    let peekRevealHeight: CGFloat
-    /// True at the half detent: the reserve collapses (animated) for a dense
-    /// half layout — see `DrivingHeroContent.collapseReserve`.
-    var collapseReserve: Bool = false
     let executor: any VehicleCommandExecutor
     @Binding var isEditingPlate: Bool
 
-    private var parkedDuration: String {
-        let seconds = max(0, Date().timeIntervalSince(location.parkedSince))
-        let hours = Int(seconds) / 3600
-        let minutes = (Int(seconds) % 3600) / 60
-        return hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m"
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Summary + its below-the-fold band (see header) — `minHeight`
-            // reserves the empty band the peek shows beneath the summary so the
-            // controls below begin at the peek fold (pixel-identical peek).
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    HStack(spacing: 10) {
-                        Text(vehicle.name)
-                            .font(.system(size: 18, weight: .semibold))
-                            .tracking(-0.3)
-                            .foregroundStyle(Color.mrtText)
-                        StatusBadge(status)
-                    }
-                    Spacer()
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text("\(Int(snapshot.batteryPercent.rounded()))")
-                            .font(.system(size: 18))
-                            .monospacedDigit()
-                            .tracking(-0.3)
-                            .foregroundStyle(Color.mrtText)
-                        Text("%")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.mrtTextMuted)
-                    }
-                }
-                BatteryBar(pct: snapshot.batteryPercent)
-                HStack {
-                    Text(location.label)
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.mrtText)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Spacer(minLength: 8)
-                    Text(parkedDuration)
-                        .font(.system(size: 12))
-                        .monospacedDigit()
-                        .foregroundStyle(Color.mrtTextMuted)
-                        .fixedSize()
-                }
-            }
-            .frame(minHeight: collapseReserve ? nil : peekRevealHeight, alignment: .top)
-            .animation(.easeOut(duration: 0.25), value: collapseReserve)
+        // Outer gap 14 (screens.jsx:585 `gap: 14`) between the summary and the
+        // controls reveal.
+        VStack(alignment: .leading, spacing: 14) {
+            // Summary — rendered identically to the peek `ParkedSummary` so the
+            // crossfade reads as a stationary summary with controls fading in
+            // beneath it (MYR-236 round 5.3).
+            ParkedSummary(vehicle: vehicle, location: location, snapshot: snapshot, status: status)
 
-            // Always laid out, beginning at the peek fold — rides up on the drag
-            // (MYR-236 round 5; see this file's header comment).
             VehicleControls(
                 vehicle: vehicle,
                 driving: false,

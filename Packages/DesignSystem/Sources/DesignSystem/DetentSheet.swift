@@ -45,6 +45,18 @@ public struct MRTDetentSheet<Content: View>: View {
     private let halfHeight: CGFloat?
     private let halfHeightFraction: CGFloat
     private let content: Content
+    /// MYR-236 round 5.3 — when non-nil, the sheet hosts two crossfade layers
+    /// (peek/low + expanded/high) that the engine cross-dissolves by drag
+    /// progress, over an always-opaque base wash, instead of the single
+    /// `content`. `nil` for the single-content path (ButtonShowcase).
+    private let crossfade: OwnerCrossfade?
+
+    /// The two owner crossfade layers, type-erased (two different content
+    /// shapes living side by side in one surface — see `PanSheetCrossfade`).
+    struct OwnerCrossfade {
+        let low: AnyView
+        let high: AnyView
+    }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -63,6 +75,24 @@ public struct MRTDetentSheet<Content: View>: View {
         self.halfHeight = halfHeight
         self.halfHeightFraction = halfHeightFraction
         self.content = content()
+        self.crossfade = nil
+    }
+
+    /// Internal designated init used by the crossfade convenience init below.
+    init(
+        detent: Binding<MRTSheetDetent>,
+        peekHeight: CGFloat,
+        halfHeight: CGFloat?,
+        halfHeightFraction: CGFloat,
+        content: Content,
+        crossfade: OwnerCrossfade?
+    ) {
+        _detent = detent
+        self.peekHeight = peekHeight
+        self.halfHeight = halfHeight
+        self.halfHeightFraction = halfHeightFraction
+        self.content = content
+        self.crossfade = crossfade
     }
 
     /// peek ↔ index 0, half ↔ index 1 — the engine works in detent indices.
@@ -80,14 +110,36 @@ public struct MRTDetentSheet<Content: View>: View {
             // the engine's layout math.
             let safeHalf = half.isFinite && half > peekHeight ? half : peekHeight + 1
             #if canImport(UIKit)
-            PanSheet(
-                detentHeights: [peekHeight, safeHalf],
-                selection: selectionIndex,
-                reduceMotion: reduceMotion,
-                accessibilityIdentifier: "mrt.detentSheet",
-                accessibilityLabel: "Sheet"
-            ) {
-                sheetSurface(half: safeHalf)
+            if let crossfade {
+                // MYR-236 round 5.3 — two-layer crossfade (mirrors the rider
+                // idle↔search sheet). The base is the always-opaque sheet wash +
+                // the stationary grab handle; the two layers ride over it with
+                // engine-driven alphas. The high layer carries the scrollable
+                // dense content, so the engine's scroll handoff discovers ITS
+                // ScrollView (base + low have none).
+                PanSheet(
+                    detentHeights: [peekHeight, safeHalf],
+                    selection: selectionIndex,
+                    reduceMotion: reduceMotion,
+                    accessibilityIdentifier: "mrt.detentSheet",
+                    accessibilityLabel: "Sheet",
+                    crossfade: PanSheetCrossfade(
+                        low: { crossfadeLayer(crossfade.low) },
+                        high: { crossfadeLayer(crossfade.high) }
+                    )
+                ) {
+                    baseWash(half: safeHalf)
+                }
+            } else {
+                PanSheet(
+                    detentHeights: [peekHeight, safeHalf],
+                    selection: selectionIndex,
+                    reduceMotion: reduceMotion,
+                    accessibilityIdentifier: "mrt.detentSheet",
+                    accessibilityLabel: "Sheet"
+                ) {
+                    sheetSurface(half: safeHalf)
+                }
             }
             #else
             sheetSurface(half: safeHalf)
@@ -110,22 +162,87 @@ public struct MRTDetentSheet<Content: View>: View {
     @ViewBuilder
     private func sheetSurface(half: CGFloat) -> some View {
         VStack(spacing: 0) {
-            MRTGrabHandle()
-                .contentShape(Rectangle().inset(by: -12))
-                .accessibilityLabel("Sheet handle")
-                .accessibilityAdjustableAction { direction in
-                    switch direction {
-                    case .increment: detent = .half
-                    case .decrement: detent = .peek
-                    @unknown default: break
-                    }
-                }
+            grabHandle
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .frame(height: half + 48) // matches the engine's surface height (max detent + overshoot pad)
         .frame(maxWidth: .infinity)
         .mrtSurface(.sheet, fill: .mrtBgSecondary)
+    }
+
+    /// The grab handle + its VoiceOver adjustable-detent action, shared by the
+    /// single-content surface and the crossfade base.
+    private var grabHandle: some View {
+        MRTGrabHandle()
+            .contentShape(Rectangle().inset(by: -12))
+            .accessibilityLabel("Sheet handle")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: detent = .half
+                case .decrement: detent = .peek
+                @unknown default: break
+                }
+            }
+    }
+
+    // MARK: MYR-236 round 5.3 — crossfade base + layers
+
+    /// The always-opaque base for the crossfade sheet: the sheet wash spanning
+    /// the full envelope (incl. the overshoot pad, so an upward rubber-band
+    /// never leaks the map beneath the lifted sheet) + the stationary grab
+    /// handle. The two crossfade layers ride OVER this with driven alphas.
+    @ViewBuilder
+    private func baseWash(half: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            grabHandle
+            Spacer(minLength: 0)
+        }
+        .frame(height: half + 48)
+        .frame(maxWidth: .infinity)
+        .mrtSurface(.sheet, fill: .mrtBgSecondary)
+    }
+
+    /// Wraps a crossfade layer so its content begins beneath the base's
+    /// stationary grab handle (reserving `sheetGrabHandleHeight` at the top) and
+    /// top-aligns within the surface envelope. The layer background is
+    /// transparent — the base wash shows through — so the peek layer contributes
+    /// ONLY the summary and the expanded layer ONLY the dense content.
+    @ViewBuilder
+    private func crossfadeLayer(_ layer: AnyView) -> some View {
+        layer
+            .padding(.top, MRTMetrics.sheetGrabHandleHeight)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+// MARK: - Crossfade owner-sheet initializer (MYR-236 round 5.3)
+
+public extension MRTDetentSheet where Content == EmptyView {
+    /// Two-layer crossfade sheet (the owner Live Map, `HomeScreen`): the `peek`
+    /// layer (summary hero only) and the `expanded` layer (the full dense,
+    /// scrollable content) are hosted SIMULTANEOUSLY and cross-dissolved by the
+    /// drag progress at the UIKit layer — controls fade in from the first pixel
+    /// of drag, with no reserve band and no gap that snaps shut at settle
+    /// (MYR-236 round 5.3, mirroring `RiderIdleSearchSheet`). Render the SAME
+    /// summary at the top of both layers so the crossfade reads as a stationary
+    /// summary. The single-content `init` remains for other sheets.
+    init<Peek: View, Expanded: View>(
+        detent: Binding<MRTSheetDetent>,
+        peekHeight: CGFloat = MRTMetrics.sheetPeekHeight,
+        halfHeight: CGFloat? = nil,
+        halfHeightFraction: CGFloat = 0.5,
+        @ViewBuilder peek: () -> Peek,
+        @ViewBuilder expanded: () -> Expanded
+    ) {
+        self.init(
+            detent: detent,
+            peekHeight: peekHeight,
+            halfHeight: halfHeight,
+            halfHeightFraction: halfHeightFraction,
+            content: EmptyView(),
+            crossfade: OwnerCrossfade(low: AnyView(peek()), high: AnyView(expanded()))
+        )
     }
 }
 
