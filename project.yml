@@ -48,7 +48,14 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.myrobotaxi.ios
-        MARKETING_VERSION: "0.1.0"
+        # MYR-247 — first TestFlight release is 1.0.0. MARKETING_VERSION is the
+        # public version string (CFBundleShortVersionString). CURRENT_PROJECT_VERSION
+        # is the build number (CFBundleVersion): it MUST be unique+monotonic per
+        # upload to App Store Connect. Keep "1" as the committed baseline and
+        # override it at archive time (RELEASING.md):
+        #   xcodebuild ... CURRENT_PROJECT_VERSION=$BUILD_NUMBER archive
+        # so re-uploads without a version bump don't collide.
+        MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: YES
         # MYR-238 — wire the app icon; AppIcon.appiconset lives in
@@ -56,6 +63,10 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIUserInterfaceStyle: Dark
+        # MYR-247 — export compliance. The app uses only standard HTTPS/TLS
+        # (exempt encryption), so declare it up front to skip the manual
+        # "missing compliance" prompt on every TestFlight build.
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
         # MYR-211 — when-in-use location for the rider's live map + "Current
         # location" pickup (live mode only; sim never requests it).
