@@ -23,6 +23,9 @@ struct AddTeslaFlow: View {
     let onCancel: () -> Void
     /// MYR-115 seam — nil (M1) presents the simulated sheet instead.
     var authenticate: TeslaAuthenticator?
+    /// MYR-246 — live path only: invoked after a successful link so the caller
+    /// can refresh the linked state / vehicles. nil (simulated) → never called.
+    var onLinked: (() -> Void)?
 
     private enum Phase {
         case intro, linked, key, waiting, paired
@@ -31,6 +34,14 @@ struct AddTeslaFlow: View {
     @State private var phase: Phase = .intro
     @State private var browserOpen = false
     private let vehicle = PairedVehicleFixture()
+    /// MYR-246 — a definite link failure (network or a §7.11 callback `reason`),
+    /// rendered in place of the intro with honest copy + a retry affordance.
+    @State private var linkFailure: TeslaLinkFailure?
+    @Environment(\.openURL) private var openURL
+
+    /// MYR-246 — the injected authenticator marks the LIVE path (real Tesla OAuth
+    /// + virtual-key handoff). nil keeps the fully-simulated M1 flow untouched.
+    private var isLive: Bool { authenticate != nil }
 
     /// jsx:200 — stepper index per phase; the open browser pins step 1.
     private var stepperStep: Int {
@@ -49,7 +60,18 @@ struct AddTeslaFlow: View {
 
             switch phase {
             case .intro:
-                intro
+                if let linkFailure {
+                    TeslaLinkErrorView(
+                        failure: linkFailure,
+                        onRetry: {
+                            self.linkFailure = nil
+                            signInTapped()
+                        },
+                        onCancel: onCancel
+                    )
+                } else {
+                    intro
+                }
             case .linked:
                 LinkedTransitionView {
                     phase = .key
@@ -66,7 +88,7 @@ struct AddTeslaFlow: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .allowsHitTesting(false)
 
-            if phase == .intro {
+            if phase == .intro && linkFailure == nil {
                 OnboardingTopAction(label: "Cancel", action: onCancel)
             }
 
@@ -136,15 +158,23 @@ struct AddTeslaFlow: View {
     }
 
     private func signInTapped() {
-        if let authenticate {
-            // MYR-115 path: system-presented real OAuth.
-            Task { @MainActor in
-                if await authenticate() == .granted {
-                    phase = .linked
-                }
-            }
-        } else {
+        guard let authenticate else {
             browserOpen = true // M1: simulated sheet
+            return
+        }
+        // MYR-246 live path: system-presented real Tesla OAuth via the injected
+        // authenticator. No URL/token material is ever logged or persisted.
+        linkFailure = nil
+        Task { @MainActor in
+            switch await authenticate() {
+            case .granted:
+                onLinked?() // refresh the linked state / vehicles
+                phase = .linked
+            case .cancelled:
+                break       // user backed out — stay on intro so they can retry
+            case .failed(let failure):
+                linkFailure = failure
+            }
         }
     }
 
@@ -155,7 +185,7 @@ struct AddTeslaFlow: View {
         return VStack(spacing: 0) {
             Spacer(minLength: 0)
             ZStack {
-                if waiting {
+                if waiting && !isLive {
                     ExpandingPulse(
                         shape: RoundedRectangle(cornerRadius: 14, style: .continuous),
                         size: CGSize(width: 176, height: 112),
@@ -169,40 +199,63 @@ struct AddTeslaFlow: View {
                     )
                 }
                 VirtualKeyCard()
-                    .modifier(KeyFloat(active: waiting))
+                    .modifier(KeyFloat(active: waiting && !isLive))
             }
             .padding(.bottom, 30)
 
             if waiting {
-                Text("Waiting for approval…")
-                    .font(.system(size: 21, weight: .semibold))
-                    .tracking(-0.4)
-                    .foregroundStyle(Color.mrtText)
-                    .padding(.bottom, 10)
-                Text("Approve the virtual key request in the Tesla app to finish pairing.")
-                    .font(.system(size: 13.5))
-                    .lineSpacing(13.5 * 0.5)
-                    .foregroundStyle(Color.mrtTextSec)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 280)
-                WaitDots()
-                    .padding(.top, 18)
-                Text("Simulating Tesla-app handoff…")
-                    .font(.system(size: 10.5))
-                    .italic()
-                    .foregroundStyle(Color.mrtTextMuted)
-                    .padding(.top, 20)
+                if isLive {
+                    // MYR-246 — honest live handoff. Virtual-key status isn't
+                    // observable in-app yet, so we say the check happens on the
+                    // owner's next sync (do NOT invent a live "paired" state).
+                    Text("Finish in the Tesla app")
+                        .font(.system(size: 21, weight: .semibold))
+                        .tracking(-0.4)
+                        .foregroundStyle(Color.mrtText)
+                        .padding(.bottom, 10)
+                    Text("Approve the virtual key request in the Tesla app. We'll confirm it on your Tesla's next sync — you can close this and keep going.")
+                        .font(.system(size: 13.5))
+                        .lineSpacing(13.5 * 0.5)
+                        .foregroundStyle(Color.mrtTextSec)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 288)
+                } else {
+                    Text("Waiting for approval…")
+                        .font(.system(size: 21, weight: .semibold))
+                        .tracking(-0.4)
+                        .foregroundStyle(Color.mrtText)
+                        .padding(.bottom, 10)
+                    Text("Approve the virtual key request in the Tesla app to finish pairing.")
+                        .font(.system(size: 13.5))
+                        .lineSpacing(13.5 * 0.5)
+                        .foregroundStyle(Color.mrtTextSec)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 280)
+                    WaitDots()
+                        .padding(.top, 18)
+                    Text("Simulating Tesla-app handoff…")
+                        .font(.system(size: 10.5))
+                        .italic()
+                        .foregroundStyle(Color.mrtTextMuted)
+                        .padding(.top, 20)
+                }
             } else {
                 Text("Authorize a virtual key")
                     .font(.system(size: 23, weight: .semibold))
                     .tracking(-0.4)
                     .foregroundStyle(Color.mrtText)
                     .padding(.bottom, 12)
-                (
-                    Text("Open the Tesla app and approve the key request. This lets MyRoboTaxi unlock, command, and dispatch your ")
-                    + Text(vehicle.name).fontWeight(.semibold).foregroundColor(.mrtText)
-                    + Text(".")
-                )
+                // Live path stays honest — no fixture vehicle name (MYR-228); the
+                // sim keeps the prototype's named-vehicle copy pixel-identical.
+                Group {
+                    if isLive {
+                        Text("Open the Tesla app and approve the key request. This lets MyRoboTaxi unlock, command, and dispatch your Tesla.")
+                    } else {
+                        Text("Open the Tesla app and approve the key request. This lets MyRoboTaxi unlock, command, and dispatch your ")
+                            + Text(vehicle.name).fontWeight(.semibold).foregroundColor(.mrtText)
+                            + Text(".")
+                    }
+                }
                 .font(.system(size: 14))
                 .lineSpacing(14 * 0.55)
                 .foregroundStyle(Color.mrtTextSec)
@@ -213,8 +266,11 @@ struct AddTeslaFlow: View {
 
             if !waiting {
                 MRTButton("Open Tesla app", variant: .outlineStatic, trailingIcon: "arrow.up.right") {
-                    phase = .waiting // jsx:206-209 — simulated handoff
+                    if isLive { openURL(TeslaVirtualKey.pairingURL) } // hands off to the Tesla app
+                    phase = .waiting // sim: jsx:206-209 simulated handoff
                 }
+            } else if isLive {
+                MRTButton("Done", variant: .outlineStatic, action: onComplete)
             }
         }
         .padding(.top, 196)
@@ -222,7 +278,9 @@ struct AddTeslaFlow: View {
         .padding(.bottom, 38)
         .mrtFadeUp(duration: 0.4)
         .task(id: waiting) {
-            guard waiting else { return }
+            // Simulated handoff only — the live path never fabricates a paired
+            // state (the fixture PairedSuccessView is sim-only, MYR-246 honesty).
+            guard waiting, !isLive else { return }
             try? await Task.sleep(for: .milliseconds(2400))
             phase = .paired
         }

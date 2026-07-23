@@ -88,6 +88,10 @@ struct RootView: View {
     /// screen-local scheduled-ride list (`RideHistoryScreen`) empty in live mode.
     /// Every fixture-seeded state above/below is gated on this single decision.
     private let isLiveMode: Bool
+    /// MYR-246 — the live in-app Tesla-link authenticator (ASWebAuthenticationSession
+    /// against §7.11), or nil on the simulated path. Built once in `init` from the
+    /// resolved mode + the sign-in session provider, mirroring the other seams.
+    private let teslaAuthenticator: TeslaAuthenticator?
     /// MYR-169 — mirrors `ownerHomeState`'s reasoning: app.jsx keeps
     /// `ownerUpcoming` App-level, not local to `DrivesScreen`, so a
     /// cancelled reservation and an open drive summary both survive
@@ -174,6 +178,11 @@ struct RootView: View {
             mode: mode,
             sessionTokenProvider: auth.sessionTokenProvider
         ))
+        // MYR-246 — live Tesla-link authenticator (nil in sim / static-token dev).
+        teslaAuthenticator = TeslaLinkComposition.makeAuthenticator(
+            mode: mode,
+            sessionTokenProvider: auth.sessionTokenProvider
+        )
         // MYR-211 — compose the rider's place-search + location seams (sim
         // fixtures by default; live MapKit/CoreLocation on device / when live).
         let seams = PlaceSearchComposition.make(mode: mode, sessionTokenProvider: auth.sessionTokenProvider)
@@ -340,7 +349,12 @@ struct RootView: View {
                         role = .owner
                         screen = .ownerTutorial
                     },
-                    onCancel: { screen = .emptyState }
+                    onCancel: { screen = .emptyState },
+                    // MYR-246 — live path wires the real authenticator; sim passes
+                    // nil (keeps the simulated sheet pixel-identical). onLinked
+                    // refreshes the owner fleet so newly linked vehicles surface.
+                    authenticate: teslaAuthenticator,
+                    onLinked: isLiveMode ? { ownerHomeState.startTelemetry() } : nil
                 )
             case .inviteCode:
                 // app.jsx:98-101 — onComplete/onCancel route on `inviteOrigin`
