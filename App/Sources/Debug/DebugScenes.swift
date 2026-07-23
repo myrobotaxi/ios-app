@@ -94,6 +94,28 @@ enum DebugScene: String, CaseIterable {
         return false
     }
 
+    /// Drift-gate flag for the `ownerHome` scene (MYR-236 r5.3): when
+    /// `MRT_OWNER_DETENT=half` is set (env or `-MRT_OWNER_DETENT half` arg), the
+    /// owner sheet boots resting at the HALF detent so the at-rest-half full-
+    /// frame can be captured without a synthesized drag. DEBUG-only.
+    static var initialOwnerDetentHalf: Bool {
+        if ProcessInfo.processInfo.environment["MRT_OWNER_DETENT"] == "half" { return true }
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-MRT_OWNER_DETENT"), i + 1 < args.count { return args[i + 1] == "half" }
+        return false
+    }
+
+    /// Drift-gate selector for the `ownerHome` scene (MYR-236 r5.3): boots with
+    /// the given fleet index selected (`MRT_OWNER_VEHICLE=1` → the parked
+    /// "Daily", for the at-rest parked captures). `nil` = default index 0.
+    /// DEBUG-only.
+    static var initialOwnerVehicleIndex: Int? {
+        if let env = ProcessInfo.processInfo.environment["MRT_OWNER_VEHICLE"], let i = Int(env) { return i }
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-MRT_OWNER_VEHICLE"), i + 1 < args.count { return Int(args[i + 1]) }
+        return nil
+    }
+
     private static var rawSceneName: String? {
         if let env = ProcessInfo.processInfo.environment["MRT_SCENE"], !env.isEmpty { return env }
         let args = ProcessInfo.processInfo.arguments

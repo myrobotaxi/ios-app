@@ -28,6 +28,12 @@ public final class OwnerHomeState {
     /// M1 default: the fixture-backed simulated fleet (no network).
     public init() {
         self.fleet = SimulatedVehicleFleet()
+        #if DEBUG
+        // Drift-gate: boot resting at half / on a chosen vehicle for the
+        // at-rest captures only.
+        if DebugScene.initialOwnerDetentHalf { self.sheetDetent = .half }
+        if let index = DebugScene.initialOwnerVehicleIndex { self.selectedVehicleIndex = index }
+        #endif
     }
 
     /// Live / injected fleet (used by `TelemetryComposition` and tests).

@@ -149,24 +149,37 @@ struct HomeScreen: View {
         }
         .ignoresSafeArea(edges: .bottom)
 
+        // MYR-236 round 5.3 — the CROSSFADE model (no reserve band). The peek
+        // layer is the summary hero ONLY; the expanded layer is the full dense
+        // scrollable content (summary + route/controls…). The engine hosts both
+        // and cross-dissolves them by drag progress, so the controls fade in
+        // beneath a stationary summary from the first pixel of drag — no reserve
+        // fold, no mid-drag gap that snaps shut at settle, and nothing poking
+        // below the summary at rest peek (client TestFlight bugs, Jul 23).
         MRTDetentSheet(
             detent: $homeState.sheetDetent,
             peekHeight: peekHeight,
-            halfHeightFraction: MRTMetrics.homeHalfHeightFraction
-        ) {
-            ScrollView {
-                sheetContent(vehicle: vehicle, snapshot: snapshot)
+            halfHeightFraction: MRTMetrics.homeHalfHeightFraction,
+            peek: {
+                // LOW layer — summary hero only, at the same top position and
+                // gutter as the expanded layer's summary so the crossfade reads
+                // as a stationary summary.
+                sheetSummary(vehicle: vehicle, snapshot: snapshot)
                     .padding(.horizontal, MRTMetrics.pageGutter)
-                    .padding(.top, 6) // screens.jsx:542 `padding: '6px 24px 100px'`
-                    .padding(.bottom, MRTMetrics.homeSheetContentBottomPadding)
+                    .padding(.top, 6) // screens.jsx:542 `padding: '6px 24px …'`
+            },
+            expanded: {
+                // HIGH layer — the full dense content, scrollable exactly as
+                // before. Its ScrollView is the one the engine's scroll handoff
+                // discovers (base + peek layer have none).
+                ScrollView {
+                    sheetDense(vehicle: vehicle, snapshot: snapshot)
+                        .padding(.horizontal, MRTMetrics.pageGutter)
+                        .padding(.top, 6) // screens.jsx:542 `padding: '6px 24px 100px'`
+                        .padding(.bottom, MRTMetrics.homeSheetContentBottomPadding)
+                }
             }
-            // MYR-236 round 4: no more `.scrollDisabled(detent == .peek)` — the
-            // PanSheet engine's scroll handoff governs instead (below max detent
-            // the sheet owns the pan and pins this offset; at half the list
-            // scrolls, and a downward pan from its top hands back to the sheet).
-            // Removing the flip also kills the round-3 "glitch" suspect: nothing
-            // hard-swaps when the detent binding commits at settle.
-        }
+        )
     }
 
     /// MYR-171 — fires once `IncomingRequestSheet`'s own sending/sent
@@ -218,30 +231,40 @@ struct HomeScreen: View {
         }
     }
 
+    /// The LOW crossfade layer — the summary hero only (peek). Identical pixels
+    /// to the top of `sheetDense` so the crossfade reads as a stationary summary.
     @ViewBuilder
-    private func sheetContent(vehicle: Vehicle, snapshot: VehicleTelemetrySnapshot) -> some View {
+    private func sheetSummary(vehicle: Vehicle, snapshot: VehicleTelemetrySnapshot) -> some View {
+        switch vehicle.activity {
+        case .driving(let trip):
+            DrivingSummary(vehicle: vehicle, trip: trip, snapshot: snapshot)
+        case .parked(let location):
+            ParkedSummary(
+                vehicle: vehicle,
+                location: location,
+                snapshot: snapshot,
+                // Live: reflect the real wire status (parked/charging/offline/
+                // in_service→neutral) in the design badge. Simulated: `.parked`.
+                status: homeState.selectedBadgeStatus
+            )
+        }
+    }
+
+    /// The HIGH crossfade layer — the full dense content (summary + route/
+    /// controls…), one scrollable block, no reserve band (MYR-236 round 5.3).
+    @ViewBuilder
+    private func sheetDense(vehicle: Vehicle, snapshot: VehicleTelemetrySnapshot) -> some View {
         // A live command executor is always present alongside a selected
         // vehicle; fall back to a throwaway simulated one only to keep the type
         // total (never rendered without a selection).
         let executor = homeState.selectedCommandExecutor
             ?? SimulatedVehicleCommandExecutor(driving: false, plate: vehicle.plate)
-        // MYR-236 round 5 — height the summary block reserves so the always-
-        // rendered route/controls begin at the PEEK FOLD (keeps the at-rest peek
-        // pixel-identical; see `HomeSheetContent` header). The sheet's peek shows
-        // `peekHeight` points from the top; subtract the grab handle (20) + the
-        // ScrollView content top pad (6) to get the fold in hero-content coords.
-        let peekHeight = snapshot.status == .driving
-            ? MRTMetrics.homePeekHeightDriving
-            : MRTMetrics.homePeekHeightParked
-        let peekRevealHeight = peekHeight - 26
         switch vehicle.activity {
         case .driving(let trip):
             DrivingHeroContent(
                 vehicle: vehicle,
                 trip: trip,
                 snapshot: snapshot,
-                peekRevealHeight: peekRevealHeight,
-                collapseReserve: homeState.sheetDetent == .half,
                 executor: executor,
                 isEditingPlate: $isEditingPlate
             )
@@ -250,11 +273,7 @@ struct HomeScreen: View {
                 vehicle: vehicle,
                 location: location,
                 snapshot: snapshot,
-                // Live: reflect the real wire status (parked/charging/offline/
-                // in_service→neutral) in the design badge. Simulated: `.parked`.
                 status: homeState.selectedBadgeStatus,
-                peekRevealHeight: peekRevealHeight,
-                collapseReserve: homeState.sheetDetent == .half,
                 executor: executor,
                 isEditingPlate: $isEditingPlate
             )
