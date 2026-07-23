@@ -458,6 +458,8 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
             // commit reconciles.
             return
         }
+        healStrandedPositionIfNeeded()
+        guard settleAnimator == nil else { return }
         if abs(restingHeight - targetHeight) > 0.5 {
             animateSettle(to: clamped, initialVelocityHeightPerSec: 0, commit: false)
         } else {
@@ -523,6 +525,7 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
                 pinnedScrollOffsetY = topInset(of: scroll)
                 sheetOwnershipTranslationY = translationY
                 dragAnchorHeight = detentHeights.max() ?? dragAnchorHeight
+                cancelScrollPan(scroll)
             }
             // Otherwise leave the scroll view to scroll itself (simultaneous
             // recognition means it already is).
@@ -556,6 +559,7 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
             dragOwner = .sheet
             pinnedScrollOffsetY = scroll.contentOffset.y
             sheetOwnershipTranslationY = 0
+            cancelScrollPan(scroll)
             return
         }
         let atTop = scroll.contentOffset.y <= topInset(of: scroll) + 0.5
@@ -563,6 +567,7 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
             dragOwner = .sheet
             pinnedScrollOffsetY = topInset(of: scroll)
             sheetOwnershipTranslationY = translationY
+            cancelScrollPan(scroll)
         } else {
             dragOwner = .scroll
         }
@@ -570,13 +575,51 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
 
     private func topInset(of scroll: UIScrollView) -> CGFloat { -scroll.adjustedContentInset.top }
 
+    /// Cancel the inner scroll view's own pan recognition for the current
+    /// gesture (toggling isEnabled tears down its touch tracking). Without
+    /// this the scroll recognizes simultaneously, builds fling momentum
+    /// during a SHEET-owned drag, and coasts the content after our release
+    /// (the post-settle content jump). The per-frame offset pin stays as a
+    /// belt-and-braces guard.
+    private func cancelScrollPan(_ scroll: UIScrollView) {
+        let pan = scroll.panGestureRecognizer
+        guard pan.isEnabled else { return }
+        pan.isEnabled = false
+        pan.isEnabled = true
+    }
+
+    /// If the surface is resting somewhere no committed detent put it (an
+    /// interrupted settle whose commit was cancelled by a re-grab, then a
+    /// scroll-owned release), settle-with-commit to the nearest detent.
+    /// No-op mid-drag or mid-settle. Uses the engine's own `liveHeight` —
+    /// authoritative at rest (a stranded freeze leaves it at the frozen
+    /// position) and initialized to the resting height at load, so this can
+    /// never misread a not-yet-laid-out transform (the launch-time
+    /// false-positive that a raw presentation-layer read produced).
+    private func healStrandedPositionIfNeeded() {
+        guard dragOwner == .undecided || dragOwner == .scroll else { return }
+        guard settleAnimator == nil else { return }
+        guard view.window != nil, view.bounds.height > 0 else { return }
+        guard liveHeight.isFinite, abs(liveHeight - restingHeight) > 2 else { return }
+        animateSettle(to: nearestDetentIndex(toHeight: liveHeight), initialVelocityHeightPerSec: 0, commit: true)
+    }
+
     private func endDrag(velocityY: CGFloat) {
         defer {
             dragOwner = .undecided
             activeScrollView = nil
             sheetOwnershipTranslationY = 0
         }
-        guard dragOwner == .sheet else { return }
+        guard dragOwner == .sheet else {
+            // A prior interrupted settle (its animator stopped by a re-grab,
+            // its commit therefore never fired) can leave the surface parked
+            // off its committed detent while THIS gesture went to the scroll —
+            // the sheet then sits at e.g. half with the binding still at peek
+            // (stale chrome + un-collapsed reserve, client bug Jul 23). Heal:
+            // settle-with-commit to the nearest detent.
+            healStrandedPositionIfNeeded()
+            return
+        }
         let releaseHeight = liveHeight
         // Project the throw from release VELOCITY (height-space: up = positive),
         // then snap to the detent nearest the projected endpoint — a fast flick
