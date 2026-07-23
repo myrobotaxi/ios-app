@@ -112,6 +112,11 @@ public enum MRTMetrics {
     /// Sheet scroll-content bottom clearance above the floating tab bar
     /// (screens.jsx:542 `padding: '6px 24px 100px'`).
     public static let homeSheetContentBottomPadding: CGFloat = 100
+    /// Total height of `MRTGrabHandle` (4pt bar + 10pt top pad + 6pt bottom
+    /// pad). The crossfade owner sheet (MYR-236 r5.3) draws the handle in its
+    /// always-opaque base and reserves this at the top of each crossfade layer,
+    /// so both layers' content aligns beneath the one stationary handle.
+    public static let sheetGrabHandleHeight: CGFloat = 20
 
     // MARK: Vehicle Controls (MYR-168, design/app/vehicle-controls.jsx)
 
