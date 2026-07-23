@@ -241,6 +241,7 @@ struct HomeScreen: View {
                 trip: trip,
                 snapshot: snapshot,
                 peekRevealHeight: peekRevealHeight,
+                collapseReserve: homeState.sheetDetent == .half,
                 executor: executor,
                 isEditingPlate: $isEditingPlate
             )
@@ -253,6 +254,7 @@ struct HomeScreen: View {
                 // in_service→neutral) in the design badge. Simulated: `.parked`.
                 status: homeState.selectedBadgeStatus,
                 peekRevealHeight: peekRevealHeight,
+                collapseReserve: homeState.sheetDetent == .half,
                 executor: executor,
                 isEditingPlate: $isEditingPlate
             )

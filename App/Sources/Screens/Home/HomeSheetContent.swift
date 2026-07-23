@@ -43,6 +43,11 @@ struct DrivingHeroContent: View {
     /// Height reserved for the summary + its below-the-fold band so the
     /// always-rendered route/controls begin at the peek fold (see header).
     let peekRevealHeight: CGFloat
+    /// True at the half detent: the reserve collapses (animated at the settle
+    /// commit) so the half layout is dense — no dead band above the route
+    /// (client feedback, Jul 23). False at peek: the reserve keeps the at-rest
+    /// peek pixel-identical and the drag reveals content from the fold.
+    var collapseReserve: Bool = false
     let executor: any VehicleCommandExecutor
     @Binding var isEditingPlate: Bool
 
@@ -125,7 +130,8 @@ struct DrivingHeroContent: View {
 
                 TripProgressBar(progress: snapshot.progress, compact: true)
             }
-            .frame(minHeight: peekRevealHeight, alignment: .top)
+            .frame(minHeight: collapseReserve ? nil : peekRevealHeight, alignment: .top)
+            .animation(.easeOut(duration: 0.25), value: collapseReserve)
 
             // Always laid out, beginning at the peek fold — rides up on the drag
             // (MYR-236 round 5; see this file's header comment).
@@ -167,6 +173,9 @@ struct ParkedHeroContent: View {
     /// Height reserved for the summary + its below-the-fold band so the
     /// always-rendered controls begin at the peek fold (see header).
     let peekRevealHeight: CGFloat
+    /// True at the half detent: the reserve collapses (animated) for a dense
+    /// half layout — see `DrivingHeroContent.collapseReserve`.
+    var collapseReserve: Bool = false
     let executor: any VehicleCommandExecutor
     @Binding var isEditingPlate: Bool
 
@@ -218,7 +227,8 @@ struct ParkedHeroContent: View {
                         .fixedSize()
                 }
             }
-            .frame(minHeight: peekRevealHeight, alignment: .top)
+            .frame(minHeight: collapseReserve ? nil : peekRevealHeight, alignment: .top)
+            .animation(.easeOut(duration: 0.25), value: collapseReserve)
 
             // Always laid out, beginning at the peek fold — rides up on the drag
             // (MYR-236 round 5; see this file's header comment).

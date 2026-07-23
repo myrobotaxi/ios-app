@@ -689,17 +689,16 @@ final class PanSheetSurfaceView: UIView {
         set { /* derived from the live transform; ignore external sets */ }
     }
 
-    /// Hit-test the surface itself but let touches OUTSIDE the visible band (the
-    /// off-screen pad, and the map area above the sheet) fall through to what's
-    /// behind — the surface's frame is the whole tall envelope, most of which is
-    /// either off-screen or transparent above the content.
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        let hit = super.hitTest(point, with: event)
-        // Only claim touches that land on real content (the hosted view tree),
-        // never the empty translated envelope.
-        if hit === self { return nil }
-        return hit
-    }
+    // The surface claims EVERY in-bounds touch (default UIView hit-testing).
+    // Round 5.1: it previously returned nil when the hosted SwiftUI tree had no
+    // hit-testable content at the point (spacers, the reserved band) — those
+    // touches fell through the passthrough container to the MAP, so panning on
+    // an "empty" part of the sheet scrolled the map (client bug, Jul 23). The
+    // surface's frame is exactly the sheet's visual band (the overshoot pad is
+    // off-screen and unreachable; the map area above is outside the frame and
+    // still falls through via `PanSheetPassthroughView`), so claiming in-bounds
+    // touches is correct — and since the pan recognizer lives on the surface,
+    // dragging an empty region now drags the SHEET, as it should.
 }
 
 /// The controller's root view: transparent to any touch that does not land on
