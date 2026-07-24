@@ -8,7 +8,11 @@
 	privacy strings from INFOPLIST_KEY_* in project.yml) on top of this file.
 	This file carries ONLY the keys that have no INFOPLIST_KEY_* equivalent —
 	here, the myrobotaxi:// custom URL scheme the in-app Tesla link callback
-	(§7.11 `myrobotaxi://tesla-linked`) is intercepted on.
+	(§7.11 `myrobotaxi://tesla-linked`) — and, MYR-258, the owner car-offboarding
+	consent-revoke return (§7.12 `myrobotaxi://tesla-unlinked`) — are intercepted
+	on. Both callbacks share the single `myrobotaxi` scheme below (distinguished by
+	host); ASWebAuthenticationSession matches on the scheme, so no second entry is
+	needed.
 	-->
 	<key>CFBundleURLTypes</key>
 	<array>
