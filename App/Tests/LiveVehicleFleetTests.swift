@@ -43,6 +43,37 @@ final class LiveVehicleFleetTests: XCTestCase {
         fleet.stop()
     }
 
+    // MYR-258 (§7.12) — remove drops the car from the fleet immediately (Home +
+    // Settings read the same list), keeps the parallel arrays aligned, and is a
+    // no-op for an unknown id. Removing the last car surfaces the empty notice.
+    func testRemoveDropsVehicleFromFleet() async {
+        let fleet = makeFleet(
+            status: 200,
+            body: Contracts.listResponse([
+                Contracts.summary(vehicleId: "v1", name: "Cybercab", model: "Cybercab", year: 2026, color: "Mercury Silver", vinLast4: "2046", status: .driving, chargeLevel: 68),
+                Contracts.summary(vehicleId: "v2", name: "Daily", model: "Model 3 LR", year: 2024, color: "Pearl White", vinLast4: "9417", status: .parked, chargeLevel: 82),
+            ])
+        )
+        fleet.start()
+        await eventually { fleet.vehicles.count == 2 }
+
+        // Unknown id → no-op (idempotent, mirrors the endpoint's re-remove).
+        fleet.remove(vehicleID: "nope")
+        XCTAssertEqual(fleet.vehicles.map(\.id), ["v1", "v2"])
+
+        fleet.remove(vehicleID: "v1")
+        XCTAssertEqual(fleet.vehicles.map(\.id), ["v2"])
+        // The parallel arrays stayed aligned — the remaining row still resolves.
+        XCTAssertEqual(fleet.vehicles[0].plate, "VIN ····9417")
+        XCTAssertEqual(fleet.badgeStatus(at: 0), .parked)
+
+        fleet.remove(vehicleID: "v2")
+        XCTAssertTrue(fleet.vehicles.isEmpty)
+        XCTAssertEqual(fleet.statusMessage, "No vehicles linked to this account")
+
+        fleet.stop()
+    }
+
     func testAuthFailureSurfacesQuietSignInMessage() async {
         let fleet = makeFleet(status: 401, body: Contracts.errorEnvelope(code: "auth_failed"))
         fleet.start()

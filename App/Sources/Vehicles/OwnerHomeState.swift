@@ -102,6 +102,18 @@ public final class OwnerHomeState {
         fleet.setActive(index: selectedVehicleIndex)
     }
 
+    /// MYR-258 (§7.12) — drop a vehicle after its authoritative backend teardown.
+    /// Delegates to the fleet (which releases the live source + re-narrows its own
+    /// active subscription) and clamps the view-facing selection so the switcher /
+    /// Settings list never point past the shortened fleet. Live-path only — the
+    /// simulated fleet ignores removal (default no-op).
+    public func removeVehicle(id: String) {
+        fleet.remove(vehicleID: id)
+        if !vehicles.indices.contains(selectedVehicleIndex) {
+            selectedVehicleIndex = max(0, vehicles.count - 1)
+        }
+    }
+
     public func handleForeground() { fleet.handleForeground() }
     public func handleBackground() { fleet.handleBackground() }
 }

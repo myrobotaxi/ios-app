@@ -168,6 +168,35 @@ final class LiveVehicleFleet: VehicleFleet {
         Task { await socket.handleBackgroundTransition() }
     }
 
+    /// MYR-258 (§7.12) — drop a vehicle after its authoritative backend teardown.
+    /// Releases that vehicle's live source (unsubscribes its socket stream) and
+    /// its parallel executor/feed, keeping the four arrays aligned. Re-narrows the
+    /// active index and re-subscribes the new selection if the removed row was at
+    /// or before the active one, so the switcher never points past the end. A no-op
+    /// if the id isn't present (idempotent — matches the endpoint's re-remove
+    /// no-op).
+    func remove(vehicleID: String) {
+        guard let removedIndex = summaries.firstIndex(where: { $0.vehicleId == vehicleID }) else { return }
+        sources[removedIndex].stop()
+        summaries.remove(at: removedIndex)
+        sources.remove(at: removedIndex)
+        executors.remove(at: removedIndex)
+        feeds.remove(at: removedIndex)
+
+        if summaries.isEmpty {
+            activeIndex = 0
+            statusMessage = "No vehicles linked to this account"
+            return
+        }
+        // Keep the active subscription valid: clamp the index, and if the removal
+        // shifted the active vehicle, subscribe the row now sitting at activeIndex.
+        let wasActiveAffected = removedIndex <= activeIndex
+        activeIndex = min(activeIndex, summaries.count - 1)
+        if started, wasActiveAffected, sources.indices.contains(activeIndex) {
+            sources[activeIndex].start()
+        }
+    }
+
     // MARK: - Fleet load
 
     private func loadFleet() {
