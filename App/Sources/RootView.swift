@@ -447,7 +447,12 @@ struct RootView: View {
                             ownerHomeState.stopTelemetry()
                             session.signOut()
                             screen = .signIn
-                        }
+                        },
+                        // MYR-246 — Settings' "Add another Tesla" runs the real
+                        // browser-sheet link flow on the live path (nil in SIM
+                        // keeps the fixture sheet); refresh the fleet on link.
+                        teslaAuthenticator: teslaAuthenticator,
+                        onTeslaLinked: isLiveMode ? { ownerHomeState.startTelemetry() } : nil
                     )
                 default:
                     HomeScreen(
