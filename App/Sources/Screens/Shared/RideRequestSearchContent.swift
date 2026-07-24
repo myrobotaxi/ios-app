@@ -46,6 +46,26 @@ struct RideRequestSearchContent: View {
     // kept local so the field/CTA presentation is a pure view concern.
     @State private var pickedDestination: RidePlace?
     @FocusState private var destinationFieldFocused: Bool
+    /// MYR-250 item 2 — the deferred auto-focus task (focus the destination
+    /// field AFTER the sheet settles, never mid-transition). Cancelled if the
+    /// sheet leaves search before it fires.
+    @State private var focusTask: Task<Void, Never>?
+
+    /// MYR-250 item 4 — seed `query`/`pickedDestination` from the RETAINED draft
+    /// at INIT (not `onAppear`) so a remount straight into the chosen-destination
+    /// state (review / pin-drop "Change trip" → search) renders its COLLAPSED
+    /// height from the very first frame. The engine then seats at the right detent
+    /// in one settle instead of flashing the tall search-list height and springing
+    /// down — the client's "jumps up and goes back down". A cold search open (no
+    /// draft) seeds empty, identical to before.
+    @MainActor
+    init(viewerState: SharedViewerState, hosted: Bool = false) {
+        _viewerState = Bindable(wrappedValue: viewerState)
+        self.hosted = hosted
+        let draft = viewerState.draftDestination
+        _query = State(initialValue: draft?.label ?? "")
+        _pickedDestination = State(initialValue: draft)
+    }
 
     /// MYR-216 deliverable 1 — the collapse trigger: true once a destination is
     /// chosen (CTA state). Drives the animated sheet resize down/up.
@@ -140,6 +160,35 @@ struct RideRequestSearchContent: View {
                     dismissKeyboardBeforeLeaving() // MYR-239 defect 2
                     viewerState.resetDraftToIdle()
                 })
+                // MYR-250 item 3 — the chosen-destination "Continue" step is
+                // swipe-LOCKED (`RiderIdleSearchSheet.isChoosing` → the engine's
+                // `dragEnabled: false`); the client asked for a standard back
+                // button there instead of swiping the sheet down. Follows the
+                // app's existing "‹ Change trip" back pattern (Review /
+                // pin-drop). Returns to search-as-you-type — clears the pick
+                // (which unlocks the idle↔search drag again) while KEEPING the
+                // typed text so the results list re-populates in place.
+                if pickedDestination != nil {
+                    HStack {
+                        Button {
+                            pickedDestination = nil
+                            viewerState.clearChosenDestination()
+                            viewerState.updateSearch(query: query)
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "chevron.left").font(.system(size: 13, weight: .semibold))
+                                Text("Change trip").font(.system(size: 13, weight: .semibold))
+                            }
+                            .foregroundStyle(Color.mrtGold)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("mrt.search.changeTrip")
+                        Spacer(minLength: 0)
+                    }
+                    .frame(minHeight: 30)
+                    .padding(.bottom, 8)
+                }
                 chipRow
                     .padding(.bottom, viewerState.draftSchedule != nil ? 8 : 12)
                 if let schedule = viewerState.draftSchedule {
@@ -218,15 +267,27 @@ struct RideRequestSearchContent: View {
         // CTA). Back-nav from pin-drop goes to `.search` (draft retained), never
         // `.idle`, so the MYR-216/239 destination-retention path is untouched.
         .onChange(of: viewerState.sheetPhase) { _, newPhase in
+            // MYR-250 item 2 — TAP-open / DRAG-open (idle → search on the SAME
+            // engine, no remount) fires this, not `onAppear`; schedule the auto-
+            // focus AFTER the settle. Leaving search cancels any pending focus so
+            // the keyboard never strands over a mid-exit sheet (MYR-239).
+            if newPhase == .search {
+                scheduleSearchFocus()
+            } else {
+                focusTask?.cancel()
+                focusTask = nil
+            }
             guard newPhase == .idle, viewerState.draftDestination == nil else { return }
             pickedDestination = nil
             if !query.isEmpty { query = "" }
         }
+        .onDisappear { focusTask?.cancel(); focusTask = nil }
         .onAppear {
-            // MYR-239 defect 2 — re-entering Search (back from pin-drop/review)
-            // must NOT restore the destination field's first responder mid-
-            // transition: keep focus down so the keyboard only returns when the
-            // rider taps the field, after the sheet has finished laying out.
+            // MYR-239 defect 2 / MYR-250 item 2 — never restore first responder
+            // mid-transition: keep focus down on appear, then (below) schedule an
+            // auto-focus that fires only AFTER the sheet has settled into a fresh
+            // (typing) search — the prototype's `SearchContent autoFocus` behavior
+            // (ride-request.jsx:157), which the round-4 discipline had dropped.
             destinationFieldFocused = false
             forSomeoneElse = viewerState.draftPassenger != nil
             if let schedule = viewerState.draftSchedule {
@@ -248,6 +309,27 @@ struct RideRequestSearchContent: View {
             // MYR-211 — seed the search backend with the (possibly debug-set)
             // query so the seam's `results` match the field on first render.
             viewerState.updateSearch(query: query)
+            // MYR-250 item 2 — COLD search scene / back-nav REMOUNT (review /
+            // pin-drop → search) reaches search through a fresh mount, which does
+            // not fire the `sheetPhase` onChange above; schedule the auto-focus here.
+            if viewerState.sheetPhase == .search { scheduleSearchFocus() }
+        }
+    }
+
+    /// MYR-250 item 2 — focus the destination field a beat AFTER the sheet
+    /// settles into search (the round-4 rule: never mid-drag / mid-transition).
+    /// The settle spring is ~0.42s, so we wait past it and then focus ONLY if the
+    /// sheet is still a fresh, typing search (no destination chosen — a remount
+    /// into the "Continue" step keeps its keyboard down so the CTA stays clear).
+    /// Idempotent across the several entry paths that all funnel here.
+    @MainActor
+    private func scheduleSearchFocus() {
+        focusTask?.cancel()
+        focusTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(450))
+            guard !Task.isCancelled else { return }
+            guard viewerState.sheetPhase == .search, pickedDestination == nil else { return }
+            destinationFieldFocused = true
         }
     }
 

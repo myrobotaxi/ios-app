@@ -44,6 +44,15 @@ struct RiderIdleSearchSheet<Idle: View, Search: View>: View {
 
     private var isSearch: Bool { viewerState.sheetPhase == .search }
 
+    /// MYR-250 item 3 — the chosen-destination "Continue" step (a destination is
+    /// picked; the sheet shows the trip card + Continue). The client asked for a
+    /// standard back button there instead of swipe-to-dismiss, and NO swipe-down
+    /// — so on this sub-state the sheet's drag is locked (`dragEnabled: false`)
+    /// and `RideRequestSearchContent` renders the "‹ Change trip" back control.
+    /// Editing/clearing the destination returns to search-as-you-type, which
+    /// re-enables the continuous idle↔search drag.
+    private var isChoosing: Bool { isSearch && viewerState.draftDestination != nil }
+
     /// Ascending detents: [idle card height, search sheet height].
     private var detents: [CGFloat] {
         let fallback = MRTMetrics.rideRequestSearchSheetHeight
@@ -64,6 +73,8 @@ struct RiderIdleSearchSheet<Idle: View, Search: View>: View {
             detentHeights: detents,
             selection: selection,
             reduceMotion: reduceMotion,
+            // MYR-250 item 3 — lock the drag on the chosen-destination step.
+            dragEnabled: !isChoosing,
             accessibilityIdentifier: "mrt.riderSheet",
             accessibilityLabel: "Ride request sheet",
             onSettle: commitSettle,
@@ -137,7 +148,10 @@ struct RiderIdleSearchSheet<Idle: View, Search: View>: View {
             // Settled at idle — collapse Search to the greeting card with a full
             // draft reset (ride-request.jsx `closeToIdle`), the same commit the
             // old >36px drag-down-dismiss made, now velocity-projected by the
-            // engine.
+            // engine. MYR-250 item 3 — never reset while a destination is chosen:
+            // that sub-state is swipe-locked, so an idle settle here can only be a
+            // genuine collapse of the search LIST (draft still empty).
+            guard viewerState.draftDestination == nil else { return }
             if viewerState.sheetPhase == .search { viewerState.resetDraftToIdle() }
         }
     }

@@ -48,6 +48,41 @@ final class PerPhaseMapInsetTests: XCTestCase {
         // Summary is a full-screen takeover — no bottom sheet to clear.
         XCTAssertEqual(SharedViewerScreen.mapBottomInset(phase: .summary, isPendingPill: false), 0)
     }
+
+    // MARK: MYR-250 item 1 — the map stays PUT under the idle↔search sheet
+    //
+    // The client: "When I swipe up rider bottom sheet it moves the entire map up.
+    // The bottom sheet should be swiping up over the map, not moving the map up
+    // with it." Root cause: the `VehicleMapView`'s `.safeAreaPadding(.bottom:)`
+    // was the FULL 712pt search-sheet height on `.search`, so committing
+    // idle→search grew the inset (286→712) and MapKit shifted the framed center
+    // UP by that jump — the map "moving up with the sheet". The `VehicleMapView`
+    // camera inset for SEARCH must equal the IDLE inset so the map holds still;
+    // the taller sheet simply covers more of the same map (the Apple Maps model).
+
+    func testVehicleMapInsetForSearchEqualsIdleSoTheMapStaysPut() {
+        // The camera inset the idle/search/pin-drop VehicleMapView actually uses:
+        // search shares idle's, so idle→search never recenters the map.
+        let idle = SharedViewerScreen.vehicleMapBottomInset(phase: .idle, isPendingPill: false)
+        let search = SharedViewerScreen.vehicleMapBottomInset(phase: .search, isPendingPill: false)
+        XCTAssertEqual(search, idle,
+                       "the search VehicleMapView must share the idle camera inset so opening search never shifts the map")
+        XCTAssertEqual(search, MRTMetrics.sharedIdleSheetHeight)
+        // And it is DECOUPLED from the tall search-sheet chrome height (which the
+        // attribution table still reports) — that jump was the coupling to remove.
+        XCTAssertNotEqual(search, SharedViewerScreen.mapBottomInset(phase: .search, isPendingPill: false))
+    }
+
+    func testVehicleMapInsetLeavesPinDropAndOtherPhasesOnTheirOwn() {
+        // Pin-drop is a legitimate street-level refit — it keeps its own inset.
+        XCTAssertEqual(
+            SharedViewerScreen.vehicleMapBottomInset(phase: .pinDrop(returnTo: .search), isPendingPill: false),
+            SharedViewerScreen.mapBottomInset(phase: .pinDrop(returnTo: .search), isPendingPill: false)
+        )
+        // Idle (greeting + pending pill) is unchanged.
+        XCTAssertEqual(SharedViewerScreen.vehicleMapBottomInset(phase: .idle, isPendingPill: true),
+                       SharedViewerScreen.mapBottomInset(phase: .idle, isPendingPill: true))
+    }
 }
 
 // MARK: - MYR-223 deliverable 3 — rider recenter re-engages follow cleanly
