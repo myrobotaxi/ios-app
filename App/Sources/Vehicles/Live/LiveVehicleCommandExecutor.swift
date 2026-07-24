@@ -4,34 +4,46 @@ import Observation
 
 // MARK: - LiveVehicleCommandExecutor (MYR-249 — P11 owner actuation, MYR-181–183)
 //
-// The live `VehicleCommandExecutor`: the four owner controls that map to a real
-// §7.9 Tesla command route through the backend command endpoint (via the Kit's
-// `VehicleCommandSending`); everything with no backend command stays a local
-// mutation, flagged below. This is the executor `LiveVehicleFleet` now injects in
-// place of the simulated one (P11 is ready as of MYR-249).
+// The live `VehicleCommandExecutor`: every owner control that maps to a real §7.9
+// Tesla command routes through the backend command endpoint (via the Kit's
+// `VehicleCommandSending`); the few controls with no backend command stay local
+// mutations, flagged below. This is the executor `LiveVehicleFleet` now injects in
+// place of the simulated one (P11 is ready as of MYR-249; phase 3 added charge
+// port, seat climate, and media once backend v186 registered them).
 //
 // Backend-backed (real command sent, then optimistic state on ack):
-//   • lock tile         → door_lock / door_unlock
-//   • climate on/off    → auto_conditioning_start / auto_conditioning_stop
-//   • set temp ±        → set_temps (driver_temp °C; passenger mirrors)
-//   • trunk tile        → actuate_trunk (rear)
+//   • lock tile          → door_lock / door_unlock
+//   • climate on/off     → auto_conditioning_start / auto_conditioning_stop
+//   • set temp ±         → set_temps (driver_temp °C; passenger mirrors)
+//   • trunk tile         → actuate_trunk (rear)
+//   • charge port tile   → charge_port_door_open / charge_port_door_close (v186;
+//                          scope `vehicle_charging_cmds` — a token without it
+//                          surfaces `.relinkCharging`)
+//   • seat heat/cool     → remote_seat_heater_request (level 0–3) OR
+//                          remote_seat_cooler_request (seat_cooler_level 1–4),
+//                          chosen by the seat's current mode; the heater/cooler
+//                          asymmetry lives in the Kit's seat factories
+//   • media play/pause   → media_toggle_playback
+//   • media prev/next    → media_prev_track / media_next_track
+//   • volume slider      → adjust_volume (0–11; immediate-local + coalesced send —
+//                          a continuous slider can't await a round trip per delta,
+//                          so it applies at once and best-effort-sends the latest,
+//                          with no per-tile spinner/notice surface)
 //
-// NO backend command in the §7.9 catalog (flagged follow-ups — kept as a local
-// mutation to preserve the control's feel, EXCEPT charge-port which is reported
-// unsupported so the tile is honestly disabled on live):
-//   • charge port tile  → no charge_port command  → `isSupported(.chargePort) == false`
+// NO backend command in the §7.9 catalog (flagged — kept as a local mutation to
+// preserve the control's feel):
 //   • climate mode (Auto/Cool/Heat) → no set-mode command
-//   • fan speed         → no fan command
-//   • seat heat / vent  → no seat-climate command
-//   • media (play/skip/volume/scrub) → media is NOT in the catalog
+//   • fan speed          → no fan command
+//   • media scrub        → no seek-to-position command (local feedback only)
 //   • license plate      → not a Tesla command (no plate field, per MYR-168)
 //
 // UX (per MYR-249 task 3): a tap sets the control PENDING (double-tap suppressed
 // by the pending guard); the value flips only once the command is acknowledged
 // (optimistic-on-ack — the next telemetry frame remains authoritative); an error
-// maps to an honest `VehicleCommandNotice`. `vehicle_asleep` (503) keeps the
-// control pending with "Waking the car…" and retries once with backoff, reflecting
-// that the server itself woke+retried (§7.9).
+// maps to an honest `VehicleCommandNotice` (charge-port `permission_denied` names
+// the charging scope). `vehicle_asleep` (503) keeps the control pending with
+// "Waking the car…" and retries once with backoff, reflecting that the server
+// itself woke+retried (§7.9).
 //
 // SAFETY: this type is only ever constructed on the LIVE path (`LiveVehicleFleet`,
 // built only for a live `AppMode`); the simulated demo never touches it. Tests
@@ -49,6 +61,13 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     private let wakeRetryDelay: Duration
     private let maxWakeRetries: Int
     private let trackCount = 3
+
+    /// One-in-flight coalescer for the volume slider (`adjust_volume`): while a
+    /// send is outstanding the newest drag value is stashed and sent when it
+    /// settles, so a drag fires the first + last value (not every delta) without
+    /// blocking the thumb. Best-effort — a slider has no spinner/notice surface.
+    private var volumeSending = false
+    private var pendingVolume: Double?
 
     init(
         vehicleID: String,
@@ -90,18 +109,18 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         uiStates[key] ?? .idle
     }
 
-    func isSupported(_ key: VehicleControlKey) -> Bool {
-        // Charge PORT has no §7.9 command — honestly disabled on live rather than
-        // faked (MYR-249). Everything else here maps to a real command.
-        key != .chargePort
-    }
+    // Every keyed control now maps to a real §7.9 command (charge port joined the
+    // catalog in v186), so `isSupported` keeps the protocol default (`true`).
 
-    /// Map the Kit's typed §7.9 failure onto an honest control notice.
-    static func notice(for kind: RestError.CommandFailureKind) -> VehicleCommandNotice {
+    /// Map the Kit's typed §7.9 failure onto an honest control notice. `key` lets
+    /// a `permission_denied` on the charge port name the charging scope
+    /// specifically (`vehicle_charging_cmds`), which the owner's token may lack.
+    static func notice(for kind: RestError.CommandFailureKind, key: VehicleControlKey) -> VehicleCommandNotice {
         switch kind {
         case .vehicleAsleep: .waking
         case .keyNotPaired: .pairKey
-        case .permissionDenied, .notOwned, .auth: .relink
+        case .permissionDenied: key == .chargePort ? .relinkCharging : .relink
+        case .notOwned, .auth: .relink
         case .rateLimited: .cooldown
         case .invalidRequest, .commandFailed, .notFound, .transport, .other: .failed
         }
@@ -136,6 +155,95 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         }
     }
 
+    func setChargePortOpen(_ open: Bool) async throws {
+        // v186: charge_port_door_open / close. Scope `vehicle_charging_cmds` — a
+        // token lacking it surfaces `.relinkCharging` (see `notice(for:key:)`).
+        await run(.chargePort, command: open ? .chargePortDoorOpen : .chargePortDoorClose) { [weak self] in
+            self?.controls.chargePortOpen = open
+        }
+    }
+
+    func setSeatHeatLevel(_ seat: VehicleSeatPosition, level: Int) async throws {
+        let clamped = min(3, max(0, level))
+        let key = Self.seatKey(seat)
+        let side = Self.seatSide(seat)
+        // The level squares actuate whichever mode the seat is armed to (the UI's
+        // accent follows the mode) — heater for .heat, cooler for .cool. The Kit
+        // factories own the seat_position + level-scale (0–3 vs 1–4) mapping.
+        let mode = seat == .driver ? controls.driverSeatMode : controls.passengerSeatMode
+        let command: VehicleCommand = mode == .cool
+            ? .seatCooler(side, uiLevel: clamped)
+            : .seatHeater(side, uiLevel: clamped)
+        await run(key, command: command) { [weak self] in
+            switch seat {
+            case .driver: self?.controls.driverSeatHeatLevel = clamped
+            case .passenger: self?.controls.passengerSeatHeatLevel = clamped
+            }
+        }
+    }
+
+    func setSeatClimateMode(_ seat: VehicleSeatPosition, mode newMode: VehicleSeatClimateMode) async throws {
+        let oldMode = seat == .driver ? controls.driverSeatMode : controls.passengerSeatMode
+        let oldLevel = seat == .driver ? controls.driverSeatHeatLevel : controls.passengerSeatHeatLevel
+        let apply: @MainActor () -> Void = { [weak self] in
+            // vehicle-controls.jsx:90 — switching Heat/Cool resets the level.
+            switch seat {
+            case .driver:
+                self?.controls.driverSeatMode = newMode
+                self?.controls.driverSeatHeatLevel = 0
+            case .passenger:
+                self?.controls.passengerSeatMode = newMode
+                self?.controls.passengerSeatHeatLevel = 0
+            }
+        }
+        // Nothing was actively heating/cooling → the mode switch is a pure local
+        // arm change (no vehicle actuation to make).
+        guard oldLevel > 0 else { apply(); return }
+        // The design's reset-to-0 means the previously-active element must stop on
+        // the car: send the OFF for the OLD mode, then flip mode + level locally.
+        let side = Self.seatSide(seat)
+        let offCommand: VehicleCommand = oldMode == .cool
+            ? .seatCooler(side, uiLevel: 0)
+            : .seatHeater(side, uiLevel: 0)
+        await run(Self.seatKey(seat), command: offCommand, apply: apply)
+    }
+
+    func setMediaPlaying(_ playing: Bool) async throws {
+        // media_toggle_playback is a toggle regardless of direction; `playing` is
+        // the optimistic target applied on ack.
+        await run(.media, command: .mediaTogglePlayback) { [weak self] in
+            self?.controls.mediaPlaying = playing
+        }
+    }
+
+    func skipTrack(_ direction: VehicleTrackDirection) async throws {
+        let command: VehicleCommand = direction == .next ? .mediaNextTrack : .mediaPrevTrack
+        await run(.media, command: command) { [weak self] in
+            guard let self else { return }
+            switch direction {
+            case .previous: self.controls.trackIndex = (self.controls.trackIndex + self.trackCount - 1) % self.trackCount
+            case .next: self.controls.trackIndex = (self.controls.trackIndex + 1) % self.trackCount
+            }
+            // The displayed track list is placeholder art (see MediaSection); the
+            // real command skips the car's track while the UI cycles optimistically.
+            self.controls.scrubPercent = 0
+        }
+    }
+
+    func setVolume(_ volume: Double) async throws {
+        // A continuous slider can't await a round trip per drag delta, so apply
+        // immediately (smooth thumb) and best-effort-send the latest value with a
+        // one-in-flight coalescer. adjust_volume takes 0–11; the UI is 0–100.
+        let clamped = min(100, max(0, volume))
+        controls.volume = clamped
+        sendVolume(clamped)
+    }
+
+    func setScrubPercent(_ percent: Double) {
+        // No seek-to-position command in §7.9 — local feedback only (flagged).
+        controls.scrubPercent = min(100, max(0, percent))
+    }
+
     // MARK: No backend command — local mutation, flagged (see header)
 
     func setClimateMode(_ mode: VehicleClimateMode) async throws {
@@ -146,54 +254,40 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         controls.fanSpeed = min(10, max(0, speed))
     }
 
-    func setSeatHeatLevel(_ seat: VehicleSeatPosition, level: Int) async throws {
-        let clamped = min(3, max(0, level))
-        switch seat {
-        case .driver: controls.driverSeatHeatLevel = clamped
-        case .passenger: controls.passengerSeatHeatLevel = clamped
-        }
-    }
-
-    func setSeatClimateMode(_ seat: VehicleSeatPosition, mode: VehicleSeatClimateMode) async throws {
-        switch seat {
-        case .driver:
-            controls.driverSeatMode = mode
-            controls.driverSeatHeatLevel = 0
-        case .passenger:
-            controls.passengerSeatMode = mode
-            controls.passengerSeatHeatLevel = 0
-        }
-    }
-
-    func setChargePortOpen(_ open: Bool) async throws {
-        // No charge_port command in §7.9. The live tile is disabled
-        // (`isSupported(.chargePort) == false`), so this is not reached on live;
-        // kept as a safe local mutation for API totality.
-        controls.chargePortOpen = open
-    }
-
-    func setMediaPlaying(_ playing: Bool) async throws {
-        controls.mediaPlaying = playing
-    }
-
-    func skipTrack(_ direction: VehicleTrackDirection) async throws {
-        switch direction {
-        case .previous: controls.trackIndex = (controls.trackIndex + trackCount - 1) % trackCount
-        case .next: controls.trackIndex = (controls.trackIndex + 1) % trackCount
-        }
-        controls.scrubPercent = 0
-    }
-
-    func setVolume(_ volume: Double) async throws {
-        controls.volume = min(100, max(0, volume))
-    }
-
-    func setScrubPercent(_ percent: Double) {
-        controls.scrubPercent = min(100, max(0, percent))
-    }
-
     func setPlate(_ plate: String) async throws {
         controls.plate = plate
+    }
+
+    // MARK: - Seat helpers
+
+    private static func seatKey(_ seat: VehicleSeatPosition) -> VehicleControlKey {
+        seat == .driver ? .driverSeat : .passengerSeat
+    }
+
+    private static func seatSide(_ seat: VehicleSeatPosition) -> VehicleCommand.SeatSide {
+        seat == .driver ? .driver : .passenger
+    }
+
+    // MARK: - Volume coalescer (best-effort adjust_volume)
+
+    /// Send `uiVolume` (0–100) as `adjust_volume` (0–11), coalescing to one send
+    /// in flight — a queued newer value replaces an older one and is sent when the
+    /// current send settles. Errors are swallowed (the slider has no error surface).
+    private func sendVolume(_ uiVolume: Double) {
+        guard !volumeSending else { pendingVolume = uiVolume; return }
+        volumeSending = true
+        let wire = uiVolume / 100 * 11
+        let sender = self.sender
+        let vehicleID = self.vehicleID
+        Task { @MainActor [weak self] in
+            _ = try? await sender.sendCommand(.adjustVolume(volume: wire), vehicleID: vehicleID)
+            guard let self else { return }
+            self.volumeSending = false
+            if let next = self.pendingVolume {
+                self.pendingVolume = nil
+                self.sendVolume(next)
+            }
+        }
     }
 
     // MARK: - Command runner
@@ -233,7 +327,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
                 await attempt(key, command: command, apply: apply, wakeRetriesLeft: wakeRetriesLeft - 1)
                 return
             }
-            uiStates[key] = VehicleControlUIState(isPending: false, notice: Self.notice(for: kind))
+            uiStates[key] = VehicleControlUIState(isPending: false, notice: Self.notice(for: kind, key: key))
         } catch {
             uiStates[key] = VehicleControlUIState(isPending: false, notice: .failed)
         }

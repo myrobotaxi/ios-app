@@ -13,6 +13,13 @@ struct MediaSection: View {
     let executor: any VehicleCommandExecutor
     let track: VehicleMediaTrack
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Live command state for the transport row (MYR-249 phase 3: play/pause +
+    /// skip route through media_toggle_playback / media_next_track /
+    /// media_prev_track). `.idle` on the simulated path → pixel-identical M1.
+    private var mediaState: VehicleControlUIState { executor.uiState(for: .media) }
+
     private var scrubBinding: Binding<Double> {
         Binding(get: { controls.scrubPercent }, set: { executor.setScrubPercent($0) })
     }
@@ -71,21 +78,46 @@ struct MediaSection: View {
                     transportButton("backward.fill", size: 22) {
                         Task { try? await executor.skipTrack(.previous) }
                     }
+                    .opacity(mediaState.isPending ? 0.5 : 1)
                     Button {
                         Task { try? await executor.setMediaPlaying(!controls.mediaPlaying) }
                     } label: {
-                        Image(systemName: controls.mediaPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 22))
-                            .foregroundStyle(Color.mrtGoldButtonLabel)
-                            .frame(width: 54, height: 54)
-                            .background(Color.mrtGold, in: Circle())
+                        // Pending → a spinner in the gold circle (Reduce Motion
+                        // falls back to the static icon dimmed). Idle renders the
+                        // bare icon exactly as before, so the M1 / drift-gate
+                        // scenes are pixel-identical.
+                        Group {
+                            if mediaState.isPending, !reduceMotion {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .tint(Color.mrtGoldButtonLabel)
+                            } else {
+                                Image(systemName: controls.mediaPlaying ? "pause.fill" : "play.fill")
+                                    .font(.system(size: 22))
+                                    .foregroundStyle(Color.mrtGoldButtonLabel)
+                                    .opacity(mediaState.isPending ? 0.5 : 1)
+                            }
+                        }
+                        .frame(width: 54, height: 54)
+                        .background(Color.mrtGold, in: Circle())
                     }
                     .buttonStyle(.plain)
                     transportButton("forward.fill", size: 22) {
                         Task { try? await executor.skipTrack(.next) }
                     }
+                    .opacity(mediaState.isPending ? 0.5 : 1)
                 }
                 .frame(maxWidth: .infinity)
+
+                // A settled media notice (re-link / pairing / waking / …) on a
+                // quiet centered line — never rendered on the simulated path.
+                if let notice = mediaState.notice {
+                    Text(notice.message)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(Color.mrtTextSec)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 10)
+                }
 
                 HStack(spacing: 12) {
                     Image(systemName: "speaker.wave.2.fill").font(.system(size: 15)).foregroundStyle(Color.mrtTextSec)

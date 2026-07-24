@@ -45,6 +45,18 @@ final class VehicleCommandEndpointTests: XCTestCase {
             Case(.remoteStartDrive, "remote_start_drive", nil),
             Case(.honkHorn, "honk_horn", nil),
             Case(.flashLights, "flash_lights", nil),
+            // MYR-249 phase 3 (v186).
+            Case(.chargePortDoorOpen, "charge_port_door_open", nil),
+            Case(.chargePortDoorClose, "charge_port_door_close", nil),
+            Case(.mediaTogglePlayback, "media_toggle_playback", nil),
+            Case(.mediaNextTrack, "media_next_track", nil),
+            Case(.mediaPrevTrack, "media_prev_track", nil),
+            Case(.adjustVolume(volume: 7.5), "adjust_volume", ["volume": 7.5]),
+            Case(.adjustVolume(volume: 0), "adjust_volume", ["volume": 0.0]),
+            Case(.adjustVolume(volume: 11), "adjust_volume", ["volume": 11.0]),
+            // Raw seat cases (wire values as-is).
+            Case(.remoteSeatHeaterRequest(seatPosition: 0, level: 3), "remote_seat_heater_request", ["seat_position": 0, "level": 3]),
+            Case(.remoteSeatCoolerRequest(seatPosition: 2, seatCoolerLevel: 4), "remote_seat_cooler_request", ["seat_position": 2, "seat_cooler_level": 4]),
         ]
 
         for c in cases {
@@ -78,6 +90,85 @@ final class VehicleCommandEndpointTests: XCTestCase {
                 }
             } else {
                 XCTAssertNil(request.httpBody, "\(c.name) is parameterless — no body", line: c.line)
+            }
+        }
+    }
+
+    // MARK: seat-climate factory — heater 0–3 vs cooler 1–4 asymmetry (the ONE place)
+
+    func testSeatFactoryMapsSideAndLevelWithAsymmetry() {
+        struct Case {
+            let command: VehicleCommand
+            let seatPosition: Int
+            let level: Int
+            let line: UInt
+            init(_ command: VehicleCommand, seatPosition: Int, level: Int, line: UInt = #line) {
+                self.command = command; self.seatPosition = seatPosition; self.level = level; self.line = line
+            }
+        }
+        let cases: [Case] = [
+            // Heater: seat_position driver 0 / passenger 1; level 0–3 passes through.
+            Case(.seatHeater(.driver, uiLevel: 0), seatPosition: 0, level: 0),
+            Case(.seatHeater(.driver, uiLevel: 3), seatPosition: 0, level: 3),
+            Case(.seatHeater(.passenger, uiLevel: 0), seatPosition: 1, level: 0),
+            Case(.seatHeater(.passenger, uiLevel: 3), seatPosition: 1, level: 3),
+            // Clamp above/below the UI 0–3 range.
+            Case(.seatHeater(.driver, uiLevel: 9), seatPosition: 0, level: 3),
+            Case(.seatHeater(.driver, uiLevel: -2), seatPosition: 0, level: 0),
+            // Cooler: seat_position driver 1 / passenger 2; seat_cooler_level 1–4
+            // (uiLevel + 1) — the asymmetry with the heater.
+            Case(.seatCooler(.driver, uiLevel: 0), seatPosition: 1, level: 1),
+            Case(.seatCooler(.driver, uiLevel: 3), seatPosition: 1, level: 4),
+            Case(.seatCooler(.passenger, uiLevel: 0), seatPosition: 2, level: 1),
+            Case(.seatCooler(.passenger, uiLevel: 3), seatPosition: 2, level: 4),
+            Case(.seatCooler(.driver, uiLevel: 9), seatPosition: 1, level: 4),
+            Case(.seatCooler(.passenger, uiLevel: -1), seatPosition: 2, level: 1),
+        ]
+        for c in cases {
+            switch c.command {
+            case .remoteSeatHeaterRequest(let pos, let level):
+                XCTAssertEqual(pos, c.seatPosition, "heater seat_position", line: c.line)
+                XCTAssertEqual(level, c.level, "heater level", line: c.line)
+            case .remoteSeatCoolerRequest(let pos, let coolerLevel):
+                XCTAssertEqual(pos, c.seatPosition, "cooler seat_position", line: c.line)
+                XCTAssertEqual(coolerLevel, c.level, "cooler seat_cooler_level", line: c.line)
+            default:
+                XCTFail("factory produced the wrong case", line: c.line)
+            }
+        }
+    }
+
+    // MARK: seat-climate wire body — snake_case keys, correct level scale
+
+    func testSeatFactoryEncodesExpectedBody() async throws {
+        struct Case {
+            let command: VehicleCommand
+            let name: String
+            let body: [String: Int]
+            let line: UInt
+            init(_ command: VehicleCommand, _ name: String, _ body: [String: Int], line: UInt = #line) {
+                self.command = command; self.name = name; self.body = body; self.line = line
+            }
+        }
+        let cases: [Case] = [
+            Case(.seatHeater(.driver, uiLevel: 2), "remote_seat_heater_request", ["seat_position": 0, "level": 2]),
+            Case(.seatHeater(.passenger, uiLevel: 1), "remote_seat_heater_request", ["seat_position": 1, "level": 1]),
+            Case(.seatCooler(.driver, uiLevel: 2), "remote_seat_cooler_request", ["seat_position": 1, "seat_cooler_level": 3]),
+            Case(.seatCooler(.passenger, uiLevel: 0), "remote_seat_cooler_request", ["seat_position": 2, "seat_cooler_level": 1]),
+        ]
+        for c in cases {
+            let http = RecordingHTTP([.init(status: 200, body: appliedBody(c.name))])
+            let client = RestClient(environment: env, tokenProvider: StaticTokenProvider("t"), http: http)
+            _ = try await client.sendCommand(c.command, vehicleID: "veh-1")
+            let requests = await http.capturedRequests()
+            XCTAssertEqual(requests[0].url?.path, "/api/vehicles/veh-1/command/\(c.name)", line: c.line)
+            guard let data = requests[0].httpBody,
+                  let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return XCTFail("expected a JSON body for \(c.name)", line: c.line)
+            }
+            XCTAssertEqual(json.count, c.body.count, "unexpected keys: \(json)", line: c.line)
+            for (key, value) in c.body {
+                XCTAssertEqual((json[key] as? NSNumber)?.intValue, value, "\(key) for \(c.name)", line: c.line)
             }
         }
     }

@@ -57,6 +57,14 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
             Case(.autoConditioningStart, key: .climate, action: { try? await $0.setClimateOn(true) }, verify: { $0.controls.climateOn == true }),
             Case(.setTemps(driverTempC: 22.0, passengerTempC: nil), key: .temp, action: { try? await $0.setTargetTemp(72) }, verify: { $0.controls.targetTemp == 72 }),
             Case(.actuateTrunk(.rear), key: .trunk, action: { try? await $0.setTrunkOpen(true) }, verify: { $0.controls.trunkOpen == true }),
+            // MYR-249 phase 3 (v186).
+            Case(.chargePortDoorOpen, key: .chargePort, action: { try? await $0.setChargePortOpen(true) }, verify: { $0.controls.chargePortOpen == true }),
+            Case(.chargePortDoorClose, key: .chargePort, action: { try? await $0.setChargePortOpen(false) }, verify: { $0.controls.chargePortOpen == false }),
+            // Driver seat seeds mode .heat → the heater command (seat_position 0, level pass-through).
+            Case(.remoteSeatHeaterRequest(seatPosition: 0, level: 3), key: .driverSeat, action: { try? await $0.setSeatHeatLevel(.driver, level: 3) }, verify: { $0.controls.driverSeatHeatLevel == 3 }),
+            Case(.mediaTogglePlayback, key: .media, action: { try? await $0.setMediaPlaying(true) }, verify: { $0.controls.mediaPlaying == true }),
+            Case(.mediaNextTrack, key: .media, action: { try? await $0.skipTrack(.next) }, verify: { $0.controls.trackIndex == 1 }),
+            Case(.mediaPrevTrack, key: .media, action: { try? await $0.skipTrack(.previous) }, verify: { $0.controls.trackIndex == 2 }),
         ]
         for c in cases {
             let sender = ScriptedCommandSender()
@@ -151,30 +159,85 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         XCTAssertFalse(exec.controls.locked)
     }
 
-    // MARK: capability + no-backend controls
+    // MARK: capability — every keyed control is backend-backed now (charge port joined v186)
 
-    func testChargePortUnsupportedOthersSupported() {
+    func testAllKeyedControlsSupported() {
         let exec = makeExecutor(ScriptedCommandSender())
-        XCTAssertFalse(exec.isSupported(.chargePort))
-        for key in [VehicleControlKey.lock, .climate, .temp, .trunk] {
+        for key in [VehicleControlKey.lock, .climate, .temp, .trunk, .chargePort, .driverSeat, .passengerSeat, .media] {
             XCTAssertTrue(exec.isSupported(key), "\(key) should be backend-backed")
         }
     }
+
+    // MARK: no-backend controls — still a local mutation, no command sent
 
     func testNoBackendControlsMutateLocallyWithoutSending() async {
         let sender = ScriptedCommandSender()
         let exec = makeExecutor(sender)
 
+        // climate mode + fan speed have no §7.9 command; scrub has no seek command.
         try? await exec.setClimateMode(.cool)
         try? await exec.setFanSpeed(7)
-        try? await exec.setSeatHeatLevel(.driver, level: 3)
-        try? await exec.setMediaPlaying(true)
+        exec.setScrubPercent(55)
 
         XCTAssertEqual(exec.controls.climateMode, .cool)
         XCTAssertEqual(exec.controls.fanSpeed, 7)
-        XCTAssertEqual(exec.controls.driverSeatHeatLevel, 3)
-        XCTAssertTrue(exec.controls.mediaPlaying)
+        XCTAssertEqual(exec.controls.scrubPercent, 55)
         XCTAssertTrue(sender.calls.isEmpty, "no §7.9 command exists for these controls")
+    }
+
+    // MARK: seat cooler — cool mode routes to remote_seat_cooler_request (1–4 scale)
+
+    func testSeatCoolerUsesCoolerCommandWithAsymmetricLevel() async {
+        let sender = ScriptedCommandSender()
+        let exec = makeExecutor(sender)
+
+        // Driver seeds mode .heat level 2 → switch to cool first. That switch sends
+        // the heater OFF (level 0) for the previously-active heat, then arms cool@0.
+        try? await exec.setSeatClimateMode(.driver, mode: .cool)
+        XCTAssertEqual(sender.calls, [.remoteSeatHeaterRequest(seatPosition: 0, level: 0)], "mode switch stops the old heat")
+        XCTAssertEqual(exec.controls.driverSeatMode, .cool)
+        XCTAssertEqual(exec.controls.driverSeatHeatLevel, 0)
+
+        // Now a cool level: UI 3 → cooler seat_cooler_level 4 (asymmetric), seat_position 1.
+        try? await exec.setSeatHeatLevel(.driver, level: 3)
+        XCTAssertEqual(sender.calls.last, .remoteSeatCoolerRequest(seatPosition: 1, seatCoolerLevel: 4))
+        XCTAssertEqual(exec.controls.driverSeatHeatLevel, 3)
+    }
+
+    // MARK: seat mode switch with nothing running — pure local, no command
+
+    func testSeatModeSwitchWhenOffSendsNothing() async {
+        let sender = ScriptedCommandSender()
+        let exec = makeExecutor(sender)
+
+        // Passenger seeds level 0 (off) → switching mode actuates nothing.
+        try? await exec.setSeatClimateMode(.passenger, mode: .cool)
+        XCTAssertTrue(sender.calls.isEmpty, "off seat needs no command on a mode switch")
+        XCTAssertEqual(exec.controls.passengerSeatMode, .cool)
+        XCTAssertEqual(exec.controls.passengerSeatHeatLevel, 0)
+    }
+
+    // MARK: charge-port permission_denied → the charging-specific re-link copy
+
+    func testChargePortPermissionDeniedNamesChargingScope() async {
+        let sender = ScriptedCommandSender([.failure(Self.restError("permission_denied", 403))])
+        let exec = makeExecutor(sender)
+
+        try? await exec.setChargePortOpen(true)
+
+        XCTAssertEqual(exec.uiState(for: .chargePort).notice, .relinkCharging)
+        XCTAssertFalse(exec.controls.chargePortOpen, "value unchanged on failure")
+    }
+
+    // MARK: volume — adjust_volume (0–11), immediate local apply, best-effort send
+
+    func testVolumeAppliesLocallyAndSendsScaledAdjustVolume() async {
+        let sender = ScriptedCommandSender()
+        let exec = makeExecutor(sender)
+
+        try? await exec.setVolume(100) // UI 0–100 → wire 0–11
+        XCTAssertEqual(exec.controls.volume, 100, "slider applies immediately")
+        await eventually { sender.calls.contains(.adjustVolume(volume: 11)) }
     }
 
     // MARK: Fahrenheit → Celsius

@@ -58,10 +58,13 @@ public enum VehicleTrackDirection: Sendable, Equatable {
 /// it UNSUPPORTED so the tile can be honestly disabled rather than faked.
 public enum VehicleControlKey: Sendable, Hashable {
     case lock
-    case climate       // auto_conditioning_start / stop (the on/off tile)
-    case temp          // set_temps
-    case trunk         // actuate_trunk (rear)
-    case chargePort    // NO backend command — flagged; disabled on live
+    case climate        // auto_conditioning_start / stop (the on/off tile)
+    case temp           // set_temps
+    case trunk          // actuate_trunk (rear)
+    case chargePort     // charge_port_door_open / close (MYR-249 phase 3, v186)
+    case driverSeat     // remote_seat_heater_request / remote_seat_cooler_request
+    case passengerSeat  // remote_seat_heater_request / remote_seat_cooler_request
+    case media          // media_toggle_playback / next / prev (one in flight at a time)
 }
 
 /// A honest, non-dramatic notice for a failed/transient command (MYR-249).
@@ -69,17 +72,23 @@ public enum VehicleControlKey: Sendable, Hashable {
 /// `LiveVehicleCommandExecutor.notice(for:)`. Copy is deliberately quiet
 /// (design minimalism) and points at the owner action where one exists.
 public enum VehicleCommandNotice: Sendable, Equatable {
-    case waking     // vehicle_asleep — the server retries; reflect that
-    case pairKey    // key_not_paired — pair the virtual key in Tesla
-    case relink     // permission_denied / not-owned / auth — reconnect Tesla
-    case cooldown   // rate_limited (429) — brief "just a moment"
-    case failed     // command_failed / invalid / offline — couldn't reach the car
+    case waking          // vehicle_asleep — the server retries; reflect that
+    case pairKey         // key_not_paired — pair the virtual key in Tesla
+    case relink          // permission_denied / not-owned / auth — reconnect Tesla
+    case relinkCharging  // permission_denied on a charge-port command — the token
+                         // lacks the `vehicle_charging_cmds` scope specifically
+    case cooldown        // rate_limited (429) — brief "just a moment"
+    case failed          // command_failed / invalid / offline — couldn't reach the car
 
     public var message: String {
         switch self {
         case .waking: "Waking the car\u{2026}"
         case .pairKey: "Pair your key in Tesla"
         case .relink: "Reconnect Tesla to allow this"
+        // The charge-port commands need the `vehicle_charging_cmds` scope, which
+        // the owner's token may not carry (MYR-249) — name the charging permission
+        // so the re-link is unambiguous.
+        case .relinkCharging: "Reconnect Tesla for charging access"
         case .cooldown: "Just a moment\u{2026}"
         case .failed: "Couldn\u{2019}t reach the car"
         }
