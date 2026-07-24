@@ -54,6 +54,14 @@ final class VehicleContractMappingTests: XCTestCase {
         XCTAssertLessThanOrEqual(snapshot.progress, 1)
     }
 
+    func testSnapshotCarriesRealOdometerAndFsdFromContract() {
+        // MYR-255 — odometer + FSD miles are contracted (`VehicleState`), so the
+        // live snapshot must carry the REAL wire values, never a fixture number.
+        let snapshot = VehicleContractMapping.snapshot(from: Contracts.drivingState())
+        XCTAssertEqual(snapshot.odometerMiles, 42184)
+        XCTAssertEqual(snapshot.fsdMilesSinceReset, 128.4)
+    }
+
     func testParkedSnapshotZeroesMotionFields() {
         let snapshot = VehicleContractMapping.snapshot(from: Contracts.parkedState(chargeLevel: 82))
         XCTAssertEqual(snapshot.status, .parked)

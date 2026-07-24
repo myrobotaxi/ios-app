@@ -48,51 +48,72 @@ struct StatusLocationSection: View {
 // MARK: - Tire pressure (vehicle-controls.jsx:398-409)
 
 struct TirePressureSection: View {
+    /// Real per-wheel pressures, or `nil` on the live path — TPMS is not on the
+    /// `VehicleState` contract yet (MYR-255 gap list), so live renders honest-
+    /// unknown rather than a fixture. Simulated passes the fixture values.
+    let pressures: TirePressures?
+
     private struct Tire: Identifiable {
         let position: String
         let psi: Int
         var id: String { position }
     }
 
-    /// vehicle-controls.jsx:231 `tires`.
-    private let tires: [Tire] = [
-        Tire(position: "FL", psi: 42),
-        Tire(position: "FR", psi: 42),
-        Tire(position: "RL", psi: 41),
-        Tire(position: "RR", psi: 43),
-    ]
+    private var tires: [Tire] {
+        guard let pressures else { return [] }
+        return [
+            Tire(position: "FL", psi: pressures.fl),
+            Tire(position: "FR", psi: pressures.fr),
+            Tire(position: "RL", psi: pressures.rl),
+            Tire(position: "RR", psi: pressures.rr),
+        ]
+    }
 
     var body: some View {
         SectionCard(title: "Tire pressure", trailing: {
-            Text("All nominal")
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(Color.mrtDriving)
+            if pressures != nil {
+                Text("All nominal")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(Color.mrtDriving)
+            }
         }) {
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                ForEach(tires) { tire in
-                    HStack(spacing: 10) {
-                        if tire.position.hasSuffix("L") {
-                            Text(tire.position)
-                                .font(.system(size: 10.5, weight: .semibold))
-                                .tracking(0.5)
-                                .foregroundStyle(Color.mrtTextMuted)
+            if pressures == nil {
+                // Not contracted yet — a calm, intentional honest-unknown row
+                // instead of fabricated psi numbers (MYR-228 / MYR-255).
+                HStack {
+                    Text("Tire pressure")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.mrtTextSec)
+                    Spacer(minLength: 12)
+                    MRTUnavailableValue(.unavailable)
+                }
+            } else {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
+                    ForEach(tires) { tire in
+                        HStack(spacing: 10) {
+                            if tire.position.hasSuffix("L") {
+                                Text(tire.position)
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .tracking(0.5)
+                                    .foregroundStyle(Color.mrtTextMuted)
+                            }
+                            (Text("\(tire.psi)")
+                                .font(.system(size: 17, weight: .medium))
+                                .foregroundStyle(Color.mrtText)
+                                + Text(" psi")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.mrtTextMuted))
+                                .tracking(-0.3)
+                                .monospacedDigit()
+                            if tire.position.hasSuffix("R") {
+                                Text(tire.position)
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .tracking(0.5)
+                                    .foregroundStyle(Color.mrtTextMuted)
+                            }
                         }
-                        (Text("\(tire.psi)")
-                            .font(.system(size: 17, weight: .medium))
-                            .foregroundStyle(Color.mrtText)
-                            + Text(" psi")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Color.mrtTextMuted))
-                            .tracking(-0.3)
-                            .monospacedDigit()
-                        if tire.position.hasSuffix("R") {
-                            Text(tire.position)
-                                .font(.system(size: 10.5, weight: .semibold))
-                                .tracking(0.5)
-                                .foregroundStyle(Color.mrtTextMuted)
-                        }
+                        .frame(maxWidth: .infinity, alignment: tire.position.hasSuffix("L") ? .leading : .trailing)
                     }
-                    .frame(maxWidth: .infinity, alignment: tire.position.hasSuffix("L") ? .leading : .trailing)
                 }
             }
         }
@@ -102,12 +123,37 @@ struct TirePressureSection: View {
 // MARK: - Lifetime (vehicle-controls.jsx:412-416)
 
 struct LifetimeSection: View {
+    /// Whole-mile odometer (`VehicleState.odometerMiles`) — real live, fixture
+    /// 42,184 simulated, `nil` until the first live snapshot → "— Syncing".
+    let odometerMiles: Int?
+    /// FSD miles since reset (`VehicleState.fsdMilesSinceReset`) — real live,
+    /// fixture 31,907 simulated, `nil` → "— Syncing".
+    let fsdMilesSinceReset: Double?
+
+    /// "42,184 mi" grouped, or nil to trigger the honest-unknown row.
+    private var odometerText: String? {
+        odometerMiles.map { "\(MRTNumber.grouped($0)) mi" }
+    }
+
+    private var fsdText: String? {
+        fsdMilesSinceReset.map { "\(MRTNumber.grouped(Int($0.rounded()))) mi" }
+    }
+
+    /// Driven-autonomously % is DERIVED (FSD miles ÷ odometer) — there is no
+    /// separate wire field. Available only when both stats are present and the
+    /// odometer is non-zero; otherwise honest-unknown.
+    private var autonomyText: String? {
+        guard let odometerMiles, odometerMiles > 0, let fsdMilesSinceReset else { return nil }
+        let pct = Int((fsdMilesSinceReset / Double(odometerMiles) * 100).rounded())
+        return "\(min(100, max(0, pct)))%"
+    }
+
     var body: some View {
         SectionCard(title: "Lifetime") {
             VStack(spacing: 0) {
-                KV(label: "Odometer", value: "42,184 mi")
-                KV(label: "Total FSD miles", value: "31,907 mi", gold: true)
-                KV(label: "Driven autonomously", value: "76%")
+                KV(label: "Odometer", value: odometerText, absence: .syncing)
+                KV(label: "Total FSD miles", value: fsdText, absence: .syncing, gold: true)
+                KV(label: "Driven autonomously", value: autonomyText, absence: .syncing)
             }
         }
     }
@@ -123,13 +169,17 @@ struct VehicleDetailsSection: View {
     var body: some View {
         SectionCard(title: "Vehicle details") {
             VStack(spacing: 0) {
-                KV(label: "Model", value: vehicle.model)
-                KV(label: "Color", value: vehicle.colorName)
+                // Model comes from the summary/state contract — real on live.
+                KV(label: "Model", value: vehicle.model, absence: .unavailable)
+                // Color is contracted (`VehicleState.color`) but may be blank on
+                // the backend → honest-unknown rather than an empty row (MYR-255).
+                KV(label: "Color", value: vehicle.colorName, absence: .unavailable)
                 PlateRow(value: plate, onEdit: onEditPlate)
-                // vehicle-controls.jsx:423-424 — hardcoded regardless of
-                // vehicle, matching the jsx's own fixture choice.
-                KV(label: "VIN", value: "7SAYGDEE9PA142184")
-                KV(label: "Software", value: "2026.14.3")
+                // Full VIN + software version are NOT contracted (only vinLast4,
+                // shown in the plate row above). Fixture-only → honest-unknown on
+                // the live path; both are on the MYR-255 backend-gap list.
+                KV(label: "VIN", value: vehicle.vin, absence: .unavailable)
+                KV(label: "Software", value: vehicle.softwareVersion, absence: .unavailable)
             }
         }
     }

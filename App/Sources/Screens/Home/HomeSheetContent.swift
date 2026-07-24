@@ -222,7 +222,9 @@ struct DrivingHeroContent: View {
                     executor: executor,
                     isEditingPlate: $isEditingPlate,
                     cabinTemp: snapshot.interiorTempF,
-                    extTemp: snapshot.exteriorTempF
+                    extTemp: snapshot.exteriorTempF,
+                    odometerMiles: snapshot.odometerMiles,
+                    fsdMilesSinceReset: snapshot.fsdMilesSinceReset
                 )
             }
         }
@@ -261,7 +263,9 @@ struct ParkedHeroContent: View {
                 executor: executor,
                 isEditingPlate: $isEditingPlate,
                 cabinTemp: snapshot.interiorTempF,
-                extTemp: snapshot.exteriorTempF
+                extTemp: snapshot.exteriorTempF,
+                odometerMiles: snapshot.odometerMiles,
+                fsdMilesSinceReset: snapshot.fsdMilesSinceReset
             )
         }
     }

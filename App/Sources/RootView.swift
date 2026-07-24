@@ -474,6 +474,9 @@ struct RootView: View {
                         // MYR-224 — real profile (nil in SIM → fixture persona);
                         // the "Switch to Owner" row renders only when non-nil.
                         liveProfile: settingsLiveProfile,
+                        // MYR-255 — gate the "Shared with me" personas: fixtures in
+                        // SIM, honest empty state on live (no shared-vehicle endpoint).
+                        isLive: isLiveMode,
                         onSwitchMode: switchViewMode,
                         onAddCode: {
                             inviteOrigin = .sharedSettings
