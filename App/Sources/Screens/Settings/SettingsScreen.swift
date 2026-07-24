@@ -1,5 +1,6 @@
 import SwiftUI
 import DesignSystem
+import MyRoboTaxiKit
 
 // MARK: - SettingsScreen (MYR-170, design/app/screens.jsx 1562-1834, Handoff §5.8)
 //
@@ -34,6 +35,13 @@ struct SettingsScreen: View {
     var teslaAuthenticator: TeslaAuthenticator? = nil
     /// Fired after a successful live link so the caller can refresh the fleet.
     var onTeslaLinked: (() -> Void)? = nil
+    /// MYR-258 — the live owner car-offboarding seam (§7.12): the real teardown
+    /// call + fleet drop + consent-revoke browser session. Non-nil ONLY on the
+    /// live path; when present, the vehicle detail sheet's destructive action runs
+    /// the authoritative `removeVehicle` teardown (busy → drop → post-teardown
+    /// sheet) instead of the local `vehiclesState.unlink`. `nil` on sim / DEBUG
+    /// keeps that local unlink pixel-identical (MYR-228).
+    var teardown: VehicleTeardownSeam? = nil
 
     private struct NotificationToggles {
         var driveStarted = true
@@ -85,6 +93,15 @@ struct SettingsScreen: View {
     @State private var isAddingTesla = false
     @State private var confirmRevoke: Viewer?
     @State private var revokedToastName: String?
+    // MYR-258 — live car-offboarding (§7.12) transient state.
+    /// The car whose teardown `DELETE` is in flight (drives the busy overlay).
+    @State private var teardownInFlight: Vehicle?
+    /// The successful teardown response — drives the post-teardown "Car removed"
+    /// sheet with the two owner-only follow-ups.
+    @State private var teardownResult: VehicleTeardownResponse?
+    /// Honest failure copy for a teardown that couldn't complete (rare — atomic,
+    /// retryable server-side).
+    @State private var teardownError: String?
 
     var body: some View {
         Group {
@@ -158,7 +175,14 @@ struct SettingsScreen: View {
             isPresented: Binding(get: { vehicleDetail != nil }, set: { if !$0 { vehicleDetail = nil } })
         ) {
             if let vehicle = vehicleDetail {
-                vehicleDetailContent(vehicle)
+                // MYR-258 — the live path shows the teardown detail (no primary
+                // concept, destructive "Remove this car"); sim keeps the fixture
+                // set-primary / unlink sheet pixel-identical.
+                if teardown != nil {
+                    liveVehicleDetailContent(vehicle)
+                } else {
+                    vehicleDetailContent(vehicle)
+                }
             }
         }
         .mrtConfirmDialog(
@@ -177,6 +201,27 @@ struct SettingsScreen: View {
             isPresented: Binding(get: { revokedToastName != nil }, set: { if !$0 { revokedToastName = nil } }),
             message: "Access revoked for \(revokedToastName ?? "")"
         )
+        // MYR-258 — post-teardown "Car removed" sheet with the two owner-only
+        // follow-ups (live path only; teardownResult is set only by the live flow).
+        .mrtConfigSheet(
+            isPresented: Binding(get: { teardownResult != nil }, set: { if !$0 { teardownResult = nil } })
+        ) {
+            if let result = teardownResult {
+                carRemovedContent(result)
+            }
+        }
+        // MYR-258 — a calm, honest failure surface for the rare teardown error
+        // (atomic + retryable server-side); never a fake success.
+        .alert(
+            "Couldn't remove this car",
+            isPresented: Binding(get: { teardownError != nil }, set: { if !$0 { teardownError = nil } })
+        ) {
+            SwiftUI.Button("OK", role: .cancel) { teardownError = nil }
+        } message: {
+            Text(teardownError ?? "")
+        }
+        // MYR-258 — busy overlay while the teardown DELETE is in flight.
+        .overlay { teardownBusyOverlay }
     }
 
     // MARK: Header (screens.jsx:398-400)
@@ -386,10 +431,27 @@ struct SettingsScreen: View {
             .padding(.vertical, 12)
     }
 
-    /// A read-only linked-vehicle row: same icon tile + name + "model · plate" as
-    /// the fixture row, but no Primary badge, no chevron, and no tap target —
-    /// there is no set-primary / unlink on the live path.
+    /// A live linked-vehicle row: same icon tile + name + "model · plate" as the
+    /// fixture row, with no Primary badge (the live path has no primary
+    /// designation). On the live path the row taps through to the teardown detail
+    /// sheet (MYR-258 — "Remove this car"); with no teardown seam it is a
+    /// non-interactive read-only row (MYR-243).
+    @ViewBuilder
     private func liveVehicleRow(_ vehicle: Vehicle, isFirst: Bool) -> some View {
+        if teardown != nil {
+            Button {
+                vehicleDetail = vehicle
+            } label: {
+                liveVehicleRowLabel(vehicle, isFirst: isFirst, showsChevron: true)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } else {
+            liveVehicleRowLabel(vehicle, isFirst: isFirst, showsChevron: false)
+        }
+    }
+
+    private func liveVehicleRowLabel(_ vehicle: Vehicle, isFirst: Bool, showsChevron: Bool) -> some View {
         HStack(spacing: 13) {
             ZStack {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -413,6 +475,11 @@ struct SettingsScreen: View {
                     .foregroundStyle(Color.mrtTextMuted)
             }
             Spacer(minLength: 0)
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.mrtTextMuted)
+            }
         }
         .padding(.vertical, 12)
         .overlay(alignment: .top) {
@@ -672,10 +739,300 @@ struct SettingsScreen: View {
         .padding(.bottom, 14)
     }
 
+    // MARK: Live vehicle detail sheet (MYR-258 — teardown entry)
+
+    /// The live-path detail sheet: the car header (no primary concept on the live
+    /// path) + an honest note + the destructive "Remove this car" action that opens
+    /// the teardown confirm dialog. Deliberately simpler than the fixture sheet —
+    /// there is no set-as-primary on the live path (MYR-243).
+    private func liveVehicleDetailContent(_ vehicle: Vehicle) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 15, style: .continuous)
+                        .fill(Color.mrtSurface)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                                .strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline)
+                        )
+                    Image(systemName: "car.fill")
+                        .font(.system(size: 24))
+                        .foregroundStyle(Color.mrtTextSec)
+                }
+                .frame(width: 52, height: 52)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(vehicle.name)
+                        .font(.system(size: 19, weight: .semibold))
+                        .tracking(-0.3)
+                        .foregroundStyle(Color.mrtText)
+                    Text(vehicle.plate.isEmpty ? vehicle.model : "\(vehicle.model) \u{00B7} \(vehicle.plate)")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Color.mrtTextSec)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.bottom, 18)
+
+            HStack(alignment: .top, spacing: 11) {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.mrtTextSec)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Removing this car")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.mrtText)
+                    Text("Takes it out of MyRoboTaxi right away and stops it streaming to us. Revoking Tesla access and removing the car's key are owner-only steps we'll guide you through afterward.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.mrtTextSec)
+                        .lineSpacing(3)
+                }
+            }
+            .padding(.horizontal, 15)
+            .padding(.vertical, 13)
+            .background(Color.mrtSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline)
+            )
+            .padding(.bottom, 18)
+
+            Button {
+                vehicleDetail = nil
+                confirmUnlink = vehicle
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "trash").font(.system(size: 14, weight: .semibold))
+                    Text("Remove this car").font(.system(size: 15, weight: .semibold))
+                }
+                .foregroundStyle(Color.mrtDialogRed)
+                .frame(maxWidth: .infinity)
+                .frame(height: MRTButtonSize.md.height)
+                .overlay(
+                    RoundedRectangle(cornerRadius: MRTMetrics.controlRadius, style: .continuous)
+                        .strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline)
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(MRTPressScaleButtonStyle())
+        }
+        .padding(.horizontal, 22)
+        .padding(.bottom, 14)
+    }
+
+    // MARK: Post-teardown "Car removed" sheet (MYR-258, §7.12)
+
+    /// Confirms the car is gone from the app and offers the TWO owner-only,
+    /// clearly-optional follow-ups Tesla's model leaves to the owner: (a) revoke
+    /// MyRoboTaxi's access on Tesla (only when this cleared the whole Tesla link —
+    /// `teslaTokensCleared && wasLastVehicle` — and a `revokeUrl` is present), and
+    /// (b) remove the car's virtual key (instructions verbatim, no automation).
+    private func carRemovedContent(_ result: VehicleTeardownResponse) -> some View {
+        let revokeURL = result.revokeUrl.flatMap { URL(string: $0) }
+        let showsRevoke = result.teslaTokensCleared && result.wasLastVehicle && revokeURL != nil
+        let showsKey = result.virtualKeyRemoval.required && !result.virtualKeyRemoval.steps.isEmpty
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 14) {
+                ZStack {
+                    Circle().fill(Color.mrtGoldBadgeFill)
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(Color.mrtGold)
+                }
+                .frame(width: 46, height: 46)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Car removed")
+                        .font(.system(size: 19, weight: .semibold))
+                        .tracking(-0.3)
+                        .foregroundStyle(Color.mrtText)
+                    Text(result.wasLastVehicle
+                        ? "Your Tesla connection to MyRoboTaxi is cleared."
+                        : "This car is no longer connected to MyRoboTaxi.")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Color.mrtTextSec)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.bottom, showsRevoke || showsKey ? 18 : 22)
+
+            if showsRevoke || showsKey {
+                Text("Optional next steps")
+                    .mrtTextStyle(.label())
+                    .foregroundStyle(Color.mrtTextMuted)
+                    .padding(.bottom, 12)
+            }
+
+            // (a) Owner revokes MyRoboTaxi's access on Tesla — opens Tesla's
+            // consent-revoke page (owner-confirmed; only Tesla can revoke the grant).
+            if showsRevoke, let revokeURL, let teardown {
+                Button {
+                    Task { _ = await teardown.revoke(revokeURL) }
+                } label: {
+                    followUpCard(
+                        icon: "person.crop.circle.badge.xmark",
+                        title: "Remove MyRoboTaxi from your Tesla account",
+                        body: "We deleted our stored access, but only you can revoke the connection on Tesla. Opens Tesla to finish.",
+                        showsChevron: true
+                    )
+                }
+                .buttonStyle(MRTPressScaleButtonStyle())
+                .padding(.bottom, showsKey ? 12 : 18)
+            }
+
+            // (b) Owner removes the enrolled virtual key — instructions verbatim,
+            // no button (no Fleet API / deep link exists — §7.12 `automatable=false`).
+            if showsKey {
+                VStack(alignment: .leading, spacing: 0) {
+                    followUpHeader(
+                        icon: "key.horizontal",
+                        title: "Remove the key from your car",
+                        body: "The MyRoboTaxi key stays on the car until you remove it yourself:"
+                    )
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(result.virtualKeyRemoval.steps.enumerated()), id: \.offset) { index, step in
+                            HStack(alignment: .top, spacing: 9) {
+                                Text("\(index + 1).")
+                                    .font(.system(size: 12.5, weight: .semibold))
+                                    .foregroundStyle(Color.mrtTextMuted)
+                                    .frame(width: 16, alignment: .trailing)
+                                Text(step)
+                                    .font(.system(size: 12.5))
+                                    .foregroundStyle(Color.mrtTextSec)
+                                    .lineSpacing(2)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                    .padding(.top, 10)
+                }
+                .padding(.horizontal, 15)
+                .padding(.vertical, 14)
+                .background(Color.mrtSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline)
+                )
+                .padding(.bottom, 18)
+            }
+
+            Button {
+                teardownResult = nil
+            } label: {
+                Text("Done")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.mrtGold)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: MRTButtonSize.md.height)
+                    .background(
+                        Color.mrtInviteAccessTintLight,
+                        in: RoundedRectangle(cornerRadius: MRTMetrics.controlRadius, style: .continuous)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: MRTMetrics.controlRadius, style: .continuous)
+                            .strokeBorder(Color.mrtPrimaryButtonBorder, lineWidth: MRTMetrics.hairline)
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(MRTPressScaleButtonStyle())
+        }
+        .padding(.horizontal, 22)
+        .padding(.bottom, 14)
+    }
+
+    /// A tappable optional-follow-up card (icon + title + body + chevron).
+    private func followUpCard(icon: String, title: String, body: String, showsChevron: Bool) -> some View {
+        HStack(alignment: .top, spacing: 11) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color.mrtGold)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(Color.mrtText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(body)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.mrtTextSec)
+                    .lineSpacing(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if showsChevron {
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.mrtTextMuted)
+            }
+        }
+        .padding(.horizontal, 15)
+        .padding(.vertical, 13)
+        .background(Color.mrtSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline)
+        )
+        .contentShape(Rectangle())
+    }
+
+    /// The header row for the (non-tappable) virtual-key instructions card.
+    private func followUpHeader(icon: String, title: String, body: String) -> some View {
+        HStack(alignment: .top, spacing: 11) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color.mrtTextSec)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(Color.mrtText)
+                Text(body)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.mrtTextSec)
+                    .lineSpacing(2)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// Busy overlay shown while the teardown `DELETE` is in flight.
+    @ViewBuilder
+    private var teardownBusyOverlay: some View {
+        if teardownInFlight != nil {
+            ZStack {
+                Color.mrtScrim.ignoresSafeArea()
+                VStack(spacing: 14) {
+                    SpinnerRing(diameter: 34, lineWidth: 3, trackColor: .mrtBorder, color: .mrtGold, period: 0.8)
+                    Text("Removing car\u{2026}")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Color.mrtText)
+                }
+            }
+            .transition(.opacity)
+        }
+    }
+
     // MARK: Dialogs
 
     private var unlinkDialogConfig: MRTConfirmDialogConfig {
         let vehicle = confirmUnlink
+        // MYR-258 — on the LIVE path the destructive action runs the authoritative
+        // §7.12 teardown (not the local unlink), with honest copy: when this is the
+        // owner's LAST linked car, the whole Tesla link clears (tokens + settings).
+        if let teardown {
+            let isLastVehicle = (linkedVehicles?.vehicles.count ?? 0) <= 1
+            let message = isLastVehicle
+                ? "This removes \(vehicle?.name ?? "your Tesla") from MyRoboTaxi and clears your whole Tesla connection — our access and everyone you've shared it with. Two owner-only steps (revoking access on Tesla and removing the car's key) come next. You can re-link anytime."
+                : "This removes \(vehicle?.name ?? "this Tesla") from MyRoboTaxi and everyone you've shared it with. You can re-link it anytime."
+            return MRTConfirmDialogConfig(
+                kind: .destructive,
+                icon: "car.fill",
+                title: "Remove \(vehicle?.name ?? "this car")?",
+                message: message,
+                actionLabel: "Remove car",
+                dismissLabel: "Keep linked"
+            ) {
+                guard let vehicle else { return }
+                Task { await performTeardown(vehicle, teardown: teardown) }
+            }
+        }
         return MRTConfirmDialogConfig(
             kind: .destructive,
             icon: "car.fill",
@@ -687,6 +1044,47 @@ struct SettingsScreen: View {
             guard let vehicle else { return }
             vehiclesState.unlink(vehicle.id)
         }
+    }
+
+    // MARK: - Live teardown (MYR-258, §7.12)
+
+    /// Run the authoritative teardown: busy → `DELETE` → drop the car from the
+    /// fleet immediately (both Home + this list read the same fleet) → present the
+    /// post-teardown sheet. A `404` is the idempotent already-gone case: still drop
+    /// it, and note it calmly. Any other failure is honest + retryable.
+    @MainActor
+    private func performTeardown(_ vehicle: Vehicle, teardown: VehicleTeardownSeam) async {
+        teardownInFlight = vehicle
+        defer { teardownInFlight = nil }
+        do {
+            let response = try await teardown.remove(vehicle.id)
+            teardown.onRemoved(vehicle.id)
+            teardownResult = response
+        } catch let error as RestError {
+            if case .http(let status, _, _, _) = error, status == 404 {
+                // Idempotent: the car is already gone server-side — reconcile the
+                // list and confirm quietly.
+                teardown.onRemoved(vehicle.id)
+                teardownError = "\(vehicle.name) was already removed."
+            } else {
+                teardownError = Self.teardownErrorMessage(error)
+            }
+        } catch {
+            teardownError = "Something went wrong removing the car. Please try again."
+        }
+    }
+
+    /// Honest, non-technical copy for a teardown failure. The teardown is atomic
+    /// server-side (nothing deleted on failure), so "try again" is always safe.
+    static func teardownErrorMessage(_ error: RestError) -> String {
+        if case .http(let status, _, _, _) = error {
+            switch status {
+            case 403: return "You don't have access to remove this car."
+            case 401: return "Please sign in again to remove this car."
+            default: break
+            }
+        }
+        return "We couldn't reach MyRoboTaxi to remove the car. Check your connection and try again."
     }
 
     private var revokeDialogConfig: MRTConfirmDialogConfig {
