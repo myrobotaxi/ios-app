@@ -44,6 +44,66 @@ public enum VehicleTrackDirection: Sendable, Equatable {
     case previous, next
 }
 
+// MARK: - Command UX state (MYR-249)
+//
+// The seam that lets a control render its in-flight / error state without
+// knowing whether the executor is simulated or live. Every backend-backed
+// control is keyed; the executor tracks a per-key `VehicleControlUIState`, and
+// the view reads `executor.uiState(for:)` to show a spinner or an honest error
+// line. The simulated executor returns `.idle` for every key (default protocol
+// impl below), so the M1 / drift-gate scenes stay pixel-identical (CLAUDE.md).
+
+/// The controls that map to a real §7.9 backend command (MYR-249). `chargePort`
+/// is included even though it has NO backend command — the live executor reports
+/// it UNSUPPORTED so the tile can be honestly disabled rather than faked.
+public enum VehicleControlKey: Sendable, Hashable {
+    case lock
+    case climate       // auto_conditioning_start / stop (the on/off tile)
+    case temp          // set_temps
+    case trunk         // actuate_trunk (rear)
+    case chargePort    // NO backend command — flagged; disabled on live
+}
+
+/// A honest, non-dramatic notice for a failed/transient command (MYR-249).
+/// Maps 1:1 from the Kit's `RestError.CommandFailureKind` via
+/// `LiveVehicleCommandExecutor.notice(for:)`. Copy is deliberately quiet
+/// (design minimalism) and points at the owner action where one exists.
+public enum VehicleCommandNotice: Sendable, Equatable {
+    case waking     // vehicle_asleep — the server retries; reflect that
+    case pairKey    // key_not_paired — pair the virtual key in Tesla
+    case relink     // permission_denied / not-owned / auth — reconnect Tesla
+    case cooldown   // rate_limited (429) — brief "just a moment"
+    case failed     // command_failed / invalid / offline — couldn't reach the car
+
+    public var message: String {
+        switch self {
+        case .waking: "Waking the car\u{2026}"
+        case .pairKey: "Pair your key in Tesla"
+        case .relink: "Reconnect Tesla to allow this"
+        case .cooldown: "Just a moment\u{2026}"
+        case .failed: "Couldn\u{2019}t reach the car"
+        }
+    }
+
+    /// Transient notices resolve on their own (the car is waking / cooling down);
+    /// the others need an owner action and persist until the next tap.
+    public var isTransient: Bool { self == .waking || self == .cooldown }
+}
+
+/// One control's live command state: pending (a command is in flight — suppress
+/// re-fires) and/or a settled notice from the last attempt.
+public struct VehicleControlUIState: Sendable, Equatable {
+    public var isPending: Bool
+    public var notice: VehicleCommandNotice?
+
+    public init(isPending: Bool = false, notice: VehicleCommandNotice? = nil) {
+        self.isPending = isPending
+        self.notice = notice
+    }
+
+    public static let idle = VehicleControlUIState()
+}
+
 /// Everything a `VehicleControls` tree needs to render one tick of the
 /// controls surface (vehicle-controls.jsx:208-225 `useState` block).
 public struct VehicleControlsSnapshot: Sendable, Equatable {
@@ -128,6 +188,24 @@ public protocol VehicleCommandExecutor: AnyObject, Observable {
     /// Continuous scrub drag — not a vehicle command (see header); synchronous
     /// so the slider tracks the finger with no await latency.
     func setScrubPercent(_ percent: Double)
+
+    // MARK: Command UX seam (MYR-249)
+
+    /// The in-flight / error state for a backend-backed control. Default `.idle`
+    /// (below) — the simulated executor never has an in-flight command, keeping
+    /// the M1 / drift-gate scenes pixel-identical.
+    func uiState(for key: VehicleControlKey) -> VehicleControlUIState
+
+    /// Whether a control maps to a real backend command on THIS executor. Default
+    /// `true` (below) — simulated everything is interactive. The live executor
+    /// returns `false` for `.chargePort` (no §7.9 command) so the tile is honestly
+    /// disabled rather than faked.
+    func isSupported(_ key: VehicleControlKey) -> Bool
+}
+
+public extension VehicleCommandExecutor {
+    func uiState(for key: VehicleControlKey) -> VehicleControlUIState { .idle }
+    func isSupported(_ key: VehicleControlKey) -> Bool { true }
 }
 
 /// M1 implementation: mutates `controls` synchronously and locally, matching
