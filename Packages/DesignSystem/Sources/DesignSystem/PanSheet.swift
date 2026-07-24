@@ -453,9 +453,33 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
         if clamped != self.selection {
             self.selection = clamped
         }
-        guard dragOwner == .undecided, settleAnimator == nil else {
-            // Mid-drag or mid-settle: don't fight the gesture; the eventual
-            // commit reconciles.
+        // A FINGER DRAG in flight owns the surface — never fight it; its release
+        // settles to the nearest detent.
+        if dragOwner != .undecided { return }
+        if settleAnimator != nil {
+            // MYR-248: a settle in flight must be RE-TARGETED — not silently
+            // dropped — when the DETENT GEOMETRY itself moved under it. The rider
+            // search detent is a MEASURED height (the search content's natural
+            // size), and the first preference pass can report a transient over-
+            // measurement (`headerHeight` starts at 0), so the surface briefly
+            // settles toward a stale, too-tall detent; one frame later the
+            // corrected (shorter) detent arrives. The OLD engine bailed here
+            // because a settle was mid-flight, dropping the correction — the
+            // surface then rested at the stale tall height while `surfaceHeight`
+            // shrank to the corrected detent, translating it far UP off the bottom
+            // (stranded at the TOP — the client's back-from-pin-drop bug). Re-aim
+            // the settle at the new detent height for the same index.
+            //
+            // GATED on `detentsChanged` (not a bare target≠resting test): mid-
+            // settle, SwiftUI can call this with the PRE-COMMIT binding selection,
+            // whose target height differs from the committed `restingHeight` even
+            // though the detents are unchanged — re-settling on THAT would snap the
+            // surface back to the old detent, killing every drag-release settle
+            // (the owner peek↔half sheet drags to nowhere). The stranding is a
+            // genuine detent-height change, so that is the only trigger.
+            if detentsChanged, abs(restingHeight - targetHeight) > 0.5 {
+                animateSettle(to: clamped, initialVelocityHeightPerSec: 0, commit: false)
+            }
             return
         }
         healStrandedPositionIfNeeded()

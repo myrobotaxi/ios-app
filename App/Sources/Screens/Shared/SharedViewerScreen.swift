@@ -172,6 +172,13 @@ struct SharedViewerScreen: View {
                     try? await Task.sleep(for: .seconds(3))
                     viewerState.chooseDestination(DebugScene.realPathDestination)
                     viewerState.proceedFromSearch()
+                    // MYR-248: continue the real path through the pin-drop
+                    // back-nav ("Change trip" → search) so the returned search
+                    // sheet's geometry can be captured headless.
+                    if DebugScene.current?.replaysPinDropBackNav == true {
+                        try? await Task.sleep(for: .seconds(3))
+                        viewerState.returnFromPinDropToSearch()
+                    }
                 }
             }
             #endif

@@ -52,7 +52,16 @@ protocol UserLocationProviding: AnyObject, Observable {
 @Observable
 @MainActor
 final class SimulatedUserLocation: UserLocationProviding {
-    var coordinate: CLLocationCoordinate2D? { nil }
+    /// Normally `nil` (no fix — pixel-identical pre-MYR-211 sim behavior). A
+    /// DEBUG scene may seed a FIXED coordinate (`debugFix`) so a headless,
+    /// auth-free repro can exercise the live-shaped `routePreviewActive` path in
+    /// the simulator (MYR-248 — the route preview needs a resolvable pickup, and
+    /// live mode gates on real auth). `nil` in every normal/Release path, so all
+    /// other sim scenes stay byte-identical.
+    private let debugFix: CLLocationCoordinate2D?
+    init(debugFix: CLLocationCoordinate2D? = nil) { self.debugFix = debugFix }
+
+    var coordinate: CLLocationCoordinate2D? { debugFix }
     var currentLocationLabel: String { "Current location" }
     var showsUserLocationDot: Bool { false }
     func start() {}

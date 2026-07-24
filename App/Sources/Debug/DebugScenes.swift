@@ -1,4 +1,5 @@
 #if DEBUG
+import CoreLocation
 import Foundation
 import DesignSystem
 
@@ -42,6 +43,13 @@ enum DebugScene: String, CaseIterable {
     /// in-process through the same `SharedViewerState` methods the taps call
     /// (`sheetPhase = .search`, `chooseDestination`, `proceedFromSearch`).
     case pinDropRealPath
+    /// MYR-248 regression probe: replays the real path all the way THROUGH the
+    /// pin-drop back-nav — idle → search → choose destination + Continue (no
+    /// pickup) → pinDrop → "Change trip" back → search — so the headless
+    /// drift-gate can capture the returned search sheet's geometry without
+    /// tapping. The client bug: after this back-nav the search sheet stranded
+    /// at the TOP of the screen instead of its bottom-anchored search detent.
+    case pinDropBackRealPath
     case review
     case reviewPicker
     case booking
@@ -207,7 +215,20 @@ enum DebugScene: String, CaseIterable {
 
     /// MYR-217: whether `SharedViewerScreen` should run the real-path replay
     /// driver on appear (see `.pinDropRealPath`'s comment).
-    var replaysRealPinDropPath: Bool { self == .pinDropRealPath }
+    var replaysRealPinDropPath: Bool { self == .pinDropRealPath || self == .pinDropBackRealPath }
+
+    /// MYR-248: whether the real-path replay should CONTINUE past pin-drop and
+    /// drive the "Change trip" back-nav to search (the regression probe).
+    var replaysPinDropBackNav: Bool { self == .pinDropBackRealPath }
+
+    /// MYR-248: a FIXED simulated device fix for scenes that must exercise the
+    /// route-preview path (`routePreviewActive` needs a resolvable pickup) in the
+    /// simulator without live mode's auth gate. `nil` for every other scene so sim
+    /// stays pixel-identical. Financial District — same SF region as the sim map /
+    /// sample pickup, so the SF→SFO preview frames sensibly.
+    var simulatedUserFix: CLLocationCoordinate2D? {
+        self == .pinDropBackRealPath ? DriveFixtures.financialDistrict : nil
+    }
 
     /// The destination the real-path replay chooses on the search sheet before
     /// tapping Continue — the same sample the seeded scenes use.
@@ -282,9 +303,10 @@ enum DebugScene: String, CaseIterable {
         // have a real pickup/destination pair in every mid-flow phase.
         viewer.draftFleetMemberID = RideRequestFixtures.fleet[0].id
         switch self {
-        case .idle, .pending, .pinDropRealPath:
-            // `.pinDropRealPath` deliberately seeds NOTHING beyond idle — the
-            // replay driver walks the real transitions after boot (MYR-217).
+        case .idle, .pending, .pinDropRealPath, .pinDropBackRealPath:
+            // `.pinDropRealPath`/`.pinDropBackRealPath` deliberately seed NOTHING
+            // beyond idle — the replay driver walks the real transitions after
+            // boot (MYR-217 / MYR-248).
             viewer.sheetPhase = .idle
         case .declined:
             viewer.sheetPhase = .search

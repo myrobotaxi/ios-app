@@ -30,9 +30,19 @@ enum PlaceSearchComposition {
         /// single shared search state.
         @MainActor
         static var simulated: Seams {
-            Seams(
+            var userLocation: any UserLocationProviding = SimulatedUserLocation()
+            #if DEBUG
+            // MYR-248: a repro scene may seed a fixed simulated device fix so the
+            // route-preview path (which needs a resolvable pickup) is reachable
+            // headless in the simulator, without live mode's auth gate. `nil` for
+            // every other scene — sim stays pixel-identical.
+            if let fix = DebugScene.current?.simulatedUserFix {
+                userLocation = SimulatedUserLocation(debugFix: fix)
+            }
+            #endif
+            return Seams(
                 placeSearch: SimulatedPlaceSearch(),
-                userLocation: SimulatedUserLocation(),
+                userLocation: userLocation,
                 liveVehicleLocator: nil,
                 pinLabeler: SimulatedPinLabeler(),
                 isLive: false
