@@ -11,8 +11,16 @@ import MyRobotaxiContracts
 //
 // NAVIGATION / DISPATCH commands (`navigation_gps_request`, `navigation_request`)
 // are deliberately absent: they are dispatch-only (MYR-176, pushed server-side on
-// ride accept) and are never issued from the owner controls. MEDIA commands are
-// NOT in the §7.9 catalog at all — do not add them here.
+// ride accept) and are never issued from the owner controls.
+//
+// MYR-249 phase 3 (backend v186) ADDED eight owner controls to the §7.9 catalog:
+// charge-port open/close, seat heater/cooler, and the four media transport
+// commands. The seat heater and cooler are ASYMMETRIC on the wire (documented in
+// §7.9): the heater's `level` is 0–3 (0 = off) while the cooler's
+// `seat_cooler_level` is 1–4 (1 = off, 2 = low, 3 = med, 4 = high), and each uses
+// a different `seat_position` numbering. That asymmetry lives in exactly ONE
+// place — the `seatHeater`/`seatCooler` factories below — and is table-tested at
+// its boundaries in `VehicleCommandEndpointTests`.
 //
 // Why the param shapes live here rather than in `MyRobotaxiContracts`: the
 // contracts codegen covers READ models + the WS envelope only — there is no
@@ -37,10 +45,60 @@ public enum VehicleCommand: Sendable, Equatable {
     case remoteStartDrive
     case honkHorn
     case flashLights
+    // MYR-249 phase 3 (v186) — charge port, seat climate, media.
+    /// Scope `vehicle_charging_cmds` — the owner's token may lack it → the server
+    /// returns `permission_denied` (re-link Tesla for charging access).
+    case chargePortDoorOpen
+    case chargePortDoorClose
+    /// `seat_position` 0–8 (0 = front-left driver, 1 = front-right passenger — the
+    /// proxy's seatPositions table, §7.9); `level` 0–3 (0 = off). Build via
+    /// `seatHeater(_:uiLevel:)` — do not hand-map the numbering.
+    case remoteSeatHeaterRequest(seatPosition: Int, level: Int)
+    /// `seat_position` **1 = front-left, 2 = front-right ONLY** (§7.9);
+    /// `seat_cooler_level` **1–4** (1 = off, 2 = low, 3 = med, 4 = high) — the
+    /// asymmetric scale. Build via `seatCooler(_:uiLevel:)`.
+    case remoteSeatCoolerRequest(seatPosition: Int, seatCoolerLevel: Int)
+    case mediaTogglePlayback
+    case mediaNextTrack
+    case mediaPrevTrack
+    /// `volume` float 0–11 (§7.9).
+    case adjustVolume(volume: Double)
 
     public enum TrunkSelection: String, Sendable, Equatable {
         case front
         case rear
+    }
+
+    /// Which front seat a seat-climate command targets. The wire `seat_position`
+    /// differs between the heater and the cooler (§7.9) — resolved in the
+    /// factories below, never at the call site.
+    public enum SeatSide: Sendable, Equatable {
+        case driver
+        case passenger
+    }
+
+    // MARK: Seat-climate factories — the ONE place the heater/cooler asymmetry lives
+
+    /// A `remote_seat_heater_request` for `side` at `uiLevel` (the UI's 0–3 heat
+    /// step, 0 = off). Heater `seat_position`: driver 0, passenger 1 (§7.9 proxy
+    /// seatPositions table). `level` passes straight through (0–3), clamped.
+    public static func seatHeater(_ side: SeatSide, uiLevel: Int) -> VehicleCommand {
+        .remoteSeatHeaterRequest(
+            seatPosition: side == .driver ? 0 : 1,
+            level: min(3, max(0, uiLevel))
+        )
+    }
+
+    /// A `remote_seat_cooler_request` for `side` at `uiLevel` (the SAME UI 0–3
+    /// step, 0 = off). The cooler is asymmetric with the heater (§7.9): its
+    /// `seat_position` is driver 1 / passenger 2 (front-left/front-right only) and
+    /// its `seat_cooler_level` is 1–4, so the UI step maps `uiLevel + 1`
+    /// (0 → 1 off, 1 → 2 low, 2 → 3 med, 3 → 4 high).
+    public static func seatCooler(_ side: SeatSide, uiLevel: Int) -> VehicleCommand {
+        .remoteSeatCoolerRequest(
+            seatPosition: side == .driver ? 1 : 2,
+            seatCoolerLevel: min(3, max(0, uiLevel)) + 1
+        )
     }
 
     /// The Tesla Fleet command name — the `{name}` path segment (§7.9 catalog).
@@ -58,6 +116,14 @@ public enum VehicleCommand: Sendable, Equatable {
         case .remoteStartDrive: "remote_start_drive"
         case .honkHorn: "honk_horn"
         case .flashLights: "flash_lights"
+        case .chargePortDoorOpen: "charge_port_door_open"
+        case .chargePortDoorClose: "charge_port_door_close"
+        case .remoteSeatHeaterRequest: "remote_seat_heater_request"
+        case .remoteSeatCoolerRequest: "remote_seat_cooler_request"
+        case .mediaTogglePlayback: "media_toggle_playback"
+        case .mediaNextTrack: "media_next_track"
+        case .mediaPrevTrack: "media_prev_track"
+        case .adjustVolume: "adjust_volume"
         }
     }
 
@@ -72,6 +138,12 @@ public enum VehicleCommand: Sendable, Equatable {
             return try encoder.encode(SetChargeLimitBody(percent: percent))
         case .actuateTrunk(let which):
             return try encoder.encode(ActuateTrunkBody(whichTrunk: which.rawValue))
+        case .remoteSeatHeaterRequest(let seatPosition, let level):
+            return try encoder.encode(SeatHeaterBody(seatPosition: seatPosition, level: level))
+        case .remoteSeatCoolerRequest(let seatPosition, let seatCoolerLevel):
+            return try encoder.encode(SeatCoolerBody(seatPosition: seatPosition, seatCoolerLevel: seatCoolerLevel))
+        case .adjustVolume(let volume):
+            return try encoder.encode(AdjustVolumeBody(volume: volume))
         default:
             return nil
         }
@@ -97,6 +169,28 @@ public enum VehicleCommand: Sendable, Equatable {
         enum CodingKeys: String, CodingKey {
             case whichTrunk = "which_trunk"
         }
+    }
+
+    private struct SeatHeaterBody: Encodable {
+        let seatPosition: Int
+        let level: Int
+        enum CodingKeys: String, CodingKey {
+            case seatPosition = "seat_position"
+            case level
+        }
+    }
+
+    private struct SeatCoolerBody: Encodable {
+        let seatPosition: Int
+        let seatCoolerLevel: Int
+        enum CodingKeys: String, CodingKey {
+            case seatPosition = "seat_position"
+            case seatCoolerLevel = "seat_cooler_level"
+        }
+    }
+
+    private struct AdjustVolumeBody: Encodable {
+        let volume: Double
     }
 }
 
