@@ -53,7 +53,8 @@ final class LiveVehicleFleet: VehicleFleet {
     /// Parallel to `summaries` — one Kit-backed source per vehicle; only the
     /// active one holds a live subscription.
     private var sources: [LiveVehicleTelemetrySource] = []
-    /// Parallel to `summaries` — command executors stay simulated (P11 pending).
+    /// Parallel to `summaries` — one live command executor per vehicle, routing
+    /// the backend-backed owner controls to the §7.9 command endpoint (MYR-249).
     private var executors: [any VehicleCommandExecutor] = []
     /// Parallel to `summaries` — one cursor-paginated live drive feed per vehicle
     /// (MYR-203), so pagination + loaded pages survive a tab switch.
@@ -192,7 +193,9 @@ final class LiveVehicleFleet: VehicleFleet {
             LiveVehicleTelemetrySource(liveState: LiveVehicleState(vehicleId: summary.vehicleId, socket: socket))
         }
         executors = items.map { summary in
-            SimulatedVehicleCommandExecutor(
+            LiveVehicleCommandExecutor(
+                vehicleID: summary.vehicleId,
+                sender: rest,
                 driving: summary.status == .driving,
                 plate: VehicleContractMapping.plateDisplay(vinLast4: summary.vinLast4)
             )
