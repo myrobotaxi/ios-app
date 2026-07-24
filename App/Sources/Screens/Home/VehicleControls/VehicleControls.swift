@@ -73,13 +73,19 @@ struct VehicleControls: View {
     // MARK: Quick tiles (vehicle-controls.jsx:244-254)
 
     private var quickTiles: some View {
-        HStack(spacing: 8) {
+        // Charge PORT has no §7.9 command (MYR-249): on the live path the executor
+        // reports it unsupported, so the tile is honestly disabled rather than
+        // faking a toggle. On the simulated path everything is supported → the
+        // M1 / drift-gate scenes render identically.
+        let chargePortSupported = executor.isSupported(.chargePort)
+        return HStack(spacing: 8) {
             ControlTile(
                 icon: controls.locked ? "lock.fill" : "lock.open.fill",
                 label: controls.locked ? "Locked" : "Unlocked",
                 sub: controls.locked ? "Tap to unlock" : "Tap to lock",
                 active: !controls.locked,
-                activeColor: .mrtDriving
+                activeColor: .mrtDriving,
+                uiState: executor.uiState(for: .lock)
             ) {
                 Task { try? await executor.setLocked(!controls.locked) }
             }
@@ -88,7 +94,8 @@ struct VehicleControls: View {
                 label: "Climate",
                 sub: controls.climateOn ? "On · \(controls.targetTemp)°" : "Off",
                 active: controls.climateOn,
-                activeColor: .mrtGold
+                activeColor: .mrtGold,
+                uiState: executor.uiState(for: .climate)
             ) {
                 Task { try? await executor.setClimateOn(!controls.climateOn) }
             }
@@ -97,16 +104,18 @@ struct VehicleControls: View {
                 label: "Trunk",
                 sub: controls.trunkOpen ? "Open" : "Closed",
                 active: controls.trunkOpen,
-                activeColor: .mrtParked
+                activeColor: .mrtParked,
+                uiState: executor.uiState(for: .trunk)
             ) {
                 Task { try? await executor.setTrunkOpen(!controls.trunkOpen) }
             }
             ControlTile(
                 icon: "bolt.fill",
                 label: "Charge",
-                sub: controls.chargePortOpen ? "Port open" : "Port closed",
-                active: controls.chargePortOpen,
-                activeColor: .mrtCharging
+                sub: chargePortSupported ? (controls.chargePortOpen ? "Port open" : "Port closed") : "Not available yet",
+                active: chargePortSupported && controls.chargePortOpen,
+                activeColor: .mrtCharging,
+                enabled: chargePortSupported
             ) {
                 Task { try? await executor.setChargePortOpen(!controls.chargePortOpen) }
             }
@@ -122,19 +131,44 @@ private struct ControlTile: View {
     let sub: String
     let active: Bool
     let activeColor: Color
+    /// Live command state (MYR-249). `.idle` on the simulated path, so the M1 /
+    /// drift-gate rendering is pixel-identical.
+    var uiState: VehicleControlUIState = .idle
+    /// `false` when the control has no backend command on the live executor
+    /// (charge port) — the tile dims + stops responding rather than faking it.
+    var enabled: Bool = true
     let action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// `${activeColor}1f` — 0x1F / 255 alpha tint (vehicle-controls.jsx:30).
     private var activeFill: Color { activeColor.opacity(Double(0x1F) / 255) }
     /// `${activeColor}66` — 0x66 / 255 alpha border (vehicle-controls.jsx:29).
     private var activeBorder: Color { activeColor.opacity(Double(0x66) / 255) }
 
+    /// The sub line: a settled notice (pairing / re-link / waking / …) takes
+    /// precedence over the resting copy so an error is surfaced honestly in place.
+    private var subLine: String { uiState.notice?.message ?? sub }
+    private var subColor: Color { uiState.notice != nil ? .mrtTextSec : (active ? activeColor : .mrtTextMuted) }
+
     var body: some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 8) {
-                Image(systemName: icon)
-                    .font(.system(size: 20))
-                    .foregroundStyle(active ? activeColor : .mrtTextSec)
+                // Pending → a spinner in the icon slot (Reduce Motion falls back
+                // to the static icon dimmed, no spin, per CLAUDE.md). The idle
+                // path renders the bare `Image` exactly as before, so the M1 /
+                // drift-gate scenes are pixel-identical.
+                if uiState.isPending, !reduceMotion {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(active ? activeColor : .mrtTextSec)
+                        .frame(width: 20, height: 20, alignment: .leading)
+                } else {
+                    Image(systemName: icon)
+                        .font(.system(size: 20))
+                        .foregroundStyle(active ? activeColor : .mrtTextSec)
+                        .opacity(uiState.isPending ? 0.5 : 1)
+                }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(label)
                         .font(.system(size: 13, weight: .semibold))
@@ -150,9 +184,9 @@ private struct ControlTile: View {
                         // nominal size, so scale down slightly before
                         // truncating rather than clipping mid-word.
                         .minimumScaleFactor(0.85)
-                    Text(sub)
+                    Text(subLine)
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(active ? activeColor : .mrtTextMuted)
+                        .foregroundStyle(subColor)
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .minimumScaleFactor(0.75)
@@ -172,6 +206,8 @@ private struct ControlTile: View {
             )
         }
         .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.45)
     }
 }
 
