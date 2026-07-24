@@ -203,6 +203,25 @@ struct RideRequestSearchContent: View {
             guard !query.isEmpty else { return }
             viewerState.updateSearch(query: query)
         }
+        // MYR-248 bug 2 — FRESH-ON-REOPEN. Round 4/5 hosts this search content
+        // PERSISTENTLY inside the `PanSheet` crossfade layer (it is never torn
+        // down when the sheet collapses to idle the way the pre-round-4 standalone
+        // `.search` phase was), so its local field/CTA `@State` (`query`,
+        // `pickedDestination`) outlives the collapse. The collapse commit runs the
+        // full `resetDraftToIdle()` draft reset (`RiderIdleSearchSheet.commitSettle`
+        // → `closeToIdle`), clearing `viewerState.draftDestination` — but the
+        // orphaned local state kept the field filled and the "Continue" CTA
+        // rendered ENABLED, while its guard (`proceedFromSearch` needs a non-nil
+        // `draftDestination`) now blocked: the stale, dead Continue the client hit.
+        // Re-sync the local state to the reset draft whenever the sheet returns to
+        // idle so the next open is fresh (empty query, no pick, results list, no
+        // CTA). Back-nav from pin-drop goes to `.search` (draft retained), never
+        // `.idle`, so the MYR-216/239 destination-retention path is untouched.
+        .onChange(of: viewerState.sheetPhase) { _, newPhase in
+            guard newPhase == .idle, viewerState.draftDestination == nil else { return }
+            pickedDestination = nil
+            if !query.isEmpty { query = "" }
+        }
         .onAppear {
             // MYR-239 defect 2 — re-entering Search (back from pin-drop/review)
             // must NOT restore the destination field's first responder mid-
