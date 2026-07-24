@@ -17,7 +17,7 @@ public protocol SnapshotFetching: Sendable {
 ///
 /// Value type (`Sendable`): all dependencies are immutable, so it is free to
 /// share across tasks without a serialization bottleneck.
-public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint {
+public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint {
     private let environment: BackendEnvironment
     private let tokenProvider: any TokenProvider
     private let http: any HTTPPerforming
@@ -199,6 +199,18 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint {
     /// discarded.
     public func revokeSession(_ body: RefreshTokenRequest) async throws {
         try await performAuthNoContent(["auth", "revoke"], body: body)
+    }
+
+    // MARK: - In-app Tesla account link (rest-api.md §7.11, MYR-246)
+
+    /// `POST /api/tesla/link/start` (§7.11.1) — owner-authenticated; mints the
+    /// Tesla authorize URL for the signed-in owner (server-side PKCE + `state`).
+    /// No request body. Runs the standard authenticated `post` pipeline (Bearer +
+    /// single 401 refresh-retry) — the caller must already hold a session. The
+    /// returned `authorizeUrl` is opened in `ASWebAuthenticationSession` by the
+    /// app; the code→token exchange completes server-side at the callback.
+    public func teslaLinkStart() async throws -> TeslaLinkStartResponse {
+        try await post(["tesla", "link", "start"], body: Optional<Empty>.none)
     }
 
     // MARK: - Request pipeline

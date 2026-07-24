@@ -14,9 +14,13 @@ import DesignSystem
 //     resolves `.granted` / `.cancelled`. The system presents its own UI, so
 //     the simulated sheet never mounts — nothing else in the flow changes.
 
-enum TeslaAuthOutcome {
+enum TeslaAuthOutcome: Equatable {
     case granted
     case cancelled
+    /// MYR-246 — the link reached a definite failure (the `/start` call, the
+    /// system session, or a §7.11 callback `reason`). Carries honest, user-facing
+    /// copy + a retry affordance via `AddTeslaFlow`.
+    case failed(TeslaLinkFailure)
 }
 
 /// Runs the Tesla OAuth dance end-to-end and reports how it ended.

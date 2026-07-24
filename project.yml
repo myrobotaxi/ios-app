@@ -58,6 +58,10 @@ targets:
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: YES
+        # MYR-246 — additive Info.plist carrying the myrobotaxi:// URL scheme
+        # (in-app Tesla-link callback, §7.11). Xcode merges the GENERATE_INFOPLIST_FILE
+        # keys on top; this file holds only keys with no INFOPLIST_KEY_* equivalent.
+        INFOPLIST_FILE: App/MyRoboTaxi-Info.plist
         # MYR-238 — wire the app icon; AppIcon.appiconset lives in
         # App/Sources/Assets.xcassets (single 1024x1024 universal entry).
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

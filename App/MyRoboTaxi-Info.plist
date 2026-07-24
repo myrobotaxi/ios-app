@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	MYR-246 — additive Info.plist. GENERATE_INFOPLIST_FILE stays YES; Xcode
+	merges the generated keys (launch screen, UIUserInterfaceStyle, versions,
+	privacy strings from INFOPLIST_KEY_* in project.yml) on top of this file.
+	This file carries ONLY the keys that have no INFOPLIST_KEY_* equivalent —
+	here, the myrobotaxi:// custom URL scheme the in-app Tesla link callback
+	(§7.11 `myrobotaxi://tesla-linked`) is intercepted on.
+	-->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>app.myrobotaxi.ios.tesla-link</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>myrobotaxi</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>
