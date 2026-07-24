@@ -292,6 +292,134 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         await eventually { sender.calls.contains(.adjustVolume(volume: 11)) }
     }
 
+    // MARK: - MYR-252 — telemetry reconciliation of the v0.12.0 cabin read-back
+
+    /// A snapshot carrying the cabin fields flips each present control to
+    /// known + the car's real value.
+    func testReconcilePresentFieldsBecomeKnownAndCorrect() {
+        let exec = makeExecutor(ScriptedCommandSender())
+        var state = Contracts.parkedState()
+        state.locked = true
+        state.hvacPower = .on
+        state.isClimateOn = true
+        state.driverTempSetting = 68
+        state.fanSpeed = 4
+        state.chargePortDoorOpen = false
+        state.trunkOpen = true
+        state.seatHeaterLeft = 2
+        state.seatCoolerLeft = 0
+        state.mediaPlaybackStatus = .playing
+        state.mediaVolume = 5.5 // wire 0–11 → UI 50
+
+        exec.reconcile(from: state)
+
+        XCTAssertTrue(exec.isKnown(.locked)); XCTAssertTrue(exec.controls.locked)
+        XCTAssertTrue(exec.isKnown(.climateOn)); XCTAssertTrue(exec.controls.climateOn)
+        XCTAssertTrue(exec.isKnown(.targetTemp)); XCTAssertEqual(exec.controls.targetTemp, 68)
+        XCTAssertTrue(exec.isKnown(.fanSpeed)); XCTAssertEqual(exec.controls.fanSpeed, 4)
+        XCTAssertTrue(exec.isKnown(.chargePortOpen)); XCTAssertFalse(exec.controls.chargePortOpen)
+        XCTAssertTrue(exec.isKnown(.trunkOpen)); XCTAssertTrue(exec.controls.trunkOpen)
+        XCTAssertTrue(exec.isKnown(.driverSeat))
+        XCTAssertEqual(exec.controls.driverSeatMode, .heat)
+        XCTAssertEqual(exec.controls.driverSeatHeatLevel, 2)
+        XCTAssertTrue(exec.isKnown(.mediaPlaying)); XCTAssertTrue(exec.controls.mediaPlaying)
+        XCTAssertTrue(exec.isKnown(.volume)); XCTAssertEqual(exec.controls.volume, 50, accuracy: 0.001)
+    }
+
+    /// A field ABSENT from the wire stays honestly unknown — never a fixture (MYR-228).
+    func testReconcileAbsentFieldsStayUnknown() {
+        let exec = makeExecutor(ScriptedCommandSender())
+        var state = Contracts.parkedState() // every cabin field nil…
+        state.locked = true                 // …except lock
+        exec.reconcile(from: state)
+
+        XCTAssertTrue(exec.isKnown(.locked))
+        for field in VehicleControlField.allCases where field != .locked {
+            XCTAssertFalse(exec.isKnown(field), "\(field) absent on the wire must stay unknown")
+        }
+    }
+
+    /// The isClimateOn honesty fix: the backend OMITS `isClimateOn` when
+    /// `hvacPower` is "Unknown", so climate must stay honestly unknown — the raw
+    /// hvacPower "Unknown" must NEVER read as climate-on (MYR-251/252).
+    func testHvacPowerUnknownDoesNotReadAsClimateOn() {
+        let exec = makeExecutor(ScriptedCommandSender())
+        var state = Contracts.parkedState()
+        state.hvacPower = .unknown
+        state.isClimateOn = nil // omitted by the server
+        exec.reconcile(from: state)
+
+        XCTAssertFalse(exec.isKnown(.climateOn), "hvacPower Unknown → climate honest-unknown, not on")
+    }
+
+    /// Real telemetry is authoritative and corrects a prior optimistic-on-ack value.
+    func testTelemetryReconcileOverridesOptimisticValue() async {
+        let exec = makeExecutor(ScriptedCommandSender())
+        try? await exec.setLocked(true) // optimistic-on-ack: locked = true, known
+        XCTAssertTrue(exec.controls.locked)
+
+        var state = Contracts.parkedState()
+        state.locked = false // the car actually reports unlocked
+        exec.reconcile(from: state)
+
+        XCTAssertTrue(exec.isKnown(.locked))
+        XCTAssertFalse(exec.controls.locked, "the next telemetry frame is authoritative")
+    }
+
+    /// A frame arriving while a control's command is in flight must not clobber the
+    /// pending interaction — the field stays unconfirmed until the ack.
+    func testReconcileSkipsControlWithCommandInFlight() async {
+        let sender = GatedCommandSender()
+        let exec = makeExecutor(sender)
+        let task = Task { try? await exec.setLocked(false) }
+        await eventually { exec.uiState(for: .lock).isPending }
+
+        var state = Contracts.parkedState()
+        state.locked = false
+        exec.reconcile(from: state)
+        XCTAssertFalse(exec.isKnown(.locked), "reconcile skipped while the lock command is in flight")
+
+        sender.release()
+        await task.value
+        XCTAssertTrue(exec.isKnown(.locked), "confirmed once the command settles")
+        XCTAssertFalse(exec.controls.locked)
+    }
+
+    /// Active cooling reconciles to cool mode at the reported level.
+    func testSeatCoolerReconcilesToCoolMode() {
+        let exec = makeExecutor(ScriptedCommandSender())
+        var state = Contracts.parkedState()
+        state.seatHeaterRight = 0
+        state.seatCoolerRight = 3
+        exec.reconcile(from: state)
+
+        XCTAssertTrue(exec.isKnown(.passengerSeat))
+        XCTAssertEqual(exec.controls.passengerSeatMode, .cool)
+        XCTAssertEqual(exec.controls.passengerSeatHeatLevel, 3)
+    }
+
+    /// Media `Unknown` stays honestly unknown even as volume reconciles.
+    func testMediaUnknownStaysUnknownWhileVolumeReconciles() {
+        let exec = makeExecutor(ScriptedCommandSender())
+        var state = Contracts.parkedState()
+        state.mediaPlaybackStatus = .unknown
+        state.mediaVolume = 11 // → UI 100
+        exec.reconcile(from: state)
+
+        XCTAssertFalse(exec.isKnown(.mediaPlaying), "media Unknown → honest unknown")
+        XCTAssertTrue(exec.isKnown(.volume))
+        XCTAssertEqual(exec.controls.volume, 100, accuracy: 0.001)
+    }
+
+    /// The Auto/Cool/Heat fold is honest: only a known On/Override asserts a mode.
+    func testClimateModeFold() {
+        XCTAssertEqual(LiveVehicleCommandExecutor.climateMode(autoMode: .on, acEnabled: nil), .auto)
+        XCTAssertEqual(LiveVehicleCommandExecutor.climateMode(autoMode: .override, acEnabled: true), .cool)
+        XCTAssertEqual(LiveVehicleCommandExecutor.climateMode(autoMode: .override, acEnabled: false), .heat)
+        XCTAssertNil(LiveVehicleCommandExecutor.climateMode(autoMode: .unknown, acEnabled: true))
+        XCTAssertNil(LiveVehicleCommandExecutor.climateMode(autoMode: nil, acEnabled: true))
+    }
+
     // MARK: Fahrenheit → Celsius
 
     func testFahrenheitToCelsius() {

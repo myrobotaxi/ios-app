@@ -177,6 +177,15 @@ final class VehicleContractMappingTests: XCTestCase {
         XCTAssertEqual(vehicle.plate, "")
     }
 
+    func testVehicleRowSeatVentReflectsLiveState() {
+        // MYR-252 — the seat Heat/Cool affordance follows the car's real
+        // `seatVentEnabled` read-back; absent (no snapshot) stays heating-only.
+        var venting = Contracts.parkedState()
+        venting.seatVentEnabled = true
+        XCTAssertTrue(VehicleContractMapping.vehicle(summary: Contracts.summary(), state: venting).seatVent)
+        XCTAssertFalse(VehicleContractMapping.vehicle(summary: Contracts.summary()).seatVent)
+    }
+
     func testVehicleRowUsesPlaceholderActivityBeforeSnapshot() {
         // No live state yet → a parked "Locating…" placeholder for a parked row.
         let vehicle = VehicleContractMapping.vehicle(summary: Contracts.summary(status: .parked))
