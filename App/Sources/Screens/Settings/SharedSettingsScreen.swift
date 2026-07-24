@@ -18,6 +18,13 @@ struct SharedSettingsScreen: View {
     /// the fixture "Sam Rivera"). When non-nil, the profile card shows real
     /// name/email and the "Switch to Owner" row appears.
     var liveProfile: UserProfile? = nil
+    /// MYR-255 — the resolved live/simulated gate (threaded from `RootView`,
+    /// MYR-214/228). On the LIVE path the fixture "Shared with me" personas
+    /// (Alex/Mom/Jordan) must NOT render — there is no shared-with-me/invites-
+    /// accepted backend endpoint yet (GET /api/vehicles is owner-rows-only per
+    /// contract §7.0 RBAC v1), so live shows an honest empty state. Simulated
+    /// keeps the fixtures so the M1 experience is pixel-identical.
+    var isLive: Bool = false
     /// MYR-224 — flip to the owner shell. Only invoked from the switch row, which
     /// renders only when `liveProfile != nil`.
     var onSwitchMode: () -> Void = {}
@@ -81,6 +88,10 @@ struct SharedSettingsScreen: View {
         SharedVehicleAccess(owner: "Mom", relationship: "Family", vehicle: "Model Y", access: "Request rides"),
         SharedVehicleAccess(owner: "Jordan", relationship: "Friend", vehicle: "Model 3", access: "Request rides"),
     ]
+
+    /// The rows actually rendered: the fixtures in SIM, an EMPTY list on the live
+    /// path (no shared-vehicle endpoint yet → honest empty state, MYR-228/255).
+    private var sharedList: [SharedVehicleAccess] { isLive ? [] : Self.sharedWith }
 
     var body: some View {
         ZStack {
@@ -183,14 +194,45 @@ struct SharedSettingsScreen: View {
 
     private var sharedWithCard: some View {
         VStack(spacing: 0) {
-            ForEach(Array(Self.sharedWith.enumerated()), id: \.element.id) { index, entry in
-                sharedWithRow(entry, isFirst: index == 0)
+            if sharedList.isEmpty {
+                // Honest empty state on the live path — never fixture personas.
+                emptySharedRow
+            } else {
+                ForEach(Array(sharedList.enumerated()), id: \.element.id) { index, entry in
+                    sharedWithRow(entry, isFirst: index == 0)
+                }
             }
             addCodeRow
         }
         .mrtSurface(.card)
         .padding(.horizontal, MRTMetrics.pageGutter)
         .padding(.bottom, 22)
+    }
+
+    /// Live path, no shared vehicles yet — a calm, intentional empty state that
+    /// points the rider at the invite-code row below (MYR-255).
+    private var emptySharedRow: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle().fill(Color.mrtElevated)
+                Image(systemName: "car.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.mrtTextMuted)
+            }
+            .frame(width: 32, height: 32)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("No vehicles shared with you yet")
+                    .font(.system(size: 14, weight: .medium))
+                    .tracking(-0.1)
+                    .foregroundStyle(Color.mrtText)
+                Text("Enter an invite code to ride someone\u{2019}s Tesla.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Color.mrtTextSec)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
     }
 
     private func sharedWithRow(_ entry: SharedVehicleAccess, isFirst: Bool) -> some View {
