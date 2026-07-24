@@ -73,12 +73,7 @@ struct VehicleControls: View {
     // MARK: Quick tiles (vehicle-controls.jsx:244-254)
 
     private var quickTiles: some View {
-        // Charge PORT has no §7.9 command (MYR-249): on the live path the executor
-        // reports it unsupported, so the tile is honestly disabled rather than
-        // faking a toggle. On the simulated path everything is supported → the
-        // M1 / drift-gate scenes render identically.
-        let chargePortSupported = executor.isSupported(.chargePort)
-        return HStack(spacing: 8) {
+        HStack(spacing: 8) {
             ControlTile(
                 icon: controls.locked ? "lock.fill" : "lock.open.fill",
                 label: controls.locked ? "Locked" : "Unlocked",
@@ -109,13 +104,17 @@ struct VehicleControls: View {
             ) {
                 Task { try? await executor.setTrunkOpen(!controls.trunkOpen) }
             }
+            // Charge port joined the §7.9 catalog in v186 (charge_port_door_open /
+            // close, MYR-249) — the tile now toggles the port per its state and
+            // shows the phase-1 pending/notice UX (a token lacking the charging
+            // scope surfaces the charging-specific re-link line).
             ControlTile(
                 icon: "bolt.fill",
                 label: "Charge",
-                sub: chargePortSupported ? (controls.chargePortOpen ? "Port open" : "Port closed") : "Not available yet",
-                active: chargePortSupported && controls.chargePortOpen,
+                sub: controls.chargePortOpen ? "Port open" : "Port closed",
+                active: controls.chargePortOpen,
                 activeColor: .mrtCharging,
-                enabled: chargePortSupported
+                uiState: executor.uiState(for: .chargePort)
             ) {
                 Task { try? await executor.setChargePortOpen(!controls.chargePortOpen) }
             }
@@ -134,9 +133,6 @@ private struct ControlTile: View {
     /// Live command state (MYR-249). `.idle` on the simulated path, so the M1 /
     /// drift-gate rendering is pixel-identical.
     var uiState: VehicleControlUIState = .idle
-    /// `false` when the control has no backend command on the live executor
-    /// (charge port) — the tile dims + stops responding rather than faking it.
-    var enabled: Bool = true
     let action: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -206,8 +202,6 @@ private struct ControlTile: View {
             )
         }
         .buttonStyle(.plain)
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.45)
     }
 }
 

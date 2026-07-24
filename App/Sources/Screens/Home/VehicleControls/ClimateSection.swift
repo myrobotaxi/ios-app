@@ -101,6 +101,7 @@ struct ClimateSection: View {
                         vent: seatVent,
                         mode: controls.driverSeatMode,
                         level: controls.driverSeatHeatLevel,
+                        uiState: executor.uiState(for: .driverSeat),
                         setMode: { mode in Task { try? await executor.setSeatClimateMode(.driver, mode: mode) } },
                         setLevel: { level in Task { try? await executor.setSeatHeatLevel(.driver, level: level) } }
                     )
@@ -109,6 +110,7 @@ struct ClimateSection: View {
                         vent: seatVent,
                         mode: controls.passengerSeatMode,
                         level: controls.passengerSeatHeatLevel,
+                        uiState: executor.uiState(for: .passengerSeat),
                         setMode: { mode in Task { try? await executor.setSeatClimateMode(.passenger, mode: mode) } },
                         setLevel: { level in Task { try? await executor.setSeatHeatLevel(.passenger, level: level) } }
                     )
@@ -240,6 +242,9 @@ private struct SeatRow: View {
     let vent: Bool
     let mode: VehicleSeatClimateMode
     let level: Int
+    /// Live command state (MYR-249). `.idle` on the simulated path, so the M1 /
+    /// drift-gate rendering is pixel-identical.
+    var uiState: VehicleControlUIState = .idle
     let setMode: (VehicleSeatClimateMode) -> Void
     let setLevel: (Int) -> Void
 
@@ -247,35 +252,51 @@ private struct SeatRow: View {
     private var accent: Color { mode == .cool ? .mrtSeatCool : .mrtCharging }
 
     var body: some View {
-        HStack {
-            HStack(spacing: 10) {
-                Image(systemName: mode == .cool ? "snowflake" : "sun.max.fill")
-                    .font(.system(size: 14))
-                    .foregroundStyle(active ? accent : .mrtTextMuted)
-                Text(label)
-                    .font(.system(size: 12.5, weight: .medium))
+        // A settled notice (re-link / pairing / waking / …) surfaces on a quiet
+        // line under the row; on the simulated path `uiState` is always `.idle`,
+        // so the extra line never renders and the layout is pixel-identical.
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                HStack(spacing: 10) {
+                    Image(systemName: mode == .cool ? "snowflake" : "sun.max.fill")
+                        .font(.system(size: 14))
+                        .foregroundStyle(active ? accent : .mrtTextMuted)
+                    Text(label)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(Color.mrtTextSec)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                // `.fixedSize()` keeps the vent toggle + heat-level squares at
+                // their natural width so the left label compresses first if the
+                // row is tight — without it, SwiftUI wraps the "Heat"/"Cool"
+                // button labels onto multiple lines under compression (seen on
+                // the longer "Passenger" row, which leaves less room here than
+                // "Driver").
+                HStack(spacing: 10) {
+                    if vent {
+                        HStack(spacing: 3) {
+                            modeButton(.heat, "Heat", .mrtCharging)
+                            modeButton(.cool, "Cool", .mrtSeatCool)
+                        }
+                        .padding(3)
+                        .background(Color.mrtControlSegmentTrack, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    }
+                    // While a seat command is in flight the squares dim (a static
+                    // dim, Reduce-Motion-safe); the executor's per-seat pending
+                    // guard already drops repeat taps.
+                    HeatLevel(value: level, color: accent, onChange: setLevel)
+                        .opacity(uiState.isPending ? 0.5 : 1)
+                }
+                .fixedSize()
+            }
+            if let notice = uiState.notice {
+                Text(notice.message)
+                    .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(Color.mrtTextSec)
                     .lineLimit(1)
+                    .padding(.leading, 24)
             }
-            Spacer(minLength: 8)
-            // `.fixedSize()` keeps the vent toggle + heat-level squares at
-            // their natural width so the left label compresses first if the
-            // row is tight — without it, SwiftUI wraps the "Heat"/"Cool"
-            // button labels onto multiple lines under compression (seen on
-            // the longer "Passenger" row, which leaves less room here than
-            // "Driver").
-            HStack(spacing: 10) {
-                if vent {
-                    HStack(spacing: 3) {
-                        modeButton(.heat, "Heat", .mrtCharging)
-                        modeButton(.cool, "Cool", .mrtSeatCool)
-                    }
-                    .padding(3)
-                    .background(Color.mrtControlSegmentTrack, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                }
-                HeatLevel(value: level, color: accent, onChange: setLevel)
-            }
-            .fixedSize()
         }
         .padding(.top, 13)
     }
