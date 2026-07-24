@@ -220,7 +220,9 @@ struct DrivingHeroContent: View {
                     batteryPercent: snapshot.batteryPercent,
                     parkedLocation: nil,
                     executor: executor,
-                    isEditingPlate: $isEditingPlate
+                    isEditingPlate: $isEditingPlate,
+                    cabinTemp: snapshot.interiorTempF,
+                    extTemp: snapshot.exteriorTempF
                 )
             }
         }
@@ -257,7 +259,9 @@ struct ParkedHeroContent: View {
                 batteryPercent: snapshot.batteryPercent,
                 parkedLocation: location,
                 executor: executor,
-                isEditingPlate: $isEditingPlate
+                isEditingPlate: $isEditingPlate,
+                cabinTemp: snapshot.interiorTempF,
+                extTemp: snapshot.exteriorTempF
             )
         }
     }

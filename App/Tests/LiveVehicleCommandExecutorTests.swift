@@ -159,6 +159,58 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         XCTAssertFalse(exec.controls.locked)
     }
 
+    // MARK: MYR-251 — honest unknown state until the owner commands a control
+
+    func testFreshExecutorKnowsNothing() {
+        let exec = makeExecutor(ScriptedCommandSender())
+        for field in VehicleControlField.allCases {
+            XCTAssertFalse(exec.isKnown(field), "\(field) must be unknown before any command (no wire field, MYR-228)")
+        }
+    }
+
+    func testSuccessfulCommandMakesOnlyThatFieldKnown() async {
+        struct Case {
+            let field: VehicleControlField
+            let action: (LiveVehicleCommandExecutor) async -> Void
+            let line: UInt
+            init(_ field: VehicleControlField, line: UInt = #line, _ action: @escaping (LiveVehicleCommandExecutor) async -> Void) {
+                self.field = field; self.action = action; self.line = line
+            }
+        }
+        let cases: [Case] = [
+            Case(.locked) { try? await $0.setLocked(false) },
+            Case(.climateOn) { try? await $0.setClimateOn(true) },
+            Case(.targetTemp) { try? await $0.setTargetTemp(72) },
+            Case(.trunkOpen) { try? await $0.setTrunkOpen(true) },
+            Case(.chargePortOpen) { try? await $0.setChargePortOpen(true) },
+            Case(.driverSeat) { try? await $0.setSeatHeatLevel(.driver, level: 2) },
+            Case(.passengerSeat) { try? await $0.setSeatHeatLevel(.passenger, level: 1) },
+            Case(.mediaPlaying) { try? await $0.setMediaPlaying(true) },
+            Case(.fanSpeed) { try? await $0.setFanSpeed(5) },
+            Case(.volume) { try? await $0.setVolume(30) },
+        ]
+        for c in cases {
+            let exec = makeExecutor(ScriptedCommandSender())
+            await c.action(exec)
+            XCTAssertTrue(exec.isKnown(c.field), "\(c.field) known after its command", line: c.line)
+            for other in VehicleControlField.allCases where other != c.field {
+                // volume + fan are independent local settings; a seat command
+                // confirms only its own seat — no field leaks known-ness.
+                XCTAssertFalse(exec.isKnown(other), "\(other) must stay unknown after only \(c.field) was commanded", line: c.line)
+            }
+        }
+    }
+
+    func testFailedCommandLeavesFieldUnknown() async {
+        let sender = ScriptedCommandSender([.failure(Self.restError("command_failed", 502))])
+        let exec = makeExecutor(sender, maxWakeRetries: 0)
+
+        try? await exec.setLocked(false)
+
+        XCTAssertFalse(exec.isKnown(.locked), "a failed command must NOT confirm the value — stays unknown")
+        XCTAssertEqual(exec.uiState(for: .lock).notice, .failed)
+    }
+
     // MARK: capability — every keyed control is backend-backed now (charge port joined v186)
 
     func testAllKeyedControlsSupported() {

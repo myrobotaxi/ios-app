@@ -11,12 +11,23 @@ struct ClimateSection: View {
     let controls: VehicleControlsSnapshot
     let seatVent: Bool
     let executor: any VehicleCommandExecutor
-    let cabinTemp: Int
-    let extTemp: Int
+    /// Real cabin/ambient temps (MYR-251); `nil` = unknown → rendered "—".
+    let cabinTemp: Int?
+    let extTemp: Int?
+
+    /// The em-dash the design uses for an unavailable value.
+    private static let dash = "\u{2014}"
+    private func degrees(_ value: Int?) -> String { value.map { "\($0)°" } ?? Self.dash }
+
+    /// Whether the executor confirms climate on/off. Unknown on the live path
+    /// until the owner commands it — then it shows on/off honestly (MYR-251).
+    private var climateOnKnown: Bool { executor.isKnown(.climateOn) }
 
     var body: some View {
         SectionCard(title: "Climate") {
-            if controls.climateOn {
+            if !climateOnKnown {
+                unknownContent
+            } else if controls.climateOn {
                 onContent
             } else {
                 offContent
@@ -33,7 +44,7 @@ struct ClimateSection: View {
                     Task { try? await executor.setTargetTemp(controls.targetTemp - 1) }
                 }
                 VStack(spacing: 4) {
-                    Text("\(controls.targetTemp)°")
+                    Text(degrees(executor.isKnown(.targetTemp) ? controls.targetTemp : nil))
                         .font(.system(size: 40, weight: .light))
                         .tracking(-1)
                         .monospacedDigit()
@@ -42,7 +53,7 @@ struct ClimateSection: View {
                         .font(.system(size: 10.5, weight: .semibold))
                         .tracking(0.6)
                         .foregroundStyle(Color.mrtTextMuted)
-                    Text("Interior \(cabinTemp)° · Outside \(extTemp)°")
+                    Text("Interior \(degrees(cabinTemp)) · Outside \(degrees(extTemp))")
                         .font(.system(size: 11))
                         .monospacedDigit()
                         .foregroundStyle(Color.mrtTextMuted)
@@ -71,14 +82,19 @@ struct ClimateSection: View {
                         Text("Fan speed").font(.system(size: 12.5, weight: .medium)).foregroundStyle(Color.mrtTextSec)
                     }
                     Spacer()
-                    (Text("\(controls.fanSpeed) ").foregroundStyle(Color.mrtText)
+                    let fanKnown = executor.isKnown(.fanSpeed)
+                    (Text(fanKnown ? "\(controls.fanSpeed) " : "\(Self.dash) ").foregroundStyle(Color.mrtText)
                         + Text("/ 10").foregroundStyle(Color.mrtTextMuted))
                         .font(.system(size: 12.5, weight: .semibold))
                         .monospacedDigit()
                 }
-                FanBar(value: controls.fanSpeed) { newValue in
+                // Unknown fan → an empty bar dimmed (not asserting a level);
+                // dragging it sets + confirms the value (MYR-251).
+                let fanKnown = executor.isKnown(.fanSpeed)
+                FanBar(value: fanKnown ? controls.fanSpeed : 0) { newValue in
                     Task { try? await executor.setFanSpeed(newValue) }
                 }
+                .opacity(fanKnown ? 1 : 0.5)
             }
 
             VStack(alignment: .leading, spacing: 0) {
@@ -101,6 +117,7 @@ struct ClimateSection: View {
                         vent: seatVent,
                         mode: controls.driverSeatMode,
                         level: controls.driverSeatHeatLevel,
+                        known: executor.isKnown(.driverSeat),
                         uiState: executor.uiState(for: .driverSeat),
                         setMode: { mode in Task { try? await executor.setSeatClimateMode(.driver, mode: mode) } },
                         setLevel: { level in Task { try? await executor.setSeatHeatLevel(.driver, level: level) } }
@@ -110,6 +127,7 @@ struct ClimateSection: View {
                         vent: seatVent,
                         mode: controls.passengerSeatMode,
                         level: controls.passengerSeatHeatLevel,
+                        known: executor.isKnown(.passengerSeat),
                         uiState: executor.uiState(for: .passengerSeat),
                         setMode: { mode in Task { try? await executor.setSeatClimateMode(.passenger, mode: mode) } },
                         setLevel: { level in Task { try? await executor.setSeatHeatLevel(.passenger, level: level) } }
@@ -163,7 +181,9 @@ struct ClimateSection: View {
                         .font(.system(size: 14, weight: .semibold))
                         .tracking(-0.2)
                         .foregroundStyle(Color.mrtText)
-                    Text("Cabin idle · last set to \(controls.targetTemp)°")
+                    Text(executor.isKnown(.targetTemp)
+                        ? "Cabin idle · last set to \(controls.targetTemp)°"
+                        : "Cabin idle")
                         .font(.system(size: 12))
                         .foregroundStyle(Color.mrtTextMuted)
                 }
@@ -197,17 +217,71 @@ struct ClimateSection: View {
         }
     }
 
-    private func tempColumn(icon: String, label: String, value: Int) -> some View {
+    private func tempColumn(icon: String, label: String, value: Int?) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 7) {
                 Image(systemName: icon).font(.system(size: 13)).foregroundStyle(Color.mrtTextMuted)
                 Text(label).font(.system(size: 10.5, weight: .semibold)).tracking(0.7).foregroundStyle(Color.mrtTextMuted)
             }
-            Text("\(value)°")
+            Text(degrees(value))
                 .font(.system(size: 26, weight: .light))
                 .tracking(-0.6)
                 .monospacedDigit()
                 .foregroundStyle(Color.mrtText)
+        }
+    }
+
+    // MARK: Unknown (MYR-251)
+    //
+    // The live path can't confirm whether climate is on or off (no wire field),
+    // so it renders a neutral panel: the real Interior/Exterior temps (the one
+    // controls-surface fact the contract carries) plus a quiet "state
+    // unavailable" line and a Start action — never a fixture "On · 70°".
+
+    private var unknownContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 14) {
+                Image(systemName: "fan")
+                    .font(.system(size: 20))
+                    .foregroundStyle(Color.mrtTextMuted)
+                    .frame(width: 44, height: 44)
+                    .background(Color.mrtControlSegmentTrack, in: Circle())
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Climate")
+                        .font(.system(size: 14, weight: .semibold))
+                        .tracking(-0.2)
+                        .foregroundStyle(Color.mrtText)
+                    Text("Live state unavailable")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.mrtTextMuted)
+                }
+                Spacer(minLength: 8)
+                Button {
+                    Task { try? await executor.setClimateOn(true) }
+                } label: {
+                    Text("Start")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(Color.mrtGoldButtonLabel)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.mrtGold, in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.bottom, 14)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(Color.mrtBorder).frame(height: MRTMetrics.hairline)
+            }
+
+            HStack(spacing: 0) {
+                tempColumn(icon: "car.fill", label: "INTERIOR", value: cabinTemp)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Rectangle().fill(Color.mrtBorder).frame(width: MRTMetrics.hairline)
+                tempColumn(icon: "sun.max.fill", label: "EXTERIOR", value: extTemp)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 18)
+            }
+            .padding(.top, 14)
         }
     }
 }
@@ -242,13 +316,17 @@ private struct SeatRow: View {
     let vent: Bool
     let mode: VehicleSeatClimateMode
     let level: Int
+    /// Whether the seat's level is confirmed (MYR-251). Unknown on the live path
+    /// until the owner commands the seat → the level squares dim rather than
+    /// asserting a fixture level. Default `true` keeps M1 pixel-identical.
+    var known: Bool = true
     /// Live command state (MYR-249). `.idle` on the simulated path, so the M1 /
     /// drift-gate rendering is pixel-identical.
     var uiState: VehicleControlUIState = .idle
     let setMode: (VehicleSeatClimateMode) -> Void
     let setLevel: (Int) -> Void
 
-    private var active: Bool { level > 0 }
+    private var active: Bool { known && level > 0 }
     private var accent: Color { mode == .cool ? .mrtSeatCool : .mrtCharging }
 
     var body: some View {
@@ -284,9 +362,10 @@ private struct SeatRow: View {
                     }
                     // While a seat command is in flight the squares dim (a static
                     // dim, Reduce-Motion-safe); the executor's per-seat pending
-                    // guard already drops repeat taps.
-                    HeatLevel(value: level, color: accent, onChange: setLevel)
-                        .opacity(uiState.isPending ? 0.5 : 1)
+                    // guard already drops repeat taps. An UNKNOWN level (live path,
+                    // uncommanded) shows empty squares dimmed — no asserted level.
+                    HeatLevel(value: known ? level : 0, color: accent, onChange: setLevel)
+                        .opacity(uiState.isPending || !known ? 0.5 : 1)
                 }
                 .fixedSize()
             }

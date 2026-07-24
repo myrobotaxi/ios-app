@@ -54,6 +54,14 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     private(set) var controls: VehicleControlsSnapshot
     private var uiStates: [VehicleControlKey: VehicleControlUIState] = [:]
 
+    /// The controls whose displayed value is CONFIRMED — i.e. the owner has
+    /// commanded them and the car acknowledged (optimistic-on-ack), or they are
+    /// local-only settings the owner has touched. Everything else renders as an
+    /// honest unknown ("—") rather than the seeded fixture (MYR-228 / MYR-251).
+    /// The `VehicleState` contract carries none of these actuator states today
+    /// (see `VehicleControlField`), so nothing is confirmed until the owner acts.
+    private var knownFields: Set<VehicleControlField> = []
+
     private let vehicleID: String
     private let sender: any VehicleCommandSending
     /// Backoff before the single `vehicle_asleep` retry (injectable → `.zero` in
@@ -81,8 +89,11 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         self.sender = sender
         self.wakeRetryDelay = wakeRetryDelay
         self.maxWakeRetries = maxWakeRetries
-        // Seed identical to the simulated executor so a switch to a not-yet-known
-        // control state renders the same neutral defaults (vehicle-controls.jsx:205-225).
+        // Seed identical to the simulated executor, but on the live path these
+        // values are NEVER displayed until `knownFields` confirms them (MYR-251):
+        // they only serve as the optimistic base a command mutates. The UI reads
+        // `isKnown(_:)` and shows "—" for every field the owner hasn't yet
+        // commanded, so no fixture value ever renders on the live path (MYR-228).
         controls = VehicleControlsSnapshot(
             locked: true,
             climateOn: true,
@@ -109,6 +120,14 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         uiStates[key] ?? .idle
     }
 
+    /// MYR-251 — a live control's value is only KNOWN once the owner has
+    /// commanded it (optimistic-on-ack) or touched a local-only setting. Until
+    /// then the UI shows an honest "—" instead of the seeded placeholder, because
+    /// the `VehicleState` contract carries no actuator state today.
+    func isKnown(_ field: VehicleControlField) -> Bool {
+        knownFields.contains(field)
+    }
+
     // Every keyed control now maps to a real §7.9 command (charge port joined the
     // catalog in v186), so `isSupported` keeps the protocol default (`true`).
 
@@ -131,12 +150,14 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     func setLocked(_ locked: Bool) async throws {
         await run(.lock, command: locked ? .doorLock : .doorUnlock) { [weak self] in
             self?.controls.locked = locked
+            self?.knownFields.insert(.locked)
         }
     }
 
     func setClimateOn(_ on: Bool) async throws {
         await run(.climate, command: on ? .autoConditioningStart : .autoConditioningStop) { [weak self] in
             self?.controls.climateOn = on
+            self?.knownFields.insert(.climateOn)
         }
     }
 
@@ -144,6 +165,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         let clamped = min(82, max(60, temp)) // vehicle-controls.jsx:262,270 (°F)
         await run(.temp, command: .setTemps(driverTempC: Self.celsius(fromFahrenheit: clamped), passengerTempC: nil)) { [weak self] in
             self?.controls.targetTemp = clamped
+            self?.knownFields.insert(.targetTemp)
         }
     }
 
@@ -152,6 +174,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         // front-trunk actuation waits on a UI that offers the choice.
         await run(.trunk, command: .actuateTrunk(.rear)) { [weak self] in
             self?.controls.trunkOpen = open
+            self?.knownFields.insert(.trunkOpen)
         }
     }
 
@@ -160,6 +183,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         // token lacking it surfaces `.relinkCharging` (see `notice(for:key:)`).
         await run(.chargePort, command: open ? .chargePortDoorOpen : .chargePortDoorClose) { [weak self] in
             self?.controls.chargePortOpen = open
+            self?.knownFields.insert(.chargePortOpen)
         }
     }
 
@@ -176,8 +200,12 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             : .seatHeater(side, uiLevel: clamped)
         await run(key, command: command) { [weak self] in
             switch seat {
-            case .driver: self?.controls.driverSeatHeatLevel = clamped
-            case .passenger: self?.controls.passengerSeatHeatLevel = clamped
+            case .driver:
+                self?.controls.driverSeatHeatLevel = clamped
+                self?.knownFields.insert(.driverSeat)
+            case .passenger:
+                self?.controls.passengerSeatHeatLevel = clamped
+                self?.knownFields.insert(.passengerSeat)
             }
         }
     }
@@ -191,9 +219,11 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             case .driver:
                 self?.controls.driverSeatMode = newMode
                 self?.controls.driverSeatHeatLevel = 0
+                self?.knownFields.insert(.driverSeat)
             case .passenger:
                 self?.controls.passengerSeatMode = newMode
                 self?.controls.passengerSeatHeatLevel = 0
+                self?.knownFields.insert(.passengerSeat)
             }
         }
         // Nothing was actively heating/cooling → the mode switch is a pure local
@@ -213,6 +243,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         // the optimistic target applied on ack.
         await run(.media, command: .mediaTogglePlayback) { [weak self] in
             self?.controls.mediaPlaying = playing
+            self?.knownFields.insert(.mediaPlaying)
         }
     }
 
@@ -236,6 +267,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         // one-in-flight coalescer. adjust_volume takes 0–11; the UI is 0–100.
         let clamped = min(100, max(0, volume))
         controls.volume = clamped
+        knownFields.insert(.volume)
         sendVolume(clamped)
     }
 
@@ -251,7 +283,10 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     }
 
     func setFanSpeed(_ speed: Int) async throws {
+        // No §7.9 fan command and no wire field — a local-only setting. Touching
+        // it confirms the owner's chosen value, so it becomes known (MYR-251).
         controls.fanSpeed = min(10, max(0, speed))
+        knownFields.insert(.fanSpeed)
     }
 
     func setPlate(_ plate: String) async throws {
