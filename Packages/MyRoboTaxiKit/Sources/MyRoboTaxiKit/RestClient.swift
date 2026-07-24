@@ -17,7 +17,7 @@ public protocol SnapshotFetching: Sendable {
 ///
 /// Value type (`Sendable`): all dependencies are immutable, so it is free to
 /// share across tasks without a serialization bottleneck.
-public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleCommandSending {
+public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehicleCommandSending {
     private let environment: BackendEnvironment
     private let tokenProvider: any TokenProvider
     private let http: any HTTPPerforming
@@ -230,6 +230,24 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
     /// app; the code→token exchange completes server-side at the callback.
     public func teslaLinkStart() async throws -> TeslaLinkStartResponse {
         try await post(["tesla", "link", "start"], body: Optional<Empty>.none)
+    }
+
+    // MARK: - Owner car offboarding (rest-api.md §7.12, MYR-258)
+
+    /// `DELETE /api/tesla/vehicles/{vehicleId}` (§7.12) — full owner teardown of
+    /// one owned vehicle. Owner-authenticated (Bearer + single 401 refresh-retry
+    /// via the shared `perform` pipeline); no request body. `{vehicleId}` is the
+    /// Prisma cuid (NOT a VIN). Authoritative + idempotent — re-removing an
+    /// already-gone car is a clean no-op (typically a `404`, mapped to a typed
+    /// `RestError.http`). A `403 vehicle_not_owned` / `500 internal_error` surface
+    /// as typed `RestError`s the caller folds into honest copy.
+    public func removeVehicle(vehicleID: String) async throws -> VehicleTeardownResponse {
+        try await perform(
+            ["tesla", "vehicles", vehicleID],
+            method: "DELETE",
+            body: nil,
+            allowTokenRefresh: true
+        )
     }
 
     // MARK: - Request pipeline
