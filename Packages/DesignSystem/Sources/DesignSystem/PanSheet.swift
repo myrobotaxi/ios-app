@@ -109,6 +109,12 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
     let detentHeights: [CGFloat]
     @Binding var selection: Int
     let reduceMotion: Bool
+    /// MYR-250 item 3 — when false the drag gesture is disabled: the surface can
+    /// no longer be dragged between detents (a phase that must NOT be swipe-
+    /// dismissed, e.g. the rider's chosen-destination "Continue" step, which
+    /// takes an explicit back button instead). Programmatic `selection`/detent
+    /// changes still animate; only the finger pan is locked out.
+    let dragEnabled: Bool
     let overshootPad: CGFloat
     let accessibilityIdentifier: String?
     let accessibilityLabel: String?
@@ -129,6 +135,7 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
         detentHeights: [CGFloat],
         selection: Binding<Int>,
         reduceMotion: Bool,
+        dragEnabled: Bool = true,
         overshootPad: CGFloat = 48,
         accessibilityIdentifier: String? = nil,
         accessibilityLabel: String? = nil,
@@ -140,6 +147,7 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
         self.detentHeights = detentHeights
         _selection = selection
         self.reduceMotion = reduceMotion
+        self.dragEnabled = dragEnabled
         self.overshootPad = overshootPad
         self.accessibilityIdentifier = accessibilityIdentifier
         self.accessibilityLabel = accessibilityLabel
@@ -155,6 +163,7 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
             detentHeights: sanitizedDetents,
             selection: selection,
             reduceMotion: reduceMotion,
+            dragEnabled: dragEnabled,
             overshootPad: overshootPad,
             accessibilityIdentifier: accessibilityIdentifier,
             accessibilityLabel: accessibilityLabel,
@@ -182,7 +191,8 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
         controller.update(
             detentHeights: sanitizedDetents,
             selection: selection,
-            reduceMotion: reduceMotion
+            reduceMotion: reduceMotion,
+            dragEnabled: dragEnabled
         )
     }
 
@@ -216,8 +226,24 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
     private var detentHeights: [CGFloat] = [1]
     private var selection = 0
     private var reduceMotion = false
+    private var dragEnabled = true
     private var overshootPad: CGFloat = 48
     private var onSettleCommit: ((Int) -> Void)?
+
+    /// MYR-250 item 4 — the media time this engine instance mounted. The hosted
+    /// content's MEASURED natural height (the search detent) lands a frame or
+    /// two AFTER the surface is first seated, so a fresh mount straight into a
+    /// measured detent (review / pin-drop "Change trip" → the collapsed
+    /// searchSelected sheet) would seat at the stale fallback height and then
+    /// SPRING to the corrected one — the client's "jumps up and goes back down".
+    /// Detent changes within `initialSeatWindow` of mount SNAP instead (see
+    /// `update`), so the back transition is one smooth settle.
+    private var mountedAt: CFTimeInterval?
+    private let initialSeatWindow: CFTimeInterval = 0.35
+    private var isWithinInitialSeatWindow: Bool {
+        guard let mountedAt else { return false }
+        return CACurrentMediaTime() - mountedAt < initialSeatWindow
+    }
 
     /// The visible height the surface is currently RESTING at (the committed
     /// detent's height), the anchor programmatic changes animate from.
@@ -263,6 +289,7 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
         detentHeights: [CGFloat],
         selection: Int,
         reduceMotion: Bool,
+        dragEnabled: Bool,
         overshootPad: CGFloat,
         accessibilityIdentifier: String?,
         accessibilityLabel: String?,
@@ -272,6 +299,7 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
         self.detentHeights = detentHeights
         self.selection = min(max(selection, 0), detentHeights.count - 1)
         self.reduceMotion = reduceMotion
+        self.dragEnabled = dragEnabled
         self.overshootPad = overshootPad
         self.onDragProgress = onDragProgress
         self.onSettleCommit = onSettleCommit
@@ -338,10 +366,15 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
         // Recognize alongside a descendant scroll view's own pan so the handoff
         // can arbitrate frame-by-frame instead of one blocking the other.
         pan.cancelsTouchesInView = false
+        // MYR-250 item 3 — a locked phase (chosen-destination "Continue" step)
+        // disables the pan entirely; programmatic settles still run.
+        pan.isEnabled = dragEnabled
         surface.addGestureRecognizer(pan)
 
         restingHeight = detentHeights[selection]
         liveHeight = restingHeight
+        // MYR-250 item 4 — start the initial-seat window from first load.
+        mountedAt = CACurrentMediaTime()
     }
 
     public override func viewDidLayoutSubviews() {
@@ -436,8 +469,15 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
         host.rootView = content
     }
 
-    func update(detentHeights: [CGFloat], selection: Int, reduceMotion: Bool) {
+    func update(detentHeights: [CGFloat], selection: Int, reduceMotion: Bool, dragEnabled: Bool = true) {
         self.reduceMotion = reduceMotion
+        if self.dragEnabled != dragEnabled {
+            self.dragEnabled = dragEnabled
+            // MYR-250 item 3 — toggling a phase's swipe lock. Disabling mid-flight
+            // is safe: any in-flight drag reads its own recognizer state, and a
+            // disabled recognizer simply stops recognizing new touches.
+            pan?.isEnabled = dragEnabled
+        }
         let detentsChanged = detentHeights != self.detentHeights
         self.detentHeights = detentHeights
         let clamped = min(max(selection, 0), detentHeights.count - 1)
@@ -456,6 +496,25 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
         // A FINGER DRAG in flight owns the surface — never fight it; its release
         // settles to the nearest detent.
         if dragOwner != .undecided { return }
+
+        // MYR-250 item 4 — INITIAL-SEAT window. Right after this engine instance
+        // mounts, the hosted content's measured natural height (the search
+        // detent) lands a frame or two after the surface is first seated. A
+        // remount straight into a measured detent (review / pin-drop "Change
+        // trip" → the collapsed searchSelected sheet) would otherwise seat at the
+        // stale fallback height and SPRING down to the corrected one — the
+        // client's "jumps up and goes back down". Within the window, SNAP to the
+        // current detent instead of animating so the back transition is a single
+        // smooth settle. This also heals the MYR-248 strand directly (it lands on
+        // the corrected detent with no spring), so the pin-drop back-nav
+        // regression test stays green.
+        if detentsChanged, isWithinInitialSeatWindow {
+            settleAnimator?.stopAnimation(true)
+            settleAnimator = nil
+            restingHeight = targetHeight
+            applyVisibleHeight(targetHeight)
+            return
+        }
         if settleAnimator != nil {
             // MYR-248: a settle in flight must be RE-TARGETED — not silently
             // dropped — when the DETENT GEOMETRY itself moved under it. The rider

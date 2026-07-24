@@ -261,12 +261,12 @@ final class SheetFeelUITests: XCTestCase {
     /// reopening search is FRESH (empty destination), never resurrecting the prior
     /// choice with a dead Continue.
     ///
-    /// From `searchSelected` (a destination chosen, "Continue" CTA), drag the
-    /// sheet DOWN to collapse it to the idle greeting, then drag back UP to reopen
-    /// search. Before the fix the persistently-hosted search content kept its
-    /// local field/CTA state across the collapse, so the reopened sheet showed the
-    /// stale "SFO · Terminal 2" + an enabled-but-inert Continue. After the fix the
-    /// reopened search is fresh: no stale destination text, no Continue CTA.
+    /// MYR-250 item 3 UPDATE — the chosen-destination "Continue" step is now
+    /// swipe-LOCKED (the client asked for a back button there, not swipe-to-
+    /// dismiss), so this test leaves it via the new "‹ Change trip" back control
+    /// (→ the search LIST), THEN collapses the (unlocked) list to idle by drag,
+    /// and reopens. The reset-on-collapse-to-idle invariant BUG 2 guards is
+    /// unchanged; only the entry into the collapsible list changed.
     func testCollapseToIdleThenReopenSearchIsFresh() {
         let app = launchRider(scene: "searchSelected")
         let s = riderSheet(in: app)
@@ -282,8 +282,17 @@ final class SheetFeelUITests: XCTestCase {
             "precondition: the destination field carries the chosen place before collapse"
         )
 
-        // Collapse to idle (slow drag down on the handle — the round-4 continuous
-        // collapse that must run the full `closeToIdle` draft reset).
+        // MYR-250 item 3 — leave the swipe-locked chosen step via the back button
+        // (→ the search LIST). Continue disappears (the results list returns).
+        let changeTrip = app.buttons["mrt.search.changeTrip"]
+        XCTAssertTrue(changeTrip.waitForExistence(timeout: 6),
+                      "the chosen-destination step must show the ‹ Change trip back button")
+        changeTrip.tap()
+        XCTAssertTrue(app.buttons["Continue"].waitForNonExistence(timeout: 6),
+                      "tapping ‹ Change trip returns to the search list (no Continue CTA)")
+
+        // Collapse the (now unlocked) LIST to idle (slow drag down on the handle —
+        // the continuous collapse that must run the full `closeToIdle` draft reset).
         handleGrab(on: s).press(
             forDuration: 1.3,
             thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.92))
@@ -310,6 +319,35 @@ final class SheetFeelUITests: XCTestCase {
             "reopened search must be fresh — the prior destination must not be restored in the field"
         )
         attachFullFrame(app, named: "myr248-bug2-after-fresh-reopen")
+    }
+
+    // MARK: MYR-250 item 3 — the chosen-destination step is swipe-LOCKED
+
+    /// The client: "You shouldn't be able to swipe the bottom sheet down here"
+    /// (the chosen-destination "Continue" step). A drag DOWN must NOT collapse it
+    /// to idle — the sheet holds its detent and the Continue CTA stays. The only
+    /// way back is the "‹ Change trip" button (covered above).
+    func testSearchSelectedIsSwipeLocked() {
+        let app = launchRider(scene: "searchSelected")
+        let s = riderSheet(in: app)
+        XCTAssertTrue(s.exists, "rider sheet should be on screen in the searchSelected scene")
+        XCTAssertTrue(app.buttons["Continue"].waitForExistence(timeout: 12),
+                      "precondition: the chosen-destination Continue CTA is shown")
+        let startFrame = settledFrame(of: s)
+
+        // A big slow drag DOWN on the handle — on an unlocked sheet this collapses
+        // to idle. Swipe-locked, it must do nothing.
+        handleGrab(on: s).press(
+            forDuration: 1.3,
+            thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.92))
+        )
+        let endFrame = settledFrame(of: s)
+        NSLog("MRT_HARNESS swipeLocked startMinY=\(startFrame.minY) endMinY=\(endFrame.minY)")
+
+        XCTAssertTrue(app.buttons["Continue"].exists,
+                      "a swipe-locked chosen step must keep its Continue CTA after a drag-down attempt")
+        XCTAssertLessThan(abs(endFrame.minY - startFrame.minY), 30,
+                          "the swipe-locked chosen step must not move on a drag-down (it stays at its detent)")
     }
 
     /// From the `idle` debug scene, a drag UP on the greeting card reaches the

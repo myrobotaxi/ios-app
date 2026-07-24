@@ -448,7 +448,7 @@ struct SharedViewerScreen: View {
                 // MYR-211 addendum: standard user-location dot in live mode
                 // (authorized only); off in sim so screenshots stay identical.
                 showsUserLocation: viewerState.userLocation.showsUserLocationDot,
-                bottomContentInset: mapBottomInset,
+                bottomContentInset: vehicleMapBottomInset,
                 // MYR-213: during pin-drop, adopt the coordinate UNDER THE GLYPH
                 // (ground-truthed via `MapProxy.convert` of the glyph's real global
                 // screen point) as the authoritative pickup — only then (no geocoding
@@ -547,6 +547,33 @@ struct SharedViewerScreen: View {
 
     private var mapBottomInset: CGFloat {
         Self.mapBottomInset(phase: viewerState.sheetPhase, isPendingPill: isPendingPill)
+    }
+
+    /// MYR-250 item 1 — the `VehicleMapView` (idle/search/pin-drop) camera inset.
+    /// SEARCH shares the IDLE inset so opening the search sheet slides OVER a
+    /// STATIONARY map (the Apple Maps model the client asked for) instead of
+    /// recentering the camera up: `mapBottomInset` reports the full 712pt search
+    /// sheet height for search, and MapKit's `.safeAreaPadding(.bottom:)` shifts
+    /// the framed center up by that jump the instant idle→search commits — the
+    /// map "moving up with the sheet". Keeping the idle inset leaves the camera
+    /// exactly where it was; the taller sheet simply covers more of the same map,
+    /// and the location dot gets covered just as Apple Maps' does. Pin-drop keeps
+    /// its own inset (a legitimate street-level refit — MYR-213/215). Once a
+    /// destination is chosen the map switches to the route-preview
+    /// (`routePreviewActive`, above), which intentionally refits to show the
+    /// route, so this only governs the empty idle↔search framing.
+    private var vehicleMapBottomInset: CGFloat {
+        Self.vehicleMapBottomInset(phase: viewerState.sheetPhase, isPendingPill: isPendingPill)
+    }
+
+    /// Pure (testable) — the idle/search/pin-drop `VehicleMapView` camera inset.
+    /// SEARCH returns the IDLE inset so idle→search never recenters the camera
+    /// (item 1); every other phase keeps its own `mapBottomInset`. Extracted
+    /// static so the "search shares idle framing" invariant is unit-testable
+    /// without mounting the view (`PerPhaseMapInsetTests`).
+    static func vehicleMapBottomInset(phase: RiderSheetPhase, isPendingPill: Bool) -> CGFloat {
+        if case .search = phase { return mapBottomInset(phase: .idle, isPendingPill: false) }
+        return mapBottomInset(phase: phase, isPendingPill: isPendingPill)
     }
 
     /// The map camera span for the shared idle/search/pin-drop map: pin-drop
