@@ -27,6 +27,13 @@ struct SettingsScreen: View {
     /// fixture list pixel-identical (MYR-228).
     var linkedVehicles: (any LinkedVehiclesReading)? = nil
     let onSignOut: () -> Void
+    /// MYR-246 — the live Tesla OAuth authenticator (nil on sim/DEBUG, which
+    /// keeps the simulated pairing sheet pixel-identical). Wired from RootView
+    /// like `linkedVehicles`; when present, "Add another Tesla" runs the REAL
+    /// ASWebAuthenticationSession link flow instead of the fixture sheet.
+    var teslaAuthenticator: TeslaAuthenticator? = nil
+    /// Fired after a successful live link so the caller can refresh the fleet.
+    var onTeslaLinked: (() -> Void)? = nil
 
     private struct NotificationToggles {
         var driveStarted = true
@@ -89,7 +96,11 @@ struct SettingsScreen: View {
                 // `vehiclesState` — see that type's header comment.
                 AddTeslaFlow(
                     onComplete: { isAddingTesla = false },
-                    onCancel: { isAddingTesla = false }
+                    onCancel: { isAddingTesla = false },
+                    // MYR-246 — live path uses the real browser-sheet link
+                    // flow; sim (nil) keeps the fixture sheet.
+                    authenticate: teslaAuthenticator,
+                    onLinked: onTeslaLinked
                 )
             } else {
                 settingsContent
