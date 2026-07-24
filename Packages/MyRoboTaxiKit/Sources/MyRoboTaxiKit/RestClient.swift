@@ -17,7 +17,7 @@ public protocol SnapshotFetching: Sendable {
 ///
 /// Value type (`Sendable`): all dependencies are immutable, so it is free to
 /// share across tasks without a serialization bottleneck.
-public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint {
+public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleCommandSending {
     private let environment: BackendEnvironment
     private let tokenProvider: any TokenProvider
     private let http: any HTTPPerforming
@@ -171,6 +171,25 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
     /// Empty JSON body sentinel for the action POSTs that take no payload
     /// (`/cancel`, `/accept`, `/decline`). Encodes to `{}`.
     private struct Empty: Encodable {}
+
+    // MARK: - Vehicle commands (rest-api.md §7.9, MYR-249 / P11 — owner actuation)
+
+    /// `POST /api/vehicles/{vehicleId}/command/{name}` (§7.9) — send one owner
+    /// Tesla command. The typed param body (`VehicleCommand.encodedBody()`) rides
+    /// the standard authenticated pipeline (Bearer + single 401 refresh-retry).
+    /// A non-2xx surfaces as a typed `RestError`; callers fold it via
+    /// `RestError.commandFailureKind` (the §7.9 error catalog) — never string-match
+    /// the human message. `perform` sends no `Content-Type`/body for the
+    /// parameterless commands (empty body), exactly as §7.9 permits.
+    public func sendCommand(_ command: VehicleCommand, vehicleID: String) async throws -> VehicleCommandResult {
+        let body = try command.encodedBody()
+        return try await perform(
+            ["vehicles", vehicleID, "command", command.name],
+            method: "POST",
+            body: body,
+            allowTokenRefresh: true
+        )
+    }
 
     // MARK: - Authentication (rest-api.md §7.10, identity module — MYR-193)
     //
