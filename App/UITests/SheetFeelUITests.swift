@@ -189,6 +189,129 @@ final class SheetFeelUITests: XCTestCase {
         )
     }
 
+    /// Capture a full-frame screenshot into the result bundle (kept always) — the
+    /// PR's fixed-state evidence, straight from the driven flow (MYR-248).
+    private func attachFullFrame(_ app: XCUIApplication, named: String) {
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.lifetime = .keepAlways
+        shot.name = named
+        add(shot)
+    }
+
+    /// Whether ANY text field currently carries `substring` as its value — the
+    /// search destination row is a `TextField`, so its content is a field value,
+    /// not a static text. Used to detect a stale/fresh destination on reopen.
+    private func destinationFieldShows(_ substring: String, in app: XCUIApplication) -> Bool {
+        for i in 0..<app.textFields.count {
+            if let value = app.textFields.element(boundBy: i).value as? String, value.contains(substring) {
+                return true
+            }
+        }
+        return false
+    }
+
+    // MARK: MYR-248 — regressions from the round-4/5 continuous idle↔search sheet
+
+    /// BUG 1 — back-nav from pin-drop must restore the search sheet to its
+    /// BOTTOM-ANCHORED search detent, not strand it at the TOP of the screen.
+    ///
+    /// The `pinDropBackRealPath` scene replays the real path through the pin-drop
+    /// back-nav (idle → search → choose destination + Continue → pinDrop → "Change
+    /// trip" back → search) with a seeded simulated fix so the route-preview map
+    /// is behind the sheet (the exact `routePreviewActive` relayout that triggered
+    /// the client's strand). Before the PanSheet fix a transient over-measurement
+    /// settled the surface toward a stale tall detent that the corrected detent
+    /// never replaced (the mid-settle `update` bail), leaving the surface
+    /// translated far UP — the sheet's top edge near y≈0. After the fix the sheet
+    /// rests bottom-anchored, its top edge well into the lower half of the screen.
+    func testPinDropBackNavRestoresBottomAnchoredSheet() {
+        let app = launchRider(scene: "pinDropBackRealPath")
+        let s = riderSheet(in: app)
+        XCTAssertTrue(s.exists, "rider sheet should be on screen after the back-nav replay")
+
+        // The replay drives idle → search → Continue → pinDrop → back over ~9s;
+        // wait for the returned search sheet's CTA to land, then let it settle.
+        XCTAssertTrue(
+            app.buttons["Continue"].waitForExistence(timeout: 20),
+            "the returned search sheet should show its Continue CTA"
+        )
+        let endFrame = settledFrame(of: s)
+        let screen = app.windows.firstMatch.frame
+        NSLog("MRT_HARNESS pinDropBack sheetMinY=\(endFrame.minY) sheetMaxY=\(endFrame.maxY) screenH=\(screen.height)")
+
+        // BOTTOM-ANCHORED invariant (height-agnostic): the sheet's bottom edge
+        // reaches the physical bottom of the screen (the surface runs flush to the
+        // bottom, its overshoot pad hanging just past it → maxY ≥ screen bottom).
+        // The stranded-at-top bug pushed the whole surface UP, so its bottom edge
+        // sat well ABOVE the screen bottom with the map showing beneath it.
+        XCTAssertGreaterThan(
+            endFrame.maxY, screen.height - 10,
+            "after pin-drop back-nav the search sheet must be bottom-anchored (bottom edge at the physical bottom), not stranded at the top with the map below it"
+        )
+        // And its top edge is on-screen, not shoved off the top (the strand parked
+        // the surface top near/above y≈0).
+        XCTAssertGreaterThan(
+            endFrame.minY, 40,
+            "the bottom-anchored search sheet's top edge is on-screen, not stranded above the top"
+        )
+        attachFullFrame(app, named: "myr248-bug1-after-backnav-restored")
+    }
+
+    /// BUG 2 — collapsing the search sheet to idle must FULLY reset the draft, so
+    /// reopening search is FRESH (empty destination), never resurrecting the prior
+    /// choice with a dead Continue.
+    ///
+    /// From `searchSelected` (a destination chosen, "Continue" CTA), drag the
+    /// sheet DOWN to collapse it to the idle greeting, then drag back UP to reopen
+    /// search. Before the fix the persistently-hosted search content kept its
+    /// local field/CTA state across the collapse, so the reopened sheet showed the
+    /// stale "SFO · Terminal 2" + an enabled-but-inert Continue. After the fix the
+    /// reopened search is fresh: no stale destination text, no Continue CTA.
+    func testCollapseToIdleThenReopenSearchIsFresh() {
+        let app = launchRider(scene: "searchSelected")
+        let s = riderSheet(in: app)
+        XCTAssertTrue(s.exists, "rider sheet should be on screen in the searchSelected scene")
+        // The chosen-destination state renders the Continue CTA and fills the
+        // destination field with the picked place — both are the precondition.
+        XCTAssertTrue(
+            app.buttons["Continue"].waitForExistence(timeout: 12),
+            "precondition: the Continue CTA is shown for the chosen destination before collapse"
+        )
+        XCTAssertTrue(
+            destinationFieldShows("SFO", in: app),
+            "precondition: the destination field carries the chosen place before collapse"
+        )
+
+        // Collapse to idle (slow drag down on the handle — the round-4 continuous
+        // collapse that must run the full `closeToIdle` draft reset).
+        handleGrab(on: s).press(
+            forDuration: 1.3,
+            thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.92))
+        )
+        _ = settledFrame(of: s)
+
+        // Reopen search by dragging the greeting card back up.
+        handleGrab(on: s).press(
+            forDuration: 1.1,
+            thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
+        )
+        _ = settledFrame(of: s)
+
+        NSLog("MRT_HARNESS freshReopen staleDest=\(destinationFieldShows("SFO", in: app)) continue=\(app.buttons["Continue"].exists)")
+        // FRESH: the reopened search must not render the (dead) Continue CTA — its
+        // guard blocks after the reset (enabled iff actionable) — and must not
+        // resurrect the prior destination in the field.
+        XCTAssertFalse(
+            app.buttons["Continue"].exists,
+            "reopened search must not render an enabled-but-inert Continue CTA (enabled iff actionable)"
+        )
+        XCTAssertFalse(
+            destinationFieldShows("SFO", in: app),
+            "reopened search must be fresh — the prior destination must not be restored in the field"
+        )
+        attachFullFrame(app, named: "myr248-bug2-after-fresh-reopen")
+    }
+
     /// From the `idle` debug scene, a drag UP on the greeting card reaches the
     /// taller search height — the sheet's top edge rises well above the idle
     /// resting position. Proves the continuous idle→search drag.
