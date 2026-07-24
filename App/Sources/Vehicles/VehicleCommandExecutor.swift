@@ -99,6 +99,31 @@ public enum VehicleCommandNotice: Sendable, Equatable {
     public var isTransient: Bool { self == .waking || self == .cooldown }
 }
 
+/// A control whose CURRENT displayed state the live path may not yet know
+/// (MYR-251). The owner's actuator state — lock, climate on/off, setpoint, fan,
+/// seat levels, trunk, charge-port, media — is NOT carried by the `VehicleState`
+/// contract today (the generated `MyRobotaxiContracts.VehicleState` has no such
+/// property; several of these values stream on the WS but are uncontracted, so
+/// the Kit cannot fold them without a hand-written wire shape — forbidden by
+/// CLAUDE.md). The live executor therefore cannot assert a resting value and
+/// renders the control as unknown ("—") until the owner commands it
+/// (optimistic-on-ack) or, once the contract grows the field, real telemetry
+/// reconciles it (MYR-228: no fixture values on the live path). The simulated
+/// executor knows every field (fixtures), keeping the M1 / drift-gate scenes
+/// pixel-identical.
+public enum VehicleControlField: Sendable, Hashable, CaseIterable {
+    case locked
+    case climateOn
+    case targetTemp
+    case fanSpeed
+    case driverSeat
+    case passengerSeat
+    case trunkOpen
+    case chargePortOpen
+    case mediaPlaying
+    case volume
+}
+
 /// One control's live command state: pending (a command is in flight — suppress
 /// re-fires) and/or a settled notice from the last attempt.
 public struct VehicleControlUIState: Sendable, Equatable {
@@ -210,11 +235,22 @@ public protocol VehicleCommandExecutor: AnyObject, Observable {
     /// returns `false` for `.chargePort` (no §7.9 command) so the tile is honestly
     /// disabled rather than faked.
     func isSupported(_ key: VehicleControlKey) -> Bool
+
+    // MARK: Honest-state seam (MYR-251)
+
+    /// Whether THIS executor knows the control's current displayed state. Default
+    /// `true` (below) — the simulated executor's fixtures are authoritative, so
+    /// M1 / drift-gate scenes render every value and stay pixel-identical. The
+    /// live executor returns `false` until the field is confirmed by a command
+    /// ack, so an unconfirmed control renders a design-consistent unknown ("—")
+    /// instead of a fixture value on the live path (MYR-228 / MYR-251).
+    func isKnown(_ field: VehicleControlField) -> Bool
 }
 
 public extension VehicleCommandExecutor {
     func uiState(for key: VehicleControlKey) -> VehicleControlUIState { .idle }
     func isSupported(_ key: VehicleControlKey) -> Bool { true }
+    func isKnown(_ field: VehicleControlField) -> Bool { true }
 }
 
 /// M1 implementation: mutates `controls` synchronously and locally, matching
