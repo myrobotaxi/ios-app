@@ -13,6 +13,24 @@ import CoreLocation
 // not a visual/motion deviation: both states render pixel-for-pixel per
 // screens.jsx `DrivingSheetContent`/`ParkedSheetContent`.
 
+/// Tire pressures per wheel (vehicle-controls.jsx:398-409). Standard Tesla
+/// fleet-telemetry fields (`TpmsPressureFl/Fr/Rl/Rr`) but NOT in the generated
+/// `VehicleState` contract yet — so fixtures carry them and the LIVE path leaves
+/// them `nil` → honest-unknown until they're contracted (MYR-255 gap list).
+public struct TirePressures: Equatable, Sendable {
+    public let fl: Int
+    public let fr: Int
+    public let rl: Int
+    public let rr: Int
+
+    public init(fl: Int, fr: Int, rl: Int, rr: Int) {
+        self.fl = fl
+        self.fr = fr
+        self.rl = rl
+        self.rr = rr
+    }
+}
+
 /// One vehicle (screens.jsx:9-12 `VEHICLES`).
 public struct Vehicle: Identifiable, Equatable, Sendable {
     public let id: String
@@ -23,6 +41,17 @@ public struct Vehicle: Identifiable, Equatable, Sendable {
     public let seatHeat: Bool
     public let seatVent: Bool
     public let activity: VehicleActivity
+    /// Full 17-char VIN. NOT on the `VehicleState`/`VehicleSummary` contract (only
+    /// `vinLast4`), so this is fixture-only — `nil` on the live path → the detail
+    /// row reads honest-unknown (MYR-255). The switcher/plate row still shows the
+    /// real `VIN ····last4` from the summary.
+    public let vin: String?
+    /// Tesla software/firmware version. Not contracted → fixture-only; `nil` live
+    /// → honest-unknown (MYR-255 gap list).
+    public let softwareVersion: String?
+    /// Per-wheel tire pressures. Not contracted → fixture-only; `nil` live →
+    /// honest-unknown (MYR-255 gap list).
+    public let tirePressures: TirePressures?
 
     public init(
         id: String,
@@ -32,7 +61,10 @@ public struct Vehicle: Identifiable, Equatable, Sendable {
         plate: String,
         seatHeat: Bool,
         seatVent: Bool,
-        activity: VehicleActivity
+        activity: VehicleActivity,
+        vin: String? = nil,
+        softwareVersion: String? = nil,
+        tirePressures: TirePressures? = nil
     ) {
         self.id = id
         self.name = name
@@ -42,6 +74,9 @@ public struct Vehicle: Identifiable, Equatable, Sendable {
         self.seatHeat = seatHeat
         self.seatVent = seatVent
         self.activity = activity
+        self.vin = vin
+        self.softwareVersion = softwareVersion
+        self.tirePressures = tirePressures
     }
 }
 
@@ -155,7 +190,13 @@ public enum VehicleFixtures {
             plate: "RBO-2046",
             seatHeat: true,
             seatVent: true,
-            activity: .driving(cybercabTrip)
+            activity: .driving(cybercabTrip),
+            // vehicle-controls.jsx:398-425 fixture detail stats — carried on the
+            // fixture so the SIMULATED sheet renders the exact VIN/Software/tires
+            // it did in M1; the LIVE path leaves these nil → honest-unknown.
+            vin: "7SAYGDEE9PA142184",
+            softwareVersion: "2026.14.3",
+            tirePressures: TirePressures(fl: 42, fr: 42, rl: 41, rr: 43)
         ),
         Vehicle(
             id: "v2",
@@ -165,7 +206,10 @@ public enum VehicleFixtures {
             plate: "CTX-9417",
             seatHeat: true,
             seatVent: false,
-            activity: .parked(dailyParkedLocation)
+            activity: .parked(dailyParkedLocation),
+            vin: "7SAYGDEE9PA142184",
+            softwareVersion: "2026.14.3",
+            tirePressures: TirePressures(fl: 42, fr: 42, rl: 41, rr: 43)
         ),
     ]
 

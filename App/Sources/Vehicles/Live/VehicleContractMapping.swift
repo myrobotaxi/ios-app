@@ -75,11 +75,17 @@ enum VehicleContractMapping {
             speedMPH: max(0, state.speed),
             batteryPercent: Double(min(100, max(0, state.chargeLevel))),
             etaMinutes: driving ? max(0, state.etaMinutes ?? 0) : 0,
-            // Real cabin/ambient temps — the ONLY controls-surface fields the
-            // `VehicleState` contract carries today (MYR-251). Everything else on
-            // the controls surface renders as unknown on the live path.
+            // Real cabin/ambient temps (MYR-251) plus the Lifetime stats the
+            // `VehicleState` contract carries: `odometerMiles` and
+            // `fsdMilesSinceReset` (MYR-255 — both non-nullable in the contract,
+            // so once a snapshot arrives they are always real, never a fixture).
+            // "Driven autonomously %" is derived from these two in the view.
+            // Tire pressures, full VIN, and software version are NOT contracted —
+            // they render honest-unknown on the live path (backend-field gap).
             interiorTempF: state.interiorTemp,
-            exteriorTempF: state.exteriorTemp
+            exteriorTempF: state.exteriorTemp,
+            odometerMiles: state.odometerMiles,
+            fsdMilesSinceReset: state.fsdMilesSinceReset
         )
     }
 

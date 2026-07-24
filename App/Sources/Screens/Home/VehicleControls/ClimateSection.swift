@@ -251,7 +251,10 @@ struct ClimateSection: View {
                         .font(.system(size: 14, weight: .semibold))
                         .tracking(-0.2)
                         .foregroundStyle(Color.mrtText)
-                    Text("Live state unavailable")
+                    // MYR-255 — "Syncing" (not "unavailable") reads as pending,
+                    // not broken; auto-resolves once MYR-252's climate read-back
+                    // lands and the executor confirms on/off (isKnown(.climateOn)).
+                    Text("Syncing live state\u{2026}")
                         .font(.system(size: 12))
                         .foregroundStyle(Color.mrtTextMuted)
                 }

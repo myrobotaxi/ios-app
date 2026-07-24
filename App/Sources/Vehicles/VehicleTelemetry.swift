@@ -41,6 +41,16 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
     /// Ambient exterior temperature in °F. Real `VehicleState.exteriorTemp` live;
     /// the fixture 58 simulated; `nil` = unknown.
     public var exteriorTempF: Int?
+    /// Lifetime odometer in whole miles (vehicle-controls Lifetime section). Real
+    /// `VehicleState.odometerMiles` on the live path; the fixture 42,184 simulated;
+    /// `nil` = not yet streamed → the Lifetime rows render "— Syncing" rather than
+    /// a fixture number (MYR-228 / MYR-255).
+    public var odometerMiles: Int?
+    /// FSD miles since last reset (`VehicleState.fsdMilesSinceReset`). Real live;
+    /// the fixture 31,907 simulated; `nil` = not yet streamed. "Driven
+    /// autonomously %" is derived from this over `odometerMiles` — no separate
+    /// wire field, so it too is honest-unknown until both stream in.
+    public var fsdMilesSinceReset: Double?
 
     public init(
         status: VehicleTelemetryStatus,
@@ -49,7 +59,9 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
         batteryPercent: Double,
         etaMinutes: Int,
         interiorTempF: Int? = nil,
-        exteriorTempF: Int? = nil
+        exteriorTempF: Int? = nil,
+        odometerMiles: Int? = nil,
+        fsdMilesSinceReset: Double? = nil
     ) {
         self.status = status
         self.progress = progress
@@ -58,6 +70,8 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
         self.etaMinutes = etaMinutes
         self.interiorTempF = interiorTempF
         self.exteriorTempF = exteriorTempF
+        self.odometerMiles = odometerMiles
+        self.fsdMilesSinceReset = fsdMilesSinceReset
     }
 }
 
@@ -109,7 +123,13 @@ public final class SimulatedVehicleTelemetrySource: VehicleTelemetrySource {
                 // vehicle-controls.jsx:229-230 fixture cabin/exterior temps — kept
                 // here so the simulated controls render identically to M1.
                 interiorTempF: 66,
-                exteriorTempF: 58
+                exteriorTempF: 58,
+                // vehicle-controls.jsx:412-414 fixture Lifetime stats — seeded here
+                // so the SIMULATED controls render the exact same 42,184 / 31,907 /
+                // 76% as M1 (the drift-gate scenes depend on it); the LIVE path
+                // takes the real wire values via VehicleContractMapping (MYR-255).
+                odometerMiles: 42184,
+                fsdMilesSinceReset: 31907
             )
         case .parked:
             totalRouteMinutes = 0
@@ -120,7 +140,9 @@ public final class SimulatedVehicleTelemetrySource: VehicleTelemetrySource {
                 batteryPercent: 68,
                 etaMinutes: 0,
                 interiorTempF: 66,
-                exteriorTempF: 58
+                exteriorTempF: 58,
+                odometerMiles: 42184,
+                fsdMilesSinceReset: 31907
             )
         }
     }

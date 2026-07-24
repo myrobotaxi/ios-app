@@ -22,6 +22,11 @@ struct VehicleControls: View {
     /// pixel-identical); `nil` = unknown (no snapshot yet) → renders "—".
     let cabinTemp: Int?
     let extTemp: Int?
+    /// Real Lifetime stats from the snapshot (MYR-255). Live: the wire
+    /// `odometerMiles`/`fsdMilesSinceReset`; simulated: the fixtures 42,184/31,907;
+    /// `nil` = not yet streamed → the Lifetime rows render "— Syncing".
+    let odometerMiles: Int?
+    let fsdMilesSinceReset: Double?
 
     private var controls: VehicleControlsSnapshot { executor.controls }
 
@@ -53,9 +58,9 @@ struct VehicleControls: View {
                 StatusLocationSection(location: parkedLocation, rangeMi: rangeMi)
             }
 
-            TirePressureSection()
+            TirePressureSection(pressures: vehicle.tirePressures)
 
-            LifetimeSection()
+            LifetimeSection(odometerMiles: odometerMiles, fsdMilesSinceReset: fsdMilesSinceReset)
 
             VehicleDetailsSection(vehicle: vehicle, plate: controls.plate) {
                 isEditingPlate = true
@@ -80,6 +85,12 @@ struct VehicleControls: View {
 
     /// The em-dash the design uses for an unavailable value.
     private static let dash = "\u{2014}"
+    /// MYR-255 — the quick tiles' honest-unknown sub. The bare "\u{2014}" read as
+    /// broken to the client ("why are some of them empty"); pairing it with a
+    /// muted "Syncing" makes "state not yet streamed" visibly intentional. These
+    /// auto-fill the moment MYR-252's contracted control states arrive (the
+    /// executor flips isKnown), so this branch simply stops rendering.
+    private static let syncingSub = "\u{2014} Syncing"
 
     private var quickTiles: some View {
         HStack(spacing: 8) {
@@ -95,7 +106,7 @@ struct VehicleControls: View {
         return ControlTile(
             icon: known ? (controls.locked ? "lock.fill" : "lock.open.fill") : "lock",
             label: known ? (controls.locked ? "Locked" : "Unlocked") : "Lock",
-            sub: known ? (controls.locked ? "Tap to unlock" : "Tap to lock") : Self.dash,
+            sub: known ? (controls.locked ? "Tap to unlock" : "Tap to lock") : Self.syncingSub,
             active: known && !controls.locked,
             activeColor: .mrtDriving,
             uiState: executor.uiState(for: .lock)
@@ -113,7 +124,7 @@ struct VehicleControls: View {
         return ControlTile(
             icon: "fan",
             label: "Climate",
-            sub: known ? (controls.climateOn ? onSub : "Off") : Self.dash,
+            sub: known ? (controls.climateOn ? onSub : "Off") : Self.syncingSub,
             active: known && controls.climateOn,
             activeColor: .mrtGold,
             uiState: executor.uiState(for: .climate)
@@ -128,7 +139,7 @@ struct VehicleControls: View {
         return ControlTile(
             icon: "car.fill",
             label: "Trunk",
-            sub: known ? (controls.trunkOpen ? "Open" : "Closed") : Self.dash,
+            sub: known ? (controls.trunkOpen ? "Open" : "Closed") : Self.syncingSub,
             active: known && controls.trunkOpen,
             activeColor: .mrtParked,
             uiState: executor.uiState(for: .trunk)
@@ -148,7 +159,7 @@ struct VehicleControls: View {
         return ControlTile(
             icon: "bolt.fill",
             label: "Charge",
-            sub: known ? (controls.chargePortOpen ? "Port open" : "Port closed") : Self.dash,
+            sub: known ? (controls.chargePortOpen ? "Port open" : "Port closed") : Self.syncingSub,
             active: known && controls.chargePortOpen,
             activeColor: .mrtCharging,
             uiState: executor.uiState(for: .chargePort)
