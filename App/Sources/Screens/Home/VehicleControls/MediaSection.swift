@@ -20,12 +20,20 @@ struct MediaSection: View {
     /// media_prev_track). `.idle` on the simulated path → pixel-identical M1.
     private var mediaState: VehicleControlUIState { executor.uiState(for: .media) }
 
+    /// MYR-251 — play/pause and volume states are not on the wire; unknown on the
+    /// live path until the owner commands them, then honest.
+    private var playingKnown: Bool { executor.isKnown(.mediaPlaying) }
+    private var volumeKnown: Bool { executor.isKnown(.volume) }
+
     private var scrubBinding: Binding<Double> {
         Binding(get: { controls.scrubPercent }, set: { executor.setScrubPercent($0) })
     }
 
     private var volumeBinding: Binding<Double> {
-        Binding(get: { controls.volume }, set: { newValue in Task { try? await executor.setVolume(newValue) } })
+        Binding(
+            get: { volumeKnown ? controls.volume : 0 },
+            set: { newValue in Task { try? await executor.setVolume(newValue) } }
+        )
     }
 
     /// vehicle-controls.jsx:233-237 `fmtTime` — a 3:42 track.
@@ -80,7 +88,10 @@ struct MediaSection: View {
                     }
                     .opacity(mediaState.isPending ? 0.5 : 1)
                     Button {
-                        Task { try? await executor.setMediaPlaying(!controls.mediaPlaying) }
+                        // Unknown → start playback (the neutral affordance below
+                        // shows play.fill); known → toggle.
+                        let target = playingKnown ? !controls.mediaPlaying : true
+                        Task { try? await executor.setMediaPlaying(target) }
                     } label: {
                         // Pending → a spinner in the gold circle (Reduce Motion
                         // falls back to the static icon dimmed). Idle renders the
@@ -92,7 +103,8 @@ struct MediaSection: View {
                                     .controlSize(.small)
                                     .tint(Color.mrtGoldButtonLabel)
                             } else {
-                                Image(systemName: controls.mediaPlaying ? "pause.fill" : "play.fill")
+                                // Unknown playback → the neutral play.fill affordance.
+                                Image(systemName: playingKnown && controls.mediaPlaying ? "pause.fill" : "play.fill")
                                     .font(.system(size: 22))
                                     .foregroundStyle(Color.mrtGoldButtonLabel)
                                     .opacity(mediaState.isPending ? 0.5 : 1)
@@ -123,6 +135,9 @@ struct MediaSection: View {
                     Image(systemName: "speaker.wave.2.fill").font(.system(size: 15)).foregroundStyle(Color.mrtTextSec)
                     MRTSlider(value: volumeBinding, trackHeight: 4)
                 }
+                // Unknown volume (live path, uncommanded) shows a neutral slider at
+                // rest, dimmed — no asserted level (MYR-251).
+                .opacity(volumeKnown ? 1 : 0.5)
                 .padding(.top, 16)
             }
         }

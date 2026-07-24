@@ -17,13 +17,13 @@ struct VehicleControls: View {
     let executor: any VehicleCommandExecutor
     @Binding var isEditingPlate: Bool
 
-    private var controls: VehicleControlsSnapshot { executor.controls }
+    /// Real cabin/ambient temps from the telemetry snapshot (MYR-251). Live: the
+    /// wire `interiorTemp`/`exteriorTemp`; simulated: the fixture 66/58 (so M1 is
+    /// pixel-identical); `nil` = unknown (no snapshot yet) → renders "—".
+    let cabinTemp: Int?
+    let extTemp: Int?
 
-    /// vehicle-controls.jsx:229-230 — hardcoded regardless of vehicle; there
-    /// is no interior/exterior temp field on `VehicleTelemetrySnapshot`
-    /// (M1 fixture data, see `VehicleTelemetry.swift`).
-    private let cabinTemp = 66
-    private let extTemp = 58
+    private var controls: VehicleControlsSnapshot { executor.controls }
 
     private var rangeMi: Int { Int(((batteryPercent / 100) * 272).rounded()) } // vehicle-controls.jsx:228
 
@@ -71,53 +71,90 @@ struct VehicleControls: View {
     }
 
     // MARK: Quick tiles (vehicle-controls.jsx:244-254)
+    //
+    // MYR-251 — each tile's STATE (locked/on/open) is only asserted when the
+    // executor confirms it (`isKnown`); on the live path it is unknown until the
+    // owner commands the tile, so it renders a neutral icon + "—" instead of a
+    // fixture value (MYR-228). When unknown the tap performs the SAFE default
+    // (lock / start climate / open) rather than toggling an unknown seed.
+
+    /// The em-dash the design uses for an unavailable value.
+    private static let dash = "\u{2014}"
 
     private var quickTiles: some View {
         HStack(spacing: 8) {
-            ControlTile(
-                icon: controls.locked ? "lock.fill" : "lock.open.fill",
-                label: controls.locked ? "Locked" : "Unlocked",
-                sub: controls.locked ? "Tap to unlock" : "Tap to lock",
-                active: !controls.locked,
-                activeColor: .mrtDriving,
-                uiState: executor.uiState(for: .lock)
-            ) {
-                Task { try? await executor.setLocked(!controls.locked) }
-            }
-            ControlTile(
-                icon: "fan",
-                label: "Climate",
-                sub: controls.climateOn ? "On · \(controls.targetTemp)°" : "Off",
-                active: controls.climateOn,
-                activeColor: .mrtGold,
-                uiState: executor.uiState(for: .climate)
-            ) {
-                Task { try? await executor.setClimateOn(!controls.climateOn) }
-            }
-            ControlTile(
-                icon: "car.fill",
-                label: "Trunk",
-                sub: controls.trunkOpen ? "Open" : "Closed",
-                active: controls.trunkOpen,
-                activeColor: .mrtParked,
-                uiState: executor.uiState(for: .trunk)
-            ) {
-                Task { try? await executor.setTrunkOpen(!controls.trunkOpen) }
-            }
-            // Charge port joined the §7.9 catalog in v186 (charge_port_door_open /
-            // close, MYR-249) — the tile now toggles the port per its state and
-            // shows the phase-1 pending/notice UX (a token lacking the charging
-            // scope surfaces the charging-specific re-link line).
-            ControlTile(
-                icon: "bolt.fill",
-                label: "Charge",
-                sub: controls.chargePortOpen ? "Port open" : "Port closed",
-                active: controls.chargePortOpen,
-                activeColor: .mrtCharging,
-                uiState: executor.uiState(for: .chargePort)
-            ) {
-                Task { try? await executor.setChargePortOpen(!controls.chargePortOpen) }
-            }
+            lockTile
+            climateTile
+            trunkTile
+            chargeTile
+        }
+    }
+
+    private var lockTile: some View {
+        let known = executor.isKnown(.locked)
+        return ControlTile(
+            icon: known ? (controls.locked ? "lock.fill" : "lock.open.fill") : "lock",
+            label: known ? (controls.locked ? "Locked" : "Unlocked") : "Lock",
+            sub: known ? (controls.locked ? "Tap to unlock" : "Tap to lock") : Self.dash,
+            active: known && !controls.locked,
+            activeColor: .mrtDriving,
+            uiState: executor.uiState(for: .lock)
+        ) {
+            // Unknown → lock (the safe default); known → toggle.
+            let target = known ? !controls.locked : true
+            Task { try? await executor.setLocked(target) }
+        }
+    }
+
+    private var climateTile: some View {
+        let known = executor.isKnown(.climateOn)
+        let tempKnown = executor.isKnown(.targetTemp)
+        let onSub = tempKnown ? "On · \(controls.targetTemp)°" : "On"
+        return ControlTile(
+            icon: "fan",
+            label: "Climate",
+            sub: known ? (controls.climateOn ? onSub : "Off") : Self.dash,
+            active: known && controls.climateOn,
+            activeColor: .mrtGold,
+            uiState: executor.uiState(for: .climate)
+        ) {
+            let target = known ? !controls.climateOn : true
+            Task { try? await executor.setClimateOn(target) }
+        }
+    }
+
+    private var trunkTile: some View {
+        let known = executor.isKnown(.trunkOpen)
+        return ControlTile(
+            icon: "car.fill",
+            label: "Trunk",
+            sub: known ? (controls.trunkOpen ? "Open" : "Closed") : Self.dash,
+            active: known && controls.trunkOpen,
+            activeColor: .mrtParked,
+            uiState: executor.uiState(for: .trunk)
+        ) {
+            let target = known ? !controls.trunkOpen : true
+            Task { try? await executor.setTrunkOpen(target) }
+        }
+    }
+
+    // Charge port joined the §7.9 catalog in v186 (charge_port_door_open /
+    // close, MYR-249) — the tile toggles the port per its state and shows the
+    // pending/notice UX (a token lacking the charging scope surfaces the
+    // charging-specific re-link line). Its OPEN/CLOSED state is not on the wire,
+    // so it too renders unknown until commanded (MYR-251).
+    private var chargeTile: some View {
+        let known = executor.isKnown(.chargePortOpen)
+        return ControlTile(
+            icon: "bolt.fill",
+            label: "Charge",
+            sub: known ? (controls.chargePortOpen ? "Port open" : "Port closed") : Self.dash,
+            active: known && controls.chargePortOpen,
+            activeColor: .mrtCharging,
+            uiState: executor.uiState(for: .chargePort)
+        ) {
+            let target = known ? !controls.chargePortOpen : true
+            Task { try? await executor.setChargePortOpen(target) }
         }
     }
 }

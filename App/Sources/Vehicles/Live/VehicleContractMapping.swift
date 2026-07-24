@@ -74,7 +74,12 @@ enum VehicleContractMapping {
             progress: driving ? tripProgress(from: state) : 0,
             speedMPH: max(0, state.speed),
             batteryPercent: Double(min(100, max(0, state.chargeLevel))),
-            etaMinutes: driving ? max(0, state.etaMinutes ?? 0) : 0
+            etaMinutes: driving ? max(0, state.etaMinutes ?? 0) : 0,
+            // Real cabin/ambient temps — the ONLY controls-surface fields the
+            // `VehicleState` contract carries today (MYR-251). Everything else on
+            // the controls surface renders as unknown on the live path.
+            interiorTempF: state.interiorTemp,
+            exteriorTempF: state.exteriorTemp
         )
     }
 

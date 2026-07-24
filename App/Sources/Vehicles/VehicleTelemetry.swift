@@ -33,19 +33,31 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
     /// screens.jsx:373 `eta = Math.max(1, Math.round((1 - progress) * 87))`
     /// — minutes remaining. 0 when parked.
     public var etaMinutes: Int
+    /// Cabin interior temperature in °F (vehicle-controls.jsx Interior/Exterior
+    /// row). Real `VehicleState.interiorTemp` on the live path; the fixture 66 on
+    /// the simulated path. `nil` = unknown (no live snapshot yet) → the controls
+    /// render "—" rather than a fixture value (MYR-228 / MYR-251).
+    public var interiorTempF: Int?
+    /// Ambient exterior temperature in °F. Real `VehicleState.exteriorTemp` live;
+    /// the fixture 58 simulated; `nil` = unknown.
+    public var exteriorTempF: Int?
 
     public init(
         status: VehicleTelemetryStatus,
         progress: Double,
         speedMPH: Int,
         batteryPercent: Double,
-        etaMinutes: Int
+        etaMinutes: Int,
+        interiorTempF: Int? = nil,
+        exteriorTempF: Int? = nil
     ) {
         self.status = status
         self.progress = progress
         self.speedMPH = speedMPH
         self.batteryPercent = batteryPercent
         self.etaMinutes = etaMinutes
+        self.interiorTempF = interiorTempF
+        self.exteriorTempF = exteriorTempF
     }
 }
 
@@ -93,7 +105,11 @@ public final class SimulatedVehicleTelemetrySource: VehicleTelemetrySource {
                 progress: progress,
                 speedMPH: 64,
                 batteryPercent: 68,
-                etaMinutes: max(1, Int(((1 - progress) * 87).rounded()))
+                etaMinutes: max(1, Int(((1 - progress) * 87).rounded())),
+                // vehicle-controls.jsx:229-230 fixture cabin/exterior temps — kept
+                // here so the simulated controls render identically to M1.
+                interiorTempF: 66,
+                exteriorTempF: 58
             )
         case .parked:
             totalRouteMinutes = 0
@@ -102,7 +118,9 @@ public final class SimulatedVehicleTelemetrySource: VehicleTelemetrySource {
                 progress: 0,
                 speedMPH: 0,
                 batteryPercent: 68,
-                etaMinutes: 0
+                etaMinutes: 0,
+                interiorTempF: 66,
+                exteriorTempF: 58
             )
         }
     }
