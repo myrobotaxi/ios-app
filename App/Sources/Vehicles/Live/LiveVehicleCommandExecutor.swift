@@ -1,5 +1,6 @@
 import Foundation
 import MyRoboTaxiKit
+import MyRobotaxiContracts
 import Observation
 
 // MARK: - LiveVehicleCommandExecutor (MYR-249 — P11 owner actuation, MYR-181–183)
@@ -126,6 +127,142 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// the `VehicleState` contract carries no actuator state today.
     func isKnown(_ field: VehicleControlField) -> Bool {
         knownFields.contains(field)
+    }
+
+    // MARK: Telemetry reconciliation (MYR-252 — v0.12.0 cabin read-back)
+    //
+    // The v0.12.0 `VehicleState` now carries the owner-actuator state as OPTIONAL
+    // fields. Each field PRESENT on the wire reconciles its control to the car's
+    // REAL value and marks it KNOWN (`isKnown` → true), so the tile stops showing
+    // "—" and shows true state; each field ABSENT stays honestly unknown — never a
+    // fixture (MYR-228 / MYR-251). Telemetry is authoritative and OVERRIDES the
+    // optimistic-on-ack value a prior command applied (MYR-249): a command ack
+    // shows the optimistic state, the next telemetry frame confirms/corrects it.
+    // The one exception is a control whose command is still in flight (pending) —
+    // its value is left for the ack + next frame so the tile doesn't flicker
+    // mid-command.
+    //
+    // Called on every cold snapshot and every folded delta via the Kit's
+    // `LiveVehicleState.onStateChanged` hook (wired in `LiveVehicleFleet`).
+    func reconcile(from state: VehicleState) {
+        // Climate on/off — use the server-DERIVED `isClimateOn` ONLY. The backend
+        // OMITS it (→ nil) when `hvacPower` is "Unknown", so an absent value stays
+        // honestly unknown; the raw `hvacPower` "Unknown" must NEVER read as
+        // climate-on (MYR-251/252 honesty fix). We deliberately do not consult
+        // `state.hvacPower` here.
+        if let on = state.isClimateOn {
+            reconcileField(.climateOn, key: .climate) { self.controls.climateOn = on }
+        }
+
+        if let locked = state.locked {
+            reconcileField(.locked, key: .lock) { self.controls.locked = locked }
+        }
+
+        // Single target-temp tile mirrors the DRIVER setpoint (matches
+        // `setTargetTemp`, which commands `driver_temp`). Passenger setpoint is on
+        // the wire (`passengerTempSetting`) but has no separate tile.
+        if let temp = state.driverTempSetting {
+            reconcileField(.targetTemp, key: .temp) { self.controls.targetTemp = min(82, max(60, temp)) }
+        }
+
+        if let fan = state.fanSpeed {
+            reconcileField(.fanSpeed, key: nil) { self.controls.fanSpeed = min(10, max(0, fan)) }
+        }
+
+        // Climate mode (Auto/Cool/Heat) — a pure display refinement (no `isKnown`
+        // seam, no §7.9 command); only asserted when the auto-mode field is a known
+        // On/Override, honest-nil otherwise.
+        if let mode = Self.climateMode(autoMode: state.hvacAutoMode, acEnabled: state.hvacAcEnabled) {
+            controls.climateMode = mode
+        }
+
+        reconcileSeat(.driver, key: .driverSeat, heater: state.seatHeaterLeft, cooler: state.seatCoolerLeft)
+        reconcileSeat(.passenger, key: .passengerSeat, heater: state.seatHeaterRight, cooler: state.seatCoolerRight)
+
+        if let trunk = state.trunkOpen {
+            reconcileField(.trunkOpen, key: .trunk) { self.controls.trunkOpen = trunk }
+        }
+
+        if let port = state.chargePortDoorOpen {
+            reconcileField(.chargePortOpen, key: .chargePort) { self.controls.chargePortOpen = port }
+        }
+
+        // Media playback — the enum carries an explicit `.unknown`; treat it (and
+        // any unrecognized value) as honestly unknown, never a fabricated play/pause.
+        if let status = state.mediaPlaybackStatus, let playing = Self.mediaPlaying(from: status) {
+            reconcileField(.mediaPlaying, key: .media) { self.controls.mediaPlaying = playing }
+        }
+
+        // Media volume — wire 0–11 (fractional) → UI 0–100. Skip while the slider's
+        // own coalescer has a send outstanding so a live frame can't yank the thumb
+        // out from under a drag.
+        if let vol = state.mediaVolume, !volumeSending, pendingVolume == nil {
+            reconcileField(.volume, key: .media) { self.controls.volume = min(100, max(0, vol / 11 * 100)) }
+        }
+    }
+
+    /// Apply a wire value to a control and mark it KNOWN — unless a command for its
+    /// `key` is currently in flight (leave the optimistic in-flight value alone; the
+    /// ack + next frame reconcile it). `key: nil` for controls with no command
+    /// (fan) — always applied.
+    private func reconcileField(_ field: VehicleControlField, key: VehicleControlKey?, apply: () -> Void) {
+        if let key, uiState(for: key).isPending { return }
+        apply()
+        knownFields.insert(field)
+    }
+
+    /// Reconcile one seat from its heater + cooler read-back levels (both 0–3 on the
+    /// wire, matching the UI's level scale). Active cooling wins the mode; otherwise
+    /// the heater level (0 = off) shows in heat mode. Absent on both → stays unknown.
+    private func reconcileSeat(_ seat: VehicleSeatPosition, key: VehicleControlKey, heater: Int?, cooler: Int?) {
+        guard heater != nil || cooler != nil else { return }
+        if uiState(for: key).isPending { return }
+        let mode: VehicleSeatClimateMode
+        let level: Int
+        if let cooler, cooler > 0 {
+            mode = .cool
+            level = min(3, max(0, cooler))
+        } else if let heater {
+            mode = .heat
+            level = min(3, max(0, heater))
+        } else {
+            // Only a cooler field, reading 0 → cool armed, off.
+            mode = .cool
+            level = 0
+        }
+        switch seat {
+        case .driver:
+            controls.driverSeatMode = mode
+            controls.driverSeatHeatLevel = level
+            knownFields.insert(.driverSeat)
+        case .passenger:
+            controls.passengerSeatMode = mode
+            controls.passengerSeatHeatLevel = level
+            knownFields.insert(.passengerSeat)
+        }
+    }
+
+    /// Fold the HVAC auto-mode + AC-enabled read-back onto the app's Auto/Cool/Heat
+    /// segment. Only a KNOWN auto state asserts a mode: `On` → Auto; `Override`
+    /// (manual) → Cool when the AC compressor is on, else Heat. `Unknown`/
+    /// unrecognized/absent → nil (leave the last-shown mode untouched — honest).
+    static func climateMode(autoMode: VehicleState.HvacAutoMode?, acEnabled: Bool?) -> VehicleClimateMode? {
+        switch autoMode {
+        case .on: return .auto
+        case .override: return (acEnabled == true) ? .cool : .heat
+        case .unknown, .unrecognized, .none: return nil
+        }
+    }
+
+    /// Map the media playback enum onto the play/pause boolean. `Unknown` and any
+    /// unrecognized value return nil so the control stays honestly unknown (MYR-251)
+    /// rather than asserting a fabricated play/pause.
+    static func mediaPlaying(from status: VehicleState.MediaPlaybackStatus) -> Bool? {
+        switch status {
+        case .playing: return true
+        case .paused, .stopped: return false
+        case .unknown, .unrecognized: return nil
+        }
     }
 
     // Every keyed control now maps to a real §7.9 command (charge port joined the

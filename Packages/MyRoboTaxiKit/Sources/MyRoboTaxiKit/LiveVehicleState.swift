@@ -40,6 +40,15 @@ public final class LiveVehicleState {
     /// `@MainActor` because the whole bridge is main-actor isolated.
     public var onDriveEnded: (@MainActor (DriveEndedPayload) -> Void)?
 
+    /// Optional hook fired whenever the accumulated ``state`` changes — i.e. on
+    /// every cold snapshot and every folded `vehicle_update` delta (MYR-252). The
+    /// app's live command executor wires this to reconcile the owner-actuator
+    /// read-back fields the v0.12.0 `VehicleState` now carries (lock, climate,
+    /// seats, trunk/charge-port, media) so a control shows the car's REAL state
+    /// instead of an honest "—". `@MainActor` because the bridge is main-actor
+    /// isolated. Fired AFTER `state` is updated, with the new value.
+    public var onStateChanged: (@MainActor (VehicleState) -> Void)?
+
     private let socket: TelemetrySocket
     private var eventTask: Task<Void, Never>?
     private var connectionTask: Task<Void, Never>?
@@ -87,9 +96,12 @@ public final class LiveVehicleState {
         switch event {
         case .snapshot(let snapshot):
             state = snapshot
+            onStateChanged?(snapshot)
         case .update(let payload):
             guard let current = state else { return } // ordering: snapshot precedes updates
-            state = VehicleStateMerger.apply(fields: payload.fields, to: current).state
+            let merged = VehicleStateMerger.apply(fields: payload.fields, to: current).state
+            state = merged
+            onStateChanged?(merged)
         case .driveStarted:
             isDriving = true
         case .driveEnded(let summary):

@@ -192,7 +192,7 @@ final class LiveVehicleFleet: VehicleFleet {
         sources = items.map { summary in
             LiveVehicleTelemetrySource(liveState: LiveVehicleState(vehicleId: summary.vehicleId, socket: socket))
         }
-        executors = items.map { summary in
+        let liveExecutors = items.map { summary in
             LiveVehicleCommandExecutor(
                 vehicleID: summary.vehicleId,
                 sender: rest,
@@ -200,6 +200,7 @@ final class LiveVehicleFleet: VehicleFleet {
                 plate: VehicleContractMapping.plateDisplay(vinLast4: summary.vinLast4)
             )
         }
+        executors = liveExecutors
         feeds = items.map { summary in
             LiveDrivesFeed(rest: rest, vehicleID: summary.vehicleId)
         }
@@ -208,6 +209,16 @@ final class LiveVehicleFleet: VehicleFleet {
         // vehicle's socket delivers frames, so only its feed refreshes.
         for (source, feed) in zip(sources, feeds) {
             source.liveState.onDriveEnded = { [weak feed] _ in feed?.refresh() }
+        }
+        // MYR-252 — reconcile the owner-control read-back fields the v0.12.0
+        // `VehicleState` now carries: on every snapshot/delta, fold the real
+        // lock/climate/seat/trunk/charge-port/media state into the executor so its
+        // tiles flip from honest-"—" to the car's true state. Only the active
+        // vehicle's socket delivers frames, so only its executor reconciles.
+        for (source, executor) in zip(sources, liveExecutors) {
+            source.liveState.onStateChanged = { [weak executor] state in
+                executor?.reconcile(from: state)
+            }
         }
         if items.isEmpty {
             statusMessage = "No vehicles linked to this account"

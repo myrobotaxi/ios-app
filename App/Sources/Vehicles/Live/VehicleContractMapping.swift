@@ -168,7 +168,10 @@ enum VehicleContractMapping {
             colorName: summary.color,
             plate: plateDisplay(vinLast4: summary.vinLast4),
             seatHeat: false,
-            seatVent: false,
+            // MYR-252 — the seat Heat/Cool affordance follows the car's real
+            // `seatVentEnabled` read-back once a snapshot arrives; `false` (no
+            // snapshot yet, or car reports vent off) leaves the heating-only UI.
+            seatVent: state?.seatVentEnabled ?? false,
             activity: activity
         )
     }
