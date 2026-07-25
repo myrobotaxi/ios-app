@@ -53,6 +53,11 @@ struct HomeScreen: View {
     /// off"). Reset on every status change so a re-shown button is tappable again
     /// (MYR-265 review: never leave the CTA permanently greyed after one advance).
     @State private var dispatchInFlight = false
+    /// The id of a `completed` ride whose "Dropped off ✓" confirmation has been
+    /// shown and auto-dismissed, so the owner's Home banner doesn't stay stuck on
+    /// "Dropped off" forever (MYR-267). Owner-local — does NOT touch the shared
+    /// `activeRequest` (the rider still sees their arrived/summary card).
+    @State private var dismissedCompletedRideID: String?
 
     /// MYR-171 — `IncomingRequestSheet` shows only while there's a request
     /// actually awaiting this owner's decision; once accepted/declined the
@@ -82,7 +87,11 @@ struct HomeScreen: View {
     private var dispatchedRide: RideRequestRecord? {
         guard let request = rideRequestService.activeRequest else { return nil }
         switch request.status {
-        case .accepted, .arrived, .enroute, .completed: return request
+        case .accepted, .arrived, .enroute: return request
+        case .completed:
+            // Show "Dropped off ✓" until it auto-dismisses (MYR-267) — then hide,
+            // so the owner's map returns to normal instead of a stuck banner.
+            return request.id == dismissedCompletedRideID ? nil : request
         case .pending, .declined: return nil
         }
     }
@@ -215,7 +224,20 @@ struct HomeScreen: View {
         // MYR-270: reset the CTA double-tap latch whenever the dispatched status
         // changes (optimistic advance or WS reconcile), so the next state's button
         // ("Picked up" → later "Dropped off") is immediately tappable.
-        .onChange(of: dispatchedRide?.status) { _, _ in dispatchInFlight = false }
+        .onChange(of: dispatchedRide?.status) { _, status in
+            dispatchInFlight = false
+            // MYR-267 — auto-dismiss the "Dropped off ✓" confirmation after a beat
+            // so the owner's Home doesn't stay stuck on it. Owner-local; the shared
+            // activeRequest (and the rider's summary) is untouched.
+            guard status == .completed, let id = rideRequestService.activeRequest?.id else { return }
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(5))
+                if rideRequestService.activeRequest?.id == id,
+                   rideRequestService.activeRequest?.status == .completed {
+                    dismissedCompletedRideID = id
+                }
+            }
+        }
     }
 
     // MARK: - Vehicle content (map + switcher + sheet)

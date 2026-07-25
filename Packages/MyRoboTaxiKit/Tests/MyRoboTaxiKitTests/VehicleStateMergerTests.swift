@@ -31,6 +31,46 @@ final class VehicleStateMergerTests: XCTestCase {
         XCTAssertEqual(result.state.longitude, -122.0)
     }
 
+    func testControlFieldsFoldOnLiveDelta() throws {
+        // MYR-272 — a LIVE vehicle_update toggling climate/lock/trunk/settings must
+        // fold into state (previously dropped by `default`, so the owner enabled
+        // climate in the car and the app kept showing "Off").
+        var state = try baseState()
+        state.isClimateOn = false
+        state.locked = true
+        let result = VehicleStateMerger.apply(fields: [
+            "isClimateOn": .bool(true),
+            "hvacPower": .string("On"),
+            "locked": .bool(false),
+            "frunkOpen": .bool(true),
+            "trunkOpen": .bool(false),
+            "chargePortDoorOpen": .bool(true),
+            "fanSpeed": .number(4),
+            "driverTempSetting": .number(70),
+            "seatHeaterLeft": .number(3),
+            "seatCoolerRight": .number(0),
+            "mediaVolume": .number(5.5),
+        ], to: state)
+        XCTAssertEqual(result.state.isClimateOn, true, "climate on/off must fold live")
+        XCTAssertEqual(result.state.hvacPower, .on)
+        XCTAssertEqual(result.state.locked, false)
+        XCTAssertEqual(result.state.frunkOpen, true)
+        XCTAssertEqual(result.state.trunkOpen, false)
+        XCTAssertEqual(result.state.chargePortDoorOpen, true)
+        XCTAssertEqual(result.state.fanSpeed, 4)
+        XCTAssertEqual(result.state.driverTempSetting, 70)
+        XCTAssertEqual(result.state.seatHeaterLeft, 3)
+        XCTAssertEqual(result.state.seatCoolerRight, 0)
+        XCTAssertEqual(result.state.mediaVolume, 5.5)
+    }
+
+    func testControlFieldNullClears() throws {
+        var state = try baseState()
+        state.isClimateOn = true
+        let result = VehicleStateMerger.apply(fields: ["isClimateOn": .null], to: state)
+        XCTAssertNil(result.state.isClimateOn, "explicit null clears the control")
+    }
+
     func testGpsDeltaRoundsHeading() throws {
         let state = try baseState()
         let result = VehicleStateMerger.apply(

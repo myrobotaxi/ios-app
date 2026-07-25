@@ -131,6 +131,51 @@ public enum VehicleStateMerger {
             case "locationAddress": if let v = value.stringValue { state.locationAddress = v }
             case "lastUpdated": if let v = value.stringValue { state.lastUpdated = v }
 
+            // Owner control / cabin fields (MYR-272). These were dropped by the
+            // `default` arm, so a LIVE `vehicle_update` toggling climate/lock/trunk
+            // etc. never folded into `state` — the tiles reflected the field only
+            // on a full snapshot (reconnect/sheet-open). The client enabled climate
+            // in the car and the app never showed it "On" (only interiorTemp — which
+            // IS folded above — dropped). Fold them so a live change reaches the
+            // tiles via `onStateChanged` → `reconcile`. Each honors an explicit null
+            // (clear); the reconcile layer guards against clobbering in-flight
+            // optimistic commands, so no extra gating is needed here.
+            case "isClimateOn":
+                if value.isNull { state.isClimateOn = nil } else if let v = value.boolValue { state.isClimateOn = v }
+            case "hvacPower":
+                if value.isNull { state.hvacPower = nil }
+                else if let v = value.stringValue { state.hvacPower = VehicleState.HvacPower(rawValue: v) }
+            case "locked":
+                if value.isNull { state.locked = nil } else if let v = value.boolValue { state.locked = v }
+            case "frunkOpen":
+                if value.isNull { state.frunkOpen = nil } else if let v = value.boolValue { state.frunkOpen = v }
+            case "trunkOpen":
+                if value.isNull { state.trunkOpen = nil } else if let v = value.boolValue { state.trunkOpen = v }
+            case "chargePortDoorOpen":
+                if value.isNull { state.chargePortDoorOpen = nil } else if let v = value.boolValue { state.chargePortDoorOpen = v }
+            case "fanSpeed":
+                if value.isNull { state.fanSpeed = nil } else if let v = value.numberValue { state.fanSpeed = Int(v) }
+            case "driverTempSetting":
+                if value.isNull { state.driverTempSetting = nil } else if let v = value.numberValue { state.driverTempSetting = Int(v) }
+            case "passengerTempSetting":
+                if value.isNull { state.passengerTempSetting = nil } else if let v = value.numberValue { state.passengerTempSetting = Int(v) }
+            case "seatHeaterLeft":
+                if value.isNull { state.seatHeaterLeft = nil } else if let v = value.numberValue { state.seatHeaterLeft = Int(v) }
+            case "seatHeaterRight":
+                if value.isNull { state.seatHeaterRight = nil } else if let v = value.numberValue { state.seatHeaterRight = Int(v) }
+            case "seatHeaterRearLeft":
+                if value.isNull { state.seatHeaterRearLeft = nil } else if let v = value.numberValue { state.seatHeaterRearLeft = Int(v) }
+            case "seatHeaterRearCenter":
+                if value.isNull { state.seatHeaterRearCenter = nil } else if let v = value.numberValue { state.seatHeaterRearCenter = Int(v) }
+            case "seatHeaterRearRight":
+                if value.isNull { state.seatHeaterRearRight = nil } else if let v = value.numberValue { state.seatHeaterRearRight = Int(v) }
+            case "seatCoolerLeft":
+                if value.isNull { state.seatCoolerLeft = nil } else if let v = value.numberValue { state.seatCoolerLeft = Int(v) }
+            case "seatCoolerRight":
+                if value.isNull { state.seatCoolerRight = nil } else if let v = value.numberValue { state.seatCoolerRight = Int(v) }
+            case "mediaVolume":
+                if value.isNull { state.mediaVolume = nil } else if let v = value.numberValue { state.mediaVolume = v }
+
             default:
                 break // unknown / forward-compat field — ignore
             }
