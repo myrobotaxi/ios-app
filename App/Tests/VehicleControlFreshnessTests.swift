@@ -64,6 +64,33 @@ final class VehicleControlFreshnessTests: XCTestCase {
         XCTAssertTrue(VehicleControlFreshness.unavailableSub.contains("Unavailable"))
     }
 
+    // MARK: showsQualifier — a non-streaming car's known value is never "live"
+
+    func testNonStreamingKnownValueAlwaysQualifiesEvenWhenRecent() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        // Car just went offline 5s ago: NOT streaming → still qualifies, so a
+        // stale trunk never renders as bare "Open" (the trunk-open incident).
+        XCTAssertTrue(VehicleControlFreshness.showsQualifier(
+            isStreaming: false, lastUpdated: now.addingTimeInterval(-5), now: now))
+    }
+
+    func testStreamingKnownValueQualifiesOnlyWhenStale() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertFalse(VehicleControlFreshness.showsQualifier(
+            isStreaming: true, lastUpdated: now.addingTimeInterval(-30), now: now), "fresh stream")
+        XCTAssertTrue(VehicleControlFreshness.showsQualifier(
+            isStreaming: true, lastUpdated: now.addingTimeInterval(-120), now: now), "stalled stream")
+    }
+
+    func testSimulatedPathNeverQualifies() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        // nil isStreaming (M1) and/or nil lastUpdated → never a qualifier.
+        XCTAssertFalse(VehicleControlFreshness.showsQualifier(
+            isStreaming: nil, lastUpdated: now.addingTimeInterval(-9999), now: now))
+        XCTAssertFalse(VehicleControlFreshness.showsQualifier(
+            isStreaming: false, lastUpdated: nil, now: now))
+    }
+
     // MARK: State 3 — known but stale → value + "X ago"
 
     func testFreshKnownValueHasNoStaleQualifier() {

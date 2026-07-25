@@ -54,6 +54,21 @@ enum VehicleControlFreshness {
         return now.timeIntervalSince(lastUpdated) >= staleThreshold
     }
 
+    /// Whether a KNOWN safety value (Trunk/Lock) should carry an "X ago"
+    /// qualifier. A NON-streaming car's value is never live, so it ALWAYS carries
+    /// the qualifier (never present old offline state as current — the crux of the
+    /// trunk-open incident); a streaming car qualifies only once its last read
+    /// ages past the threshold. `nil` isStreaming = simulated path → never (M1
+    /// stays pixel-identical). Requires a read time to have a value to show.
+    static func showsQualifier(isStreaming: Bool?, lastUpdated: Date?, now: Date) -> Bool {
+        guard lastUpdated != nil else { return false }
+        switch isStreaming {
+        case nil: return false
+        case .some(false): return true
+        case .some(true): return isStale(lastUpdated: lastUpdated, now: now)
+        }
+    }
+
     /// A compact, bounded "X ago" label for the stale qualifier. Coarse buckets
     /// (minutes / hours / days) keep it inside the tile's narrow subtitle grammar.
     static func agoLabel(since lastUpdated: Date, now: Date) -> String {

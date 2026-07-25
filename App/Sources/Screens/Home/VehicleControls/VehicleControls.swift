@@ -73,7 +73,10 @@ struct VehicleControls: View {
                 isEditingPlate = true
             }
 
-            Text("Updated just now · Live")
+            // Honest freshness footer (MYR-260): "· Live" only when the car is
+            // actually streaming — an offline/in-service car with stale tiles above
+            // must NOT claim "Updated just now · Live".
+            Text(footerText)
                 .font(.system(size: 10))
                 .tracking(0.3)
                 .foregroundStyle(Color.mrtTextMuted)
@@ -90,8 +93,6 @@ struct VehicleControls: View {
     // fixture value (MYR-228). When unknown the tap performs the SAFE default
     // (lock / start climate / open) rather than toggling an unknown seed.
 
-    /// The em-dash the design uses for an unavailable value.
-    private static let dash = "\u{2014}"
     // MYR-260 — the quick tiles' honest-unknown sub now resolves through
     // `VehicleControlFreshness`: "— Syncing" only while connecting or while a
     // streaming car is still delivering the value, an honest "— Unavailable"
@@ -100,18 +101,40 @@ struct VehicleControls: View {
     // known-but-stale value. Auto-fills the moment MYR-252's contracted control
     // states arrive (the executor flips isKnown).
 
-    /// A frame has arrived (we have a server read time) — tells the connecting
-    /// state from a reachable-but-unknown one (MYR-260).
-    private var hasSnapshot: Bool { lastUpdated != nil }
+    /// A live `VehicleState` has arrived — tells the connecting state from a
+    /// reachable-but-unknown one (MYR-260). Keyed off `isStreaming`, which the
+    /// live mapper sets whenever a state exists, NOT off `lastUpdated`: an empty
+    /// or non-standard server timestamp parses to nil, and keying on that would
+    /// wrongly fall back to "Syncing" on the exact offline path this fixes. `nil`
+    /// on the simulated path (all fields known, so this is never consulted).
+    private var hasSnapshot: Bool { isStreaming != nil }
 
     /// The stale "X ago" label for a KNOWN safety value (Trunk/Lock), or `nil`
-    /// when fresh: simulated path, a streaming car, or a read within the
-    /// threshold. Evaluated against `Date()` at render time.
+    /// when genuinely fresh (simulated path, or a streaming car within the
+    /// threshold). A NON-streaming car's known value is never "live", so it
+    /// always carries the qualifier when we have a read time — even if
+    /// `lastUpdated` is recent — so a freshly-offline car never presents old
+    /// state as current (MYR-260). Evaluated against `Date()` at render time.
     private var staleAgo: String? {
         guard let lastUpdated,
-              VehicleControlFreshness.isStale(lastUpdated: lastUpdated, now: Date())
+              VehicleControlFreshness.showsQualifier(
+                isStreaming: isStreaming, lastUpdated: lastUpdated, now: Date())
         else { return nil }
         return VehicleControlFreshness.agoLabel(since: lastUpdated, now: Date())
+    }
+
+    /// The honest freshness footer. The simulated path (no `isStreaming` signal)
+    /// keeps the original "Updated just now · Live" copy so M1 stays pixel-identical;
+    /// a streaming car is genuinely live; a non-streaming car never claims "Live"
+    /// and reports how long ago it was last heard from (MYR-260).
+    private var footerText: String {
+        guard let isStreaming else { return "Updated just now · Live" }
+        if isStreaming { return "Updated just now · Live" }
+        // Not streaming: never claim "Live". Report last contact when we have it.
+        if let lastUpdated {
+            return "Last contact \(VehicleControlFreshness.agoLabel(since: lastUpdated, now: Date())) · Not live"
+        }
+        return "Not live"
     }
 
     private var quickTiles: some View {
