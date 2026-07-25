@@ -41,10 +41,12 @@ final class PrimitiveTests: XCTestCase {
         XCTAssertEqual(MRTVehicleStatus.parked.label, "Parked")
         XCTAssertEqual(MRTVehicleStatus.charging.label, "Charging")
         XCTAssertEqual(MRTVehicleStatus.offline.label, "Offline")
+        XCTAssertEqual(MRTVehicleStatus.inService.label, "In Service")
         XCTAssertEqual(MRTVehicleStatus.driving.color, .mrtDriving)
         XCTAssertEqual(MRTVehicleStatus.parked.color, .mrtParked)
         XCTAssertEqual(MRTVehicleStatus.charging.color, .mrtCharging)
         XCTAssertEqual(MRTVehicleStatus.offline.color, .mrtOffline)
+        XCTAssertEqual(MRTVehicleStatus.inService.color, .mrtInService)
     }
 
     // MARK: Avatar
