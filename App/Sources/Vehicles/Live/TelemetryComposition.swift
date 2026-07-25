@@ -23,6 +23,16 @@ enum TelemetryComposition {
         mode: AppMode,
         sessionTokenProvider: SessionTokenProvider? = nil
     ) -> OwnerHomeState {
+        #if DEBUG
+        // MYR-260 — a scene may inject a DEBUG fleet (e.g. the honest unknown /
+        // stale controls capture). Reachable only via that scene; every other
+        // path falls through to the normal live/simulated selection below.
+        if let fleet = DebugScene.current?.previewFleet {
+            let state = OwnerHomeState(fleet: fleet)
+            if DebugScene.initialOwnerDetentHalf { state.sheetDetent = .half }
+            return state
+        }
+        #endif
         if let config = liveFleetConfig(mode: mode, sessionTokenProvider: sessionTokenProvider) {
             return OwnerHomeState(fleet: LiveVehicleFleet(config: config))
         }

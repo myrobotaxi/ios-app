@@ -81,6 +81,12 @@ enum DebugScene: String, CaseIterable {
     case ownerDrives       // owner Drives tab, nothing seeded (live-drives captures)
     case ownerIncoming
     case ownerScheduled
+    /// MYR-260 — owner Home sheet in the honest unknown / stale controls state
+    /// (offline car: Lock/Trunk KNOWN-but-stale, Climate/Charge "— Unavailable").
+    /// Injects `DebugUnavailableControlsFleet` so the REAL sheet renders the new
+    /// copy full-frame in the simulator (no live backend). Pair with
+    /// `MRT_OWNER_DETENT=half` to boot at the controls detent.
+    case ownerControlsUnavailable
 
     /// The active scene for this launch, or `nil` for a normal boot. Read
     /// from `MRT_SCENE` (env, the documented `SIMCTL_CHILD_MRT_SCENE=` path);
@@ -173,6 +179,16 @@ enum DebugScene: String, CaseIterable {
     private var isOwner: Bool {
         self == .ownerHome || self == .ownerDrives || self == .ownerIncoming
             || self == .ownerScheduled || self == .ownerSettings
+            || self == .ownerControlsUnavailable
+    }
+
+    /// MYR-260 — a DEBUG fleet override for scenes that need a specific
+    /// live-like fleet the simulated fixtures can't express (here: the honest
+    /// unknown / stale controls state). `nil` for every other scene, so the
+    /// normal owner paths use the simulated fleet unchanged.
+    @MainActor
+    var previewFleet: (any VehicleFleet)? {
+        self == .ownerControlsUnavailable ? DebugUnavailableControlsFleet() : nil
     }
 
     private var isScheduled: Bool {
@@ -344,7 +360,7 @@ enum DebugScene: String, CaseIterable {
             viewer.sheetPhase = .summary
         case .modeChooser, .ownerSettings, .riderSettings,
              .scheduledDetails, .scheduledReschedule, .scheduledRequested, .scheduledConfirmCancel,
-             .ownerHome, .ownerDrives, .ownerIncoming, .ownerScheduled:
+             .ownerHome, .ownerDrives, .ownerIncoming, .ownerScheduled, .ownerControlsUnavailable:
             break // chooser / settings / rider live-map / owner scenes don't drive the viewer sheet
         }
     }

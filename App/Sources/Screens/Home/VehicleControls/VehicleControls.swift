@@ -27,6 +27,13 @@ struct VehicleControls: View {
     /// `nil` = not yet streamed → the Lifetime rows render "— Syncing".
     let odometerMiles: Int?
     let fsdMilesSinceReset: Double?
+    /// MYR-260 — the live snapshot's server read time + whether the car is
+    /// currently streaming, threaded from `VehicleTelemetrySnapshot`. They drive
+    /// the honest unknown labeling (Syncing vs Unavailable) and the stale
+    /// "X ago" qualifier. `nil`/`nil` on the simulated path, so M1 / drift-gate
+    /// render pixel-identically.
+    let lastUpdated: Date?
+    let isStreaming: Bool?
 
     private var controls: VehicleControlsSnapshot { executor.controls }
 
@@ -66,7 +73,10 @@ struct VehicleControls: View {
                 isEditingPlate = true
             }
 
-            Text("Updated just now · Live")
+            // Honest freshness footer (MYR-260): "· Live" only when the car is
+            // actually streaming — an offline/in-service car with stale tiles above
+            // must NOT claim "Updated just now · Live".
+            Text(footerText)
                 .font(.system(size: 10))
                 .tracking(0.3)
                 .foregroundStyle(Color.mrtTextMuted)
@@ -83,14 +93,49 @@ struct VehicleControls: View {
     // fixture value (MYR-228). When unknown the tap performs the SAFE default
     // (lock / start climate / open) rather than toggling an unknown seed.
 
-    /// The em-dash the design uses for an unavailable value.
-    private static let dash = "\u{2014}"
-    /// MYR-255 — the quick tiles' honest-unknown sub. The bare "\u{2014}" read as
-    /// broken to the client ("why are some of them empty"); pairing it with a
-    /// muted "Syncing" makes "state not yet streamed" visibly intentional. These
-    /// auto-fill the moment MYR-252's contracted control states arrive (the
-    /// executor flips isKnown), so this branch simply stops rendering.
-    private static let syncingSub = "\u{2014} Syncing"
+    // MYR-260 — the quick tiles' honest-unknown sub now resolves through
+    // `VehicleControlFreshness`: "— Syncing" only while connecting or while a
+    // streaming car is still delivering the value, an honest "— Unavailable"
+    // once a reachable NON-streaming snapshot proves the value is not coming, and
+    // (for the safety-relevant Trunk/Lock) a bounded "X ago" qualifier on a
+    // known-but-stale value. Auto-fills the moment MYR-252's contracted control
+    // states arrive (the executor flips isKnown).
+
+    /// A live `VehicleState` has arrived — tells the connecting state from a
+    /// reachable-but-unknown one (MYR-260). Keyed off `isStreaming`, which the
+    /// live mapper sets whenever a state exists, NOT off `lastUpdated`: an empty
+    /// or non-standard server timestamp parses to nil, and keying on that would
+    /// wrongly fall back to "Syncing" on the exact offline path this fixes. `nil`
+    /// on the simulated path (all fields known, so this is never consulted).
+    private var hasSnapshot: Bool { isStreaming != nil }
+
+    /// The stale "X ago" label for a KNOWN safety value (Trunk/Lock), or `nil`
+    /// when genuinely fresh (simulated path, or a streaming car within the
+    /// threshold). A NON-streaming car's known value is never "live", so it
+    /// always carries the qualifier when we have a read time — even if
+    /// `lastUpdated` is recent — so a freshly-offline car never presents old
+    /// state as current (MYR-260). Evaluated against `Date()` at render time.
+    private var staleAgo: String? {
+        guard let lastUpdated,
+              VehicleControlFreshness.showsQualifier(
+                isStreaming: isStreaming, lastUpdated: lastUpdated, now: Date())
+        else { return nil }
+        return VehicleControlFreshness.agoLabel(since: lastUpdated, now: Date())
+    }
+
+    /// The honest freshness footer. The simulated path (no `isStreaming` signal)
+    /// keeps the original "Updated just now · Live" copy so M1 stays pixel-identical;
+    /// a streaming car is genuinely live; a non-streaming car never claims "Live"
+    /// and reports how long ago it was last heard from (MYR-260).
+    private var footerText: String {
+        guard let isStreaming else { return "Updated just now · Live" }
+        if isStreaming { return "Updated just now · Live" }
+        // Not streaming: never claim "Live". Report last contact when we have it.
+        if let lastUpdated {
+            return "Last contact \(VehicleControlFreshness.agoLabel(since: lastUpdated, now: Date())) · Not live"
+        }
+        return "Not live"
+    }
 
     private var quickTiles: some View {
         HStack(spacing: 8) {
@@ -103,10 +148,20 @@ struct VehicleControls: View {
 
     private var lockTile: some View {
         let known = executor.isKnown(.locked)
+        // Fresh known → the affordance hint; stale known → an honest freshness
+        // note (the label already carries Locked/Unlocked, so the sub leads with
+        // when it was last synced); unknown → Syncing/Unavailable (MYR-260).
+        let sub: String
+        if known {
+            sub = staleAgo.map { "Synced \($0)" }
+                ?? (controls.locked ? "Tap to unlock" : "Tap to lock")
+        } else {
+            sub = VehicleControlFreshness.unknownSub(hasSnapshot: hasSnapshot, isStreaming: isStreaming)
+        }
         return ControlTile(
             icon: known ? (controls.locked ? "lock.fill" : "lock.open.fill") : "lock",
             label: known ? (controls.locked ? "Locked" : "Unlocked") : "Lock",
-            sub: known ? (controls.locked ? "Tap to unlock" : "Tap to lock") : Self.syncingSub,
+            sub: sub,
             active: known && !controls.locked,
             activeColor: .mrtDriving,
             uiState: executor.uiState(for: .lock)
@@ -124,7 +179,8 @@ struct VehicleControls: View {
         return ControlTile(
             icon: "fan",
             label: "Climate",
-            sub: known ? (controls.climateOn ? onSub : "Off") : Self.syncingSub,
+            sub: known ? (controls.climateOn ? onSub : "Off")
+                : VehicleControlFreshness.unknownSub(hasSnapshot: hasSnapshot, isStreaming: isStreaming),
             active: known && controls.climateOn,
             activeColor: .mrtGold,
             uiState: executor.uiState(for: .climate)
@@ -136,10 +192,20 @@ struct VehicleControls: View {
 
     private var trunkTile: some View {
         let known = executor.isKnown(.trunkOpen)
+        // Trunk's label is generic, so the STATE (safety-critical) lives in the
+        // sub; when stale, keep the state and append when it was last synced
+        // ("Open · 2h ago") rather than presenting old state as current (MYR-260).
+        let sub: String
+        if known {
+            let state = controls.trunkOpen ? "Open" : "Closed"
+            sub = staleAgo.map { "\(state) · \($0)" } ?? state
+        } else {
+            sub = VehicleControlFreshness.unknownSub(hasSnapshot: hasSnapshot, isStreaming: isStreaming)
+        }
         return ControlTile(
             icon: "car.fill",
             label: "Trunk",
-            sub: known ? (controls.trunkOpen ? "Open" : "Closed") : Self.syncingSub,
+            sub: sub,
             active: known && controls.trunkOpen,
             activeColor: .mrtParked,
             uiState: executor.uiState(for: .trunk)
@@ -159,7 +225,8 @@ struct VehicleControls: View {
         return ControlTile(
             icon: "bolt.fill",
             label: "Charge",
-            sub: known ? (controls.chargePortOpen ? "Port open" : "Port closed") : Self.syncingSub,
+            sub: known ? (controls.chargePortOpen ? "Port open" : "Port closed")
+                : VehicleControlFreshness.unknownSub(hasSnapshot: hasSnapshot, isStreaming: isStreaming),
             active: known && controls.chargePortOpen,
             activeColor: .mrtCharging,
             uiState: executor.uiState(for: .chargePort)
@@ -233,7 +300,15 @@ private struct ControlTile: View {
                         .foregroundStyle(subColor)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .minimumScaleFactor(0.75)
+                        // MYR-260 — the honest states add a few physically-wider
+                        // subs ("— Unavailable", "Synced 2h ago", "Open · 2h ago")
+                        // that overran the 0.75 floor and truncated the key word.
+                        // A lower floor lets them shrink to fit instead. SwiftUI
+                        // picks the LARGEST scale ≥ floor that fits, so the shorter
+                        // M1 subs (all of which already fit at ≥ 0.75) are
+                        // unchanged — the simulated / drift-gate scenes stay
+                        // pixel-identical.
+                        .minimumScaleFactor(0.6)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

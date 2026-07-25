@@ -51,6 +51,21 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
     /// autonomously %" is derived from this over `odometerMiles` — no separate
     /// wire field, so it too is honest-unknown until both stream in.
     public var fsdMilesSinceReset: Double?
+    /// MYR-260 — the snapshot's server read time (`VehicleState.lastUpdated`).
+    /// Used to (a) tell a genuinely-connecting state (no snapshot yet → `nil`)
+    /// from a reachable one, and (b) qualify a KNOWN-but-stale control value with
+    /// a bounded "· synced X ago" so the owner knows it may be out of date
+    /// (especially Trunk/Lock). `nil` on the simulated path and before the first
+    /// live frame, so M1 / drift-gate render identically (no qualifier).
+    public var lastUpdated: Date?
+    /// MYR-260 — whether the car is currently STREAMING live telemetry (online:
+    /// driving/parked/charging) as opposed to not (offline/in_service/asleep).
+    /// Distinguishes a transient unknown ("Syncing" — the value is still in
+    /// flight from a streaming car) from a genuine one ("Unavailable" — the car
+    /// isn't streaming and the one-shot REST read couldn't fill it, so the value
+    /// is not coming). `nil` on the simulated path (treated as live), keeping M1
+    /// pixel-identical.
+    public var isStreaming: Bool?
 
     public init(
         status: VehicleTelemetryStatus,
@@ -61,7 +76,9 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
         interiorTempF: Int? = nil,
         exteriorTempF: Int? = nil,
         odometerMiles: Int? = nil,
-        fsdMilesSinceReset: Double? = nil
+        fsdMilesSinceReset: Double? = nil,
+        lastUpdated: Date? = nil,
+        isStreaming: Bool? = nil
     ) {
         self.status = status
         self.progress = progress
@@ -72,6 +89,8 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
         self.exteriorTempF = exteriorTempF
         self.odometerMiles = odometerMiles
         self.fsdMilesSinceReset = fsdMilesSinceReset
+        self.lastUpdated = lastUpdated
+        self.isStreaming = isStreaming
     }
 }
 
