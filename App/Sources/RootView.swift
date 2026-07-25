@@ -1,5 +1,6 @@
 import SwiftUI
 import DesignSystem
+import MyRoboTaxiKit
 
 // MARK: - Routing shell (MYR-164)
 //
@@ -92,6 +93,12 @@ struct RootView: View {
     /// against §7.11), or nil on the simulated path. Built once in `init` from the
     /// resolved mode + the sign-in session provider, mirroring the other seams.
     private let teslaAuthenticator: TeslaAuthenticator?
+    /// MYR-258 — the live owner car-offboarding teardown call (§7.12), or nil on
+    /// the simulated path. Built once in `init` from the resolved mode + session
+    /// provider, mirroring `teslaAuthenticator`; combined with the fleet drop +
+    /// consent-revoke runner into a `VehicleTeardownSeam` where `SettingsScreen` is
+    /// built (needs the live `ownerHomeState` for the drop).
+    private let vehicleTeardownRemover: ((String) async throws -> VehicleTeardownResponse)?
     /// MYR-169 — mirrors `ownerHomeState`'s reasoning: app.jsx keeps
     /// `ownerUpcoming` App-level, not local to `DrivesScreen`, so a
     /// cancelled reservation and an open drive summary both survive
@@ -180,6 +187,11 @@ struct RootView: View {
         ))
         // MYR-246 — live Tesla-link authenticator (nil in sim / static-token dev).
         teslaAuthenticator = TeslaLinkComposition.makeAuthenticator(
+            mode: mode,
+            sessionTokenProvider: auth.sessionTokenProvider
+        )
+        // MYR-258 — live car-offboarding teardown call (nil in sim / static-token dev).
+        vehicleTeardownRemover = VehicleTeardownComposition.makeRemover(
             mode: mode,
             sessionTokenProvider: auth.sessionTokenProvider
         )
@@ -308,6 +320,21 @@ struct RootView: View {
         if DebugScene.current?.showsLiveSettings == true { return DebugScene.sampleProfile }
         #endif
         return nil
+    }
+
+    /// MYR-258 — the live owner car-offboarding seam for `SettingsScreen`, or nil
+    /// (sim / static-token dev → the local unlink stays pixel-identical). Bundles
+    /// the teardown `DELETE` (`vehicleTeardownRemover`), the fleet drop (so the car
+    /// leaves Home + the Settings list the moment it's gone), and the consent-revoke
+    /// browser runner. Built here (not in `init`) because the drop closure needs the
+    /// live `ownerHomeState`.
+    private var teardownSeam: VehicleTeardownSeam? {
+        guard isLiveMode, let remove = vehicleTeardownRemover else { return nil }
+        return VehicleTeardownSeam(
+            remove: remove,
+            onRemoved: { ownerHomeState.removeVehicle(id: $0) },
+            revoke: VehicleTeardownComposition.makeRevoker()
+        )
     }
 
     var body: some View {
@@ -452,7 +479,12 @@ struct RootView: View {
                         // browser-sheet link flow on the live path (nil in SIM
                         // keeps the fixture sheet); refresh the fleet on link.
                         teslaAuthenticator: teslaAuthenticator,
-                        onTeslaLinked: isLiveMode ? { ownerHomeState.startTelemetry() } : nil
+                        onTeslaLinked: isLiveMode ? { ownerHomeState.startTelemetry() } : nil,
+                        // MYR-258 — live "Remove this car" teardown (§7.12): the real
+                        // DELETE + fleet drop (so the car leaves Home + this list at
+                        // once) + consent-revoke browser session. nil in SIM keeps
+                        // the local unlink pixel-identical (MYR-228).
+                        teardown: teardownSeam
                     )
                 default:
                     HomeScreen(

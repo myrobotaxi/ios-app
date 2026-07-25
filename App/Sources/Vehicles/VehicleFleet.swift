@@ -58,6 +58,19 @@ protocol VehicleFleet: AnyObject, Observable {
     /// Scene lifecycle hooks, forwarded to the Kit socket (no-ops for sim).
     func handleForeground()
     func handleBackground()
+
+    /// Drop a vehicle from the fleet after an authoritative backend teardown
+    /// (MYR-258, §7.12): the car is gone from the app, so it leaves the switcher +
+    /// the Settings list at once. The live fleet releases that vehicle's live
+    /// source/executor/feed; the simulated fleet has no live teardown backend and
+    /// ignores it (default no-op below).
+    func remove(vehicleID: String)
+}
+
+extension VehicleFleet {
+    /// Default: no removal (the simulated fleet's fixture list is immutable — the
+    /// live teardown flow is a live-path affordance only, MYR-258/228).
+    func remove(vehicleID: String) {}
 }
 
 // MARK: - SimulatedVehicleFleet (M1 default)
