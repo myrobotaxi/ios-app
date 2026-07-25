@@ -57,6 +57,9 @@ enum DebugScene: String, CaseIterable {
     case trackingLeg1      // heading to pickup
     case trackingLeg2      // in-ride, heading to drop-off
     case trackingArriving  // arriving at drop-off
+    /// MYR-270 — rider tracking sheet AFTER the owner confirmed pickup: the "Your car
+    /// is here" stage with the circular pulsing "Start ride" CTA (status `.arrived`).
+    case trackingArrived
     case summary
     case declined
 
@@ -92,6 +95,9 @@ enum DebugScene: String, CaseIterable {
     /// accepted owner ride). `…Enroute` seeds the leg-2 "<Name> aboard · heading
     /// to <dropoff>" state.
     case ownerDispatched
+    /// MYR-270 — owner Home in the `arrived` state: "Picked up · waiting for <Name> to
+    /// start" status line, NO owner CTA (the rider must start). Status-only capture.
+    case ownerDispatchedArrived
     case ownerDispatchedEnroute
 
     /// The active scene for this launch, or `nil` for a normal boot. Read
@@ -186,7 +192,8 @@ enum DebugScene: String, CaseIterable {
         self == .ownerHome || self == .ownerDrives || self == .ownerIncoming
             || self == .ownerScheduled || self == .ownerSettings
             || self == .ownerControlsUnavailable
-            || self == .ownerDispatched || self == .ownerDispatchedEnroute
+            || self == .ownerDispatched || self == .ownerDispatchedArrived
+            || self == .ownerDispatchedEnroute
     }
 
     /// MYR-260 — a DEBUG fleet override for scenes that need a specific
@@ -296,12 +303,16 @@ enum DebugScene: String, CaseIterable {
             return record(status: .accepted, progress: 0.5)
         case .trackingArriving:
             return record(status: .accepted, progress: 0.97)
+        case .trackingArrived:
+            return record(status: .arrived, progress: RideRequestTiming.autoAcceptInitialProgress)
         case .summary:
             return record(status: .accepted, progress: 1.0)
         case .declined:
             return record(status: .declined)
         case .ownerDispatched:
             return record(status: .accepted, progress: 0.08)
+        case .ownerDispatchedArrived:
+            return record(status: .arrived, progress: RideRequestTiming.autoAcceptInitialProgress)
         case .ownerDispatchedEnroute:
             return record(status: .enroute, progress: 0.5)
         default:
@@ -361,7 +372,7 @@ enum DebugScene: String, CaseIterable {
             viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
             viewer.sheetPhase = .booking
-        case .trackingLeg1, .trackingLeg2, .trackingArriving:
+        case .trackingLeg1, .trackingLeg2, .trackingArriving, .trackingArrived:
             viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
             viewer.sheetPhase = .tracking
@@ -372,7 +383,7 @@ enum DebugScene: String, CaseIterable {
         case .modeChooser, .ownerSettings, .riderSettings,
              .scheduledDetails, .scheduledReschedule, .scheduledRequested, .scheduledConfirmCancel,
              .ownerHome, .ownerDrives, .ownerIncoming, .ownerScheduled, .ownerControlsUnavailable,
-             .ownerDispatched, .ownerDispatchedEnroute:
+             .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute:
             break // chooser / settings / rider live-map / owner scenes don't drive the viewer sheet
         }
     }

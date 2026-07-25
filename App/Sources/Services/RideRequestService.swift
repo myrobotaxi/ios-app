@@ -76,13 +76,26 @@ public protocol RideRequestService: AnyObject, Observable {
     /// (`PendingContent`'s "Cancel request" / `closeToIdle`).
     func cancel()
 
-    /// MYR-265 — the rider's "I'm in" on the leg-1 tracking sheet: advances the
-    /// active ride `accepted → enroute` (leg 1 → leg 2, rider aboard). LIVE mode
-    /// optimistically flips the local status + seeds the leg-2 tracking anchor and
-    /// POSTs `/board`, reconciling to server state on a 409/failure. Sim is a no-op
-    /// default (the button is a live-only affordance — the simulated tracking is
-    /// driven by the `trackProgress` ticker, unchanged).
-    func board()
+    /// MYR-270 — OWNER confirms the rider is aboard on the leg-1 tracking sheet:
+    /// advances `accepted → arrived` (car reached pickup, awaiting the rider's
+    /// start). LIVE mode optimistically flips the local status and POSTs
+    /// `/picked-up`, reconciling to server state on a 409/failure. Sim is a no-op
+    /// default (a live-only affordance — the simulated tracking is `trackProgress`
+    /// ticker-driven, unchanged). NO nav is pushed here (see `start()`).
+    func pickedUp()
+
+    /// MYR-270 — RIDER starts the ride once the owner has confirmed pickup:
+    /// advances `arrived → enroute` (leg 2). This is what makes the server PUSH THE
+    /// DROPOFF NAV to the car. LIVE mode optimistically flips the status + seeds the
+    /// leg-2 tracking anchor and POSTs `/start`, reconciling on a 409/failure (a 409
+    /// from `accepted` means the owner has not confirmed pickup yet). Sim no-op.
+    func startRide()
+
+    /// MYR-270 — OWNER completes the ride at the drop-off: advances
+    /// `enroute → completed`. There is NO drive-end auto-completion anymore; the
+    /// owner explicitly ends the ride. LIVE mode optimistically flips the status and
+    /// POSTs `/dropped-off`, reconciling on a 409/failure. Sim no-op.
+    func droppedOff()
 
     /// Ride Summary's "See you soon" — builds the completed-ride record for
     /// `RideHistoryStore` and resets `activeRequest` to `nil`. Returns `nil`
@@ -104,10 +117,13 @@ public extension RideRequestService {
     func confirmSend() {}
 
     /// Default: no-op. The simulated service has no server ride to advance — its
-    /// tracking is driven by the `trackProgress` ticker, and the "I'm in" button is
-    /// gated to the live path (`SharedViewerState.isLiveLocation`), so it never
-    /// reaches this call in sim. Only `LiveRideRequestService` overrides it (MYR-265).
-    func board() {}
+    /// tracking is driven by the `trackProgress` ticker, and the dispatch v2 CTAs
+    /// (owner "Picked up" / "Dropped off", rider "Start ride") are gated to the LIVE
+    /// path (`SharedViewerState.isLiveLocation`), so these never reach the sim. Only
+    /// `LiveRideRequestService` overrides them (MYR-270).
+    func pickedUp() {}
+    func startRide() {}
+    func droppedOff() {}
 }
 
 // MARK: - Timing constants (single source, per CLAUDE.md deliverable 2)
@@ -154,13 +170,18 @@ public enum RideRequestTiming {
 public enum RideRequestStatus: String, Sendable, Equatable {
     /// Sent, awaiting the owner's decision.
     case pending
-    /// MYR-265 leg 1 — owner accepted; car en route to the PICKUP. The rider's
-    /// "I'm in" (`board()`) is the only affordance out of this state.
+    /// MYR-270 leg 1 — owner accepted; car en route to the PICKUP. The owner's
+    /// "Picked up" (`pickedUp()`) is the affordance out of this state.
     case accepted
-    /// MYR-265 leg 2 — the rider is ABOARD; car en route to the DROPOFF (the
-    /// backend flipped `accepted → enroute` on `board` and pushed the dropoff nav).
+    /// MYR-270 — the rider has been picked up (owner confirmed); the car is at the
+    /// pickup, awaiting the rider's "Start ride" (`start()`). NOT yet moving to the
+    /// dropoff. The rider's Start CTA is gated to exactly this state.
+    case arrived
+    /// MYR-270 leg 2 — the ride has STARTED; car en route to the DROPOFF (the rider
+    /// tapped Start, the backend flipped `arrived → enroute` and pushed the dropoff
+    /// nav). The owner's "Dropped off" (`droppedOff()`) is the affordance out here.
     case enroute
-    /// MYR-265 — dropped off (backend auto-sets on drive-end at the dropoff).
+    /// MYR-270 — dropped off (owner tapped "Dropped off"; no drive-end auto-complete).
     case completed
     /// Owner declined.
     case declined

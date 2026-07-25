@@ -49,6 +49,10 @@ struct HomeScreen: View {
     /// `handleAccept` the moment `IncomingRequestSheet`'s local choreography
     /// finishes; cleared by the toast's own auto-dismiss timer.
     @State private var routeSentToast: RouteSentToastContent?
+    /// MYR-270 — double-tap guard for the owner dispatch CTA ("Picked up"/"Dropped
+    /// off"). Reset on every status change so a re-shown button is tappable again
+    /// (MYR-265 review: never leave the CTA permanently greyed after one advance).
+    @State private var dispatchInFlight = false
 
     /// MYR-171 — `IncomingRequestSheet` shows only while there's a request
     /// actually awaiting this owner's decision; once accepted/declined the
@@ -78,7 +82,7 @@ struct HomeScreen: View {
     private var dispatchedRide: RideRequestRecord? {
         guard let request = rideRequestService.activeRequest else { return nil }
         switch request.status {
-        case .accepted, .enroute, .completed: return request
+        case .accepted, .arrived, .enroute, .completed: return request
         case .pending, .declined: return nil
         }
     }
@@ -91,8 +95,37 @@ struct HomeScreen: View {
         return OwnerRideStatusLine.text(
             status: request.status,
             riderName: incomingDisplay(for: request).riderName,
-            dropoffLabel: request.input.destination.label
+            dropoffLabel: request.input.destination.label,
+            arriving: ownerArriving
         )
+    }
+
+    /// MYR-270 — "Arriving at <dropoff>" derives from the streamed nav ETA
+    /// (`etaMinutes ≤ 2`) of the selected vehicle DURING the in-ride leg, never a
+    /// timer. Real wire ETA off the live telemetry snapshot; false when there is no
+    /// live ETA yet (honest — no fabricated ETA, MYR-228).
+    private var ownerArriving: Bool {
+        guard dispatchedRide?.status == .enroute,
+              let eta = homeState.selectedTelemetry?.snapshot.etaMinutes else { return false }
+        return eta <= 2
+    }
+
+    /// The owner's dispatch CTA for the current state — "Picked up" (accepted →
+    /// arrived) / "Dropped off" (enroute → completed); `nil` for arrived (awaiting
+    /// the rider's Start) and completed. Optimistic + 409-reconcile happen inside the
+    /// service; `dispatchInFlight` only guards a double-tap within one frame.
+    private var dispatchAction: OwnerDispatchAction? {
+        guard let status = dispatchedRide?.status,
+              let title = OwnerRideStatusLine.actionTitle(for: status) else { return nil }
+        return OwnerDispatchAction(title: title) {
+            guard !dispatchInFlight else { return }
+            dispatchInFlight = true
+            switch status {
+            case .accepted: rideRequestService.pickedUp()
+            case .enroute: rideRequestService.droppedOff()
+            default: break
+            }
+        }
     }
 
     var body: some View {
@@ -160,14 +193,23 @@ struct HomeScreen: View {
         // pixel-identical. Full-bleed placement mirrors `MapHeader` (physical top).
         .overlay(alignment: .top) {
             if let line = dispatchStatusLine {
-                OwnerDispatchBanner(line: line, isComplete: dispatchedRide?.status == .completed)
-                    .padding(.top, MRTMetrics.mapHeaderTop + MRTMetrics.mapChipHeight + 12)
-                    .frame(maxWidth: .infinity, alignment: .top)
-                    .ignoresSafeArea(edges: .top)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                OwnerDispatchCard(
+                    line: line,
+                    isComplete: dispatchedRide?.status == .completed,
+                    action: dispatchAction,
+                    actionDisabled: dispatchInFlight
+                )
+                .padding(.top, MRTMetrics.mapHeaderTop + MRTMetrics.mapChipHeight + 12)
+                .frame(maxWidth: .infinity, alignment: .top)
+                .ignoresSafeArea(edges: .top)
+                .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
         .animation(.easeOut(duration: 0.28), value: dispatchStatusLine)
+        // MYR-270: reset the CTA double-tap latch whenever the dispatched status
+        // changes (optimistic advance or WS reconcile), so the next state's button
+        // ("Picked up" → later "Dropped off") is immediately tappable.
+        .onChange(of: dispatchedRide?.status) { _, _ in dispatchInFlight = false }
     }
 
     // MARK: - Vehicle content (map + switcher + sheet)

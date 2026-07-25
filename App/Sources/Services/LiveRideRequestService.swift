@@ -28,10 +28,12 @@ import Observation
 // route and the audit's live pass.
 //
 // Deliberate v1 gaps (MYR-176/177 own the rest of the lifecycle):
-//  • No enroute / arrived / completed. After accept, the rider's tracking sheet
-//    mounts at the static `autoAcceptInitialProgress` seed (heading-to-pickup)
-//    with NO progress ticker and NO summary auto-advance — reusing existing UI,
-//    inventing no new screen (dead-code rule).
+//  • No per-second progress ticker (MYR-176/177). Each lifecycle leg mounts the
+//    rider's tracking sheet at a STATIC anchor (heading-to-pickup / aboard) and the
+//    LEG/stage is read off the server STATUS (accepted → arrived → enroute →
+//    completed), not an interpolated progress — reusing existing UI, inventing no
+//    new screen (dead-code rule). The dropoff ETA "arriving" takeover derives from
+//    the streamed nav ETA where available, never a timer (MYR-270).
 //  • Create targets the caller's first owned vehicle (the demo's single shared
 //    car); the fixture fleet-picker → live-vehicle join is future work (needs the
 //    MYR-91 shared-viewer access set + a live Review picker). Display-only fleet
@@ -375,60 +377,86 @@ final class LiveRideRequestService: RideRequestService {
         postMutation { try await $0.declineRideRequest(id: $1) }
     }
 
-    // MARK: MYR-265 — the rider's "I'm in" (leg 1 → leg 2)
+    // MARK: MYR-270 — owner-driven dispatch v2 (picked-up / start / dropped-off)
+    //
+    // Each is the optimistic-then-reconcile analog of accept/decline for a lifecycle
+    // advance the owner or rider triggers: flip the local status (and, where relevant,
+    // the leg tracking anchor) synchronously so the sheet reacts with the same timing
+    // as the sim, then POST + reconcile. A 200 (the advance OR the idempotent
+    // already-there no-op) folds the returned record; a 409 (wrong state) or transient
+    // failure REFETCHES the authoritative record; a double failure (POST AND refetch)
+    // reverts the optimistic flip so the party is not stranded on a phantom state the
+    // car never entered (MYR-265 review — reset the optimistic advance when the server
+    // never confirmed it). Never an auto-retry of the same POST (§7.8).
 
-    func board() {
+    /// OWNER "Picked up" — `accepted → arrived`. No nav push here (that is `start`).
+    func pickedUp() {
         guard var request = activeRequest, request.status == .accepted else { return }
-        // Optimistic leg 1 → leg 2: flip the status and seed the leg-2 tracking
-        // anchor synchronously so the rider's sheet advances (and the "I'm in"
-        // button hides) the instant this returns — same optimistic discipline as
-        // accept/decline. The POST + WS `ride_status_changed` then reconcile.
+        request.status = .arrived
+        activeRequest = request
+        advanceMutation(revertTo: .accepted) { try await $0.pickedUp(rideID: $1) }
+    }
+
+    /// RIDER "Start ride" — `arrived → enroute`. The server pushes the dropoff nav.
+    /// Seeds the leg-2 anchor optimistically so the rider's sheet advances to leg 2
+    /// the instant this returns (v1 has no per-second ticker).
+    func startRide() {
+        guard var request = activeRequest, request.status == .arrived else { return }
         request.status = .enroute
         if request.input.schedule == nil {
             request.trackProgress = max(request.trackProgress ?? 0, request.enrouteSeedProgress)
         }
         activeRequest = request
-        boardMutation()
+        advanceMutation(revertTo: .arrived) { try await $0.start(rideID: $1) }
     }
 
-    /// POST `/board` and reconcile to server state. A `200` (the advance OR the
-    /// idempotent already-`enroute` no-op) folds the returned record; a `409`
-    /// (wrong state — e.g. the ride already `completed`) or a transient failure
-    /// REFETCHES the authoritative record and integrates it, so a genuinely failed
-    /// advance reverts the optimistic `enroute` back to `accepted` (re-showing "I'm
-    /// in") while an already-advanced ride settles on its true leg. Never an
-    /// auto-retry of the same POST (§7.8).
-    private func boardMutation() {
+    /// OWNER "Dropped off" — `enroute → completed`.
+    func droppedOff() {
+        guard var request = activeRequest, request.status == .enroute else { return }
+        request.status = .completed
+        if request.input.schedule == nil { request.trackProgress = 1 }
+        activeRequest = request
+        advanceMutation(revertTo: .enroute) { try await $0.droppedOff(rideID: $1) }
+    }
+
+    /// Shared optimistic-advance reconcile (MYR-270). POST the action; a 200 folds the
+    /// returned record; any error REFETCHES the authoritative record and folds it (so
+    /// an already-advanced ride settles on its true state while a genuinely failed
+    /// advance reverts). A double failure (POST AND refetch) reverts the optimistic
+    /// flip to `previous` — the server never advanced, so no `ride_status_changed`
+    /// frame will arrive to correct it; a re-tap is an idempotent 200 and the WS
+    /// re-confirms the real state.
+    private func advanceMutation(
+        revertTo previous: RideRequestStatus,
+        _ op: @escaping @Sendable (any RideRequestAPI, String) async throws -> RideRequest
+    ) {
         guard let id = serverRideID else { return } // create not yet acknowledged
         let api = self.api
         Task { @MainActor [weak self] in
             do {
-                let ride = try await api.board(rideID: id)
+                let ride = try await op(api, id)
                 self?.integrate(ride)
             } catch {
                 if let ride = try? await api.rideRequest(id: id) {
                     self?.integrate(ride)
                 } else {
-                    // Double failure (the POST AND the reconciling refetch both
-                    // failed — e.g. an offline blip spanning both). The server
-                    // never advanced, so no `ride_status_changed` frame will ever
-                    // arrive to correct the optimistic `.enroute`. Undo it → back
-                    // to leg 1 so the rider isn't stranded on a phantom leg 2 the
-                    // car isn't driving, and "I'm in" reappears for a retry. Safe
-                    // if the advance secretly succeeded: a re-tap is an idempotent
-                    // 200 and the WS frame re-confirms `.enroute` (MYR-265 review).
-                    self?.revertOptimisticBoard()
+                    self?.revertOptimisticAdvance(to: previous)
                 }
             }
         }
     }
 
-    /// Undo an optimistic board flip that was never confirmed by the server.
-    private func revertOptimisticBoard() {
-        guard var request = activeRequest, request.status == .enroute else { return }
-        request.status = .accepted
+    /// Undo an optimistic advance the server never confirmed, restoring the prior
+    /// status + its leg tracking anchor (MYR-270).
+    private func revertOptimisticAdvance(to previous: RideRequestStatus) {
+        guard var request = activeRequest else { return }
+        request.status = previous
         if request.input.schedule == nil {
-            request.trackProgress = RideRequestTiming.autoAcceptInitialProgress
+            switch previous {
+            case .accepted, .arrived: request.trackProgress = RideRequestTiming.autoAcceptInitialProgress
+            case .enroute: request.trackProgress = request.enrouteSeedProgress
+            default: break
+            }
         }
         activeRequest = request
     }
@@ -489,12 +517,13 @@ final class LiveRideRequestService: RideRequestService {
             // The owner side ignores `trackProgress`; only the rider reads it.
             if current.input.schedule == nil {
                 switch mapped! {
-                case .accepted:
-                    // Live has no per-second ticker, so an accepted ride's anchor is
-                    // always the static leg-1 seed. Set it unconditionally so a board
-                    // that FAILED (optimistic enroute reverting to accepted on the
-                    // refetch) also rewinds the anchor back to leg 1 — not just when
-                    // it was nil.
+                case .accepted, .arrived:
+                    // Live has no per-second ticker, so an accepted/arrived ride's
+                    // anchor is always the static leg-1 seed (car at/approaching the
+                    // pickup). Set it unconditionally so an advance that FAILED
+                    // (optimistic enroute reverting on the refetch) also rewinds the
+                    // anchor back to leg 1 — not just when it was nil. The rider's
+                    // arrived "Your car is here" stage reads off the STATUS itself.
                     current.trackProgress = RideRequestTiming.autoAcceptInitialProgress
                 case .enroute:
                     current.trackProgress = max(current.trackProgress ?? 0, current.enrouteSeedProgress)

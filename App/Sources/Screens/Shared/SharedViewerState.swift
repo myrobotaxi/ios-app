@@ -644,6 +644,14 @@ public final class SharedViewerState {
         isLiveLocation ? liveVehicleLocator?.fleetMember : nil
     }
 
+    /// MYR-270 — the streamed nav ETA (minutes) of the ride's car for the rider's
+    /// tracking "Arriving" takeover. v1 has NO rider-side live vehicle ETA stream
+    /// yet (`RiderLiveVehicleLocator` carries the car's coordinate + identity only),
+    /// so this is `nil`: the rider sheet then never fabricates an "Arriving" state on
+    /// the live path (MYR-228 — no fake ETA). Exposed here so the real ETA source
+    /// (a future rider-side telemetry subscription) swaps in one place.
+    public var riderNavMinutesToArrival: Int? { nil }
+
     /// The fleet member to render for a draft/record `id`: the live vehicle in
     /// live mode (single-vehicle join), else the fixture looked up by id.
     public func fleetMember(forID id: String) -> FleetMember {

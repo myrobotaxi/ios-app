@@ -47,6 +47,10 @@ struct SharedViewerScreen: View {
     /// tone; the rider is already returned to a retryable state with the draft
     /// intact by `handleSessionFailure()`.
     @State private var showSessionErrorToast = false
+    /// MYR-271 — the tracking sheet's settled visible height, reported by
+    /// `RiderTrackingSheet` on every settle. The recenter button + the tracking map
+    /// camera inset re-anchor ABOVE this so both clear the card in every detent.
+    @State private var trackingSettledHeight: CGFloat = MRTMetrics.trackingMapBottomInset
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -118,7 +122,10 @@ struct SharedViewerScreen: View {
                 // `.onChange(of: isFollowing)` → `TrackingCameraController.recenter`).
                 if isTrackingPhase {
                     FloatingMapButton(
-                        bottom: MRTMetrics.trackingRecenterButtonBottom,
+                        // MYR-271: re-anchor above the sheet's SETTLED top (recomputed
+                        // from the settled detent height) so it clears the card in
+                        // every detent — no longer a fixed offset that overlapped it.
+                        bottom: trackingSettledHeight + MRTMetrics.trackingRecenterSheetGap,
                         hidden: isFollowing
                     ) {
                         isFollowing = true
@@ -312,7 +319,18 @@ struct SharedViewerScreen: View {
             case .booking:
                 RideRequestBookingContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
             case .tracking:
-                RideRequestTrackingContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
+                // MYR-271: the tracking card rides the shared PanSheet engine (drag +
+                // fluid chrome), reporting its settled height back for the recenter /
+                // map-inset re-anchor. The two-leg map/camera behind it are unchanged.
+                RiderTrackingSheet(settledHeight: $trackingSettledHeight) {
+                    RideRequestTrackingContent(
+                        viewerState: viewerState,
+                        rideRequestService: rideRequestService,
+                        totalHeight: totalHeight,
+                        hosted: true,
+                        navMinutesToArrival: viewerState.riderNavMinutesToArrival
+                    )
+                }
             case .summary:
                 RideRequestSummaryContent(viewerState: viewerState, rideRequestService: rideRequestService, historyStore: historyStore, riderName: riderName, liveProfile: liveProfile)
             }
@@ -495,7 +513,9 @@ struct SharedViewerScreen: View {
                 carCoordinate: trackingCarPosition.coordinate,
                 carHeading: trackingCarPosition.headingDegrees,
                 legProgress: trackingLegProgress,
-                bottomInset: mapBottomInset,
+                // MYR-271: track the sheet's settled detent height so the leg-fit
+                // camera fills the true visible band above the (now draggable) card.
+                bottomInset: trackingSettledHeight,
                 cameraPosition: $cameraPosition,
                 isFollowing: $isFollowing,
                 controller: viewerState.trackingCamera,
@@ -717,6 +737,10 @@ struct SharedViewerScreen: View {
         switch rideRequestService.activeRequest?.status {
         case .enroute, .completed:
             return .inRide
+        case .arrived:
+            // MYR-270: the car has reached the pickup (rider picked up, awaiting the
+            // Start CTA) — still the leg-1 (car→pickup) framing, at the pickup.
+            return .toPickup
         default:
             return TrackingLeg.forProgress(rideRequestService.activeRequest?.trackProgress ?? 0,
                                            pickupCut: rideRequestService.activeRequest?.pickupCut ?? 0.2)
@@ -837,10 +861,11 @@ struct SharedViewerScreen: View {
         case .accepted:
             guard !hasSchedule, current == .booking || current == .idle else { return nil }
             return .tracking
-        case .enroute:
-            // MYR-265 — the rider boarded (leg 2). From booking/idle (a cold-adopt
-            // of an already-enroute ride) enter tracking; already tracking → stay
-            // (the leg flips within the tracking sheet off the status itself).
+        case .arrived, .enroute:
+            // MYR-270 — the owner confirmed pickup (arrived) or the rider started
+            // (enroute). From booking/idle (a cold-adopt of an in-progress ride) enter
+            // tracking; already tracking → stay (the stage/leg flips within the
+            // tracking sheet off the status itself).
             guard !hasSchedule, current == .booking || current == .idle else { return nil }
             return .tracking
         case .completed:
