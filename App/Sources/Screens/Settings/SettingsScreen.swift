@@ -1062,10 +1062,14 @@ struct SettingsScreen: View {
             teardownResult = response
         } catch let error as RestError {
             if case .http(let status, _, _, _) = error, status == 404 {
-                // Idempotent: the car is already gone server-side — reconcile the
-                // list and confirm quietly.
+                // Idempotent: the car is already gone server-side (a retry, a
+                // double-tap, or a removal that succeeded before the UI caught up).
+                // That is a SUCCESS, not a failure — drop it and show the normal
+                // "Car removed" confirmation, never the "Couldn't remove" error
+                // dialog (MYR-261: the false-error the client hit). No follow-up
+                // steps: the first successful removal already surfaced them.
                 teardown.onRemoved(vehicle.id)
-                teardownError = "\(vehicle.name) was already removed."
+                teardownResult = Self.alreadyRemovedResult
             } else {
                 teardownError = Self.teardownErrorMessage(error)
             }
@@ -1073,6 +1077,19 @@ struct SettingsScreen: View {
             teardownError = "Something went wrong removing the car. Please try again."
         }
     }
+
+    /// The synthesized success response for the idempotent already-gone (404)
+    /// case: the car is confirmed removed, with no follow-up next steps (the
+    /// original successful removal already presented any revoke / virtual-key
+    /// instructions). Drives the same "Car removed" confirmation sheet.
+    static let alreadyRemovedResult = VehicleTeardownResponse(
+        removed: true,
+        wasLastVehicle: false,
+        teslaTokensCleared: false,
+        streamConfigDeleted: false,
+        revokeUrl: nil,
+        virtualKeyRemoval: VirtualKeyRemoval(required: false, automatable: false, steps: [])
+    )
 
     /// Honest, non-technical copy for a teardown failure. The teardown is atomic
     /// server-side (nothing deleted on failure), so "try again" is always safe.
