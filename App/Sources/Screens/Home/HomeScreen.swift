@@ -70,6 +70,31 @@ struct HomeScreen: View {
         IncomingRequestDisplay.resolve(request: request, isLive: isLive, liveVehicle: incomingVehicle(for: request))
     }
 
+    /// MYR-265 — the active DISPATCHED ride this owner is tracking (accepted →
+    /// enroute → completed), or `nil` when there is none / it is still pending
+    /// (the incoming sheet handles pending). The owner observes the live status
+    /// through the SAME shared `rideRequestService.activeRequest`, folded from each
+    /// `ride_status_changed` WS unicast by `LiveRideRequestService.integrate`.
+    private var dispatchedRide: RideRequestRecord? {
+        guard let request = rideRequestService.activeRequest else { return nil }
+        switch request.status {
+        case .accepted, .enroute, .completed: return request
+        case .pending, .declined: return nil
+        }
+    }
+
+    /// The owner's ride-aware status line for the dispatched ride — real rider name
+    /// (via the gated `IncomingRequestDisplay`) + real drop-off label, neutral when
+    /// absent (MYR-228). `nil` when there is no dispatched ride.
+    private var dispatchStatusLine: String? {
+        guard let request = dispatchedRide else { return nil }
+        return OwnerRideStatusLine.text(
+            status: request.status,
+            riderName: incomingDisplay(for: request).riderName,
+            dropoffLabel: request.input.destination.label
+        )
+    }
+
     var body: some View {
         ZStack {
             if let vehicle = homeState.selectedVehicle,
@@ -129,6 +154,20 @@ struct HomeScreen: View {
         .overlay {
             RouteSentToast(content: $routeSentToast)
         }
+        // MYR-265 — the ride-aware dispatch status pill, pinned just below the
+        // MapHeader switcher. Shown ONLY while a ride is dispatched, so the plain
+        // owner Home (no active ride, the `ownerHome` drift-gate scene) is
+        // pixel-identical. Full-bleed placement mirrors `MapHeader` (physical top).
+        .overlay(alignment: .top) {
+            if let line = dispatchStatusLine {
+                OwnerDispatchBanner(line: line, isComplete: dispatchedRide?.status == .completed)
+                    .padding(.top, MRTMetrics.mapHeaderTop + MRTMetrics.mapChipHeight + 12)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .ignoresSafeArea(edges: .top)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.28), value: dispatchStatusLine)
     }
 
     // MARK: - Vehicle content (map + switcher + sheet)

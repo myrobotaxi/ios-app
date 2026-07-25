@@ -87,6 +87,12 @@ enum DebugScene: String, CaseIterable {
     /// copy full-frame in the simulator (no live backend). Pair with
     /// `MRT_OWNER_DETENT=half` to boot at the controls detent.
     case ownerControlsUnavailable
+    /// MYR-265 — owner Home AFTER accepting a ride: the ride-aware dispatch banner
+    /// in its leg-1 "En route to pickup · picking up <Name>" state (seeds an
+    /// accepted owner ride). `…Enroute` seeds the leg-2 "<Name> aboard · heading
+    /// to <dropoff>" state.
+    case ownerDispatched
+    case ownerDispatchedEnroute
 
     /// The active scene for this launch, or `nil` for a normal boot. Read
     /// from `MRT_SCENE` (env, the documented `SIMCTL_CHILD_MRT_SCENE=` path);
@@ -180,6 +186,7 @@ enum DebugScene: String, CaseIterable {
         self == .ownerHome || self == .ownerDrives || self == .ownerIncoming
             || self == .ownerScheduled || self == .ownerSettings
             || self == .ownerControlsUnavailable
+            || self == .ownerDispatched || self == .ownerDispatchedEnroute
     }
 
     /// MYR-260 — a DEBUG fleet override for scenes that need a specific
@@ -293,6 +300,10 @@ enum DebugScene: String, CaseIterable {
             return record(status: .accepted, progress: 1.0)
         case .declined:
             return record(status: .declined)
+        case .ownerDispatched:
+            return record(status: .accepted, progress: 0.08)
+        case .ownerDispatchedEnroute:
+            return record(status: .enroute, progress: 0.5)
         default:
             return nil
         }
@@ -360,7 +371,8 @@ enum DebugScene: String, CaseIterable {
             viewer.sheetPhase = .summary
         case .modeChooser, .ownerSettings, .riderSettings,
              .scheduledDetails, .scheduledReschedule, .scheduledRequested, .scheduledConfirmCancel,
-             .ownerHome, .ownerDrives, .ownerIncoming, .ownerScheduled, .ownerControlsUnavailable:
+             .ownerHome, .ownerDrives, .ownerIncoming, .ownerScheduled, .ownerControlsUnavailable,
+             .ownerDispatched, .ownerDispatchedEnroute:
             break // chooser / settings / rider live-map / owner scenes don't drive the viewer sheet
         }
     }
