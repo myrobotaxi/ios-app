@@ -101,13 +101,19 @@ struct HomeScreen: View {
     }
 
     /// MYR-270 — "Arriving at <dropoff>" derives from the streamed nav ETA
-    /// (`etaMinutes ≤ 2`) of the selected vehicle DURING the in-ride leg, never a
-    /// timer. Real wire ETA off the live telemetry snapshot; false when there is no
-    /// live ETA yet (honest — no fabricated ETA, MYR-228).
+    /// (`etaMinutes` 1…2) of the selected vehicle DURING the in-ride leg, never a
+    /// timer. Honest — no fabricated ETA (MYR-228): `snapshot.etaMinutes` is a
+    /// non-optional Int that collapses an ABSENT ETA to 0 (VehicleContractMapping),
+    /// so an absent ETA and a stationary car both read 0. We must NOT treat 0 as
+    /// "arriving" — otherwise the owner flashes "Arriving" the instant leg 2 starts
+    /// (car still parked at pickup, dropoff ETA not yet streamed). Require the car
+    /// to be actively DRIVING with a real ETA of 1…2 min — matching the rider path
+    /// (which uses an Int? and returns false on nil).
     private var ownerArriving: Bool {
-        guard dispatchedRide?.status == .enroute,
-              let eta = homeState.selectedTelemetry?.snapshot.etaMinutes else { return false }
-        return eta <= 2
+        guard let status = dispatchedRide?.status,
+              let snapshot = homeState.selectedTelemetry?.snapshot else { return false }
+        return OwnerRideStatusLine.arriving(
+            status: status, isDriving: snapshot.status == .driving, etaMinutes: snapshot.etaMinutes)
     }
 
     /// The owner's dispatch CTA for the current state — "Picked up" (accepted →

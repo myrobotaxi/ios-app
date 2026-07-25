@@ -112,6 +112,23 @@ final class RideDispatchStatusTests: XCTestCase {
                        "En route to pickup", "blank name treated as absent")
     }
 
+    func testOwnerArrivingRequiresDrivingAndRealETA() {
+        // The bug (MYR-270 review): etaMinutes collapses an ABSENT ETA to 0, so
+        // the owner must NOT read "Arriving" at eta==0 the instant leg 2 starts
+        // (car still parked at pickup).
+        XCTAssertFalse(OwnerRideStatusLine.arriving(status: .enroute, isDriving: true, etaMinutes: 0),
+                       "eta 0 = no ETA yet / stationary, never arriving")
+        XCTAssertFalse(OwnerRideStatusLine.arriving(status: .enroute, isDriving: false, etaMinutes: 2),
+                       "parked at pickup, not driving → not arriving")
+        XCTAssertFalse(OwnerRideStatusLine.arriving(status: .enroute, isDriving: true, etaMinutes: 3),
+                       "3 min out is not yet arriving")
+        XCTAssertTrue(OwnerRideStatusLine.arriving(status: .enroute, isDriving: true, etaMinutes: 2))
+        XCTAssertTrue(OwnerRideStatusLine.arriving(status: .enroute, isDriving: true, etaMinutes: 1))
+        // Only during the in-ride leg.
+        XCTAssertFalse(OwnerRideStatusLine.arriving(status: .accepted, isDriving: true, etaMinutes: 1))
+        XCTAssertFalse(OwnerRideStatusLine.arriving(status: .arrived, isDriving: true, etaMinutes: 1))
+    }
+
     func testOwnerStatusLineArrived() {
         XCTAssertEqual(OwnerRideStatusLine.text(status: .arrived, riderName: "Maya", dropoffLabel: "SFO"),
                        "Picked up \u{00B7} waiting for Maya to start")

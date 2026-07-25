@@ -54,6 +54,17 @@ enum OwnerRideStatusLine {
         }
     }
 
+    /// Whether the owner's in-ride line should read "Arriving" — pure + testable
+    /// (MYR-270 review). ONLY during `enroute`, when the car is actively DRIVING
+    /// with a real ETA of 1…2 min. `snapshot.etaMinutes` is a non-optional Int
+    /// that collapses an ABSENT ETA to 0 (VehicleContractMapping), so `0` means
+    /// "no ETA yet / stationary", NEVER "arriving" — otherwise the owner flashes
+    /// "Arriving" the instant leg 2 starts (car still parked at pickup, dropoff
+    /// ETA not yet streamed), matching the rider path's honest nil-handling.
+    static func arriving(status: RideRequestStatus, isDriving: Bool, etaMinutes: Int) -> Bool {
+        status == .enroute && isDriving && etaMinutes > 0 && etaMinutes <= 2
+    }
+
     /// The owner's action CTA title for the current dispatched state, or `nil` when
     /// there is nothing for the owner to do (`arrived` — awaiting the rider's Start;
     /// and `completed`). Pure so the accepted→"Picked up" / enroute→"Dropped off"
