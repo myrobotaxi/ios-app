@@ -367,7 +367,46 @@ final class LiveRideRequestService: RideRequestService {
             request.trackProgress = RideRequestTiming.autoAcceptInitialProgress
         }
         activeRequest = request
-        postMutation { try await $0.acceptRideRequest(id: $1) }
+        // MYR-277 C: the backend now 409s an accept for an in_service/offline
+        // vehicle (parallel PR). A swallowed error would strand the owner on a
+        // phantom "accepted" — so reconcile on failure instead of fire-and-forget.
+        reconcileAcceptOnFailure()
+    }
+
+    /// MYR-277 C: POST the accept; on SUCCESS keep the optimistic `.accepted` (the
+    /// owner tracking + WS frames drive the rest, unchanged from the prior
+    /// fire-and-forget behavior). On ANY error — notably a 409 when the target
+    /// vehicle went in_service/offline and the backend refuses the dispatch —
+    /// REFETCH the authoritative record and fold it: a still-`requested` ride folds
+    /// back to `.pending`, re-showing the incoming sheet (clean, tappable — the
+    /// sheet resets its sending/sent choreography on the id round-trip) instead of
+    /// leaving the owner stuck. If even the refetch fails, revert to pending.
+    private func reconcileAcceptOnFailure() {
+        guard let id = serverRideID else { return } // create not yet acknowledged
+        let api = self.api
+        Task { @MainActor [weak self] in
+            do {
+                _ = try await api.acceptRideRequest(id: id)
+            } catch {
+                if let ride = try? await api.rideRequest(id: id) {
+                    self?.integrate(ride)
+                } else {
+                    self?.revertOptimisticAccept()
+                }
+            }
+        }
+    }
+
+    /// Undo an optimistic accept the server never confirmed (a 409 whose refetch
+    /// also failed), restoring the pending incoming card (MYR-277 C). Guards on the
+    /// optimistic `.accepted` so a WS frame that already moved the ride on is never
+    /// clobbered.
+    private func revertOptimisticAccept() {
+        guard var request = activeRequest, request.status == .accepted else { return }
+        request.status = .pending
+        request.acceptedAt = nil
+        request.trackProgress = nil
+        activeRequest = request
     }
 
     func decline() {
@@ -509,9 +548,21 @@ final class LiveRideRequestService: RideRequestService {
             // Update status in place, preserving the richer local draft input.
             // `record(from:)` is non-nil here (it returns nil only for the
             // already-handled cancelled/terminal case above).
-            var current = activeRequest ?? RideRequestContractMapping.record(from: ride)!
+            let refetched = RideRequestContractMapping.record(from: ride)!
+            var current = activeRequest ?? refetched
             current.status = mapped!
             current.acceptedAt = ride.acceptedAt.flatMap(RideRequestContractMapping.parseISO)
+            // MYR-277 A1: in the single-account demo the rider's optimistic draft
+            // carries NO requesterName (the rider never stamps their own display
+            // name) and may carry placeholder place labels; the refetched server
+            // record is authoritative for identity. Refresh those fields from it
+            // WITHOUT downgrading a richer local value, so the owner card shows the
+            // real "<Name> wants a ride" instead of the neutral "Shared viewer".
+            // The two-device owner path builds its record in the `else if` branch
+            // below (via `record(from:)`) and is unaffected by this fold.
+            current.input.requesterName = ride.requesterName ?? current.input.requesterName
+            current.input.pickup = Self.preferRicherPlace(local: current.input.pickup, refetched: refetched.input.pickup)
+            current.input.destination = Self.preferRicherPlace(local: current.input.destination, refetched: refetched.input.destination)
             // MYR-265: seed the per-leg tracking anchor so a WS-driven status change
             // moves the rider's sheet to the matching leg (v1 has no live ticker).
             // The owner side ignores `trackProgress`; only the rider reads it.
@@ -546,6 +597,15 @@ final class LiveRideRequestService: RideRequestService {
 
     private func isCurrent(_ rideID: String) -> Bool {
         rideID == serverRideID || rideID == activeRequest?.id
+    }
+
+    /// MYR-277 A1: prefer the local draft's place, adopting the refetched server
+    /// place ONLY when the local one is a placeholder (empty label). Never
+    /// downgrades a routed local value (miles/minutes the rider already computed);
+    /// only fills a same-device draft that lacked the field.
+    private static func preferRicherPlace(local: RidePlace, refetched: RidePlace) -> RidePlace {
+        let localEmpty = local.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return localEmpty && !refetched.label.isEmpty ? refetched : local
     }
 
     // MARK: MYR-230 — adopt the rider's real open ride
