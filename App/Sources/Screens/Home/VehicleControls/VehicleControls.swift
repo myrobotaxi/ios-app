@@ -146,12 +146,18 @@ struct VehicleControls: View {
     }
 
     private var quickTiles: some View {
-        HStack(spacing: 8) {
+        // `.top` alignment + each tile filling the row height (maxHeight:.infinity
+        // on the tile) makes all four EQUAL height regardless of sub-line length —
+        // otherwise a scaled-down longer sub ("Closed · just now") yields a shorter
+        // line than a full-size short one ("Off"), mismatching tile heights (client,
+        // MYR-260 read-back surfaced real subs of varying length).
+        HStack(alignment: .top, spacing: 8) {
             lockTile
             climateTile
             trunkTile
             chargeTile
         }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var lockTile: some View {
@@ -319,7 +325,7 @@ private struct ControlTile: View {
                         .minimumScaleFactor(0.6)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(.horizontal, 13)
             .padding(.top, 13)
             .padding(.bottom, 12)
