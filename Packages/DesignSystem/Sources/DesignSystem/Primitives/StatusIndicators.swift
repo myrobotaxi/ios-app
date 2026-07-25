@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - Vehicle status (components.jsx STATUS map)
 
 public enum MRTVehicleStatus: String, CaseIterable, Identifiable, Sendable {
-    case driving, parked, charging, offline
+    case driving, parked, charging, offline, inService
 
     public var id: String { rawValue }
 
@@ -13,6 +13,7 @@ public enum MRTVehicleStatus: String, CaseIterable, Identifiable, Sendable {
         case .parked: "Parked"
         case .charging: "Charging"
         case .offline: "Offline"
+        case .inService: "In Service"
         }
     }
 
@@ -22,6 +23,7 @@ public enum MRTVehicleStatus: String, CaseIterable, Identifiable, Sendable {
         case .parked: .mrtParked
         case .charging: .mrtCharging
         case .offline: .mrtOffline
+        case .inService: .mrtInService
         }
     }
 }

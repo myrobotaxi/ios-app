@@ -33,6 +33,10 @@ enum Hex {
     static let parked: UInt32 = 0x3B82F6
     static let charging: UInt32 = 0xFFD60A
     static let offline: UInt32 = 0x6B6B6B
+    // Net-new state (MYR-259) — no prototype precedent; amber reads as
+    // "temporarily out of service / maintenance", deliberately distinct from
+    // charging's warmer yellow. Pending design-project blessing.
+    static let inService: UInt32 = 0xFF9F0A
 
     // Danger
     static let danger: UInt32 = 0xFF3B30 // battery low / destructive
@@ -200,6 +204,7 @@ public extension Color {
     static let mrtParked = Color(hex: Hex.parked)
     static let mrtCharging = Color(hex: Hex.charging)
     static let mrtOffline = Color(hex: Hex.offline)
+    static let mrtInService = Color(hex: Hex.inService)
 
     // Battery (batHigh/batMid share the driving/charging hexes in tokens.js)
     static let mrtBatHigh = Color(hex: Hex.driving)
