@@ -226,16 +226,26 @@ struct HomeScreen: View {
         // ("Picked up" → later "Dropped off") is immediately tappable.
         .onChange(of: dispatchedRide?.status) { _, status in
             dispatchInFlight = false
-            // MYR-267 — auto-dismiss the "Dropped off ✓" confirmation after a beat
-            // so the owner's Home doesn't stay stuck on it. Owner-local; the shared
-            // activeRequest (and the rider's summary) is untouched.
-            guard status == .completed, let id = rideRequestService.activeRequest?.id else { return }
-            Task { @MainActor in
-                try? await Task.sleep(for: .seconds(5))
-                if rideRequestService.activeRequest?.id == id,
-                   rideRequestService.activeRequest?.status == .completed {
-                    dismissedCompletedRideID = id
-                }
+            scheduleDroppedOffDismiss(for: status)
+        }
+        // Also on appear: `.onChange` skips the initial value, so a ride that is
+        // ALREADY `.completed` when Home first renders (e.g. app relaunched right
+        // after drop-off) would otherwise never schedule the dismiss and the
+        // "Dropped off ✓" banner would stay stuck (MYR-267 review).
+        .onAppear { scheduleDroppedOffDismiss(for: dispatchedRide?.status) }
+    }
+
+    /// Auto-dismiss the owner's "Dropped off ✓" confirmation after a beat so Home
+    /// doesn't stay stuck on it. Owner-local — never touches the shared
+    /// `activeRequest`, so the rider's summary is unaffected (MYR-267).
+    private func scheduleDroppedOffDismiss(for status: RideRequestStatus?) {
+        guard status == .completed, let id = rideRequestService.activeRequest?.id,
+              dismissedCompletedRideID != id else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(5))
+            if rideRequestService.activeRequest?.id == id,
+               rideRequestService.activeRequest?.status == .completed {
+                dismissedCompletedRideID = id
             }
         }
     }

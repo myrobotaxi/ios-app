@@ -14,7 +14,8 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
     private func makeExecutor(
         _ sender: any VehicleCommandSending,
         driving: Bool = false,
-        maxWakeRetries: Int = 1
+        maxWakeRetries: Int = 1,
+        settleWindow: TimeInterval = 15
     ) -> LiveVehicleCommandExecutor {
         LiveVehicleCommandExecutor(
             vehicleID: "veh-1",
@@ -22,7 +23,8 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
             driving: driving,
             plate: "VIN ····0001",
             wakeRetryDelay: .zero,
-            maxWakeRetries: maxWakeRetries
+            maxWakeRetries: maxWakeRetries,
+            settleWindow: settleWindow
         )
     }
 
@@ -348,6 +350,25 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         // Hold cleared → a later GENUINE external ON is honored again.
         exec.reconcile(from: stale)
         XCTAssertTrue(exec.controls.climateOn, "after confirmation the live stream drives the tile")
+    }
+
+    /// Honest revert: if the car NEVER confirms the commanded value, after the
+    /// settle window lapses the live stream's (contradicting) reality wins — the
+    /// app doesn't lie indefinitely (e.g. a service center keeping HVAC on).
+    func testCommandRevertsToRealityAfterSettleWindow() async {
+        let exec = makeExecutor(ScriptedCommandSender(), settleWindow: 0.05)
+        try? await exec.setClimateOn(false)
+        XCTAssertFalse(exec.controls.climateOn)
+
+        // Stale on-frame within the (tiny) window is still held.
+        var on = Contracts.parkedState(); on.isClimateOn = true
+        exec.reconcile(from: on)
+        XCTAssertFalse(exec.controls.climateOn, "held within the window")
+
+        // Let the window lapse; the next contradicting frame is now authoritative.
+        try? await Task.sleep(for: .milliseconds(80))
+        exec.reconcile(from: on)
+        XCTAssertTrue(exec.controls.climateOn, "after the window, the car's reported reality wins (honest)")
     }
 
     /// A field ABSENT from the wire stays honestly unknown — never a fixture (MYR-228).

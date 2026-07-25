@@ -89,7 +89,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// (agrees) or the deadline passes (then we accept the car's reported reality —
     /// honest, e.g. a service center keeping HVAC on). Mirrors the volume coalescer.
     private var settleHold: [VehicleControlKey: (want: Bool, until: Date)] = [:]
-    private static let settleWindow: TimeInterval = 15
+    private let settleWindow: TimeInterval
 
     init(
         vehicleID: String,
@@ -97,12 +97,14 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         driving: Bool,
         plate: String,
         wakeRetryDelay: Duration = .seconds(2),
-        maxWakeRetries: Int = 1
+        maxWakeRetries: Int = 1,
+        settleWindow: TimeInterval = 15
     ) {
         self.vehicleID = vehicleID
         self.sender = sender
         self.wakeRetryDelay = wakeRetryDelay
         self.maxWakeRetries = maxWakeRetries
+        self.settleWindow = settleWindow
         // Seed identical to the simulated executor, but on the live path these
         // values are NEVER displayed until `knownFields` confirms them (MYR-251):
         // they only serve as the optimistic base a command mutates. The UI reads
@@ -366,7 +368,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
 
     /// Start the post-ack settle window for a commanded toggle (see `settleHold`).
     private func holdSettle(_ key: VehicleControlKey, want: Bool) {
-        settleHold[key] = (want: want, until: Date().addingTimeInterval(Self.settleWindow))
+        settleHold[key] = (want: want, until: Date().addingTimeInterval(settleWindow))
     }
 
     func setSeatHeatLevel(_ seat: VehicleSeatPosition, level: Int) async throws {
