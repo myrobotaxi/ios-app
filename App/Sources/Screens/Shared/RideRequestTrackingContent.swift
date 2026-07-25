@@ -100,6 +100,15 @@ struct RideRequestTrackingContent: View {
         .padding(.top, 14)
         .padding(.bottom, 30)
         .rideRequestSheetChrome()
+        .onChange(of: request?.status) {
+            // The board resolved — either it advanced to `.enroute` (button
+            // gone) or a failed/rejected advance reverted to `.accepted`
+            // (button re-shown). Either way clear the in-flight latch so a
+            // re-shown "I'm in" is tappable again; otherwise a single transient
+            // board failure leaves the rider stuck on leg 1 with a permanently
+            // greyed-out button and the car never navigated (MYR-265 review).
+            boarding = false
+        }
     }
 
     // MARK: Live header (ride-request.jsx:820-838)

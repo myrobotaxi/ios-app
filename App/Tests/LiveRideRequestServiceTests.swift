@@ -364,6 +364,33 @@ final class LiveRideRequestServiceTests: XCTestCase {
         XCTAssertLessThan(progress, cut, "anchor rewound to leg 1 (pre-pickup)")
     }
 
+    /// Double failure: the `/board` POST AND the reconciling refetch both fail
+    /// (offline blip spanning both). The server never advanced, so no WS frame
+    /// will correct the optimistic enroute — the service must UNDO the optimistic
+    /// flip back to `.accepted` (leg 1) rather than strand the rider on a phantom
+    /// leg 2 the car isn't driving (MYR-265 review).
+    func testBoardDoubleFailureRevertsOptimisticEnroute() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-dd", status: .requested))
+        await api.setDetail(Self.wireRide(id: "srv-dd", status: .accepted, accepted: true))
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        service.accept()
+        await eventually { await api.acceptCount == 1 }
+
+        // Both the POST and the refetch fail.
+        await api.setBoardError(URLError(.timedOut))
+        await api.setDetailError(URLError(.notConnectedToInternet))
+        service.board()
+        XCTAssertEqual(service.activeRequest?.status, .enroute, "optimistic flip first")
+        await eventually { service.activeRequest?.status == .accepted }
+        let cut = service.activeRequest?.pickupCut ?? 0
+        let progress = service.activeRequest?.trackProgress ?? 1
+        XCTAssertLessThan(progress, cut, "anchor rewound to leg 1 so 'I'm in' reappears")
+    }
+
     // MARK: WS ride_status_changed round-trips into the UI state
 
     func testStatusChangedFrameRefetchesAndReconcilesToAccepted() async {
@@ -574,6 +601,7 @@ private actor StubRideAPI: RideRequestAPI {
 
     private var boardReturn: RideRequest?
     private var boardError: Error?
+    private var detailError: Error?
 
     private(set) var createCount = 0
     private(set) var acceptCount = 0
@@ -596,6 +624,7 @@ private actor StubRideAPI: RideRequestAPI {
     func setRideList(_ rides: [RideRequest]) { rideList = rides }
     func setBoard(_ ride: RideRequest?) { boardReturn = ride }
     func setBoardError(_ error: Error?) { boardError = error }
+    func setDetailError(_ error: Error?) { detailError = error }
 
     func vehicles() async throws -> [VehicleSummary] {
         [VehicleSummary(vehicleId: "veh-live", name: "Lunar", model: "Model Y", year: 2025, color: "Quicksilver",
@@ -614,7 +643,10 @@ private actor StubRideAPI: RideRequestAPI {
         rideListCount += 1
         return RideRequestsListResponse(items: rideList, hasMore: false)
     }
-    func rideRequest(id: String) async throws -> RideRequest { detailReturn ?? createReturn }
+    func rideRequest(id: String) async throws -> RideRequest {
+        if let detailError { throw detailError }
+        return detailReturn ?? createReturn
+    }
     func cancelRideRequest(id: String) async throws -> RideRequest { cancelCount += 1; lastCancelID = id; return createReturn }
     func acceptRideRequest(id: String) async throws -> RideRequest { acceptCount += 1; lastAcceptID = id; return detailReturn ?? createReturn }
     func declineRideRequest(id: String) async throws -> RideRequest { declineCount += 1; lastDeclineID = id; return createReturn }

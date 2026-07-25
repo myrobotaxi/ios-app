@@ -406,9 +406,31 @@ final class LiveRideRequestService: RideRequestService {
                 let ride = try await api.board(rideID: id)
                 self?.integrate(ride)
             } catch {
-                if let ride = try? await api.rideRequest(id: id) { self?.integrate(ride) }
+                if let ride = try? await api.rideRequest(id: id) {
+                    self?.integrate(ride)
+                } else {
+                    // Double failure (the POST AND the reconciling refetch both
+                    // failed — e.g. an offline blip spanning both). The server
+                    // never advanced, so no `ride_status_changed` frame will ever
+                    // arrive to correct the optimistic `.enroute`. Undo it → back
+                    // to leg 1 so the rider isn't stranded on a phantom leg 2 the
+                    // car isn't driving, and "I'm in" reappears for a retry. Safe
+                    // if the advance secretly succeeded: a re-tap is an idempotent
+                    // 200 and the WS frame re-confirms `.enroute` (MYR-265 review).
+                    self?.revertOptimisticBoard()
+                }
             }
         }
+    }
+
+    /// Undo an optimistic board flip that was never confirmed by the server.
+    private func revertOptimisticBoard() {
+        guard var request = activeRequest, request.status == .enroute else { return }
+        request.status = .accepted
+        if request.input.schedule == nil {
+            request.trackProgress = RideRequestTiming.autoAcceptInitialProgress
+        }
+        activeRequest = request
     }
 
     func cancel() {
