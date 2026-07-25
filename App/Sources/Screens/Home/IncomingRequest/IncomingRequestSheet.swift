@@ -33,6 +33,17 @@ struct IncomingRequestSheet: View {
     /// `vehicleId` in `HomeScreen`. `nil` in SIM (unused) and for a live request
     /// whose vehicle isn't in the loaded fleet (→ vehicle name hidden).
     var resolvedVehicle: Vehicle? = nil
+    /// MYR-277 A2 — the TARGET vehicle's live position (joined by id in
+    /// `HomeScreen`), used to estimate the car→pickup leg (leg 1 of dispatch v2).
+    /// `nil` in SIM (fixture ride ids don't join the live fleet) and when the
+    /// vehicle isn't loaded / has no GPS fix → the pickup leg is omitted and the
+    /// card falls back to the single-leg stats row (pixel-identical to M1).
+    var carPosition: CLLocationCoordinate2D? = nil
+    /// MYR-277 C — the TARGET vehicle's live badge status. When `.inService` or
+    /// `.offline` the car can't take a dispatch, so Accept is disabled with an
+    /// honest reason line. `nil` in SIM / when the vehicle isn't loaded (Accept
+    /// stays enabled, unchanged).
+    var vehicleStatus: MRTVehicleStatus? = nil
     let onAccept: () -> Void
     let onDecline: () -> Void
 
@@ -97,8 +108,15 @@ struct IncomingRequestSheet: View {
             }
             ctaArea(request)
             if !sending, !sent {
-                helperText(request)
-                    .padding(.top, 12)
+                // MYR-277 C — an honest reason replaces the helper line when the
+                // target vehicle can't take the dispatch (in_service/offline).
+                if let reason = Self.unavailableReason(status: vehicleStatus, vehicleName: display(for: request).vehicleName) {
+                    unavailableLine(reason)
+                        .padding(.top, 12)
+                } else {
+                    helperText(request)
+                        .padding(.top, 12)
+                }
             }
         }
         .padding(.horizontal, 24)
@@ -287,7 +305,15 @@ struct IncomingRequestSheet: View {
                 .padding(.bottom, 10)
             }
             .frame(height: MRTMetrics.incomingRequestMapHeight)
-            statsRow(request)
+            // MYR-277 A2 — when the car→pickup leg is known (live path with the
+            // target vehicle's real position + a valid fix), show BOTH legs; else
+            // fall back to the single ride-leg stats row (pixel-identical to M1 /
+            // the `ownerIncoming` drift-gate scene, where `carPosition` is nil).
+            if let pickupLeg = Self.pickupLegEstimate(carPosition: carPosition, pickup: request.input.pickup.coordinate) {
+                legsRow(request, pickupLeg: pickupLeg)
+            } else {
+                statsRow(request)
+            }
         }
         .background(Color.mrtSurface)
         .clipShape(RoundedRectangle(cornerRadius: MRTMetrics.cardRadius, style: .continuous))
@@ -336,6 +362,64 @@ struct IncomingRequestSheet: View {
                 .font(.system(size: 14, weight: .medium))
                 .monospacedDigit()
                 .foregroundStyle(Color.mrtText)
+        }
+    }
+
+    // MARK: Two-leg itinerary (MYR-277 A2 — dispatch v2)
+    //
+    // Accepting routes the car to the PICKUP first, then the pickup→drop-off ride.
+    // The card shows both legs honestly: the car→pickup ETA/distance (estimated
+    // client-side from the target vehicle's live position, MYR-228 real-data-only)
+    // and the pickup→drop-off ride leg (already carried on the destination).
+
+    /// The car→pickup leg estimate, or `nil` when there's no usable car position
+    /// (SIM, unloaded vehicle, or the "0,0 = no fix" convention). Pure + static so
+    /// it's unit-testable without SwiftUI.
+    static func pickupLegEstimate(carPosition: CLLocationCoordinate2D?, pickup: CLLocationCoordinate2D) -> (miles: Double, minutes: Int)? {
+        guard let carPosition, !(carPosition.latitude == 0 && carPosition.longitude == 0) else { return nil }
+        return TripEstimate.estimate(from: carPosition, to: pickup)
+    }
+
+    private func legsRow(_ request: RideRequestRecord, pickupLeg: (miles: Double, minutes: Int)) -> some View {
+        let dest = request.input.destination
+        return VStack(alignment: .leading, spacing: 10) {
+            legLine(
+                dotColor: .mrtDriving,
+                name: "PICKUP",
+                place: request.input.pickup.label,
+                metric: "\(String(format: "%.1f", pickupLeg.miles)) mi \u{00B7} ~\(pickupLeg.minutes) min away"
+            )
+            Rectangle().fill(Color.mrtBorder).frame(height: MRTMetrics.hairline)
+            legLine(
+                dotColor: .mrtGold,
+                name: "DROP-OFF",
+                place: dest.label,
+                metric: "\(String(format: "%.1f", dest.miles)) mi \u{00B7} ~\(dest.minutes) min"
+            )
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+    }
+
+    private func legLine(dotColor: Color, name: String, place: String, metric: String) -> some View {
+        HStack(alignment: .center, spacing: 9) {
+            Circle().fill(dotColor).frame(width: 6, height: 6)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name)
+                    .font(.system(size: 9, weight: .semibold))
+                    .tracking(0.8)
+                    .foregroundStyle(Color.mrtTextMuted)
+                Text(place)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color.mrtText)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Text(metric)
+                .font(.system(size: 12, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(Color.mrtTextSec)
+                .fixedSize()
         }
     }
 
@@ -402,11 +486,63 @@ struct IncomingRequestSheet: View {
         } else {
             HStack(spacing: 10) {
                 declineButton
-                MRTButton(isScheduled(request) ? "Accept ride" : "Accept & send", variant: .outlineDraw, fullWidth: true) {
-                    handleAccept(request)
+                // MYR-277 C — Decline stays enabled; Accept is disabled (honest,
+                // non-interactive) when the target vehicle is in_service/offline.
+                if Self.isVehicleUnavailable(vehicleStatus) {
+                    disabledAcceptButton(request)
+                } else {
+                    MRTButton(isScheduled(request) ? "Accept ride" : "Accept & send", variant: .outlineDraw, fullWidth: true) {
+                        handleAccept(request)
+                    }
                 }
             }
         }
+    }
+
+    /// A muted, non-interactive Accept for the in_service/offline gate (MYR-277 C).
+    /// Mirrors the accept CTA's footprint (44pt tap-height, control radius) but
+    /// carries no `outline-draw` trace so it never invites a tap.
+    private func disabledAcceptButton(_ request: RideRequestRecord) -> some View {
+        Text(isScheduled(request) ? "Accept ride" : "Accept & send")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(Color.mrtTextMuted)
+            .frame(maxWidth: .infinity)
+            .frame(height: MRTButtonSize.md.height)
+            .background(Color.mrtSurface, in: RoundedRectangle(cornerRadius: MRTMetrics.controlRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: MRTMetrics.controlRadius, style: .continuous)
+                    .strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline)
+            )
+            .accessibilityLabel("Accept unavailable")
+    }
+
+    /// The honest reason line under the CTAs when Accept is gated (MYR-277 C).
+    private func unavailableLine(_ text: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(Color.mrtTextSec)
+            Text(text)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.mrtTextSec)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// Whether the target vehicle can't take a dispatch (MYR-277 C). Pure + static
+    /// so the gate is unit-testable without SwiftUI.
+    static func isVehicleUnavailable(_ status: MRTVehicleStatus?) -> Bool {
+        status == .inService || status == .offline
+    }
+
+    /// The reason line text for a gated Accept, or `nil` when the vehicle is
+    /// available (MYR-277 C). Neutral "This vehicle" when the name isn't known.
+    static func unavailableReason(status: MRTVehicleStatus?, vehicleName: String?) -> String? {
+        guard isVehicleUnavailable(status) else { return nil }
+        let name = vehicleName ?? "This vehicle"
+        let phrase = status == .offline ? "offline" : "in service"
+        return "\(name) is \(phrase) \u{2014} unavailable"
     }
 
     /// Custom destructive fill — `outline-draw` is reserved for the accept
@@ -491,15 +627,40 @@ struct IncomingRequestSheet: View {
         let vehicleName = display(for: request).vehicleName
         let destination = request.input.destination.label
         if let passenger = request.input.passenger, !passenger.phone.isEmpty {
-            let routeSuffix = (isScheduled(request) || vehicleName == nil) ? "" : " and routes \(vehicleName!)"
-            return "Accepting texts \(passenger.firstName) a live tracking link\(routeSuffix)."
+            return Self.passengerCopy(isLive: isLive, isScheduled: isScheduled(request), vehicleName: vehicleName, passengerFirstName: passenger.firstName)
         }
         if let schedule = request.input.schedule {
             if let name = vehicleName { return "\(name) will be reserved for \(schedule.day) \(schedule.time)." }
             return "Reserved for \(schedule.day) \(schedule.time)."
         }
+        return Self.nowRideCopy(isLive: isLive, vehicleName: vehicleName, destination: destination)
+    }
+
+    /// MYR-277 A2 — accept copy for a now-ride. LIVE (dispatch v2) says the car is
+    /// routed to the PICKUP first, then on to the drop-off; SIM keeps the M1
+    /// prototype copy verbatim so the `ownerIncoming` drift-gate scene is
+    /// pixel-identical. Pure + static so it's unit-testable.
+    static func nowRideCopy(isLive: Bool, vehicleName: String?, destination: String) -> String {
+        if isLive {
+            if let name = vehicleName { return "Accepting routes \(name) to the pickup, then to \(destination)." }
+            return "Accepting dispatches to the pickup, then to \(destination)."
+        }
         if let name = vehicleName { return "Accepting will route \(name) to \(destination)." }
         return "Accepting will dispatch to \(destination)."
+    }
+
+    /// MYR-277 A2 — accept copy for a for-someone-else ride with a phone. LIVE adds
+    /// the v2 "routes … to the pickup" note; SIM keeps the M1 " and routes {name}".
+    static func passengerCopy(isLive: Bool, isScheduled: Bool, vehicleName: String?, passengerFirstName: String) -> String {
+        let routeSuffix: String
+        if isScheduled || vehicleName == nil {
+            routeSuffix = ""
+        } else if isLive {
+            routeSuffix = " and routes \(vehicleName!) to the pickup"
+        } else {
+            routeSuffix = " and routes \(vehicleName!)"
+        }
+        return "Accepting texts \(passengerFirstName) a live tracking link\(routeSuffix)."
     }
 
     // MARK: Choreography (ride-request.jsx:1276-1280)
