@@ -326,6 +326,30 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         XCTAssertTrue(exec.isKnown(.volume)); XCTAssertEqual(exec.controls.volume, 50, accuracy: 0.001)
     }
 
+    /// Settle window: after a command acks, a STALE streamed frame that still
+    /// reports the OLD state must NOT revert the optimistic value — until the car
+    /// confirms (agrees) or the window lapses (MYR-272 clobber fix). The client
+    /// turned climate off; it loaded, then a stale on-frame flipped it back to On.
+    func testCommandOffSurvivesStaleOnFrameThenConfirms() async {
+        let exec = makeExecutor(ScriptedCommandSender())
+        try? await exec.setClimateOn(false)
+        XCTAssertFalse(exec.controls.climateOn, "optimistic off applied on ack")
+
+        // The car (in service) keeps streaming ON right after the ack.
+        var stale = Contracts.parkedState(); stale.isClimateOn = true
+        exec.reconcile(from: stale)
+        XCTAssertFalse(exec.controls.climateOn, "stale on-frame ignored within the settle window")
+
+        // The car finally reflects the off — confirmation clears the hold.
+        var confirm = Contracts.parkedState(); confirm.isClimateOn = false
+        exec.reconcile(from: confirm)
+        XCTAssertFalse(exec.controls.climateOn)
+
+        // Hold cleared → a later GENUINE external ON is honored again.
+        exec.reconcile(from: stale)
+        XCTAssertTrue(exec.controls.climateOn, "after confirmation the live stream drives the tile")
+    }
+
     /// A field ABSENT from the wire stays honestly unknown — never a fixture (MYR-228).
     func testReconcileAbsentFieldsStayUnknown() {
         let exec = makeExecutor(ScriptedCommandSender())
@@ -352,18 +376,21 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         XCTAssertFalse(exec.isKnown(.climateOn), "hvacPower Unknown → climate honest-unknown, not on")
     }
 
-    /// Real telemetry is authoritative and corrects a prior optimistic-on-ack value.
-    func testTelemetryReconcileOverridesOptimisticValue() async {
+    /// Real telemetry is authoritative for a control with NO in-flight command or
+    /// settle hold — a live frame drives the tile (the correcting-a-command case is
+    /// the settle-window test above, where a DISAGREEING frame is held briefly).
+    func testTelemetryReconcileDrivesUncommandedControl() {
         let exec = makeExecutor(ScriptedCommandSender())
-        try? await exec.setLocked(true) // optimistic-on-ack: locked = true, known
-        XCTAssertTrue(exec.controls.locked)
-
         var state = Contracts.parkedState()
-        state.locked = false // the car actually reports unlocked
+        state.locked = false // the car reports unlocked; the user never commanded lock
         exec.reconcile(from: state)
-
         XCTAssertTrue(exec.isKnown(.locked))
-        XCTAssertFalse(exec.controls.locked, "the next telemetry frame is authoritative")
+        XCTAssertFalse(exec.controls.locked, "telemetry drives an uncommanded control")
+
+        var relock = Contracts.parkedState()
+        relock.locked = true
+        exec.reconcile(from: relock)
+        XCTAssertTrue(exec.controls.locked, "a later live frame updates it again")
     }
 
     /// A frame arriving while a control's command is in flight must not clobber the

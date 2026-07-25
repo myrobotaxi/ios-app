@@ -78,6 +78,19 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     private var volumeSending = false
     private var pendingVolume: Double?
 
+    /// Settle-window guard for the commanded boolean toggles (climate/lock/trunk/
+    /// charge-port). The in-flight `isPending` guard only protects UNTIL the command
+    /// acks — but the car keeps streaming the OLD state for a few seconds AFTER the
+    /// ack until it actually reflects the change. Once MYR-272 folds these fields on
+    /// every live delta, that stale frame lands ~1s after the ack and clobbers the
+    /// optimistic value back (client: "turned climate off, it loaded then showed On
+    /// again"). After a command acks we record the COMMANDED value + a deadline;
+    /// reconcile ignores a DISAGREEING streamed value for that key until it confirms
+    /// (agrees) or the deadline passes (then we accept the car's reported reality —
+    /// honest, e.g. a service center keeping HVAC on). Mirrors the volume coalescer.
+    private var settleHold: [VehicleControlKey: (want: Bool, until: Date)] = [:]
+    private static let settleWindow: TimeInterval = 15
+
     init(
         vehicleID: String,
         sender: any VehicleCommandSending,
@@ -151,11 +164,11 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         // climate-on (MYR-251/252 honesty fix). We deliberately do not consult
         // `state.hvacPower` here.
         if let on = state.isClimateOn {
-            reconcileField(.climateOn, key: .climate) { self.controls.climateOn = on }
+            reconcileControlled(.climateOn, key: .climate, wire: on) { self.controls.climateOn = $0 }
         }
 
         if let locked = state.locked {
-            reconcileField(.locked, key: .lock) { self.controls.locked = locked }
+            reconcileControlled(.locked, key: .lock, wire: locked) { self.controls.locked = $0 }
         }
 
         // Single target-temp tile mirrors the DRIVER setpoint (matches
@@ -180,11 +193,11 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         reconcileSeat(.passenger, key: .passengerSeat, heater: state.seatHeaterRight, cooler: state.seatCoolerRight)
 
         if let trunk = state.trunkOpen {
-            reconcileField(.trunkOpen, key: .trunk) { self.controls.trunkOpen = trunk }
+            reconcileControlled(.trunkOpen, key: .trunk, wire: trunk) { self.controls.trunkOpen = $0 }
         }
 
         if let port = state.chargePortDoorOpen {
-            reconcileField(.chargePortOpen, key: .chargePort) { self.controls.chargePortOpen = port }
+            reconcileControlled(.chargePortOpen, key: .chargePort, wire: port) { self.controls.chargePortOpen = $0 }
         }
 
         // Media playback — the enum carries an explicit `.unknown`; treat it (and
@@ -208,6 +221,29 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     private func reconcileField(_ field: VehicleControlField, key: VehicleControlKey?, apply: () -> Void) {
         if let key, uiState(for: key).isPending { return }
         apply()
+        knownFields.insert(field)
+    }
+
+    /// Like `reconcileField` for a COMMANDED boolean toggle, but also honors the
+    /// post-ack settle window: after a command applies, a streamed value that
+    /// DISAGREES with what we commanded is ignored until the car confirms (agrees)
+    /// or the deadline lapses — so a stale frame can't yank the tile back (the
+    /// climate-off revert, MYR-272). Confirmation or timeout clears the hold and the
+    /// live stream resumes driving the tile (incl. a genuine external change).
+    private func reconcileControlled(
+        _ field: VehicleControlField, key: VehicleControlKey, wire: Bool, assign: (Bool) -> Void
+    ) {
+        if uiState(for: key).isPending { return } // command still in flight
+        if let hold = settleHold[key] {
+            if wire == hold.want {
+                settleHold[key] = nil // the car confirmed the commanded state
+            } else if Date() < hold.until {
+                return // settling — ignore a stale frame that disagrees with the command
+            } else {
+                settleHold[key] = nil // timed out — accept the car's reported reality (honest)
+            }
+        }
+        assign(wire)
         knownFields.insert(field)
     }
 
@@ -288,6 +324,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         await run(.lock, command: locked ? .doorLock : .doorUnlock) { [weak self] in
             self?.controls.locked = locked
             self?.knownFields.insert(.locked)
+            self?.holdSettle(.lock, want: locked)
         }
     }
 
@@ -295,6 +332,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         await run(.climate, command: on ? .autoConditioningStart : .autoConditioningStop) { [weak self] in
             self?.controls.climateOn = on
             self?.knownFields.insert(.climateOn)
+            self?.holdSettle(.climate, want: on)
         }
     }
 
@@ -312,6 +350,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         await run(.trunk, command: .actuateTrunk(.rear)) { [weak self] in
             self?.controls.trunkOpen = open
             self?.knownFields.insert(.trunkOpen)
+            self?.holdSettle(.trunk, want: open)
         }
     }
 
@@ -321,7 +360,13 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         await run(.chargePort, command: open ? .chargePortDoorOpen : .chargePortDoorClose) { [weak self] in
             self?.controls.chargePortOpen = open
             self?.knownFields.insert(.chargePortOpen)
+            self?.holdSettle(.chargePort, want: open)
         }
+    }
+
+    /// Start the post-ack settle window for a commanded toggle (see `settleHold`).
+    private func holdSettle(_ key: VehicleControlKey, want: Bool) {
+        settleHold[key] = (want: want, until: Date().addingTimeInterval(Self.settleWindow))
     }
 
     func setSeatHeatLevel(_ seat: VehicleSeatPosition, level: Int) async throws {
