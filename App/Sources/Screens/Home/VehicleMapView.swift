@@ -113,6 +113,14 @@ struct VehicleMapView: View {
     /// not miles wide (MYR-213). Only affects programmatic recenters — user
     /// zoom/pan afterwards is never overridden.
     var regionSpanDelta: Double = MRTMetrics.mapRegionSpanDelta
+    /// MYR-277 B — the dispatched ride's PICKUP, drawn as a straight car→pickup
+    /// route (leg 1) with a gold pickup marker on the OWNER map. A dispatched
+    /// in-service car maps to `.parked`, so `mapContent`'s `.driving` route branch
+    /// never fires for it; this makes the owner's map show where the car is headed.
+    /// Non-nil only while the owner's active ride is heading to the pickup
+    /// (`.accepted`/`.arrived`, gated at the call site); `nil` otherwise and on the
+    /// rider map, so every other call site is unchanged.
+    var pickupCoordinate: CLLocationCoordinate2D? = nil
 
     // MYR-222 — token accounting for the legacy (non-pin-drop) writers,
     // replacing the wall-clock `programmaticCameraUntil` window. The window
@@ -462,6 +470,18 @@ struct VehicleMapView: View {
     private var mapContent: some MapContent {
         if showsUserLocation {
             UserAnnotation()
+        }
+        // MYR-277 B — the dispatched leg-1 route: a straight gold car→pickup line
+        // + a gold pickup marker, using the same two-point technique as
+        // `IncomingRequestRouteMap`. Drawn before the activity switch so it renders
+        // whether the (dispatched, in-service → parked) car is parked or driving.
+        if let pickup = pickupCoordinate {
+            let leg = [vehiclePosition.coordinate, pickup]
+            MapPolyline(coordinates: leg)
+                .stroke(Color.mrtGoldGlowSoft, style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))
+            MapPolyline(coordinates: leg)
+                .stroke(Color.mrtGold.opacity(0.95), style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+            Annotation("Pickup", coordinate: pickup) { MRTEndpointDot(color: .mrtGold, size: 12) }
         }
         switch vehicle.activity {
         case .driving(let trip):
