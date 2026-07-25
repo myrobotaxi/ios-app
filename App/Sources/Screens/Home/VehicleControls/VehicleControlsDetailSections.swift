@@ -17,8 +17,12 @@ struct StatusLocationSection: View {
     let location: ParkedLocation
     let rangeMi: Int
 
-    private var parkedDuration: String {
-        let seconds = max(0, Date().timeIntervalSince(location.parkedSince))
+    /// Elapsed-since-parked, or `nil` when the park-start is unknown (live — no
+    /// contracted park-start; MYR-268) so the "Parked" row is omitted rather than
+    /// showing a fabricated "0m".
+    private var parkedDuration: String? {
+        guard let parkedSince = location.parkedSince else { return nil }
+        let seconds = max(0, Date().timeIntervalSince(parkedSince))
         let hours = Int(seconds) / 3600
         let minutes = (Int(seconds) % 3600) / 60
         return hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m"
@@ -38,7 +42,9 @@ struct StatusLocationSection: View {
         }) {
             VStack(spacing: 0) {
                 KV(label: "Location", value: location.label)
-                KV(label: "Parked", value: parkedDuration)
+                if let parkedDuration {
+                    KV(label: "Parked", value: parkedDuration)
+                }
                 KV(label: "Range", value: "\(rangeMi) mi")
             }
         }

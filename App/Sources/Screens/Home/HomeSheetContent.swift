@@ -134,8 +134,12 @@ struct ParkedSummary: View {
     /// wire status so a charging/offline vehicle shows the matching badge.
     var status: MRTVehicleStatus = .parked
 
-    private var parkedDuration: String {
-        let seconds = max(0, Date().timeIntervalSince(location.parkedSince))
+    /// The elapsed-since-parked label, or `nil` when the park-start is unknown
+    /// (live path — no contracted park-start; MYR-268) so the view omits it
+    /// rather than showing a fabricated "0m" that reads like "0 meters".
+    private var parkedDuration: String? {
+        guard let parkedSince = location.parkedSince else { return nil }
+        let seconds = max(0, Date().timeIntervalSince(parkedSince))
         let hours = Int(seconds) / 3600
         let minutes = (Int(seconds) % 3600) / 60
         return hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m"
@@ -171,11 +175,13 @@ struct ParkedSummary: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer(minLength: 8)
-                Text(parkedDuration)
-                    .font(.system(size: 12))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.mrtTextMuted)
-                    .fixedSize()
+                if let parkedDuration {
+                    Text(parkedDuration)
+                        .font(.system(size: 12))
+                        .monospacedDigit()
+                        .foregroundStyle(Color.mrtTextMuted)
+                        .fixedSize()
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

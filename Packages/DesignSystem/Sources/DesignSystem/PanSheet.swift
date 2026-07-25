@@ -825,6 +825,24 @@ final class PanSheetSurfaceView: UIView {
     // still falls through via `PanSheetPassthroughView`), so claiming in-bounds
     // touches is correct — and since the pan recognizer lives on the surface,
     // dragging an empty region now drags the SHEET, as it should.
+
+    /// The grab band ABOVE the surface's top edge. The 4pt grab handle is drawn
+    /// at the very top of the surface, so a finger aimed "at" the grabber lands a
+    /// few points ABOVE `bounds` — outside the surface, so the touch fell through
+    /// to the map and panned it (client bug: "even right on top of the bottom
+    /// sheet it's dragging the map"). The SwiftUI `.contentShape(inset:-12)` on the
+    /// handle can't fix this: it lives inside a hosting view clipped to the surface
+    /// bounds, so the negative-y region is never hit-tested. Extending the surface's
+    /// own hit region up by this margin routes those touches to the surface's pan
+    /// recognizer instead. Purely a hit-test change — nothing is drawn here, so no
+    /// pixels move; the strip of map just above the grabber becomes a grab zone.
+    private static let topGrabMargin: CGFloat = 44
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        // All in-bounds points (unchanged) PLUS the top grab overhang band.
+        point.x >= 0 && point.x < bounds.width
+            && point.y >= -Self.topGrabMargin && point.y < bounds.height
+    }
 }
 
 /// The controller's root view: transparent to any touch that does not land on
