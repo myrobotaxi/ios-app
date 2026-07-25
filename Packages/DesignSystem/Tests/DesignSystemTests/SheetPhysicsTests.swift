@@ -159,3 +159,40 @@ final class SheetPhysicsTests: XCTestCase {
         XCTAssertEqual(SheetPhysics.nearestDetent(toProjectedHeight: .nan, peekHeight: peek, halfHeight: half), .peek)
     }
 }
+
+// MARK: - PanSheetSurfaceView top grab band (MYR-268)
+//
+// A finger aimed at the 4pt grab handle (drawn at the surface's very top edge)
+// lands a few points ABOVE the surface bounds. Those touches used to fall
+// through to the map behind and pan it ("even right on top of the bottom sheet
+// it's dragging the map"). The surface now claims a top overhang band so its pan
+// recognizer wins. This pins that hit region.
+final class PanSheetGrabBandTests: XCTestCase {
+    private func surface() -> PanSheetSurfaceView {
+        let v = PanSheetSurfaceView()
+        v.bounds = CGRect(x: 0, y: 0, width: 390, height: 500)
+        return v
+    }
+
+    func testClaimsTouchesJustAboveTheGrabber() {
+        let v = surface()
+        // Up to 44pt above the top edge is claimed (the grab band).
+        XCTAssertTrue(v.point(inside: CGPoint(x: 195, y: -1), with: nil))
+        XCTAssertTrue(v.point(inside: CGPoint(x: 195, y: -44), with: nil))
+        XCTAssertTrue(v.point(inside: CGPoint(x: 195, y: 0), with: nil), "the grabber row itself")
+    }
+
+    func testStillClaimsAllInBoundsTouches() {
+        let v = surface()
+        XCTAssertTrue(v.point(inside: CGPoint(x: 10, y: 250), with: nil))
+        XCTAssertTrue(v.point(inside: CGPoint(x: 389, y: 499), with: nil))
+    }
+
+    func testRejectsBeyondTheGrabBandAndSides() {
+        let v = surface()
+        XCTAssertFalse(v.point(inside: CGPoint(x: 195, y: -45), with: nil), "above the grab band → map")
+        XCTAssertFalse(v.point(inside: CGPoint(x: 195, y: 500), with: nil), "below the surface")
+        XCTAssertFalse(v.point(inside: CGPoint(x: -1, y: 250), with: nil), "left of surface")
+        XCTAssertFalse(v.point(inside: CGPoint(x: 390, y: 250), with: nil), "right of surface")
+    }
+}

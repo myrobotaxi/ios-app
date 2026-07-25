@@ -161,10 +161,14 @@ public struct ParkedLocation: Equatable, Sendable {
     /// coordinate — it places the marker at a fixed SVG point).
     public let coordinate: CLLocationCoordinate2D
     /// When the vehicle parked — screens.jsx:562 "1h 42m" is derived here
-    /// from wall-clock elapsed time instead of being a static string.
-    public let parkedSince: Date
+    /// from wall-clock elapsed time. `nil` = UNKNOWN: the live `VehicleState`
+    /// contract carries no park-start timestamp, so on the live path we cannot
+    /// know it (deriving it from the ~1Hz `lastUpdated` freshness stamp made it
+    /// read a perpetual "0m" — MYR-268). Views hide the duration when nil rather
+    /// than show a fabricated 0. The simulated fixture supplies a real date.
+    public let parkedSince: Date?
 
-    public init(label: String, coordinate: CLLocationCoordinate2D, parkedSince: Date) {
+    public init(label: String, coordinate: CLLocationCoordinate2D, parkedSince: Date?) {
         self.label = label
         self.coordinate = coordinate
         self.parkedSince = parkedSince

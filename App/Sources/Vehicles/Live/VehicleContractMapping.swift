@@ -165,7 +165,9 @@ enum VehicleContractMapping {
                 ?? nonEmpty(state.locationAddress)
                 ?? "Location unavailable",
             coordinate: position(from: state),
-            parkedSince: parseTimestamp(state.lastUpdated) ?? Date()
+            // No park-start in the contract — UNKNOWN on live (MYR-268). Do NOT
+            // derive it from `lastUpdated` (a ~1Hz freshness stamp → perpetual 0m).
+            parkedSince: nil
         )
     }
 
@@ -214,7 +216,7 @@ enum VehicleContractMapping {
             return .parked(ParkedLocation(
                 label: "Locating…",
                 coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0),
-                parkedSince: Date()
+                parkedSince: nil // unknown on live (MYR-268)
             ))
         }
     }
