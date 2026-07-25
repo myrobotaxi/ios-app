@@ -130,65 +130,115 @@ final class RideRequestEndpointTests: XCTestCase {
         XCTAssertEqual(declineReqs[0].url?.path, "/api/ride-requests/r9/decline")
     }
 
-    // MARK: - Board (MYR-265 — the rider's "I'm in", leg 1 → leg 2)
+    // MARK: - Dispatch v2 actions (MYR-270 — owner-driven picked-up / start /
+    // dropped-off). Each asserts path + method + no query, an idempotent-200
+    // no-op decode, and the typed 409 on an illegal transition.
 
-    /// `POST /api/ride-requests/{id}/board` targets the `/board` action path with
-    /// no body and decodes the returned `enroute` record (the advance succeeded and
-    /// the server flipped `accepted → enroute`).
-    func testBoardTargetsPostBoardPathAndDecodesEnroute() async throws {
-        let body = Data("""
+    private func rideBody(id: String, status: String) -> Data {
+        Data("""
         {
-          "id": "clride0000000000000002",
-          "riderId": "u-rider", "ownerId": "u-rider", "vehicleId": "clxyz1234567890abcdef",
+          "id": "\(id)",
+          "riderId": "u-rider", "ownerId": "u-owner", "vehicleId": "clxyz1234567890abcdef",
           "pickup": { "lat": 37.7793, "lng": -122.3937, "label": "Current location" },
           "dropoff": { "lat": 37.6156, "lng": -122.3900, "label": "SFO · Terminal 2" },
-          "status": "enroute",
+          "status": "\(status)",
           "createdAt": "2026-07-10T18:00:00.000Z",
           "updatedAt": "2026-07-10T18:06:00.000Z",
           "acceptedAt": "2026-07-10T18:04:00.000Z"
         }
         """.utf8)
-        let (client, http) = client([.init(status: 200, body: body)])
+    }
 
-        let ride = try await client.board(rideID: "clride0000000000000002")
-        XCTAssertEqual(ride.status, .enroute, "board advances the ride to leg 2")
+    /// `POST …/picked-up` (owner) targets the action path, no body/query, and
+    /// decodes the returned `arrived` record (accepted → arrived).
+    func testPickedUpTargetsPostPickedUpPathAndDecodesArrived() async throws {
+        let (client, http) = client([.init(status: 200, body: rideBody(id: "clride0000000000000002", status: "arrived"))])
+
+        let ride = try await client.pickedUp(rideID: "clride0000000000000002")
+        XCTAssertEqual(ride.status, .arrived, "picked-up advances the ride to arrived (awaiting rider start)")
 
         let requests = await http.capturedRequests()
         XCTAssertEqual(requests[0].httpMethod, "POST")
-        XCTAssertEqual(requests[0].url?.path, "/api/ride-requests/clride0000000000000002/board")
+        XCTAssertEqual(requests[0].url?.path, "/api/ride-requests/clride0000000000000002/picked-up")
         XCTAssertNil(requests[0].url?.query, "action POST carries no query")
     }
 
-    /// The idempotent no-op: an already-`enroute` ride returns `200` with the
-    /// current record (a re-tap / retry is safe). It decodes exactly like the
-    /// advance — the caller need not distinguish the two.
-    func testBoardIsIdempotent200OnAlreadyEnroute() async throws {
-        let body = Data("""
-        {
-          "id": "r-board", "riderId": "u", "ownerId": "u", "vehicleId": "v",
-          "pickup": { "lat": 1, "lng": 2, "label": "p" },
-          "dropoff": { "lat": 3, "lng": 4, "label": "d" },
-          "status": "enroute",
-          "createdAt": "2026-07-10T18:00:00.000Z", "updatedAt": "2026-07-10T18:06:00.000Z"
-        }
-        """.utf8)
-        let (client, _) = client([.init(status: 200, body: body)])
-        let ride = try await client.board(rideID: "r-board")
-        XCTAssertEqual(ride.status, .enroute, "idempotent 200 returns the current enroute record")
+    /// `…/picked-up` idempotent 200: an already-`arrived` ride returns the current
+    /// record (a re-tap / retry is safe), decoding exactly like the advance.
+    func testPickedUpIsIdempotent200OnAlreadyArrived() async throws {
+        let (client, _) = client([.init(status: 200, body: rideBody(id: "r-pu", status: "arrived"))])
+        let ride = try await client.pickedUp(rideID: "r-pu")
+        XCTAssertEqual(ride.status, .arrived, "idempotent 200 returns the current arrived record")
     }
 
-    /// Any illegal source state (e.g. the ride already `completed`, or still
-    /// `requested`) is a typed `409 conflict` the caller reconciles against — never
-    /// an auto-retry of the same POST.
-    func testBoardIllegalTransitionMapsToTypedConflict() async throws {
+    /// `POST …/start` (rider) targets the action path and decodes the returned
+    /// `enroute` record — starting is what pushes the dropoff nav server-side.
+    func testStartTargetsPostStartPathAndDecodesEnroute() async throws {
+        let (client, http) = client([.init(status: 200, body: rideBody(id: "clride0000000000000002", status: "enroute"))])
+
+        let ride = try await client.start(rideID: "clride0000000000000002")
+        XCTAssertEqual(ride.status, .enroute, "start advances arrived → enroute (leg 2)")
+
+        let requests = await http.capturedRequests()
+        XCTAssertEqual(requests[0].httpMethod, "POST")
+        XCTAssertEqual(requests[0].url?.path, "/api/ride-requests/clride0000000000000002/start")
+        XCTAssertNil(requests[0].url?.query, "action POST carries no query")
+    }
+
+    /// `…/start` idempotent 200: an already-`enroute` ride returns the current
+    /// record so a re-tap is safe.
+    func testStartIsIdempotent200OnAlreadyEnroute() async throws {
+        let (client, _) = client([.init(status: 200, body: rideBody(id: "r-start", status: "enroute"))])
+        let ride = try await client.start(rideID: "r-start")
+        XCTAssertEqual(ride.status, .enroute)
+    }
+
+    /// `…/start` from `accepted` (owner has NOT confirmed pickup yet) is the guarded
+    /// `409 conflict` — the rider cannot start before pickup is confirmed.
+    func testStartBeforePickupMapsToTypedConflict() async throws {
         let (client, _) = client([.init(status: 409, body: try Fixture.data("rest/error.conflict.json"))])
         do {
-            _ = try await client.board(rideID: "r-board")
+            _ = try await client.start(rideID: "r-start")
             XCTFail("expected RestError.http 409 conflict")
         } catch let error as RestError {
             guard case .http(let status, let code, _, _) = error else { return XCTFail("wrong case") }
             XCTAssertEqual(status, 409)
             XCTAssertEqual(code, .conflict, "branch on the typed code, never the message")
+        }
+    }
+
+    /// `POST …/dropped-off` (owner) targets the action path and decodes the returned
+    /// `completed` record (enroute → completed).
+    func testDroppedOffTargetsPostDroppedOffPathAndDecodesCompleted() async throws {
+        let (client, http) = client([.init(status: 200, body: rideBody(id: "clride0000000000000002", status: "completed"))])
+
+        let ride = try await client.droppedOff(rideID: "clride0000000000000002")
+        XCTAssertEqual(ride.status, .completed, "dropped-off completes the ride")
+
+        let requests = await http.capturedRequests()
+        XCTAssertEqual(requests[0].httpMethod, "POST")
+        XCTAssertEqual(requests[0].url?.path, "/api/ride-requests/clride0000000000000002/dropped-off")
+        XCTAssertNil(requests[0].url?.query, "action POST carries no query")
+    }
+
+    /// `…/dropped-off` idempotent 200 on an already-`completed` ride.
+    func testDroppedOffIsIdempotent200OnAlreadyCompleted() async throws {
+        let (client, _) = client([.init(status: 200, body: rideBody(id: "r-do", status: "completed"))])
+        let ride = try await client.droppedOff(rideID: "r-do")
+        XCTAssertEqual(ride.status, .completed)
+    }
+
+    /// Any illegal source state for an action POST is a typed `409 conflict` the
+    /// caller reconciles against — never an auto-retry of the same POST.
+    func testDroppedOffIllegalTransitionMapsToTypedConflict() async throws {
+        let (client, _) = client([.init(status: 409, body: try Fixture.data("rest/error.conflict.json"))])
+        do {
+            _ = try await client.droppedOff(rideID: "r-do")
+            XCTFail("expected RestError.http 409 conflict")
+        } catch let error as RestError {
+            guard case .http(let status, let code, _, _) = error else { return XCTFail("wrong case") }
+            XCTAssertEqual(status, 409)
+            XCTAssertEqual(code, .conflict)
         }
     }
 
