@@ -375,6 +375,42 @@ final class LiveRideRequestService: RideRequestService {
         postMutation { try await $0.declineRideRequest(id: $1) }
     }
 
+    // MARK: MYR-265 — the rider's "I'm in" (leg 1 → leg 2)
+
+    func board() {
+        guard var request = activeRequest, request.status == .accepted else { return }
+        // Optimistic leg 1 → leg 2: flip the status and seed the leg-2 tracking
+        // anchor synchronously so the rider's sheet advances (and the "I'm in"
+        // button hides) the instant this returns — same optimistic discipline as
+        // accept/decline. The POST + WS `ride_status_changed` then reconcile.
+        request.status = .enroute
+        if request.input.schedule == nil {
+            request.trackProgress = max(request.trackProgress ?? 0, request.enrouteSeedProgress)
+        }
+        activeRequest = request
+        boardMutation()
+    }
+
+    /// POST `/board` and reconcile to server state. A `200` (the advance OR the
+    /// idempotent already-`enroute` no-op) folds the returned record; a `409`
+    /// (wrong state — e.g. the ride already `completed`) or a transient failure
+    /// REFETCHES the authoritative record and integrates it, so a genuinely failed
+    /// advance reverts the optimistic `enroute` back to `accepted` (re-showing "I'm
+    /// in") while an already-advanced ride settles on its true leg. Never an
+    /// auto-retry of the same POST (§7.8).
+    private func boardMutation() {
+        guard let id = serverRideID else { return } // create not yet acknowledged
+        let api = self.api
+        Task { @MainActor [weak self] in
+            do {
+                let ride = try await api.board(rideID: id)
+                self?.integrate(ride)
+            } catch {
+                if let ride = try? await api.rideRequest(id: id) { self?.integrate(ride) }
+            }
+        }
+    }
+
     func cancel() {
         // MYR-218 defect 1: a cancel DURING the grace window (before the
         // deferred POST fired) must make ZERO server calls — no ride exists yet.
@@ -426,8 +462,25 @@ final class LiveRideRequestService: RideRequestService {
             var current = activeRequest ?? RideRequestContractMapping.record(from: ride)!
             current.status = mapped!
             current.acceptedAt = ride.acceptedAt.flatMap(RideRequestContractMapping.parseISO)
-            if mapped == .accepted, current.trackProgress == nil, current.input.schedule == nil {
-                current.trackProgress = RideRequestTiming.autoAcceptInitialProgress
+            // MYR-265: seed the per-leg tracking anchor so a WS-driven status change
+            // moves the rider's sheet to the matching leg (v1 has no live ticker).
+            // The owner side ignores `trackProgress`; only the rider reads it.
+            if current.input.schedule == nil {
+                switch mapped! {
+                case .accepted:
+                    // Live has no per-second ticker, so an accepted ride's anchor is
+                    // always the static leg-1 seed. Set it unconditionally so a board
+                    // that FAILED (optimistic enroute reverting to accepted on the
+                    // refetch) also rewinds the anchor back to leg 1 — not just when
+                    // it was nil.
+                    current.trackProgress = RideRequestTiming.autoAcceptInitialProgress
+                case .enroute:
+                    current.trackProgress = max(current.trackProgress ?? 0, current.enrouteSeedProgress)
+                case .completed:
+                    current.trackProgress = 1
+                default:
+                    break
+                }
             }
             activeRequest = current
             serverRideID = ride.id
