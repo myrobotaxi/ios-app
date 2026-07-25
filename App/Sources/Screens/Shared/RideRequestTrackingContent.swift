@@ -1,35 +1,43 @@
 import SwiftUI
 import DesignSystem
 
-// MARK: - RideRequestTrackingContent (MYR-171, design/app/ride-request.jsx
-// TrackingContent 746-905)
+// MARK: - RideRequestTrackingContent (MYR-171 base, reworked MYR-270 dispatch v2)
 //
-// Two legs (pickup then drop-off), split at `RideRequestRecord.pickupCut`.
-// `SharedViewerScreen` transitions the phase to `.summary` once
-// `trackProgress >= 0.999` (see `RiderSheetPhase`'s doc comment on why
-// tracking/summary are split into two cases here vs. the jsx's single
-// 'tracking' phase) — this view only ever renders the two live legs.
+// The rider's live tracking sheet. Two legs (car → pickup, then pickup → drop-off).
+// MYR-270 drives the STAGE off the server status on the live path — the owner-driven
+// dispatch v2 lifecycle (accepted → arrived → enroute → completed) — while the SIM /
+// DEBUG tracking scenes (status `.accepted`, `trackProgress`-ticker-driven) keep
+// deriving the leg from progress vs `pickupCut`, so `trackingLeg1/leg2/arriving`
+// render exactly as before (drift gate). See `RiderTrackingStage.stage(...)`.
+//
+// The rider affordance out of `arrived` is the CIRCULAR PULSING "Start ride" CTA
+// (`PulseStartButton`, DesignSystem), gated to EXACTLY `status == .arrived`: never
+// during `accepted` (the owner has not confirmed pickup yet — the server would 409 a
+// start). Tapping it calls `start()`, which flips `arrived → enroute` and makes the
+// backend push the drop-off nav.
 struct RideRequestTrackingContent: View {
     @Bindable var viewerState: SharedViewerState
     var rideRequestService: any RideRequestService
     var totalHeight: CGFloat?
+    /// MYR-271: when hosted inside the `PanSheet` engine (`RiderTrackingSheet`), the
+    /// engine's surface provides the sheet wash/corners/hairline, so the content
+    /// drops its own `rideRequestSheetChrome()` (mirrors the search sheet's `hosted`
+    /// path). `false` keeps the standalone bottom-pinned card for previews/fallback.
+    var hosted: Bool = false
+    /// MYR-270: the streamed nav ETA (minutes) of the ride's car during the in-ride
+    /// leg, or `nil` when no live ETA stream is available yet (v1 rider gap — the
+    /// arriving takeover then never fires on live, never a fabricated ETA, MYR-228).
+    /// Drives the `enroute` "Arriving" takeover off the REAL wire ETA (≤ 2), not a timer.
+    var navMinutesToArrival: Int? = nil
 
-    /// MYR-265 — disables the "I'm in" CTA for the frame it is tapped. `board()`
+    /// MYR-270 — disables the "Start ride" CTA for the frame it is tapped. `start()`
     /// flips the status to `.enroute` synchronously (the button then vanishes), so
-    /// this only guards a double-tap landing in the same frame.
-    @State private var boarding = false
+    /// this only guards a double-tap landing in the same frame. Reset on every status
+    /// change so a re-shown button (a failed/reverted advance) is tappable again.
+    @State private var starting = false
 
     private var request: RideRequestRecord? { rideRequestService.activeRequest }
-    /// MYR-218 defect 3: the LOOK FOR / Your-ride card must name the LIVE
-    /// vehicle in live mode — same source MYR-212 threaded through Review and
-    /// Booking (`viewerState.liveFleetMember`: nickname primary, model subline,
-    /// VIN-last-4 chip, hidden when empty), not the fixture fleet. `nil` in sim
-    /// (`isLiveLocation == false`), so the tracking card falls back to the
-    /// record's fixture fleet member exactly as before — sim unchanged.
     private var fleetMember: FleetMember { viewerState.liveFleetMember ?? request?.input.fleetMember ?? RideRequestFixtures.fleet[0] }
-    /// True when the live vehicle backs this ride — the plate chip then carries a
-    /// VIN last-4 rather than a real license plate (see `rideRow`'s defect-c note).
-    /// Same signal `RideRequestReviewContent.isLiveVehicle` uses.
     private var isLiveVehicle: Bool { viewerState.liveFleetMember != nil }
     private var passenger: RidePassenger? { request?.input.passenger }
     private var destination: RidePlace { request?.input.destination ?? RideRequestFixtures.recentPlaces[0] }
@@ -37,7 +45,7 @@ struct RideRequestTrackingContent: View {
 
     private var progress: Double { request?.trackProgress ?? 0 }
     private var pickupCut: Double { request?.pickupCut ?? 0.2 }
-    private var atPickup: Bool { progress >= pickupCut }
+    private var atPickupByProgress: Bool { progress >= pickupCut }
 
     private var pickupLegMinutes: Double { RideRequestTiming.pickupLegMinutes }
     private var tripMinutes: Int { destination.minutes }
@@ -48,9 +56,7 @@ struct RideRequestTrackingContent: View {
         max(0, Int(((pickupCut - progress) / pickupCut * pickupLegMinutes).rounded()))
     }
 
-    /// ride-request.jsx:565 `pickupMilesTotal = 2.2` — a hardcoded reference
-    /// distance for the pickup leg (the jsx has no real geocoded distance
-    /// for the pickup point either, ported verbatim rather than invented).
+    /// ride-request.jsx:565 `pickupMilesTotal = 2.2`.
     private static let pickupLegMiles = 2.2
 
     private var pickupRemainMiles: Double {
@@ -66,23 +72,50 @@ struct RideRequestTrackingContent: View {
 
     private var arriveClock: String { RideRequestClock.fromNow(minutes: remainMinutes) }
 
+    // MARK: MYR-270 — status-driven stage (live) / progress-derived (sim)
+
+    /// Whether the drop-off "Arriving" takeover fires. On the live in-ride leg it is
+    /// the REAL streamed nav ETA (≤ 2) — never a timer, never fabricated; on the
+    /// sim/`.accepted` progress path it is the existing progress-derived `remain ≤ 2`
+    /// so the `trackingArriving` sim scene is unchanged.
+    private var arriving: Bool {
+        switch request?.status {
+        case .enroute, .completed:
+            if let eta = navMinutesToArrival { return eta <= 2 }
+            return false
+        default:
+            return atPickupByProgress && remainMinutes <= 2
+        }
+    }
+
+    private var stage: RiderTrackingStage {
+        RiderTrackingStage.stage(status: request?.status, atPickupByProgress: atPickupByProgress, arriving: arriving)
+    }
+
+    /// Whether the sheet renders the IN-RIDE leg framing (hero/itinerary/"Your ride"
+    /// row). `arrivedAwaitingStart` renders its own card, so it reads as leg 1 here.
+    private var atPickup: Bool {
+        switch stage {
+        case .inRide, .arrivingDropoff: return true
+        case .toPickup, .arrivedAwaitingStart: return false
+        }
+    }
+
     private var arrivingPickup: Bool { !atPickup && toPickupMinutes <= 1 }
-    private var arrivingDropoff: Bool { atPickup && remainMinutes <= 2 }
 
     private var statusWord: String {
         if !atPickup { return arrivingPickup ? "Your ride is arriving" : "Heading your way" }
-        return arrivingDropoff ? "Arriving at drop-off" : "Heading to \(destination.label)"
+        return stage == .arrivingDropoff ? "Arriving at drop-off" : "Heading to \(destination.label)"
     }
 
     var body: some View {
-        // MYR-171 fix: no `ScrollView` — see `RideRequestPinDropContent`'s
-        // identical fix comment (this phase also sizes to content, and the
-        // bottom nav is hidden during tracking so there's no floating chrome
-        // to clear either).
         VStack(alignment: .leading, spacing: 0) {
-            if arrivingDropoff {
+            switch stage {
+            case .arrivingDropoff:
                 arrivalHeader
-            } else {
+            case .arrivedAwaitingStart:
+                arrivedContent
+            case .toPickup, .inRide:
                 liveHeader
                 if !atPickup {
                     rideRow(emphasize: true).padding(.bottom, 12)
@@ -91,23 +124,17 @@ struct RideRequestTrackingContent: View {
                 if atPickup {
                     rideRow(emphasize: false)
                 }
-                if showBoardButton {
-                    boardButton.padding(.top, 2)
-                }
             }
         }
         .padding(.horizontal, 22)
         .padding(.top, 14)
         .padding(.bottom, 30)
-        .rideRequestSheetChrome()
+        .modifier(TrackingChrome(hosted: hosted))
         .onChange(of: request?.status) {
-            // The board resolved — either it advanced to `.enroute` (button
-            // gone) or a failed/rejected advance reverted to `.accepted`
-            // (button re-shown). Either way clear the in-flight latch so a
-            // re-shown "I'm in" is tappable again; otherwise a single transient
-            // board failure leaves the rider stuck on leg 1 with a permanently
-            // greyed-out button and the car never navigated (MYR-265 review).
-            boarding = false
+            // The advance resolved — either it moved on (button gone) or a
+            // failed/reverted advance came back (button re-shown). Clear the latch
+            // so a re-shown "Start ride" is tappable again (MYR-265 review bug).
+            starting = false
         }
     }
 
@@ -120,21 +147,6 @@ struct RideRequestTrackingContent: View {
                     Circle().fill(Color.mrtGold).frame(width: 6, height: 6).shadow(color: .mrtGoldGlow, radius: 4)
                     RideEyebrowText(text: statusWord, color: .mrtGold, size: 11)
                 }
-                // MYR-218 defect 2: a long pickup/drop-off name ("Bell
-                // Southstone Yards") used to tail-truncate on one line — MYR-218
-                // let the place-name wrap to a second line instead.
-                //
-                // MYR-219 defect a: MYR-218 built the wrap as a two-`Text` HStack
-                // (prefix + name), which pinned the prefix to line 1 and let ONLY
-                // the name wrap — so the continuation ("Yards") hung indented under
-                // the NAME's start ("Bell"), reading as center-/mid-aligned rather
-                // than aligned to the block's leading edge. The design renders this
-                // as a SINGLE left-aligned paragraph (ride-request.jsx:882-884:
-                // `'Picking you up at '<span bold>{name}</span>`), so the
-                // continuation wraps back under "Picking". Ported as one
-                // concatenated `Text` with `.multilineTextAlignment(.leading)`.
-                // A one-line fixture name renders identically (single line, no
-                // wrap), so the sim scenes are unchanged.
                 (Text(atPickup ? "Dropping you off at " : "Picking you up at ")
                     .font(.system(size: 13.5))
                     .foregroundStyle(Color.mrtTextSec)
@@ -195,15 +207,6 @@ struct RideRequestTrackingContent: View {
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.mrtGold.opacity(Double(0x24) / 255.0), lineWidth: MRTMetrics.hairline))
     }
 
-    /// MYR-197 fix: the connector line used to be a `flex:1`
-    /// `Rectangle().frame(maxHeight: .infinity)` HStack sibling — with no
-    /// fixed-height frame between this itinerary and the screen-height
-    /// `GeometryReader`/`ZStack` in `SharedViewerScreen`, that request
-    /// propagated all the way up and stretched the whole Tracking sheet
-    /// full-screen (client QA, MYR-197). Fix: paint the dot/line rail as a
-    /// `.background` behind the content column instead — see
-    /// `RideRequestSearchContent.routeCard`'s identical fix for the full
-    /// explanation.
     private func stopRow(isDropoff: Bool, place: String, clock: String, filled: Bool, note: String, last: Bool) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline) {
@@ -212,9 +215,6 @@ struct RideRequestTrackingContent: View {
                 Text(clock).font(.system(size: 13, weight: .medium)).monospacedDigit().foregroundStyle(Color.mrtTextSec)
             }
             HStack(alignment: .firstTextBaseline) {
-                // MYR-218 defect 2: allow a long place name a second line in the
-                // itinerary rows too (the trailing miles/min note stays on the
-                // first line). Fixture names fit one line, so sim is unchanged.
                 Text(place).font(.system(size: 15, weight: .semibold)).foregroundStyle(Color.mrtText)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
@@ -243,13 +243,6 @@ struct RideRequestTrackingContent: View {
         }
     }
 
-    /// MYR-199 fix: the pickup→drop-off connector was always a solid
-    /// `Rectangle` — the jsx (ride-request.jsx:794) renders it DOTTED
-    /// (`repeating-linear-gradient`, a 3px-on/3px-off vertical dash) while
-    /// the car is still heading to pickup, switching to a SOLID gold line
-    /// only once `pickupDone` (`atPickup`). This app was solid throughout
-    /// (a QA round 2/3 regression), losing that pre-pickup "still in
-    /// progress" cue. Ported with a dashed `Shape` for the pre-pickup state.
     @ViewBuilder
     private var connector: some View {
         if atPickup {
@@ -262,17 +255,8 @@ struct RideRequestTrackingContent: View {
         }
     }
 
-    // MARK: Ride row — "Look for" (spotting, pickup leg) vs "Your ride"
-    // (quiet reference, in-ride leg) — ride-request.jsx:683-695 `RideRow`.
+    // MARK: Ride row — "Look for" (spotting) vs "Your ride" (quiet reference)
 
-    /// MYR-199 fix: headline was rendering `"{model} {name}"` (e.g. "2025
-    /// Tesla Model Y") as a single combined line with no subline at all —
-    /// the jsx's `RideRow` (ride-request.jsx:683-695) actually splits this
-    /// into a headline on the vehicle's paint-color nickname + model name
-    /// (`{carColor} {carName}`, e.g. "Quicksilver Model Y") and a quiet
-    /// subline on the year/make alone (`carYearMake`, e.g. "2025 Tesla"),
-    /// optionally suffixed with the passenger note. Ported verbatim here —
-    /// same split `RideRequestBookingContent.vehicleRow` uses.
     private func rideRow(emphasize: Bool) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 5) {
@@ -284,32 +268,10 @@ struct RideRequestTrackingContent: View {
                 Text(fleetMember.model + (passenger?.name.isEmpty == false ? " \u{00B7} for \(passenger!.name)" : ""))
                     .font(.system(size: 12.5))
                     .foregroundStyle(Color.mrtTextSec)
-                    .lineLimit(1) // design subline is nowrap+ellipsis (ride-request.jsx:690)
+                    .lineLimit(1)
             }
-            // MYR-219 defect b: the client saw the LOOK FOR chip drift off the
-            // card's trailing edge in live mode. The design's `RideRow`
-            // (ride-request.jsx:683-692) makes the text `flex:1, minWidth:0`
-            // (fills the row + truncates) and the plate chip `flexShrink:0`, which
-            // pins the chip to the card's trailing padding for ANY vehicle-name
-            // length. Mirror that: fill + truncate the text column, chip stays put.
-            // A short fixture name occupies the same left slot with the chip at the
-            // same trailing edge, so the sim scene is unchanged.
             .frame(maxWidth: .infinity, alignment: .leading)
-            // MYR-218 defect 3: mirror Booking's live-vehicle plate degrade —
-            // live telemetry has no plate, so the chip carries the VIN last-4
-            // when known and is HIDDEN entirely when empty (never a blank box).
-            // Fixture plates are non-empty, so sim always shows the chip.
             if !fleetMember.plate.isEmpty {
-                // MYR-219 defect c: the emphasized "spot the car" chip
-                // (`emphasizedPlateChip`, 18pt shimmering gold) is sized for a real
-                // 8-char plate like "RBO-2046". In LIVE mode there is no plate —
-                // only a VIN last-4 ("VIN ····3795", 12 glyphs) — so that giant
-                // chip rendered disproportionately large and crowded the trailing
-                // edge. A VIN isn't a spot-it-across-the-lot plate, so the live
-                // variant reuses the design-spec `RidePlateChip` (the same
-                // RBO-2046-proportioned pill Booking/Summary use — 14pt, quiet):
-                // reuse the chip, only the text differs. The fixture keeps the
-                // emphasized chip (`isLiveVehicle == false`), so sim is unchanged.
                 if emphasize && !isLiveVehicle {
                     emphasizedPlateChip
                 } else {
@@ -326,17 +288,6 @@ struct RideRequestTrackingContent: View {
         )
     }
 
-    /// Big bright plate for the "spotting the car" pickup leg — the jsx
-    /// sweeps a shine gradient across the plate's own background
-    /// (`mrt-plate-shine`, Handoff §8). MYR-199 fix: this had been left a
-    /// static gold chip ("no new background-shimmer primitive for one
-    /// plate," a prior PR's deviations note) — but the onboarding pairing
-    /// flow's virtual-key card (`AddTeslaFlow.VirtualKeyCard`) already ships
-    /// the equivalent diagonal-sweep treatment (`mrtShimmer`), now lifted to
-    /// `DesignSystem.MRTShimmerBand` (see that type's header comment) exactly
-    /// so this plate reuses it instead of re-deriving a second shimmer
-    /// primitive (CLAUDE.md "Reuse, don't fork"). `MRTShimmerBand` already
-    /// honors Reduce Motion (renders nothing, static base chip only).
     private var emphasizedPlateChip: some View {
         Text(fleetMember.plate)
             .font(.system(size: 18, weight: .bold))
@@ -351,35 +302,40 @@ struct RideRequestTrackingContent: View {
             .shadow(color: .mrtGoldGlow, radius: 10)
     }
 
-    // MARK: MYR-265 — rider "I'm in" (leg 1 → leg 2)
+    // MARK: MYR-270 — arrived: "Your car is here" + circular pulsing Start CTA
     //
-    // A CLIENT-APPROVED addition (the design prototype has no such control — its
-    // tracking auto-advances off a Tweaks slider): on the LIVE two-leg dispatch the
-    // rider explicitly confirms they are aboard, which POSTs `/board` and flips the
-    // ride `accepted → enroute` (the backend then pushes the DROP-OFF nav to the
-    // car). Gated to the LIVE, leg-1, non-arriving tracking state:
-    //  • `viewerState.isLiveLocation` — the sim/DEBUG tracking scenes are driven by
-    //    the `trackProgress` ticker and never show this button, so trackingLeg1/leg2
-    //    stay pixel-identical (drift gate);
-    //  • `status == .accepted` && `!atPickup` — leg 1 only; the instant `board()`
-    //    flips the status to `.enroute` the button disappears (leg 2).
-    // Uses the reserved `outline-draw` ride-CTA treatment (Reduce Motion → static),
-    // the same "actionable moment" language as Request / Confirm pickup / Accept.
+    // Gated to EXACTLY `status == .arrived` (owner has confirmed pickup). During
+    // `accepted` the CTA never shows — the server would 409 a start before pickup is
+    // confirmed. The button flips `arrived → enroute` (server pushes the dropoff nav)
+    // the instant it is tapped, so it then disappears (leg 2).
 
-    private var showBoardButton: Bool {
-        viewerState.isLiveLocation && request?.status == .accepted && !atPickup
-    }
-
-    private var boardButton: some View {
-        MRTButton("I\u{2019}m in", variant: .outlineDraw, leadingIcon: "checkmark.circle") {
-            guard !boarding else { return }
-            boarding = true
-            rideRequestService.board()
+    private var arrivedContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 7) {
+                Circle().fill(Color.mrtGold).frame(width: 6, height: 6).shadow(color: .mrtGoldGlow, radius: 4)
+                RideEyebrowText(text: "Your car is here", color: .mrtGold, size: 11)
+            }
+            .padding(.bottom, 10)
+            // Reuse the "Look for" spotting chip so the rider can identify the car.
+            rideRow(emphasize: true)
+                .padding(.bottom, 22)
+            if request?.status == .arrived {
+                HStack {
+                    Spacer(minLength: 0)
+                    PulseStartButton {
+                        guard !starting else { return }
+                        starting = true
+                        rideRequestService.startRide()
+                    }
+                    .disabled(starting)
+                    Spacer(minLength: 0)
+                }
+                .padding(.bottom, 6)
+            }
         }
-        .disabled(boarding)
     }
 
-    // MARK: Arrival takeover (ride-request.jsx:756-774, remainMins <= 2)
+    // MARK: Arrival takeover (ride-request.jsx:756-774)
 
     private var arrivalHeader: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -425,9 +381,56 @@ struct RideRequestTrackingContent: View {
     }
 }
 
+// MARK: - Rider tracking stage (MYR-270, pure + testable)
+
+/// The rider tracking sheet's stage. On the LIVE path it follows the server status
+/// (owner-driven dispatch v2); on the SIM/`.accepted` progress path it derives from
+/// the `trackProgress` ticker so the existing tracking drift-gate scenes render
+/// unchanged.
+enum RiderTrackingStage: Equatable {
+    /// Leg 1 — car heading to the pickup ("Heading your way").
+    case toPickup
+    /// The car has arrived and the rider was picked up; awaiting the rider's Start
+    /// ("Your car is here" + the pulsing Start CTA). LIVE-only (`status == .arrived`).
+    case arrivedAwaitingStart
+    /// Leg 2 — the ride has started, heading to the drop-off.
+    case inRide
+    /// The drop-off "Arriving" takeover (last stretch).
+    case arrivingDropoff
+
+    /// Pure decision, unit-testable without mounting the view.
+    ///  • `.arrived` → `arrivedAwaitingStart` (the Start CTA state);
+    ///  • `.enroute`/`.completed` → `arrivingDropoff` when the wire ETA says so, else `inRide`;
+    ///  • otherwise (`.accepted` live leg 1, or the sim progress ticker) → progress-derived:
+    ///    before `pickupCut` → `toPickup`; past it → `arrivingDropoff` (ETA≤2) or `inRide`.
+    static func stage(status: RideRequestStatus?, atPickupByProgress: Bool, arriving: Bool) -> RiderTrackingStage {
+        switch status {
+        case .arrived:
+            return .arrivedAwaitingStart
+        case .enroute, .completed:
+            return arriving ? .arrivingDropoff : .inRide
+        default:
+            if atPickupByProgress { return arriving ? .arrivingDropoff : .inRide }
+            return .toPickup
+        }
+    }
+}
+
+/// Applies the ride-request sheet chrome UNLESS the content is hosted inside the
+/// `PanSheet` engine (MYR-271), where the engine surface provides the wash.
+private struct TrackingChrome: ViewModifier {
+    let hosted: Bool
+    func body(content: Content) -> some View {
+        if hosted {
+            content.frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            content.rideRequestSheetChrome()
+        }
+    }
+}
+
 /// A plain vertical line filling its proposed rect — stroked dashed by
-/// `RideRequestTrackingContent.connector` for the pre-pickup itinerary
-/// segment (see that property's MYR-199 fix comment).
+/// `RideRequestTrackingContent.connector` for the pre-pickup itinerary segment.
 private struct RideConnectorDash: Shape {
     func path(in rect: CGRect) -> Path {
         var path = Path()

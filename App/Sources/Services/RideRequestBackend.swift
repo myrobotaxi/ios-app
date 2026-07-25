@@ -31,9 +31,15 @@ protocol RideRequestAPI: Sendable {
     func cancelRideRequest(id: String) async throws -> RideRequest
     func acceptRideRequest(id: String) async throws -> RideRequest
     func declineRideRequest(id: String) async throws -> RideRequest
-    /// MYR-265 — the rider's "I'm in" (leg 1 → leg 2). `accepted → enroute`,
-    /// idempotent on an already-`enroute` ride (200 no-op), else `409`.
-    func board(rideID: String) async throws -> RideRequest
+    /// MYR-270 — owner confirms pickup (`accepted → arrived`), idempotent on an
+    /// already-`arrived` ride (200), else `409`. Owner-only.
+    func pickedUp(rideID: String) async throws -> RideRequest
+    /// MYR-270 — rider starts the ride (`arrived → enroute`), pushing the dropoff
+    /// nav server-side. Idempotent on already-`enroute` (200), else `409`. Rider-only.
+    func start(rideID: String) async throws -> RideRequest
+    /// MYR-270 — owner completes the ride (`enroute → completed`), idempotent on
+    /// already-`completed` (200), else `409`. Owner-only.
+    func droppedOff(rideID: String) async throws -> RideRequest
     func incomingRideRequests(cursor: String?, limit: Int) async throws -> RideRequestsListResponse
 }
 
@@ -105,21 +111,21 @@ enum RideRequestContractMapping {
         return RideSchedule(day: day, time: timeFormatter.string(from: date))
     }
 
-    /// Map the wire lifecycle onto the app's sheet status (MYR-265 — two-leg
-    /// dispatch). `requested → pending`; `accepted → accepted` (leg 1, en route to
-    /// pickup); `enroute → enroute` (leg 2, rider aboard, heading to drop-off);
-    /// `arrived → enroute` (arriving AT the drop-off is still the in-ride leg — the
-    /// tracking sheet's own `arrivingDropoff` takeover handles the last stretch);
-    /// `completed → completed` (dropped off); `declined → declined`. `cancelled`
-    /// (and anything unrecognized) returns `nil`: the caller drops the active
-    /// request rather than showing a dead card. This NO LONGER collapses
-    /// enroute/completed into `.accepted` — the owner ride-aware sheet and the
-    /// rider's leg-2 transition read the real leg off this status (MYR-265).
+    /// Map the wire lifecycle onto the app's sheet status (MYR-270 — owner-driven
+    /// dispatch v2). `requested → pending`; `accepted → accepted` (leg 1, car → pickup);
+    /// `arrived → arrived` (rider picked up, awaiting the rider's Start — a DISTINCT
+    /// app state now, no longer folded into enroute); `enroute → enroute` (leg 2, ride
+    /// started, car → dropoff); `completed → completed` (dropped off); `declined →
+    /// declined`. `cancelled` (and anything unrecognized) returns `nil`: the caller
+    /// drops the active request rather than showing a dead card. Each of accepted/
+    /// arrived/enroute/completed is preserved 1:1 so the owner status line + action
+    /// button and the rider's Start CTA read the real state off this status (MYR-270).
     static func status(_ wire: MyRobotaxiContracts.RideRequestStatus) -> RideRequestStatus? {
         switch wire {
         case .requested: return .pending
         case .accepted: return .accepted
-        case .enroute, .arrived: return .enroute
+        case .arrived: return .arrived
+        case .enroute: return .enroute
         case .completed: return .completed
         case .declined: return .declined
         case .cancelled, .unrecognized: return nil
@@ -168,7 +174,10 @@ enum RideRequestContractMapping {
         // Scheduled reservations never seed a live trip.
         if record.input.schedule == nil {
             switch appStatus {
-            case .accepted: record.trackProgress = RideRequestTiming.autoAcceptInitialProgress
+            // MYR-270: accepted (leg 1) and arrived (car at pickup, awaiting start)
+            // both mount the leg-1 heading-to-pickup framing — the rider sheet's
+            // arrived "Your car is here" stage reads off the STATUS, not progress.
+            case .accepted, .arrived: record.trackProgress = RideRequestTiming.autoAcceptInitialProgress
             case .enroute: record.trackProgress = record.enrouteSeedProgress
             case .completed: record.trackProgress = 1
             default: break

@@ -168,17 +168,42 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
         try await post(["ride-requests", id, "decline"], body: Optional<Empty>.none)
     }
 
-    /// `POST /api/ride-requests/{id}/board` (rest-api.md §7.8, MYR-265) — the
-    /// rider's "I'm in": leg 1 → leg 2. RIDER-only (party auth). Guarded
-    /// `accepted → enroute`; on success it flips the status AND pushes the DROPOFF
-    /// nav to the car. IDEMPOTENT — an already-`enroute` ride returns `200` with the
-    /// current record (no-op), so a retry / re-tap is safe. Any OTHER status is
-    /// `409 conflict`; the owner / a non-rider party gets `403`; a non-party `404`.
+    /// `POST /api/ride-requests/{id}/picked-up` (rest-api.md §7.8, MYR-270 —
+    /// owner-driven dispatch v2) — the OWNER confirms the rider is aboard: leg 1 →
+    /// "picked up". OWNER-only (party auth). Guarded `accepted → arrived`. This does
+    /// NOT push any nav (the DROPOFF nav is pushed by `start`, below, when the rider
+    /// starts the ride). IDEMPOTENT — an already-`arrived` ride returns `200` with
+    /// the current record (no-op), so a retry / re-tap is safe. Any OTHER status is
+    /// `409 conflict`; the rider / a non-owner party gets `403`; a non-party `404`.
     /// Responds `200 OK` with the updated `RideRequest`. A `409` surfaces as a typed
     /// `RestError.http(status: 409, …)` the caller reconciles against server state
     /// (never an auto-retry of the same POST).
-    public func board(rideID: String) async throws -> RideRequest {
-        try await post(["ride-requests", rideID, "board"], body: Optional<Empty>.none)
+    public func pickedUp(rideID: String) async throws -> RideRequest {
+        try await post(["ride-requests", rideID, "picked-up"], body: Optional<Empty>.none)
+    }
+
+    /// `POST /api/ride-requests/{id}/start` (rest-api.md §7.8, MYR-270) — the RIDER
+    /// starts the ride once the owner has confirmed pickup: `arrived → enroute`. This
+    /// is what PUSHES THE DROPOFF NAV to the car (server-side). RIDER-only (party
+    /// auth). Guarded `arrived → enroute`, so a rider cannot start before the owner
+    /// confirms pickup — a `start` from `accepted` is a `409 conflict`. IDEMPOTENT —
+    /// an already-`enroute` ride returns `200` with the current record (no-op), so a
+    /// retry / re-tap is safe. The owner / a non-rider party gets `403`; a non-party
+    /// `404`. Responds `200 OK`. A `409` surfaces as a typed `RestError.http`.
+    public func start(rideID: String) async throws -> RideRequest {
+        try await post(["ride-requests", rideID, "start"], body: Optional<Empty>.none)
+    }
+
+    /// `POST /api/ride-requests/{id}/dropped-off` (rest-api.md §7.8, MYR-270) — the
+    /// OWNER completes the ride at the drop-off: `enroute → completed`. OWNER-only
+    /// (party auth). There is NO drive-end auto-completion anymore (MYR-270): the
+    /// owner explicitly ends the ride here. IDEMPOTENT — an already-`completed` ride
+    /// returns `200` with the current record (no-op), so a retry / re-tap is safe.
+    /// Any OTHER status is `409 conflict`; the rider / a non-owner party gets `403`;
+    /// a non-party `404`. Responds `200 OK`. A `409` surfaces as a typed
+    /// `RestError.http` the caller reconciles against server state.
+    public func droppedOff(rideID: String) async throws -> RideRequest {
+        try await post(["ride-requests", rideID, "dropped-off"], body: Optional<Empty>.none)
     }
 
     /// Empty JSON body sentinel for the action POSTs that take no payload
