@@ -76,6 +76,14 @@ public protocol RideRequestService: AnyObject, Observable {
     /// (`PendingContent`'s "Cancel request" / `closeToIdle`).
     func cancel()
 
+    /// MYR-265 — the rider's "I'm in" on the leg-1 tracking sheet: advances the
+    /// active ride `accepted → enroute` (leg 1 → leg 2, rider aboard). LIVE mode
+    /// optimistically flips the local status + seeds the leg-2 tracking anchor and
+    /// POSTs `/board`, reconciling to server state on a 409/failure. Sim is a no-op
+    /// default (the button is a live-only affordance — the simulated tracking is
+    /// driven by the `trackProgress` ticker, unchanged).
+    func board()
+
     /// Ride Summary's "See you soon" — builds the completed-ride record for
     /// `RideHistoryStore` and resets `activeRequest` to `nil`. Returns `nil`
     /// if there's no request or it hasn't reached `trackProgress >= 0.999`.
@@ -94,6 +102,12 @@ public extension RideRequestService {
     /// later. Only `LiveRideRequestService` overrides this to fire the deferred
     /// create POST (MYR-218 defect 1).
     func confirmSend() {}
+
+    /// Default: no-op. The simulated service has no server ride to advance — its
+    /// tracking is driven by the `trackProgress` ticker, and the "I'm in" button is
+    /// gated to the live path (`SharedViewerState.isLiveLocation`), so it never
+    /// reaches this call in sim. Only `LiveRideRequestService` overrides it (MYR-265).
+    func board() {}
 }
 
 // MARK: - Timing constants (single source, per CLAUDE.md deliverable 2)
@@ -138,8 +152,17 @@ public enum RideRequestTiming {
 // MARK: - Models
 
 public enum RideRequestStatus: String, Sendable, Equatable {
+    /// Sent, awaiting the owner's decision.
     case pending
+    /// MYR-265 leg 1 — owner accepted; car en route to the PICKUP. The rider's
+    /// "I'm in" (`board()`) is the only affordance out of this state.
     case accepted
+    /// MYR-265 leg 2 — the rider is ABOARD; car en route to the DROPOFF (the
+    /// backend flipped `accepted → enroute` on `board` and pushed the dropoff nav).
+    case enroute
+    /// MYR-265 — dropped off (backend auto-sets on drive-end at the dropoff).
+    case completed
+    /// Owner declined.
     case declined
 }
 
@@ -221,4 +244,15 @@ public struct RideRequestRecord: Identifiable, Sendable, Equatable {
     }
 
     public var isArrived: Bool { (trackProgress ?? 0) >= 0.999 }
+
+    /// MYR-265 — the whole-trip `trackProgress` anchor for the LIVE leg-2 seed
+    /// ("aboard, just past pickup, heading to drop-off"). v1 live has no per-second
+    /// progress ticker (MYR-176/177), so an `enroute` ride mounts the tracking sheet
+    /// at this static point — the leg-2 analog of `autoAcceptInitialProgress`'s
+    /// leg-1 seed — which puts `TrackingLeg`/`atPickup`/the itinerary/the leg-fit
+    /// camera all on leg 2 with no new plumbing. Past `pickupCut`, well short of the
+    /// `>= 0.999` "arrived" summary trigger.
+    public var enrouteSeedProgress: Double {
+        pickupCut + (1 - pickupCut) * RideRequestTiming.autoAcceptInitialProgress
+    }
 }
