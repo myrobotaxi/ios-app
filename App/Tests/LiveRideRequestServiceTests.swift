@@ -285,6 +285,112 @@ final class LiveRideRequestServiceTests: XCTestCase {
         XCTAssertNil(service.sessionFailure, "a 409 is a real refusal — not a session failure")
     }
 
+    // MARK: MYR-265 — the rider's "I'm in" (board: accepted → enroute)
+
+    /// `board()` optimistically flips an accepted ride to `.enroute`, seeds the
+    /// leg-2 tracking anchor (past `pickupCut`), and POSTs `/board` on the SERVER
+    /// id; the returned enroute record reconciles in place.
+    func testBoardAdvancesAcceptedToEnrouteAndPostsOnServerID() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-b", status: .requested))
+        await api.setDetail(Self.wireRide(id: "srv-b", status: .accepted, accepted: true))
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        service.accept()
+        await eventually { await api.acceptCount == 1 }
+        XCTAssertEqual(service.activeRequest?.status, .accepted)
+
+        await api.setBoard(Self.wireRide(id: "srv-b", status: .enroute, accepted: true))
+        service.board()
+
+        // Optimistic leg-2 flip is synchronous (the "I'm in" button vanishes at once).
+        XCTAssertEqual(service.activeRequest?.status, .enroute, "board flips to enroute synchronously")
+        let seeded = service.activeRequest?.trackProgress ?? 0
+        let cut = service.activeRequest?.pickupCut ?? 1
+        XCTAssertGreaterThan(seeded, cut, "leg-2 anchor sits past pickupCut (in-ride leg)")
+
+        await eventually { await api.boardCount == 1 }
+        let boardID = await api.lastBoardID
+        XCTAssertEqual(boardID, "srv-b", "board targets the server-assigned id")
+        await eventually { service.activeRequest?.status == .enroute }
+    }
+
+    /// A `409` on `/board` (the ride already advanced past `accepted` — e.g. it
+    /// completed) reconciles to the TRUE server status via a refetch, not an
+    /// auto-retry: the ride settles on `.completed`, never stuck on the optimistic
+    /// enroute.
+    func testBoard409ReconcilesToServerStatusViaRefetch() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-c", status: .requested))
+        await api.setDetail(Self.wireRide(id: "srv-c", status: .accepted, accepted: true))
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        service.accept()
+        await eventually { await api.acceptCount == 1 }
+
+        await api.setBoardError(RestError.http(status: 409, code: .conflict, message: "already advanced", subCode: nil))
+        await api.setDetail(Self.wireRide(id: "srv-c", status: .completed, accepted: true))
+        service.board()
+        await eventually { await api.boardCount == 1 }
+        await eventually { service.activeRequest?.status == .completed }
+    }
+
+    /// A transient `/board` failure where the server NEVER advanced (the refetch
+    /// still reads `accepted`) reverts the optimistic enroute back to `accepted` —
+    /// and rewinds the tracking anchor to the leg-1 seed, so the "I'm in" button
+    /// re-appears.
+    func testBoardTransientFailureRevertsToAcceptedLeg1() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-d", status: .requested))
+        await api.setDetail(Self.wireRide(id: "srv-d", status: .accepted, accepted: true))
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        service.accept()
+        await eventually { await api.acceptCount == 1 }
+
+        await api.setBoardError(URLError(.timedOut))
+        // Server never advanced — the refetch still reads accepted.
+        service.board()
+        XCTAssertEqual(service.activeRequest?.status, .enroute, "optimistic flip first")
+        await eventually { service.activeRequest?.status == .accepted }
+        let cut = service.activeRequest?.pickupCut ?? 0
+        let progress = service.activeRequest?.trackProgress ?? 1
+        XCTAssertLessThan(progress, cut, "anchor rewound to leg 1 (pre-pickup)")
+    }
+
+    /// Double failure: the `/board` POST AND the reconciling refetch both fail
+    /// (offline blip spanning both). The server never advanced, so no WS frame
+    /// will correct the optimistic enroute — the service must UNDO the optimistic
+    /// flip back to `.accepted` (leg 1) rather than strand the rider on a phantom
+    /// leg 2 the car isn't driving (MYR-265 review).
+    func testBoardDoubleFailureRevertsOptimisticEnroute() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-dd", status: .requested))
+        await api.setDetail(Self.wireRide(id: "srv-dd", status: .accepted, accepted: true))
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        service.accept()
+        await eventually { await api.acceptCount == 1 }
+
+        // Both the POST and the refetch fail.
+        await api.setBoardError(URLError(.timedOut))
+        await api.setDetailError(URLError(.notConnectedToInternet))
+        service.board()
+        XCTAssertEqual(service.activeRequest?.status, .enroute, "optimistic flip first")
+        await eventually { service.activeRequest?.status == .accepted }
+        let cut = service.activeRequest?.pickupCut ?? 0
+        let progress = service.activeRequest?.trackProgress ?? 1
+        XCTAssertLessThan(progress, cut, "anchor rewound to leg 1 so 'I'm in' reappears")
+    }
+
     // MARK: WS ride_status_changed round-trips into the UI state
 
     func testStatusChangedFrameRefetchesAndReconcilesToAccepted() async {
@@ -493,10 +599,16 @@ private actor StubRideAPI: RideRequestAPI {
     private var detailReturn: RideRequest?
     private var rideList: [RideRequest] = []
 
+    private var boardReturn: RideRequest?
+    private var boardError: Error?
+    private var detailError: Error?
+
     private(set) var createCount = 0
     private(set) var acceptCount = 0
     private(set) var declineCount = 0
     private(set) var cancelCount = 0
+    private(set) var boardCount = 0
+    private(set) var lastBoardID: String?
     private(set) var rideListCount = 0
     private(set) var lastCreateVehicleID: String?
     private(set) var lastAcceptID: String?
@@ -510,6 +622,9 @@ private actor StubRideAPI: RideRequestAPI {
 
     func setDetail(_ ride: RideRequest) { detailReturn = ride }
     func setRideList(_ rides: [RideRequest]) { rideList = rides }
+    func setBoard(_ ride: RideRequest?) { boardReturn = ride }
+    func setBoardError(_ error: Error?) { boardError = error }
+    func setDetailError(_ error: Error?) { detailError = error }
 
     func vehicles() async throws -> [VehicleSummary] {
         [VehicleSummary(vehicleId: "veh-live", name: "Lunar", model: "Model Y", year: 2025, color: "Quicksilver",
@@ -528,10 +643,18 @@ private actor StubRideAPI: RideRequestAPI {
         rideListCount += 1
         return RideRequestsListResponse(items: rideList, hasMore: false)
     }
-    func rideRequest(id: String) async throws -> RideRequest { detailReturn ?? createReturn }
+    func rideRequest(id: String) async throws -> RideRequest {
+        if let detailError { throw detailError }
+        return detailReturn ?? createReturn
+    }
     func cancelRideRequest(id: String) async throws -> RideRequest { cancelCount += 1; lastCancelID = id; return createReturn }
     func acceptRideRequest(id: String) async throws -> RideRequest { acceptCount += 1; lastAcceptID = id; return detailReturn ?? createReturn }
     func declineRideRequest(id: String) async throws -> RideRequest { declineCount += 1; lastDeclineID = id; return createReturn }
+    func board(rideID: String) async throws -> RideRequest {
+        boardCount += 1; lastBoardID = rideID
+        if let boardError { throw boardError }
+        return boardReturn ?? detailReturn ?? createReturn
+    }
     func incomingRideRequests(cursor: String?, limit: Int) async throws -> RideRequestsListResponse {
         RideRequestsListResponse(items: [], hasMore: false)
     }

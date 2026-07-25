@@ -31,6 +31,9 @@ protocol RideRequestAPI: Sendable {
     func cancelRideRequest(id: String) async throws -> RideRequest
     func acceptRideRequest(id: String) async throws -> RideRequest
     func declineRideRequest(id: String) async throws -> RideRequest
+    /// MYR-265 — the rider's "I'm in" (leg 1 → leg 2). `accepted → enroute`,
+    /// idempotent on an already-`enroute` ride (200 no-op), else `409`.
+    func board(rideID: String) async throws -> RideRequest
     func incomingRideRequests(cursor: String?, limit: Int) async throws -> RideRequestsListResponse
 }
 
@@ -102,15 +105,22 @@ enum RideRequestContractMapping {
         return RideSchedule(day: day, time: timeFormatter.string(from: date))
     }
 
-    /// Map the wire lifecycle onto the app's 3-state sheet status. `requested →
-    /// pending`; `accepted / enroute / arrived / completed → accepted` (v1 has no
-    /// distinct enroute/arrived/completed UI — MYR-176/177); `declined → declined`.
-    /// `cancelled` (and anything unrecognized) returns `nil`: the caller drops the
-    /// active request rather than showing a dead card.
+    /// Map the wire lifecycle onto the app's sheet status (MYR-265 — two-leg
+    /// dispatch). `requested → pending`; `accepted → accepted` (leg 1, en route to
+    /// pickup); `enroute → enroute` (leg 2, rider aboard, heading to drop-off);
+    /// `arrived → enroute` (arriving AT the drop-off is still the in-ride leg — the
+    /// tracking sheet's own `arrivingDropoff` takeover handles the last stretch);
+    /// `completed → completed` (dropped off); `declined → declined`. `cancelled`
+    /// (and anything unrecognized) returns `nil`: the caller drops the active
+    /// request rather than showing a dead card. This NO LONGER collapses
+    /// enroute/completed into `.accepted` — the owner ride-aware sheet and the
+    /// rider's leg-2 transition read the real leg off this status (MYR-265).
     static func status(_ wire: MyRobotaxiContracts.RideRequestStatus) -> RideRequestStatus? {
         switch wire {
         case .requested: return .pending
-        case .accepted, .enroute, .arrived, .completed: return .accepted
+        case .accepted: return .accepted
+        case .enroute, .arrived: return .enroute
+        case .completed: return .completed
         case .declined: return .declined
         case .cancelled, .unrecognized: return nil
         }
@@ -149,11 +159,20 @@ enum RideRequestContractMapping {
             requestedAt: parseISO(ride.createdAt) ?? Date()
         )
         record.acceptedAt = ride.acceptedAt.flatMap(parseISO)
-        // v1 has no live-tracking progress (MYR-176/177). An accepted ride mounts
-        // the tracking sheet at the static seed so it shows "heading to pickup"
-        // without inventing a progress ticker.
-        if appStatus == .accepted {
-            record.trackProgress = RideRequestTiming.autoAcceptInitialProgress
+        // MYR-265: v1 has no per-second progress ticker (MYR-176/177), so each
+        // live leg mounts the tracking sheet at a STATIC anchor that positions
+        // `TrackingLeg`/`atPickup`/the leg-fit camera correctly for that leg:
+        //  • accepted (leg 1) → the heading-to-pickup seed;
+        //  • enroute  (leg 2) → the aboard/heading-to-drop-off seed;
+        //  • completed        → arrived (>= 0.999) so the rider lands on the summary.
+        // Scheduled reservations never seed a live trip.
+        if record.input.schedule == nil {
+            switch appStatus {
+            case .accepted: record.trackProgress = RideRequestTiming.autoAcceptInitialProgress
+            case .enroute: record.trackProgress = record.enrouteSeedProgress
+            case .completed: record.trackProgress = 1
+            default: break
+            }
         }
         return record
     }

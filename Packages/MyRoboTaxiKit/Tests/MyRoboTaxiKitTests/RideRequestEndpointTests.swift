@@ -130,6 +130,68 @@ final class RideRequestEndpointTests: XCTestCase {
         XCTAssertEqual(declineReqs[0].url?.path, "/api/ride-requests/r9/decline")
     }
 
+    // MARK: - Board (MYR-265 — the rider's "I'm in", leg 1 → leg 2)
+
+    /// `POST /api/ride-requests/{id}/board` targets the `/board` action path with
+    /// no body and decodes the returned `enroute` record (the advance succeeded and
+    /// the server flipped `accepted → enroute`).
+    func testBoardTargetsPostBoardPathAndDecodesEnroute() async throws {
+        let body = Data("""
+        {
+          "id": "clride0000000000000002",
+          "riderId": "u-rider", "ownerId": "u-rider", "vehicleId": "clxyz1234567890abcdef",
+          "pickup": { "lat": 37.7793, "lng": -122.3937, "label": "Current location" },
+          "dropoff": { "lat": 37.6156, "lng": -122.3900, "label": "SFO · Terminal 2" },
+          "status": "enroute",
+          "createdAt": "2026-07-10T18:00:00.000Z",
+          "updatedAt": "2026-07-10T18:06:00.000Z",
+          "acceptedAt": "2026-07-10T18:04:00.000Z"
+        }
+        """.utf8)
+        let (client, http) = client([.init(status: 200, body: body)])
+
+        let ride = try await client.board(rideID: "clride0000000000000002")
+        XCTAssertEqual(ride.status, .enroute, "board advances the ride to leg 2")
+
+        let requests = await http.capturedRequests()
+        XCTAssertEqual(requests[0].httpMethod, "POST")
+        XCTAssertEqual(requests[0].url?.path, "/api/ride-requests/clride0000000000000002/board")
+        XCTAssertNil(requests[0].url?.query, "action POST carries no query")
+    }
+
+    /// The idempotent no-op: an already-`enroute` ride returns `200` with the
+    /// current record (a re-tap / retry is safe). It decodes exactly like the
+    /// advance — the caller need not distinguish the two.
+    func testBoardIsIdempotent200OnAlreadyEnroute() async throws {
+        let body = Data("""
+        {
+          "id": "r-board", "riderId": "u", "ownerId": "u", "vehicleId": "v",
+          "pickup": { "lat": 1, "lng": 2, "label": "p" },
+          "dropoff": { "lat": 3, "lng": 4, "label": "d" },
+          "status": "enroute",
+          "createdAt": "2026-07-10T18:00:00.000Z", "updatedAt": "2026-07-10T18:06:00.000Z"
+        }
+        """.utf8)
+        let (client, _) = client([.init(status: 200, body: body)])
+        let ride = try await client.board(rideID: "r-board")
+        XCTAssertEqual(ride.status, .enroute, "idempotent 200 returns the current enroute record")
+    }
+
+    /// Any illegal source state (e.g. the ride already `completed`, or still
+    /// `requested`) is a typed `409 conflict` the caller reconciles against — never
+    /// an auto-retry of the same POST.
+    func testBoardIllegalTransitionMapsToTypedConflict() async throws {
+        let (client, _) = client([.init(status: 409, body: try Fixture.data("rest/error.conflict.json"))])
+        do {
+            _ = try await client.board(rideID: "r-board")
+            XCTFail("expected RestError.http 409 conflict")
+        } catch let error as RestError {
+            guard case .http(let status, let code, _, _) = error else { return XCTFail("wrong case") }
+            XCTAssertEqual(status, 409)
+            XCTAssertEqual(code, .conflict, "branch on the typed code, never the message")
+        }
+    }
+
     // MARK: - 409 conflict (illegal lifecycle transition)
 
     func testIllegalTransitionMapsToTypedConflict() async throws {

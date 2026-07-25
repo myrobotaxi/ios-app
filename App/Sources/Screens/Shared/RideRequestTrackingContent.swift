@@ -14,6 +14,11 @@ struct RideRequestTrackingContent: View {
     var rideRequestService: any RideRequestService
     var totalHeight: CGFloat?
 
+    /// MYR-265 — disables the "I'm in" CTA for the frame it is tapped. `board()`
+    /// flips the status to `.enroute` synchronously (the button then vanishes), so
+    /// this only guards a double-tap landing in the same frame.
+    @State private var boarding = false
+
     private var request: RideRequestRecord? { rideRequestService.activeRequest }
     /// MYR-218 defect 3: the LOOK FOR / Your-ride card must name the LIVE
     /// vehicle in live mode — same source MYR-212 threaded through Review and
@@ -86,12 +91,24 @@ struct RideRequestTrackingContent: View {
                 if atPickup {
                     rideRow(emphasize: false)
                 }
+                if showBoardButton {
+                    boardButton.padding(.top, 2)
+                }
             }
         }
         .padding(.horizontal, 22)
         .padding(.top, 14)
         .padding(.bottom, 30)
         .rideRequestSheetChrome()
+        .onChange(of: request?.status) {
+            // The board resolved — either it advanced to `.enroute` (button
+            // gone) or a failed/rejected advance reverted to `.accepted`
+            // (button re-shown). Either way clear the in-flight latch so a
+            // re-shown "I'm in" is tappable again; otherwise a single transient
+            // board failure leaves the rider stuck on leg 1 with a permanently
+            // greyed-out button and the car never navigated (MYR-265 review).
+            boarding = false
+        }
     }
 
     // MARK: Live header (ride-request.jsx:820-838)
@@ -332,6 +349,34 @@ struct RideRequestTrackingContent: View {
             .overlay(MRTShimmerBand())
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .shadow(color: .mrtGoldGlow, radius: 10)
+    }
+
+    // MARK: MYR-265 — rider "I'm in" (leg 1 → leg 2)
+    //
+    // A CLIENT-APPROVED addition (the design prototype has no such control — its
+    // tracking auto-advances off a Tweaks slider): on the LIVE two-leg dispatch the
+    // rider explicitly confirms they are aboard, which POSTs `/board` and flips the
+    // ride `accepted → enroute` (the backend then pushes the DROP-OFF nav to the
+    // car). Gated to the LIVE, leg-1, non-arriving tracking state:
+    //  • `viewerState.isLiveLocation` — the sim/DEBUG tracking scenes are driven by
+    //    the `trackProgress` ticker and never show this button, so trackingLeg1/leg2
+    //    stay pixel-identical (drift gate);
+    //  • `status == .accepted` && `!atPickup` — leg 1 only; the instant `board()`
+    //    flips the status to `.enroute` the button disappears (leg 2).
+    // Uses the reserved `outline-draw` ride-CTA treatment (Reduce Motion → static),
+    // the same "actionable moment" language as Request / Confirm pickup / Accept.
+
+    private var showBoardButton: Bool {
+        viewerState.isLiveLocation && request?.status == .accepted && !atPickup
+    }
+
+    private var boardButton: some View {
+        MRTButton("I\u{2019}m in", variant: .outlineDraw, leadingIcon: "checkmark.circle") {
+            guard !boarding else { return }
+            boarding = true
+            rideRequestService.board()
+        }
+        .disabled(boarding)
     }
 
     // MARK: Arrival takeover (ride-request.jsx:756-774, remainMins <= 2)

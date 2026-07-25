@@ -708,8 +708,19 @@ struct SharedViewerScreen: View {
     }
 
     private var trackingLeg: TrackingLeg {
-        TrackingLeg.forProgress(rideRequestService.activeRequest?.trackProgress ?? 0,
-                                pickupCut: rideRequestService.activeRequest?.pickupCut ?? 0.2)
+        // MYR-265: on the LIVE path the leg follows the REAL server status — an
+        // `enroute`/`completed` ride is the in-ride leg regardless of the seeded
+        // anchor. Otherwise (the sim ticker, and the leg-1 `accepted` case) it
+        // derives from `trackProgress` vs `pickupCut`, so the simulated
+        // trackingLeg1/leg2 drift-gate scenes (status `.accepted`, progress-driven)
+        // render exactly as before.
+        switch rideRequestService.activeRequest?.status {
+        case .enroute, .completed:
+            return .inRide
+        default:
+            return TrackingLeg.forProgress(rideRequestService.activeRequest?.trackProgress ?? 0,
+                                           pickupCut: rideRequestService.activeRequest?.pickupCut ?? 0.2)
+        }
     }
 
     /// The two leg polylines, falling back to a straight segment until the
@@ -826,6 +837,15 @@ struct SharedViewerScreen: View {
         case .accepted:
             guard !hasSchedule, current == .booking || current == .idle else { return nil }
             return .tracking
+        case .enroute:
+            // MYR-265 — the rider boarded (leg 2). From booking/idle (a cold-adopt
+            // of an already-enroute ride) enter tracking; already tracking → stay
+            // (the leg flips within the tracking sheet off the status itself).
+            guard !hasSchedule, current == .booking || current == .idle else { return nil }
+            return .tracking
+        case .completed:
+            // MYR-265 — dropped off: advance the live tracking sheet to the summary.
+            return current == .tracking ? .summary : nil
         case .declined:
             return current == .search ? nil : .search
         case .pending:

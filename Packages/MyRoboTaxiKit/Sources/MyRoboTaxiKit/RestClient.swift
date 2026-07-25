@@ -168,6 +168,19 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
         try await post(["ride-requests", id, "decline"], body: Optional<Empty>.none)
     }
 
+    /// `POST /api/ride-requests/{id}/board` (rest-api.md §7.8, MYR-265) — the
+    /// rider's "I'm in": leg 1 → leg 2. RIDER-only (party auth). Guarded
+    /// `accepted → enroute`; on success it flips the status AND pushes the DROPOFF
+    /// nav to the car. IDEMPOTENT — an already-`enroute` ride returns `200` with the
+    /// current record (no-op), so a retry / re-tap is safe. Any OTHER status is
+    /// `409 conflict`; the owner / a non-rider party gets `403`; a non-party `404`.
+    /// Responds `200 OK` with the updated `RideRequest`. A `409` surfaces as a typed
+    /// `RestError.http(status: 409, …)` the caller reconciles against server state
+    /// (never an auto-retry of the same POST).
+    public func board(rideID: String) async throws -> RideRequest {
+        try await post(["ride-requests", rideID, "board"], body: Optional<Empty>.none)
+    }
+
     /// Empty JSON body sentinel for the action POSTs that take no payload
     /// (`/cancel`, `/accept`, `/decline`). Encodes to `{}`.
     private struct Empty: Encodable {}
