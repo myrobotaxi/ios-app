@@ -62,6 +62,19 @@ enum VehicleContractMapping {
         return false
     }
 
+    /// MYR-260 — whether the car is currently STREAMING live telemetry. Online
+    /// states (driving/parked/charging) stream ~1 Hz, so an unknown control value
+    /// is genuinely in flight ("Syncing"); a car that is offline or in service
+    /// (or a forward-compat unrecognized status, treated conservatively) is NOT
+    /// streaming, so a value the one-shot REST read couldn't fill will not arrive
+    /// ("Unavailable"). Feeds `VehicleTelemetrySnapshot.isStreaming`.
+    static func isStreaming(_ wire: VehicleState.Status) -> Bool {
+        switch wire {
+        case .driving, .parked, .charging: return true
+        case .offline, .inService, .unrecognized: return false
+        }
+    }
+
     // MARK: VehicleState → telemetry snapshot (the M1/M2 seam value)
 
     /// Map a full `VehicleState` onto the hero's per-tick `VehicleTelemetrySnapshot`.
@@ -86,7 +99,12 @@ enum VehicleContractMapping {
             interiorTempF: state.interiorTemp,
             exteriorTempF: state.exteriorTemp,
             odometerMiles: state.odometerMiles,
-            fsdMilesSinceReset: state.fsdMilesSinceReset
+            fsdMilesSinceReset: state.fsdMilesSinceReset,
+            // MYR-260 — the read time + streaming state let the controls label an
+            // unknown value honestly (Syncing vs Unavailable) and qualify a
+            // stale last-known value ("· synced X ago").
+            lastUpdated: parseTimestamp(state.lastUpdated),
+            isStreaming: isStreaming(state.status)
         )
     }
 

@@ -63,6 +63,41 @@ final class VehicleContractMappingTests: XCTestCase {
         XCTAssertEqual(snapshot.fsdMilesSinceReset, 128.4)
     }
 
+    // MARK: MYR-260 — freshness/streaming for honest unknown labeling
+
+    func testSnapshotCarriesParsedLastUpdatedReadTime() {
+        // The controls need the read time to qualify a stale value ("X ago") and
+        // to tell "connecting" (no snapshot) from "reachable".
+        let snapshot = VehicleContractMapping.snapshot(from: Contracts.drivingState())
+        XCTAssertEqual(
+            snapshot.lastUpdated,
+            VehicleContractMapping.parseTimestamp("2026-07-08T17:30:00Z"),
+            "lastUpdated must be the parsed VehicleState.lastUpdated read time"
+        )
+    }
+
+    func testOnlineStatusesReportStreaming() {
+        // Driving / parked / charging stream ~1 Hz → an unknown field is transient.
+        XCTAssertEqual(VehicleContractMapping.snapshot(from: Contracts.drivingState()).isStreaming, true)
+        XCTAssertEqual(VehicleContractMapping.snapshot(from: Contracts.parkedState()).isStreaming, true)
+        XCTAssertEqual(
+            VehicleContractMapping.snapshot(from: Contracts.parkedState(status: .charging)).isStreaming,
+            true
+        )
+    }
+
+    func testOfflineAndInServiceReportNotStreaming() {
+        // Offline / in_service don't stream — an unknown field the REST read
+        // couldn't fill is "Unavailable", not a hopeful "Syncing".
+        XCTAssertEqual(VehicleContractMapping.snapshot(from: Contracts.parkedState(status: .offline)).isStreaming, false)
+        XCTAssertEqual(VehicleContractMapping.snapshot(from: Contracts.parkedState(status: .inService)).isStreaming, false)
+        XCTAssertEqual(
+            VehicleContractMapping.snapshot(from: Contracts.parkedState(status: .unrecognized("hibernating"))).isStreaming,
+            false,
+            "a forward-compat unknown status is treated conservatively as not streaming"
+        )
+    }
+
     func testParkedSnapshotZeroesMotionFields() {
         let snapshot = VehicleContractMapping.snapshot(from: Contracts.parkedState(chargeLevel: 82))
         XCTAssertEqual(snapshot.status, .parked)

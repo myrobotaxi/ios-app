@@ -224,7 +224,9 @@ struct DrivingHeroContent: View {
                     cabinTemp: snapshot.interiorTempF,
                     extTemp: snapshot.exteriorTempF,
                     odometerMiles: snapshot.odometerMiles,
-                    fsdMilesSinceReset: snapshot.fsdMilesSinceReset
+                    fsdMilesSinceReset: snapshot.fsdMilesSinceReset,
+                    lastUpdated: snapshot.lastUpdated,
+                    isStreaming: snapshot.isStreaming
                 )
             }
         }
@@ -265,7 +267,9 @@ struct ParkedHeroContent: View {
                 cabinTemp: snapshot.interiorTempF,
                 extTemp: snapshot.exteriorTempF,
                 odometerMiles: snapshot.odometerMiles,
-                fsdMilesSinceReset: snapshot.fsdMilesSinceReset
+                fsdMilesSinceReset: snapshot.fsdMilesSinceReset,
+                lastUpdated: snapshot.lastUpdated,
+                isStreaming: snapshot.isStreaming
             )
         }
     }
