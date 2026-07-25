@@ -332,4 +332,15 @@ public enum MRTMetrics {
     /// (MYR-177) — floats just above the content-sized tracking sheet, mirroring
     /// the idle map's `FloatingMapButton` placement/language.
     public static let trackingRecenterButtonBottom: CGFloat = 340
+
+    /// MYR-271 — the rider tracking sheet's PEEK detent (hosted on the `PanSheet`
+    /// engine): the hero band + a hint of the itinerary stays visible while dragging
+    /// the card down reveals more of the two-leg map. The FULL detent is the card's
+    /// measured natural height.
+    public static let trackingSheetPeekHeight: CGFloat = 150
+
+    /// MYR-271 — gap between the rider tracking sheet's SETTLED top edge and the
+    /// recenter button's bottom, so the button clears the card in EVERY detent
+    /// (re-anchored off the settled detent height, not a fixed offset).
+    public static let trackingRecenterSheetGap: CGFloat = 22
 }
