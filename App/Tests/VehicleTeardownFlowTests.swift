@@ -39,3 +39,21 @@ final class TeslaUnlinkCallbackTests: XCTestCase {
         XCTAssertEqual(TeslaUnlinkCallback.scheme, TeslaLinkCallback.scheme)
     }
 }
+
+// MARK: - MYR-261: the idempotent already-gone (404) case is a SUCCESS
+
+final class TeardownAlreadyRemovedTests: XCTestCase {
+    // The client hit a false "Couldn't remove this car" dialog on an already-gone
+    // car. The 404 path now drives the normal "Car removed" confirmation via this
+    // synthesized result — which must read as a clean success with NO follow-up
+    // next steps (those were shown on the first, real removal).
+    func testAlreadyRemovedResultIsCleanSuccess() {
+        let r = SettingsScreen.alreadyRemovedResult
+        XCTAssertTrue(r.removed, "404 idempotent case must confirm the car is removed")
+        XCTAssertFalse(r.wasLastVehicle)
+        XCTAssertFalse(r.teslaTokensCleared)
+        XCTAssertNil(r.revokeUrl, "no consent-revoke prompt on an already-gone no-op")
+        XCTAssertFalse(r.virtualKeyRemoval.required, "no virtual-key steps on a no-op")
+        XCTAssertTrue(r.virtualKeyRemoval.steps.isEmpty)
+    }
+}
