@@ -11,7 +11,13 @@ import DesignSystem
 struct MediaSection: View {
     let controls: VehicleControlsSnapshot
     let executor: any VehicleCommandExecutor
-    let track: VehicleMediaTrack
+    /// The now-playing track — a pure fixture (`VehicleMediaTrack`). `nil` on the
+    /// live path (MYR-264): media title/artist/cover are not on the `VehicleState`
+    /// contract, so the now-playing block + scrubber are honest-hidden rather than
+    /// showing a fake song ("Midnight City · M83"). The transport row + volume
+    /// slider route REAL commands (MYR-249/251) and remain. Always non-nil in SIM,
+    /// so the M1 / drift-gate media section is pixel-identical.
+    let track: VehicleMediaTrack?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -45,42 +51,49 @@ struct MediaSection: View {
     var body: some View {
         SectionCard(title: "Media") {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 13) {
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .fill(LinearGradient(
-                            colors: [track.gradientStart, track.gradientEnd],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ))
-                        .frame(width: 52, height: 52)
-                        .shadow(color: .mrtMediaCoverShadow, radius: 5, y: 2)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(track.title)
-                            .font(.system(size: 15, weight: .semibold))
-                            .tracking(-0.2)
-                            .foregroundStyle(Color.mrtText)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Text(track.artist)
-                            .font(.system(size: 12.5))
-                            .foregroundStyle(Color.mrtTextSec)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+                // MYR-264 — the now-playing block + scrubber render ONLY when a
+                // (fixture) track exists. On the live path `track` is nil (media
+                // metadata isn't contracted), so nothing here is shown — never a
+                // fabricated song title, cover, or scrub position. SIM always has a
+                // track, so the layout below is unchanged.
+                if let track {
+                    HStack(spacing: 13) {
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .fill(LinearGradient(
+                                colors: [track.gradientStart, track.gradientEnd],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ))
+                            .frame(width: 52, height: 52)
+                            .shadow(color: .mrtMediaCoverShadow, radius: 5, y: 2)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(track.title)
+                                .font(.system(size: 15, weight: .semibold))
+                                .tracking(-0.2)
+                                .foregroundStyle(Color.mrtText)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            Text(track.artist)
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(Color.mrtTextSec)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
                     }
-                }
-                .padding(.bottom, 14)
+                    .padding(.bottom, 14)
 
-                MRTSlider(value: scrubBinding, trackHeight: 4)
-                HStack {
-                    Text(formattedTime(controls.scrubPercent))
-                    Spacer()
-                    Text("3:42")
+                    MRTSlider(value: scrubBinding, trackHeight: 4)
+                    HStack {
+                        Text(formattedTime(controls.scrubPercent))
+                        Spacer()
+                        Text("3:42")
+                    }
+                    .font(.system(size: 10.5))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.mrtTextMuted)
+                    .padding(.top, 6)
+                    .padding(.bottom, 10)
                 }
-                .font(.system(size: 10.5))
-                .monospacedDigit()
-                .foregroundStyle(Color.mrtTextMuted)
-                .padding(.top, 6)
-                .padding(.bottom, 10)
 
                 HStack(spacing: 30) {
                     transportButton("backward.fill", size: 22) {

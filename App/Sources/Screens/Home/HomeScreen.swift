@@ -32,6 +32,12 @@ struct HomeScreen: View {
     /// MYR-171 — accepting a *scheduled* request reserves it into Drives →
     /// Upcoming (`addUpcoming`) instead of dispatching now.
     @Bindable var drivesState: OwnerDrivesState
+    /// MYR-264 — the ONE resolved live/sim flag (threaded from `RootView`). Gates
+    /// every fixture surface below the owner Home: the incoming-request sheet's
+    /// rider/vehicle identity and the vehicle-controls media block. `false` in SIM
+    /// / DEBUG scenes keeps them pixel-identical (CLAUDE.md "No fixtures on the
+    /// live path").
+    var isLive: Bool = false
 
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var isFollowing = true
@@ -50,6 +56,18 @@ struct HomeScreen: View {
     /// `nil`, which is also what drives the sheet's own dismiss animation.
     private var incomingRequest: RideRequestRecord? {
         rideRequestService.activeRequest?.status == .pending ? rideRequestService.activeRequest : nil
+    }
+
+    /// MYR-264 — join a request's real `vehicleId` to the owner's loaded fleet for
+    /// the true vehicle name/status. `nil` in SIM (a fixture `fleetMemberID` is not
+    /// a live vehicle id — the sheet falls back to the fixture fleet member there)
+    /// and for a live request whose vehicle isn't in the loaded fleet.
+    private func incomingVehicle(for request: RideRequestRecord) -> Vehicle? {
+        homeState.vehicles.first { $0.id == request.input.fleetMemberID }
+    }
+
+    private func incomingDisplay(for request: RideRequestRecord) -> IncomingRequestDisplay {
+        IncomingRequestDisplay.resolve(request: request, isLive: isLive, liveVehicle: incomingVehicle(for: request))
     }
 
     var body: some View {
@@ -102,6 +120,8 @@ struct HomeScreen: View {
         .overlay {
             IncomingRequestSheet(
                 request: incomingRequest,
+                isLive: isLive,
+                resolvedVehicle: incomingRequest.flatMap { incomingVehicle(for: $0) },
                 onAccept: handleAccept,
                 onDecline: { rideRequestService.decline() }
             )
@@ -192,14 +212,21 @@ struct HomeScreen: View {
         guard let request = rideRequestService.activeRequest else { return }
         rideRequestService.accept()
 
-        let fleetMember = request.input.fleetMember
+        // MYR-264 — the accept toast + reserved Upcoming ride resolve through the
+        // SAME gated display the sheet uses: real rider name + real joined vehicle
+        // on live (neutral / hidden when absent), fixture "Sam"/"Model Y" in SIM.
+        // Previously this read `request.input.fleetMember` (→ fixture `fleet[0]` on
+        // live) and a hardcoded "Sam", leaking both onto the live route toast.
+        let display = incomingDisplay(for: request)
         let destination = request.input.destination
+        let vehicleName = display.vehicleName
+        let riderLabel = display.riderLabel
 
         if let schedule = request.input.schedule {
             drivesState.addUpcoming(
                 UpcomingRide(
                     id: "ou-" + request.id,
-                    rider: "Sam",
+                    rider: riderLabel,
                     destination: .init(
                         label: destination.label,
                         subtitle: destination.subtitle ?? "",
@@ -208,23 +235,25 @@ struct HomeScreen: View {
                     ),
                     scheduleDay: schedule.day,
                     scheduleTime: schedule.time,
-                    vehicleName: fleetMember.name
+                    vehicleName: vehicleName ?? ""
                 )
             )
+            let reserved = vehicleName.map { "\(riderLabel) \u{00B7} \(destination.label) \u{00B7} \($0) reserved" }
+                ?? "\(riderLabel) \u{00B7} \(destination.label) reserved"
             routeSentToast = RouteSentToastContent(
                 title: "Ride scheduled \u{00B7} \(schedule.day) \(schedule.time)",
-                subtitle: "Sam \u{00B7} \(destination.label) \u{00B7} \(fleetMember.name) reserved",
+                subtitle: reserved,
                 isScheduled: true
             )
         } else if let passenger = request.input.passenger {
             routeSentToast = RouteSentToastContent(
-                title: "Destination sent to \(fleetMember.name)",
+                title: vehicleName.map { "Destination sent to \($0)" } ?? "Destination sent",
                 subtitle: "\(passenger.name) got a tracking link \u{00B7} \(destination.label)",
                 isScheduled: false
             )
         } else {
             routeSentToast = RouteSentToastContent(
-                title: "Destination sent to \(fleetMember.name)",
+                title: vehicleName.map { "Destination sent to \($0)" } ?? "Destination sent",
                 subtitle: "Heading to \(destination.label) \u{00B7} \(destination.minutes) min",
                 isScheduled: false
             )
@@ -266,7 +295,8 @@ struct HomeScreen: View {
                 trip: trip,
                 snapshot: snapshot,
                 executor: executor,
-                isEditingPlate: $isEditingPlate
+                isEditingPlate: $isEditingPlate,
+                isLive: isLive
             )
         case .parked(let location):
             ParkedHeroContent(
@@ -275,7 +305,8 @@ struct HomeScreen: View {
                 snapshot: snapshot,
                 status: homeState.selectedBadgeStatus,
                 executor: executor,
-                isEditingPlate: $isEditingPlate
+                isEditingPlate: $isEditingPlate,
+                isLive: isLive
             )
         }
     }

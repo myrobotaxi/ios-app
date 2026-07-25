@@ -192,6 +192,10 @@ struct DrivingHeroContent: View {
     let snapshot: VehicleTelemetrySnapshot
     let executor: any VehicleCommandExecutor
     @Binding var isEditingPlate: Bool
+    /// MYR-264 — gates `VehicleControls`' fixture media block (now-playing
+    /// title/artist/cover are not on the wire → honest-hidden on live). `false` in
+    /// SIM keeps the media section pixel-identical.
+    var isLive: Bool = false
 
     var body: some View {
         // Outer gap 22 (screens.jsx:449 `gap: 22`) between the summary block and
@@ -226,7 +230,8 @@ struct DrivingHeroContent: View {
                     odometerMiles: snapshot.odometerMiles,
                     fsdMilesSinceReset: snapshot.fsdMilesSinceReset,
                     lastUpdated: snapshot.lastUpdated,
-                    isStreaming: snapshot.isStreaming
+                    isStreaming: snapshot.isStreaming,
+                    isLive: isLive
                 )
             }
         }
@@ -247,6 +252,8 @@ struct ParkedHeroContent: View {
     var status: MRTVehicleStatus = .parked
     let executor: any VehicleCommandExecutor
     @Binding var isEditingPlate: Bool
+    /// MYR-264 — see `DrivingHeroContent.isLive`.
+    var isLive: Bool = false
 
     var body: some View {
         // Outer gap 14 (screens.jsx:585 `gap: 14`) between the summary and the
@@ -269,7 +276,8 @@ struct ParkedHeroContent: View {
                 odometerMiles: snapshot.odometerMiles,
                 fsdMilesSinceReset: snapshot.fsdMilesSinceReset,
                 lastUpdated: snapshot.lastUpdated,
-                isStreaming: snapshot.isStreaming
+                isStreaming: snapshot.isStreaming,
+                isLive: isLive
             )
         }
     }

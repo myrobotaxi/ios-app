@@ -21,7 +21,13 @@ struct RideRequestSummaryContent: View {
     @State private var tip: String?
 
     private var request: RideRequestRecord? { rideRequestService.activeRequest }
-    private var fleetMember: FleetMember { request?.input.fleetMember ?? RideRequestFixtures.fleet[0] }
+    /// MYR-264 — the "You rode in" card must name the LIVE vehicle in live mode
+    /// (same source MYR-212 threads through Review/Booking/Tracking:
+    /// `viewerState.liveFleetMember`), not the fixture fleet. On live, the record's
+    /// `fleetMemberID` is a real vehicle id that matches no fixture, so
+    /// `input.fleetMember` would fall back to `fleet[0]` ("Quicksilver Model Y" /
+    /// "RBO-2046") — a fixture leak. `nil` in sim → the fixture member, unchanged.
+    private var fleetMember: FleetMember { viewerState.liveFleetMember ?? request?.input.fleetMember ?? RideRequestFixtures.fleet[0] }
     private var destination: RidePlace { request?.input.destination ?? RideRequestFixtures.recentPlaces[0] }
     private var pickup: RidePlace? { request?.input.pickup }
     private var passenger: RidePassenger? { request?.input.passenger }
@@ -38,9 +44,15 @@ struct RideRequestSummaryContent: View {
     /// account (→ a generic sign-off with no name). SIM keeps the fixture-derived
     /// behavior (`riderName` "Sam", or the ride's passenger).
     private var greetingFirstName: String? {
+        // LIVE (MYR-224): the real signed-in rider — or nil (generic greeting) when
+        // that account has no name. Never the fixture "Sam".
         if let profile = liveProfile { return profile.firstName }
-        let name = riderName.isEmpty ? (passenger?.name ?? "Sam") : riderName
-        return name.split(separator: " ").first.map(String.init) ?? name
+        // SIM: the fixture rider name (or the ride's passenger). MYR-264 — dropped
+        // the hardcoded "Sam" fallback so no fixture persona literal can reach the
+        // live path; the sim `riderName` is non-empty ("Sam"), so this is unchanged.
+        if !riderName.isEmpty { return riderName.split(separator: " ").first.map(String.init) ?? riderName }
+        if let name = passenger?.name, !name.isEmpty { return name.split(separator: " ").first.map(String.init) ?? name }
+        return nil
     }
 
     /// "Have a wonderful {part of day}, {first}." — or, with no name, the same
@@ -115,7 +127,12 @@ struct RideRequestSummaryContent: View {
                             .foregroundStyle(Color.mrtText)
                     }
                     Spacer(minLength: 0)
-                    RidePlateChip(plate: fleetMember.plate)
+                    // MYR-264/218 — live telemetry has no license plate (only a VIN
+                    // last-4, hidden when empty); a fixture plate is always present,
+                    // so sim always shows the chip.
+                    if !fleetMember.plate.isEmpty {
+                        RidePlateChip(plate: fleetMember.plate)
+                    }
                 }
                 .padding(.top, 16)
                 .overlay(alignment: .top) {

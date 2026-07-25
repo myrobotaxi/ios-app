@@ -25,6 +25,14 @@ import DesignSystem
 struct IncomingRequestSheet: View {
     /// `nil` hides the sheet — mirrors `ScheduledRideSheet`'s `ride: ScheduledRide?`.
     let request: RideRequestRecord?
+    /// MYR-264 — the ONE resolved live/sim flag (threaded from `HomeScreen`).
+    /// SIM renders the fixture persona/vehicle; LIVE renders the real rider name +
+    /// a real fleet-join vehicle (or neutral/hidden), never fixture data.
+    var isLive: Bool = false
+    /// MYR-264 — the owner's real fleet vehicle this request targets, joined by
+    /// `vehicleId` in `HomeScreen`. `nil` in SIM (unused) and for a live request
+    /// whose vehicle isn't in the loaded fleet (→ vehicle name hidden).
+    var resolvedVehicle: Vehicle? = nil
     let onAccept: () -> Void
     let onDecline: () -> Void
 
@@ -32,12 +40,12 @@ struct IncomingRequestSheet: View {
     @State private var sent = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// ride-request.jsx's `requesterName` prop defaults to a placeholder,
-    /// but `RideRequestInput` (RideRequestService.swift) carries no
-    /// rider-name field — M1 ships no rider-name customization, every
-    /// request is from "Sam" (see this issue's spec + the Tweaks panel's
-    /// fixed "Rider name: Sam" field in the prototype).
-    private static let requesterName = "Sam"
+    /// MYR-264 — what each gated surface renders for `request`: the fixture persona
+    /// / vehicle in SIM, the real rider name + real fleet-join vehicle in LIVE (see
+    /// `IncomingRequestDisplay`). Resolved once per request from the ONE `isLive`.
+    private func display(for request: RideRequestRecord) -> IncomingRequestDisplay {
+        IncomingRequestDisplay.resolve(request: request, isLive: isLive, liveVehicle: resolvedVehicle)
+    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -79,8 +87,14 @@ struct IncomingRequestSheet: View {
             }
             mapCard(request)
                 .padding(.bottom, 14)
-            statusRow(request)
-                .padding(.bottom, 18)
+            // MYR-264 — hide the vehicle status row entirely on the live path when
+            // the request's vehicle isn't in the loaded fleet (no name to show and
+            // nothing to honestly assert); the scheduled reservation line still
+            // renders because its day/time come from the real wire schedule.
+            if showsStatusRow(for: request) {
+                statusRow(request)
+                    .padding(.bottom, 18)
+            }
             ctaArea(request)
             if !sending, !sent {
                 helperText(request)
@@ -128,7 +142,8 @@ struct IncomingRequestSheet: View {
     }
 
     private func header(_ request: RideRequestRecord) -> some View {
-        HStack(alignment: .center, spacing: 14) {
+        let display = display(for: request)
+        return HStack(alignment: .center, spacing: 14) {
             Circle()
                 .fill(
                     LinearGradient(
@@ -138,12 +153,22 @@ struct IncomingRequestSheet: View {
                 )
                 .frame(width: 48, height: 48)
                 .overlay(
-                    Text(Self.requesterName.prefix(1))
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.white)
+                    // MYR-264 — the real/fixture name's initial when known, else a
+                    // NEUTRAL person glyph (never a fabricated "S" on live).
+                    Group {
+                        if let initial = display.avatarInitial {
+                            Text(initial)
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundStyle(.white)
+                        } else {
+                            Image(systemName: "person.fill")
+                                .font(.system(size: 19))
+                                .foregroundStyle(.white)
+                        }
+                    }
                 )
             VStack(alignment: .leading, spacing: 2) {
-                Text(headerTitle(request))
+                Text(display.title(hasPassenger: request.input.passenger != nil))
                     .font(.system(size: 16, weight: .semibold))
                     .tracking(-0.2)
                     .foregroundStyle(Color.mrtText)
@@ -155,17 +180,27 @@ struct IncomingRequestSheet: View {
         }
     }
 
-    private func headerTitle(_ request: RideRequestRecord) -> String {
-        request.input.passenger != nil
-            ? "\(Self.requesterName) requested a ride"
-            : "\(Self.requesterName) wants a ride"
-    }
-
     private func headerSubtitle(_ request: RideRequestRecord) -> String {
         if let schedule = request.input.schedule {
             return "Scheduled \u{00B7} \(schedule.day) \(schedule.time)"
         }
-        return "Shared viewer \u{00B7} just now"
+        // MYR-264 — SIM keeps the fixture literal (pixel-identical); LIVE derives an
+        // honest relative time from the request's real `requestedAt` (no hardcoded
+        // "just now").
+        let when = isLive ? relativeRequestedTime(request.requestedAt) : "just now"
+        return "\(IncomingRequestDisplay.neutralRole) \u{00B7} \(when)"
+    }
+
+    /// An honest coarse "when" for the live header — the request's real age.
+    private func relativeRequestedTime(_ date: Date) -> String {
+        let seconds = max(0, Date().timeIntervalSince(date))
+        if seconds < 60 { return "just now" }
+        let minutes = Int(seconds / 60)
+        if minutes < 60 { return "\(minutes) min ago" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours) hr ago" }
+        let days = hours / 24
+        return "\(days) day\(days == 1 ? "" : "s") ago"
     }
 
     // MARK: Passenger chip (ride-request.jsx:1316-1328, "for someone else")
@@ -268,19 +303,27 @@ struct IncomingRequestSheet: View {
     /// formula rather than the spec's optional "just use battery directly"
     /// simplification.
     private func statsRow(_ request: RideRequestRecord) -> some View {
-        let fleetMember = request.input.fleetMember
         let dest = request.input.destination
-        let batteryAfter = max(10, fleetMember.battery - Int((dest.miles * 0.7).rounded()))
+        // MYR-264 — the wire carries no per-request battery, so the BATTERY AFTER
+        // cell (and its divider) is dropped on live rather than asserting a fixture
+        // battery; DISTANCE/DRIVE TIME are real (filled by `TripEstimate`, MYR-219).
+        let batteryAfter = display(for: request).batteryAfter
         return HStack(spacing: 16) {
             statCell(label: "DISTANCE", value: "\(String(format: "%.1f", dest.miles)) mi")
-            Rectangle().fill(Color.mrtBorder).frame(width: MRTMetrics.hairline, height: 22)
+            statDivider
             statCell(label: "DRIVE TIME", value: "~\(dest.minutes) min")
-            Rectangle().fill(Color.mrtBorder).frame(width: MRTMetrics.hairline, height: 22)
-            statCell(label: "BATTERY AFTER", value: "\(batteryAfter)%")
+            if let batteryAfter {
+                statDivider
+                statCell(label: "BATTERY AFTER", value: "\(batteryAfter)%")
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
+    }
+
+    private var statDivider: some View {
+        Rectangle().fill(Color.mrtBorder).frame(width: MRTMetrics.hairline, height: 22)
     }
 
     private func statCell(label: String, value: String) -> some View {
@@ -298,22 +341,41 @@ struct IncomingRequestSheet: View {
 
     // MARK: Status row (ride-request.jsx:1360-1378)
 
+    /// Whether the status row has anything honest to show: a scheduled request
+    /// always shows its real reservation line; a live-now request shows only when
+    /// its vehicle resolved from the loaded fleet (MYR-264).
+    private func showsStatusRow(for request: RideRequestRecord) -> Bool {
+        isScheduled(request) || display(for: request).vehicleName != nil
+    }
+
     private func statusRow(_ request: RideRequestRecord) -> some View {
         let scheduled = isScheduled(request)
-        let fleetMember = request.input.fleetMember
+        let display = display(for: request)
         return HStack(spacing: 8) {
             if let schedule = request.input.schedule {
                 Image(systemName: "calendar").font(.system(size: 13)).foregroundStyle(Color.mrtGold)
-                Text(fleetMember.name).font(.system(size: 12, weight: .medium)).foregroundStyle(Color.mrtText)
-                Text("reserved for \(schedule.day) \(schedule.time)")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.mrtTextSec)
-            } else {
-                Circle().fill(Color.mrtParked).frame(width: 6, height: 6)
-                Text(fleetMember.name).font(.system(size: 12, weight: .medium)).foregroundStyle(Color.mrtText)
-                Text("is parked \u{00B7} ready to dispatch")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.mrtTextSec)
+                if let name = display.vehicleName {
+                    Text(name).font(.system(size: 12, weight: .medium)).foregroundStyle(Color.mrtText)
+                    Text("reserved for \(schedule.day) \(schedule.time)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.mrtTextSec)
+                } else {
+                    // Live, no fleet join — the reservation is real, the vehicle name isn't known.
+                    Text("Reserved for \(schedule.day) \(schedule.time)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.mrtTextSec)
+                }
+            } else if let name = display.vehicleName {
+                // MYR-264 — assert "parked · ready" only when the status is actually
+                // known (sim fixtures); live shows the real vehicle name with a
+                // neutral dot and NO unverified readiness claim.
+                Circle().fill(display.showsReadyStatus ? Color.mrtParked : Color.mrtTextMuted).frame(width: 6, height: 6)
+                Text(name).font(.system(size: 12, weight: .medium)).foregroundStyle(Color.mrtText)
+                if display.showsReadyStatus {
+                    Text("is parked \u{00B7} ready to dispatch")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.mrtTextSec)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -372,7 +434,7 @@ struct IncomingRequestSheet: View {
         HStack(spacing: 10) {
             ProgressView()
                 .tint(Color.mrtGoldButtonLabel)
-            Text(isScheduled(request) ? "Confirming\u{2026}" : "Sending to \(request.input.fleetMember.name)\u{2026}")
+            Text(sendingLabel(request))
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Color.mrtGoldButtonLabel)
         }
@@ -397,11 +459,19 @@ struct IncomingRequestSheet: View {
         )
     }
 
+    private func sendingLabel(_ request: RideRequestRecord) -> String {
+        if isScheduled(request) { return "Confirming\u{2026}" }
+        // MYR-264 — name the real joined vehicle when known, else a neutral verb.
+        if let name = display(for: request).vehicleName { return "Sending to \(name)\u{2026}" }
+        return "Sending\u{2026}"
+    }
+
     private func sentLabel(_ request: RideRequestRecord) -> String {
         if let schedule = request.input.schedule {
             return "Reserved for \(schedule.day) \(schedule.time)"
         }
-        return "Destination sent to \(request.input.fleetMember.name)"
+        if let name = display(for: request).vehicleName { return "Destination sent to \(name)" }
+        return "Destination sent"
     }
 
     // MARK: Helper line (ride-request.jsx:1409-1417)
@@ -416,15 +486,20 @@ struct IncomingRequestSheet: View {
     }
 
     private func helperCopy(_ request: RideRequestRecord) -> String {
-        let fleetMember = request.input.fleetMember
+        // MYR-264 — reference the real joined vehicle name when known; on live with
+        // no fleet join, drop the name rather than assert the fixture "Model Y".
+        let vehicleName = display(for: request).vehicleName
+        let destination = request.input.destination.label
         if let passenger = request.input.passenger, !passenger.phone.isEmpty {
-            let routeSuffix = isScheduled(request) ? "" : " and routes \(fleetMember.name)"
+            let routeSuffix = (isScheduled(request) || vehicleName == nil) ? "" : " and routes \(vehicleName!)"
             return "Accepting texts \(passenger.firstName) a live tracking link\(routeSuffix)."
         }
         if let schedule = request.input.schedule {
-            return "\(fleetMember.name) will be reserved for \(schedule.day) \(schedule.time)."
+            if let name = vehicleName { return "\(name) will be reserved for \(schedule.day) \(schedule.time)." }
+            return "Reserved for \(schedule.day) \(schedule.time)."
         }
-        return "Accepting will route \(fleetMember.name) to \(request.input.destination.label)."
+        if let name = vehicleName { return "Accepting will route \(name) to \(destination)." }
+        return "Accepting will dispatch to \(destination)."
     }
 
     // MARK: Choreography (ride-request.jsx:1276-1280)
