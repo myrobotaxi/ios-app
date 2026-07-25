@@ -19,9 +19,10 @@ final class VehicleContractMappingTests: XCTestCase {
         XCTAssertEqual(VehicleContractMapping.badgeStatus(from: VehicleState.Status.offline), .offline)
     }
 
-    func testBadgeStatusInServiceFallsBackToNeutralParked() {
-        // No shipped in-service badge — the calm stationary fallback.
-        XCTAssertEqual(VehicleContractMapping.badgeStatus(from: VehicleState.Status.inService), .parked)
+    func testBadgeStatusInServiceSurfacesOwnBadge() {
+        // MYR-259 — in-service now has its own badge (backend reliably reports
+        // and clears the status), no longer collapsed to the parked fallback.
+        XCTAssertEqual(VehicleContractMapping.badgeStatus(from: VehicleState.Status.inService), .inService)
     }
 
     func testBadgeStatusUnrecognizedFallsBackToNeutralOffline() {
@@ -35,7 +36,7 @@ final class VehicleContractMappingTests: XCTestCase {
     func testSummaryBadgeStatusMatchesStateMapping() {
         XCTAssertEqual(VehicleContractMapping.badgeStatus(from: VehicleSummary.Status.offline), .offline)
         XCTAssertEqual(VehicleContractMapping.badgeStatus(from: VehicleSummary.Status.charging), .charging)
-        XCTAssertEqual(VehicleContractMapping.badgeStatus(from: VehicleSummary.Status.inService), .parked)
+        XCTAssertEqual(VehicleContractMapping.badgeStatus(from: VehicleSummary.Status.inService), .inService)
         XCTAssertEqual(
             VehicleContractMapping.badgeStatus(from: VehicleSummary.Status.unrecognized("x")),
             .offline
@@ -83,6 +84,16 @@ final class VehicleContractMappingTests: XCTestCase {
         let state = Contracts.parkedState(status: .offline)
         XCTAssertEqual(VehicleContractMapping.snapshot(from: state).status, .parked)
         XCTAssertEqual(VehicleContractMapping.badgeStatus(from: state.status), .offline)
+    }
+
+    func testInServiceStateMapsToParkedSnapshotButInServiceBadge() {
+        // MYR-259 — the half-state contract: the badge distinguishes
+        // "In Service" while the hero/motion stays the stationary (parked)
+        // layout. If `isDriving` ever treats in_service as driving, this fails
+        // even though the isolated badge-mapping tests still pass.
+        let state = Contracts.parkedState(status: .inService)
+        XCTAssertEqual(VehicleContractMapping.snapshot(from: state).status, .parked)
+        XCTAssertEqual(VehicleContractMapping.badgeStatus(from: state.status), .inService)
     }
 
     func testSnapshotClampsOutOfRangeChargeAndSpeed() {

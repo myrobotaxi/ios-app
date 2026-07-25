@@ -27,16 +27,17 @@ enum VehicleContractMapping {
     // MARK: Status → design badge
 
     /// Fold the full-snapshot `VehicleState.Status` onto the design's badge set.
-    /// `inService` has no shipped badge, so it takes the calm stationary
-    /// `parked` fallback; `unrecognized` (a newer-contracts wire value) takes the
-    /// neutral `offline` fallback rather than guessing a live state.
+    /// `inService` now surfaces its own `inService` badge (MYR-259 — the backend
+    /// reliably reports and clears this status); `unrecognized` (a newer-contracts
+    /// wire value) takes the neutral `offline` fallback rather than guessing a
+    /// live state.
     static func badgeStatus(from wire: VehicleState.Status) -> MRTVehicleStatus {
         switch wire {
         case .driving: return .driving
         case .parked: return .parked
         case .charging: return .charging
         case .offline: return .offline
-        case .inService: return .parked          // no in-service badge — neutral stationary
+        case .inService: return .inService        // MYR-259 — own badge
         case .unrecognized: return .offline       // forward-compat wire value — neutral
         }
     }
@@ -48,7 +49,7 @@ enum VehicleContractMapping {
         case .parked: return .parked
         case .charging: return .charging
         case .offline: return .offline
-        case .inService: return .parked
+        case .inService: return .inService        // MYR-259 — own badge
         case .unrecognized: return .offline
         }
     }
