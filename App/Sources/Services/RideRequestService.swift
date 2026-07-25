@@ -173,13 +173,20 @@ public struct RideRequestInput: Sendable, Equatable {
     public var fleetMemberID: String
     public var passenger: RidePassenger?
     public var schedule: RideSchedule?
+    /// MYR-264 — the REAL rider display name carried off the wire record
+    /// (`RideRequest.requesterName`), so the owner's `IncomingRequestSheet` shows
+    /// "<Name> wants a ride". `nil` on the SIM/fixture path (the sheet then uses
+    /// its fixture "Sam" persona) and `nil`/absent for a live request whose backend
+    /// omitted a name (→ a neutral honest role label). NEVER a fabricated persona.
+    public var requesterName: String?
 
-    public init(pickup: RidePlace, destination: RidePlace, fleetMemberID: String, passenger: RidePassenger? = nil, schedule: RideSchedule? = nil) {
+    public init(pickup: RidePlace, destination: RidePlace, fleetMemberID: String, passenger: RidePassenger? = nil, schedule: RideSchedule? = nil, requesterName: String? = nil) {
         self.pickup = pickup
         self.destination = destination
         self.fleetMemberID = fleetMemberID
         self.passenger = passenger
         self.schedule = schedule
+        self.requesterName = requesterName
     }
 
     public var fleetMember: FleetMember {

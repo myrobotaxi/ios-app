@@ -52,10 +52,18 @@ extension TelemetrySocket: RideEventStreaming {}
 //
 //  • Fleet-member identity: the wire record carries only `vehicleId`, not the
 //    rich `FleetMember` card fields (owner name, colorName, battery, plate) the
-//    fixture picker supplies. Until a live fleet-picker join lands (needs the
-//    MYR-91 shared-viewer access set + a live Review picker — out of scope here),
-//    a live record reuses `RideRequestFixtures.fleet[0]` for those display-only
-//    fields. Names/plates in a live capture are therefore fixture stand-ins.
+//    fixture picker supplies. MYR-264 — the real `vehicleId` is now PRESERVED as
+//    the record's `fleetMemberID` (it was being overwritten with the fixture
+//    `fleet[0].id`, which leaked "Model Y"/"Alex" onto the LIVE owner sheet). The
+//    owner incoming surface JOINs that id to the real loaded fleet for the true
+//    vehicle name; the rider surfaces use `SharedViewerState.liveFleetMember`
+//    (MYR-212). `RideRequestInput.fleetMember` still resolves the id against the
+//    fixtures, but that fallback is consulted on the SIM path only — a live id
+//    matches no fixture, and every live fleet-member field renders off the real
+//    join instead (MYR-228: no fixtures on the live path).
+//  • Rider identity: MYR-264 preserves the wire `requesterName` onto the record so
+//    the owner sheet shows the REAL rider ("<Name> wants a ride"), falling back to
+//    a neutral role label only when the wire carried no name.
 //  • Distance / duration: the wire `RidePlace` has no miles/minutes (those are a
 //    routing concern, MYR-176/177). `place(_:)` maps them to 0; `record(from:)`
 //    then fills the DESTINATION's estimate client-side from the pickup→dropoff
@@ -125,9 +133,14 @@ enum RideRequestContractMapping {
             // fixture/sim records (built with baked miles/minutes and never routed
             // through this mapping) are untouched.
             destination: TripEstimate.applied(to: place(ride.dropoff), pickup: pickup.coordinate),
-            fleetMemberID: RideRequestFixtures.fleet[0].id, // display-only fallback — see enum header
+            // MYR-264: preserve the REAL vehicle id (was `fleet[0].id`) so the owner
+            // sheet can join it to the real fleet for the true vehicle name.
+            fleetMemberID: ride.vehicleId,
             passenger: passenger(ride),
-            schedule: schedule(from: ride.scheduledFor)
+            schedule: schedule(from: ride.scheduledFor),
+            // MYR-264: carry the REAL rider name through so the owner sheet shows
+            // "<Name> wants a ride" (neutral fallback when the wire omits it).
+            requesterName: ride.requesterName
         )
         var record = RideRequestRecord(
             id: ride.id,

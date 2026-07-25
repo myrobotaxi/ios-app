@@ -34,6 +34,12 @@ struct VehicleControls: View {
     /// render pixel-identically.
     let lastUpdated: Date?
     let isStreaming: Bool?
+    /// MYR-264 — the ONE resolved live flag. The now-playing media metadata
+    /// (title/artist/cover) is a pure fixture (`VehicleMediaTrack`, not on the
+    /// `VehicleState` contract), so it is honest-hidden on live; the transport +
+    /// volume controls route REAL commands (MYR-249/251) and stay. `false` in SIM
+    /// keeps the media section pixel-identical.
+    var isLive: Bool = false
 
     private var controls: VehicleControlsSnapshot { executor.controls }
 
@@ -56,7 +62,9 @@ struct VehicleControls: View {
             MediaSection(
                 controls: controls,
                 executor: executor,
-                track: VehicleMediaTrack.all[controls.trackIndex]
+                // MYR-264 — no fixture track on the live path (media metadata isn't
+                // contracted → honest-hidden); SIM passes the fixture unchanged.
+                track: isLive ? nil : VehicleMediaTrack.all[controls.trackIndex]
             )
 
             // vehicle-controls.jsx:385 `{!driving && …}` — while driving, live

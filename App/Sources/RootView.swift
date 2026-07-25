@@ -491,7 +491,11 @@ struct RootView: View {
                         homeState: ownerHomeState,
                         ownerTab: $ownerTab,
                         rideRequestService: rideRequestService,
-                        drivesState: ownerDrivesState
+                        drivesState: ownerDrivesState,
+                        // MYR-264 — the ONE resolved live flag gates the incoming
+                        // request sheet's rider/vehicle identity + the media block
+                        // (fixtures render only in SIM / DEBUG scenes).
+                        isLive: isLiveMode
                     )
                 }
             case .sharedHome:
