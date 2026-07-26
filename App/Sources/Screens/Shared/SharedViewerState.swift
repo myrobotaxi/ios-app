@@ -212,6 +212,14 @@ public final class SharedViewerState {
         placeSearch.update(query: query, regionCenter: mapRegionCenter)
     }
 
+    /// MYR-278 — the rider tapped a "Search Nearby" category row: run a real
+    /// nearby POI search for that category (region-biased to the rider) whose
+    /// results replace the list. The row is NOT a destination — it has no single
+    /// coordinate — so this never touches `draftDestination`.
+    public func runNearbySearch(_ place: RidePlace) {
+        placeSearch.runNearbySearch(category: place.label, regionCenter: mapRegionCenter)
+    }
+
     /// Select a destination and advance the flow (MYR-171 / MYR-211 defect B).
     /// If a pickup is already set, straight to Review; otherwise route through
     /// the pin-drop step so the rider confirms their exact pickup spot on the
@@ -220,6 +228,11 @@ public final class SharedViewerState {
     /// "Current location" is the pin's STARTING point, never a bypass. Sim is
     /// unchanged (no fix ⇒ pin-drop over the fixture region, as before).
     public func selectDestination(_ place: RidePlace) {
+        // MYR-278 — a "Search Nearby" category row is not a place (it has no
+        // single coordinate); it must never become a destination via any path
+        // (it would produce a 0.0mi trip / arbitrary point). The search UI runs
+        // a nearby search on tap instead; this is belt-and-suspenders.
+        guard !RidePlaceMapper.isCategorySearch(place) else { return }
         draftDestination = place
         capturePreviewPickupAnchor()
         resolveDraftDestinationIfNeeded()
@@ -248,6 +261,10 @@ public final class SharedViewerState {
     /// Enter a destination on the search sheet WITHOUT advancing — the rider
     /// stays on `.search` to set chips before proceeding (deliverable 3).
     public func chooseDestination(_ place: RidePlace) {
+        // MYR-278 — never let a "Search Nearby" category row become the chosen
+        // destination (see `selectDestination`); the UI routes it to a nearby
+        // search instead.
+        guard !RidePlaceMapper.isCategorySearch(place) else { return }
         draftDestination = place
         capturePreviewPickupAnchor()
         resolveDraftDestinationIfNeeded()

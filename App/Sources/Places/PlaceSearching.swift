@@ -31,6 +31,14 @@ protocol PlaceSearching: AnyObject, Observable {
     /// by `SharedViewerState.mapRegionCenter`). The simulated backend resolves
     /// synchronously; the live backend debounces + queries asynchronously.
     func update(query: String, regionCenter: CLLocationCoordinate2D)
+
+    /// MYR-278 — run an actual nearby POI search for a category term (e.g.
+    /// "Coffee", "Restaurants") around `regionCenter`, replacing `results` with
+    /// the matching places. Invoked when the rider taps a "Search Nearby"
+    /// category row (a MapKit query-type completion, which has NO single
+    /// coordinate) instead of selecting it as a destination. `[]` → honest "No
+    /// results"; each returned place is a real, selectable destination.
+    func runNearbySearch(category: String, regionCenter: CLLocationCoordinate2D)
 }
 
 // MARK: - Simulated backend (byte-identical to the pre-MYR-211 inline filter)
@@ -51,6 +59,15 @@ final class SimulatedPlaceSearch: PlaceSearching {
             $0.label.lowercased().contains(q) || ($0.subtitle?.lowercased().contains(q) ?? false)
         }
     }
+
+    /// MYR-278 — sim never produces "Search Nearby" category rows (the fixture
+    /// filter only returns concrete places), so this is defensive: reuse the
+    /// same fixture filter so a simulated category tap degrades to a normal
+    /// (fixture) result set rather than doing nothing. Keeps sim behavior
+    /// self-consistent and pixel-identical (no category rows ever appear).
+    func runNearbySearch(category: String, regionCenter: CLLocationCoordinate2D) {
+        update(query: category, regionCenter: regionCenter)
+    }
 }
 
 // MARK: - RidePlace mapping (pure — MYR-211 deliverable 5)
@@ -60,6 +77,92 @@ final class SimulatedPlaceSearch: PlaceSearching {
 // straight-line distance are unit-testable with hand-built values and no
 // network / no completer.
 enum RidePlaceMapper {
+
+    // MARK: MYR-278 — "Search Nearby" category rows
+    //
+    // `MKLocalSearchCompleter` returns QUERY-type completions for category-ish
+    // fragments ("coffee", "food", "gas") — MapKit labels these with the literal
+    // subtitle "Search Nearby". A query completion has NO single coordinate; it
+    // stands for a whole CATEGORY. The pre-278 pipeline resolved each one through
+    // `MKLocalSearch` to its FIRST map item and let the rider "select" it as a
+    // destination — so tapping "Coffee" silently picked one arbitrary coffee shop
+    // (or, when resolution lost to Apple's throttle, an `unresolvedPlace` whose
+    // coordinate is the rider's OWN location → a 0.0mi pickup→pickup break). The
+    // client's report: "Search Nearby doesn't work — it just selects it as a
+    // destination and breaks."
+    //
+    // Fix: recognize these completions, render them as a distinct category-search
+    // row, and — on tap — run a real nearby `MKLocalSearch` for the category
+    // whose POIs the rider then selects (see `LivePlaceSearch.runNearbySearch`).
+
+    /// MapKit's literal subtitle on a category / multi-result query completion.
+    static let nearbySearchSubtitle = "Search Nearby"
+
+    /// True when an autocomplete suggestion is a category query completion (no
+    /// single coordinate) rather than a concrete place — detected by MapKit's
+    /// "Search Nearby" subtitle marker.
+    ///
+    /// KNOWN LIMITATION (locale) — `MKLocalSearchCompletion` exposes no public
+    /// `isQuery`/result-type flag, so the only available signal is the subtitle
+    /// string, and MapKit LOCALIZES it to the device region. This match is the
+    /// English "Search Nearby"; on a non-English device a category completion's
+    /// subtitle is translated, so detection returns false and the completion
+    /// falls through to coordinate resolution (an arbitrary single place — the
+    /// milder, non-crashing form of the original bug; `selectDestination` /
+    /// `chooseDestination` still block the 0.0mi break). Needs a follow-up
+    /// (locale-robust query-completion detection, e.g. a curated per-locale
+    /// marker table or a structural signal if Apple ever exposes one).
+    static func isCategoryCompletion(title: String, subtitle: String?) -> Bool {
+        guard !title.isEmpty, let subtitle else { return false }
+        return subtitle.trimmingCharacters(in: .whitespaces)
+            .caseInsensitiveCompare(nearbySearchSubtitle) == .orderedSame
+    }
+
+    /// A category-search row — tapping it runs a real nearby POI search instead
+    /// of selecting it as a destination. Its "coordinate" is the region center
+    /// as an inert placeholder (it is NEVER geocoded / routed — the UI branches
+    /// on `isCategorySearch` before any select path). Distance hidden (miles 0).
+    static func categorySearchPlace(title: String, regionCenter: CLLocationCoordinate2D) -> RidePlace {
+        RidePlace(
+            id: "live-category|\(title)",
+            label: title,
+            subtitle: nearbySearchSubtitle,
+            miles: 0,
+            minutes: 0,
+            icon: "magnifyingglass",
+            coordinate: regionCenter
+        )
+    }
+
+    /// Whether a place is a "Search Nearby" category row (see `categorySearchPlace`).
+    /// The search UI runs a nearby POI search on tap rather than a destination select.
+    static func isCategorySearch(_ place: RidePlace) -> Bool {
+        place.id.hasPrefix("live-category|")
+    }
+
+    /// A concise subtitle for a POI returned by a nearby `MKLocalSearch` (which
+    /// resolves items directly, so there's no completer subtitle to carry) —
+    /// street · locality, or nil when the placemark has neither.
+    static func nearbyAddressSubtitle(_ placemark: MKPlacemark) -> String? {
+        let parts = [placemark.thoroughfare, placemark.locality].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
+    }
+
+    /// Map a POI from a nearby `MKLocalSearch` (MYR-278) to a `RidePlace` — a
+    /// real, selectable destination (real coordinate + category icon), titled by
+    /// the item's own name (falling back to the category term).
+    static func nearbyRidePlace(
+        from item: MKMapItem,
+        fallbackTitle: String,
+        regionCenter: CLLocationCoordinate2D
+    ) -> RidePlace {
+        ridePlace(
+            from: item,
+            title: item.name ?? fallbackTitle,
+            subtitle: nearbyAddressSubtitle(item.placemark),
+            regionCenter: regionCenter
+        )
+    }
 
     /// Straight-line distance in miles between two coordinates (v1 accepts this
     /// in place of a per-result `MKDirections` route — see MYR-211 brief).
