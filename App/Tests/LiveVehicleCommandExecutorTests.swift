@@ -228,15 +228,117 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         let sender = ScriptedCommandSender()
         let exec = makeExecutor(sender)
 
-        // climate mode + fan speed have no §7.9 command; scrub has no seek command.
-        try? await exec.setClimateMode(.cool)
+        // fan speed has no §7.9 command; scrub has no seek command.
         try? await exec.setFanSpeed(7)
         exec.setScrubPercent(55)
 
-        XCTAssertEqual(exec.controls.climateMode, .cool)
         XCTAssertEqual(exec.controls.fanSpeed, 7)
         XCTAssertEqual(exec.controls.scrubPercent, 55)
         XCTAssertTrue(sender.calls.isEmpty, "no §7.9 command exists for these controls")
+    }
+
+    // MARK: - MYR-274 — climate Auto/Cool/Heat: Auto real, Cool/Heat reflect state
+
+    /// Tapping Auto sends the real `auto_conditioning_start`, optimistically shows
+    /// Auto on ack, and marks the mode field known.
+    func testClimateAutoSendsAutoConditioningStartAndBecomesKnown() async {
+        let sender = ScriptedCommandSender()
+        let exec = makeExecutor(sender)
+
+        try? await exec.setClimateMode(.auto)
+
+        XCTAssertEqual(sender.calls, [.autoConditioningStart], "Auto sends the real auto-conditioning command")
+        XCTAssertEqual(exec.controls.climateMode, .auto, "optimistic Auto applied on ack")
+        XCTAssertTrue(exec.isKnown(.climateMode), "Auto command confirms the mode field")
+        XCTAssertEqual(exec.uiState(for: .climate), .idle)
+    }
+
+    /// Cool/Heat have NO Tesla set-mode command — a tap must send NOTHING and mutate
+    /// NOTHING (honest display-only). The mode also stays unknown (no command, no
+    /// reconcile), so the segment lights nothing rather than a fabricated Cool/Heat.
+    func testClimateCoolAndHeatSendNothingAndStayUnknown() async {
+        for mode in [VehicleClimateMode.cool, .heat] {
+            let sender = ScriptedCommandSender()
+            let exec = makeExecutor(sender)
+
+            try? await exec.setClimateMode(mode)
+
+            XCTAssertTrue(sender.calls.isEmpty, "\(mode) is non-commanding — no §7.9 command exists")
+            XCTAssertFalse(exec.isKnown(.climateMode), "\(mode) tap must not fabricate a known mode")
+        }
+    }
+
+    /// Honest-unknown: the mode field is unknown before any reconcile or command,
+    /// so the segment shows nothing lit rather than the seeded `.auto`.
+    func testClimateModeUnknownBeforeAnyReconcileOrCommand() {
+        let exec = makeExecutor(ScriptedCommandSender())
+        XCTAssertFalse(exec.isKnown(.climateMode), "mode honest-unknown until reconciled or Auto commanded")
+    }
+
+    /// Reconcile folds the car's real mode honestly: On → Auto (known); Override +
+    /// AC → Cool; Override + no AC → Heat; an absent mode stays unknown.
+    func testClimateModeReconcileFoldsRealModeAndAbsentStaysUnknown() {
+        // On → Auto
+        let onExec = makeExecutor(ScriptedCommandSender())
+        var on = Contracts.parkedState(); on.hvacAutoMode = .on
+        onExec.reconcile(from: on)
+        XCTAssertTrue(onExec.isKnown(.climateMode)); XCTAssertEqual(onExec.controls.climateMode, .auto)
+
+        // Override + AC on → Cool
+        let coolExec = makeExecutor(ScriptedCommandSender())
+        var cool = Contracts.parkedState(); cool.hvacAutoMode = .override; cool.hvacAcEnabled = true
+        coolExec.reconcile(from: cool)
+        XCTAssertTrue(coolExec.isKnown(.climateMode)); XCTAssertEqual(coolExec.controls.climateMode, .cool)
+
+        // Override + AC off → Heat
+        let heatExec = makeExecutor(ScriptedCommandSender())
+        var heat = Contracts.parkedState(); heat.hvacAutoMode = .override; heat.hvacAcEnabled = false
+        heatExec.reconcile(from: heat)
+        XCTAssertTrue(heatExec.isKnown(.climateMode)); XCTAssertEqual(heatExec.controls.climateMode, .heat)
+
+        // Absent → stays unknown (never fabricated)
+        let absentExec = makeExecutor(ScriptedCommandSender())
+        absentExec.reconcile(from: Contracts.parkedState())
+        XCTAssertFalse(absentExec.isKnown(.climateMode), "absent mode stays honestly unknown")
+    }
+
+    /// Settle window: after Auto acks, a STALE `Override` frame that still reports
+    /// manual must NOT flip the segment off Auto — until the car confirms On or the
+    /// window lapses (the MYR-272 clobber fix, extended to the mode segment).
+    func testClimateAutoSurvivesStaleOverrideFrameThenConfirms() async {
+        let exec = makeExecutor(ScriptedCommandSender())
+        try? await exec.setClimateMode(.auto)
+        XCTAssertEqual(exec.controls.climateMode, .auto, "optimistic Auto applied on ack")
+
+        // The car keeps streaming a manual Override right after the ack.
+        var stale = Contracts.parkedState(); stale.hvacAutoMode = .override; stale.hvacAcEnabled = true
+        exec.reconcile(from: stale)
+        XCTAssertEqual(exec.controls.climateMode, .auto, "stale Override ignored within the settle window")
+
+        // The car finally reflects On — confirmation clears the hold.
+        var confirm = Contracts.parkedState(); confirm.hvacAutoMode = .on
+        exec.reconcile(from: confirm)
+        XCTAssertEqual(exec.controls.climateMode, .auto)
+
+        // Hold cleared → a later GENUINE external switch to manual is honored.
+        exec.reconcile(from: stale)
+        XCTAssertEqual(exec.controls.climateMode, .cool, "after confirmation the live stream drives the segment")
+    }
+
+    /// Honest revert: if the car NEVER confirms Auto, after the settle window lapses
+    /// the live stream's (contradicting) mode wins — the app doesn't lie forever.
+    func testClimateModeRevertsToRealityAfterSettleWindow() async {
+        let exec = makeExecutor(ScriptedCommandSender(), settleWindow: 0.05)
+        try? await exec.setClimateMode(.auto)
+        XCTAssertEqual(exec.controls.climateMode, .auto)
+
+        var override = Contracts.parkedState(); override.hvacAutoMode = .override; override.hvacAcEnabled = false
+        exec.reconcile(from: override)
+        XCTAssertEqual(exec.controls.climateMode, .auto, "held within the window")
+
+        try? await Task.sleep(for: .milliseconds(80))
+        exec.reconcile(from: override)
+        XCTAssertEqual(exec.controls.climateMode, .heat, "after the window, the car's reported mode wins (honest)")
     }
 
     // MARK: seat cooler — cool mode routes to remote_seat_cooler_request (1–4 scale)

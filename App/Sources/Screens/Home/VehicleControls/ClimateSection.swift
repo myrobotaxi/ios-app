@@ -171,19 +171,39 @@ struct ClimateSection: View {
         .buttonStyle(.plain)
     }
 
+    /// MYR-274 — the segment only lights a mode once the car's real mode is known
+    /// (reconciled or the owner commanded Auto); until then nothing is lit (honest
+    /// unknown), never the seeded `.auto`.
+    private var climateModeKnown: Bool { executor.isKnown(.climateMode) }
+
+    // MYR-274 — "Auto real, Cool/Heat reflect state". Only Auto is an actionable
+    // control (a tap sends the real `auto_conditioning_start`); Cool and Heat are
+    // honest DISPLAY-ONLY reflections of the car's reported mode — Tesla has no
+    // command to force them, so they are non-commanding indicators, not buttons.
+    @ViewBuilder
     private func modeSeg(_ mode: VehicleClimateMode, _ label: String) -> some View {
-        let isActive = controls.climateMode == mode
-        return Button {
-            Task { try? await executor.setClimateMode(mode) }
-        } label: {
-            Text(label)
-                .font(.system(size: 12.5, weight: .semibold))
-                .foregroundStyle(isActive ? Color.mrtGoldButtonLabel : .mrtTextSec)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 7)
-                .background(isActive ? Color.mrtGold : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        let isActive = climateModeKnown && controls.climateMode == mode
+        if mode == .auto {
+            Button {
+                Task { try? await executor.setClimateMode(.auto) }
+            } label: {
+                segLabel(label, isActive: isActive)
+            }
+            .buttonStyle(.plain)
+        } else {
+            // Non-commanding state indicator (no Button → no tap action, no button
+            // trait): it lights only when the car actually reports this mode.
+            segLabel(label, isActive: isActive)
         }
-        .buttonStyle(.plain)
+    }
+
+    private func segLabel(_ label: String, isActive: Bool) -> some View {
+        Text(label)
+            .font(.system(size: 12.5, weight: .semibold))
+            .foregroundStyle(isActive ? Color.mrtGoldButtonLabel : .mrtTextSec)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 7)
+            .background(isActive ? Color.mrtGold : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     // MARK: Off (vehicle-controls.jsx:310-343)
