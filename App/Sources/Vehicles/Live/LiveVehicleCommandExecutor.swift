@@ -260,8 +260,10 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     }
 
     /// Reconcile one seat from its heater + cooler read-back levels (both 0–3 on the
-    /// wire, matching the UI's level scale). Active cooling wins the mode; otherwise
-    /// the heater level (0 = off) shows in heat mode. Absent on both → stays unknown.
+    /// wire, matching the UI's level scale). Active cooling (cooler > 0) wins the
+    /// mode; else active heating (heater > 0) → heat; else the seat is OFF and the
+    /// wire is mode-ambiguous, so the seat's current/armed mode is PRESERVED (never
+    /// forced to heat — MYR-280). Absent on both → stays unknown.
     private func reconcileSeat(_ seat: VehicleSeatPosition, key: VehicleControlKey, heater: Int?, cooler: Int?) {
         guard heater != nil || cooler != nil else { return }
         if uiState(for: key).isPending { return } // command still in flight
@@ -270,12 +272,20 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         if let cooler, cooler > 0 {
             mode = .cool
             level = min(3, max(0, cooler))
-        } else if let heater {
+        } else if let heater, heater > 0 {
             mode = .heat
             level = min(3, max(0, heater))
         } else {
-            // Only a cooler field, reading 0 → cool armed, off.
-            mode = .cool
+            // Seat is OFF (no active heat or cool on the wire). An off seat streams
+            // heater=0/cooler=0 IDENTICALLY whether the owner armed it to Heat or
+            // Cool — the wire cannot distinguish the two. Defaulting to .heat here
+            // silently reverted a seat the owner had just switched to Cool-but-off
+            // back to Heat once the settle window lapsed (the MYR-280 "impossible to
+            // toggle heated↔cooled" complaint, for the off state). Preserve the
+            // seat's current/armed mode instead; a genuine actuation (level > 0)
+            // still wins the mode in the branches above. This also lets an all-zero
+            // frame CONFIRM a `(.cool, 0)` settle hold instead of disagreeing with it.
+            mode = seat == .driver ? controls.driverSeatMode : controls.passengerSeatMode
             level = 0
         }
         // Post-ack settle window (MYR-280): ignore a streamed seat state that
