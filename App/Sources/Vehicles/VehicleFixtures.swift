@@ -41,13 +41,15 @@ public struct Vehicle: Identifiable, Equatable, Sendable {
     public let seatHeat: Bool
     public let seatVent: Bool
     public let activity: VehicleActivity
-    /// Full 17-char VIN. NOT on the `VehicleState`/`VehicleSummary` contract (only
-    /// `vinLast4`), so this is fixture-only — `nil` on the live path → the detail
-    /// row reads honest-unknown (MYR-255). The switcher/plate row still shows the
-    /// real `VIN ····last4` from the summary.
+    /// Full 17-char VIN. Now on the `VehicleState` snapshot (owner-masked,
+    /// telemetry PR #325 / contracts v0.13.0 — MYR-279), mapped onto the live
+    /// `Vehicle`; `nil` before the first snapshot → the detail row reads
+    /// honest-unknown. The switcher/plate row shows the `VIN ····last4` from the
+    /// summary. The fixture supplies a value so the SIMULATED sheet is unchanged.
     public let vin: String?
-    /// Tesla software/firmware version. Not contracted → fixture-only; `nil` live
-    /// → honest-unknown (MYR-255 gap list).
+    /// Tesla software/firmware version. Now on the `VehicleState` snapshot
+    /// (contracts v0.13.0 — MYR-279); `nil` before the first snapshot →
+    /// honest-unknown. Fixture supplies a value for the SIMULATED path.
     public let softwareVersion: String?
     /// Per-wheel tire pressures. Not contracted → fixture-only; `nil` live →
     /// honest-unknown (MYR-255 gap list).
