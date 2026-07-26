@@ -124,6 +124,16 @@ final class LivePlaceSearch: PlaceSearching {
     @ObservationIgnored private let resolveItem: ItemResolver
     @ObservationIgnored private let resolveNearby: NearbyResolver
     @ObservationIgnored private var nearbyTask: Task<Void, Never>?
+    /// MYR-278 (live-regression fix) — the category term of the ACTIVE nearby
+    /// search, or nil in normal autocomplete mode. On the live path the device
+    /// streams ~1Hz fixes; each fix re-runs the active query with a new center
+    /// (`SharedViewerState.mapRegionCenterKey` onChange). Without this, that
+    /// re-run went through `update` → re-resolved the last autocomplete batch →
+    /// republished the "Search Nearby" category ROW over the tapped POIs (the
+    /// results survived ~250ms then flipped back on any moving device). While a
+    /// category is active, a same-category `update` (a re-bias) is a no-op that
+    /// keeps the POIs; a DIFFERENT query (the rider typed) exits nearby mode.
+    @ObservationIgnored private var activeNearbyCategory: String?
     /// The saved places ranked ahead of live suggestions. EMPTY on the live
     /// composition path (MYR-214) so fixture SF places never poison a live
     /// destination search; real saved places populate this with accounts
@@ -181,6 +191,16 @@ final class LivePlaceSearch: PlaceSearching {
 
     func update(query: String, regionCenter: CLLocationCoordinate2D) {
         self.regionCenter = regionCenter
+        // MYR-278 (live-regression fix) — a location re-bias (SAME category, new
+        // GPS fix) while a nearby-category search is active must KEEP the
+        // published POIs, never fall back to the autocomplete category-row list,
+        // and must not re-issue an `MKLocalSearch` on every 1Hz fix (throttle).
+        // The center is updated above for the next EXPLICIT search. A different
+        // query means the rider typed → fall through and exit nearby mode.
+        if let category = activeNearbyCategory, query == category {
+            return
+        }
+        activeNearbyCategory = nil
         self.query = query
         debounceTask?.cancel()
         // MYR-278 — a keystroke supersedes any in-flight nearby-category search.
@@ -225,6 +245,10 @@ final class LivePlaceSearch: PlaceSearching {
         // The category term becomes the active query so a later keystroke's
         // supersede/clear logic (and the empty-query reset) behaves normally.
         self.query = category
+        // MYR-278 (live-regression fix) — enter nearby-category mode so a
+        // subsequent same-category re-bias (a fresh GPS fix) keeps these POIs
+        // instead of resurrecting the autocomplete category-row list.
+        self.activeNearbyCategory = category
         debounceTask?.cancel()
         resolveTask?.cancel()
         nearbyTask?.cancel()
@@ -359,6 +383,12 @@ final class LivePlaceSearch: PlaceSearching {
             center: center,
             span: MKCoordinateSpan(latitudeDelta: 0.12, longitudeDelta: 0.12)
         )
+        // NOTE: a throttled/failed `MKLocalSearch` surfaces here as `[]` — the UI
+        // then shows the honest "No results" empty state, which under Apple's
+        // throttle is indistinguishable from a genuine no-match. The
+        // `activeNearbyCategory` re-bias no-op (see `update`) deliberately does
+        // NOT re-issue this search on every 1Hz fix, precisely to stay clear of
+        // that throttle; the rider can re-run by editing the query.
         let response = try? await MKLocalSearch(request: request).start()
         return response?.mapItems ?? []
     }

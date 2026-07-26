@@ -331,6 +331,61 @@ final class LivePlaceSearchTests: XCTestCase {
         XCTAssertEqual(results[0].miles, 20.7, accuracy: 3)
     }
 
+    /// LIVE REGRESSION (the blocking review find): the device streams ~1Hz
+    /// fixes; each fix re-runs the active query with a new center via
+    /// `update(query:regionCenter:)`. After a nearby-category search publishes
+    /// POIs, that re-bias must KEEP the POIs — it must NOT resurrect the
+    /// autocomplete "Search Nearby" category-row list (which flipped the tapped
+    /// results back on any moving device). A static-center isolation test can't
+    /// catch this; this one moves the center.
+    func testNearbyResultsSurviveLocationRebiasFromMovingFix() async {
+        let engine = FakeEngine()
+        let search = LivePlaceSearch(
+            engine: engine,
+            resolveItem: resolver([:]),
+            resolveNearby: nearbyResolver([
+                ("Klyde Warren Coffee", dallasDowntown),
+                ("SF Coffee", sfFernSt),
+            ]),
+            debounce: .milliseconds(1)
+        )
+        search.runNearbySearch(category: "Coffee", regionCenter: frisco)
+        await eventually { search.results?.count == 2 }
+        let before = search.results!.map(\.label)
+
+        // A fresh GPS fix re-runs the SAME active query with a moved center —
+        // exactly what `SharedViewerState.mapRegionCenterKey` onChange does.
+        let friscoMoved = CLLocationCoordinate2D(latitude: frisco.latitude + 0.002, longitude: frisco.longitude - 0.002)
+        search.update(query: "Coffee", regionCenter: friscoMoved)
+        try? await Task.sleep(nanoseconds: 40_000_000) // let any wrong autocomplete publish
+
+        // POIs intact — no category-search row resurrected, and the re-bias
+        // issued NO autocomplete engine query (throttle-safe).
+        XCTAssertEqual(search.results?.map(\.label), before)
+        XCTAssertFalse(search.results?.contains { RidePlaceMapper.isCategorySearch($0) } ?? true)
+        XCTAssertTrue(engine.updates.isEmpty, "a location re-bias must not issue an autocomplete query")
+    }
+
+    /// Typing after a nearby-category search DOES exit nearby mode (a different
+    /// query is a keystroke, not a re-bias) and resumes normal autocomplete.
+    func testTypingAfterNearbySearchExitsNearbyMode() async {
+        let engine = FakeEngine()
+        let search = LivePlaceSearch(
+            engine: engine,
+            resolveItem: resolver(["Tea House": dallasDowntown]),
+            resolveNearby: nearbyResolver([("A Coffee", dallasDowntown)]),
+            debounce: .milliseconds(1)
+        )
+        search.runNearbySearch(category: "Coffee", regionCenter: frisco)
+        await eventually { search.results?.count == 1 }
+
+        // The rider edits the field — a genuine keystroke, not a re-bias.
+        search.update(query: "tea", regionCenter: frisco)
+        await eventually { engine.updates.contains { $0.fragment == "tea" } }
+        engine.emit([AutocompleteSuggestion(title: "Tea House", subtitle: "Dallas, TX")])
+        await eventually { search.results?.map(\.label) == ["Tea House"] }
+    }
+
     /// A nearby search with no matches shows the honest empty state (`[]` → "No
     /// results"), never `nil` (which would fall back to Saved/Recent sections).
     func testRunNearbySearchEmptyIsHonestEmptyState() async {

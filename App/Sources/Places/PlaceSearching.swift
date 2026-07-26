@@ -101,8 +101,21 @@ enum RidePlaceMapper {
     /// True when an autocomplete suggestion is a category query completion (no
     /// single coordinate) rather than a concrete place — detected by MapKit's
     /// "Search Nearby" subtitle marker.
+    ///
+    /// KNOWN LIMITATION (locale) — `MKLocalSearchCompletion` exposes no public
+    /// `isQuery`/result-type flag, so the only available signal is the subtitle
+    /// string, and MapKit LOCALIZES it to the device region. This match is the
+    /// English "Search Nearby"; on a non-English device a category completion's
+    /// subtitle is translated, so detection returns false and the completion
+    /// falls through to coordinate resolution (an arbitrary single place — the
+    /// milder, non-crashing form of the original bug; `selectDestination` /
+    /// `chooseDestination` still block the 0.0mi break). Needs a follow-up
+    /// (locale-robust query-completion detection, e.g. a curated per-locale
+    /// marker table or a structural signal if Apple ever exposes one).
     static func isCategoryCompletion(title: String, subtitle: String?) -> Bool {
-        subtitle == nearbySearchSubtitle && !title.isEmpty
+        guard !title.isEmpty, let subtitle else { return false }
+        return subtitle.trimmingCharacters(in: .whitespaces)
+            .caseInsensitiveCompare(nearbySearchSubtitle) == .orderedSame
     }
 
     /// A category-search row — tapping it runs a real nearby POI search instead

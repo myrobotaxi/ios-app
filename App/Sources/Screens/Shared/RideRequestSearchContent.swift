@@ -656,6 +656,21 @@ struct RideRequestSearchContent: View {
     /// the regression this locks in.
     static func proceedRegionHeight(isLive: Bool) -> CGFloat? { nil }
 
+    /// MYR-278 — the rider tapped a "Search Nearby" category row: run a real
+    /// nearby POI search for that category (region-biased to the rider), then
+    /// reflect the active browse in the field. The field is set to the category
+    /// label AFTER `runNearbySearch` enters nearby-category mode, so the
+    /// resulting `query` onChange (→ `updateSearch(category)`) is the seam's
+    /// keep-POIs re-bias no-op rather than a fresh autocomplete — and every
+    /// later 1Hz-fix re-bias (which also passes this same `query`) likewise
+    /// keeps the POIs instead of resurrecting the category row. Editing the
+    /// field to anything else exits nearby mode back to search-as-you-type.
+    private func runNearbyCategorySearch(_ place: RidePlace) {
+        viewerState.runNearbySearch(place)
+        query = place.label
+        destinationFieldFocused = false
+    }
+
     /// Enter a chosen destination into the field WITHOUT advancing (MYR-215
     /// deliverable 3): fill the field with the resolved place name, dismiss the
     /// keyboard, and clear the results (the field is now filled). The explicit
@@ -756,7 +771,7 @@ struct RideRequestSearchContent: View {
             // nearby POI search, not select it as a destination (which selected
             // an arbitrary place / broke the flow). Concrete rows still choose.
             if RidePlaceMapper.isCategorySearch(place) {
-                viewerState.runNearbySearch(place)
+                runNearbyCategorySearch(place)
             } else {
                 choose(place)
             }

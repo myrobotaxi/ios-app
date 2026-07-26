@@ -109,6 +109,9 @@ final class PlaceSearchTests: XCTestCase {
         XCTAssertFalse(RidePlaceMapper.isCategoryCompletion(title: "Blue Bottle", subtitle: "66 Mint St"))
         XCTAssertFalse(RidePlaceMapper.isCategoryCompletion(title: "", subtitle: "Search Nearby"))
         XCTAssertFalse(RidePlaceMapper.isCategoryCompletion(title: "Coffee", subtitle: nil))
+        // Tolerant of case / surrounding whitespace variants of the marker.
+        XCTAssertTrue(RidePlaceMapper.isCategoryCompletion(title: "Coffee", subtitle: " Search Nearby "))
+        XCTAssertTrue(RidePlaceMapper.isCategoryCompletion(title: "Coffee", subtitle: "search nearby"))
     }
 
     /// A category row is a nearby-search TRIGGER, not a destination: flagged as

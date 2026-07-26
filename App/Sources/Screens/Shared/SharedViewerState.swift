@@ -228,6 +228,11 @@ public final class SharedViewerState {
     /// "Current location" is the pin's STARTING point, never a bypass. Sim is
     /// unchanged (no fix ⇒ pin-drop over the fixture region, as before).
     public func selectDestination(_ place: RidePlace) {
+        // MYR-278 — a "Search Nearby" category row is not a place (it has no
+        // single coordinate); it must never become a destination via any path
+        // (it would produce a 0.0mi trip / arbitrary point). The search UI runs
+        // a nearby search on tap instead; this is belt-and-suspenders.
+        guard !RidePlaceMapper.isCategorySearch(place) else { return }
         draftDestination = place
         capturePreviewPickupAnchor()
         resolveDraftDestinationIfNeeded()
@@ -256,6 +261,10 @@ public final class SharedViewerState {
     /// Enter a destination on the search sheet WITHOUT advancing — the rider
     /// stays on `.search` to set chips before proceeding (deliverable 3).
     public func chooseDestination(_ place: RidePlace) {
+        // MYR-278 — never let a "Search Nearby" category row become the chosen
+        // destination (see `selectDestination`); the UI routes it to a nearby
+        // search instead.
+        guard !RidePlaceMapper.isCategorySearch(place) else { return }
         draftDestination = place
         capturePreviewPickupAnchor()
         resolveDraftDestinationIfNeeded()
