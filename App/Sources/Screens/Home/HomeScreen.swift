@@ -79,6 +79,38 @@ struct HomeScreen: View {
         IncomingRequestDisplay.resolve(request: request, isLive: isLive, liveVehicle: incomingVehicle(for: request))
     }
 
+    /// MYR-277 A2 — the TARGET vehicle's live position, used by the incoming sheet
+    /// to estimate the car→pickup leg. `nil` when the vehicle isn't in the loaded
+    /// fleet (SIM fixture ride ids, or a live ride whose vehicle isn't loaded) or
+    /// when its coordinate is the "0,0 = no fix" sentinel — the sheet then omits the
+    /// pickup leg and falls back to the single ride-leg stats row.
+    private func carPosition(for request: RideRequestRecord) -> CLLocationCoordinate2D? {
+        guard let vehicle = incomingVehicle(for: request) else { return nil }
+        let coordinate: CLLocationCoordinate2D
+        switch vehicle.activity {
+        case .parked(let location):
+            coordinate = location.coordinate
+        case .driving(let trip):
+            let progress = homeState.telemetry(forVehicleID: vehicle.id)?.snapshot.progress ?? 0
+            coordinate = VehicleRoute.position(along: trip.route, progress: progress).coordinate
+        }
+        return (coordinate.latitude == 0 && coordinate.longitude == 0) ? nil : coordinate
+    }
+
+    /// MYR-277 B — the dispatched ride's pickup coordinate while the owner's active
+    /// ride is heading to the pickup (leg 1: `.accepted`/`.arrived`); `nil`
+    /// otherwise so the owner map only draws the car→pickup route during leg 1.
+    private var leg1PickupCoordinate: CLLocationCoordinate2D? {
+        guard let ride = dispatchedRide, ride.status == .accepted || ride.status == .arrived,
+              // Only draw the pickup route when the vehicle ON SCREEN is the one
+              // actually dispatched — otherwise switching the map to another car
+              // mid-dispatch would draw a spurious route from the wrong vehicle
+              // (MYR-277 review).
+              ride.input.fleetMemberID == homeState.selectedVehicle?.id
+        else { return nil }
+        return ride.input.pickup.coordinate
+    }
+
     /// MYR-265 — the active DISPATCHED ride this owner is tracking (accepted →
     /// enroute → completed), or `nil` when there is none / it is still pending
     /// (the incoming sheet handles pending). The owner observes the live status
@@ -195,6 +227,8 @@ struct HomeScreen: View {
                 request: incomingRequest,
                 isLive: isLive,
                 resolvedVehicle: incomingRequest.flatMap { incomingVehicle(for: $0) },
+                carPosition: incomingRequest.flatMap { carPosition(for: $0) },
+                vehicleStatus: incomingRequest.flatMap { homeState.badgeStatus(forVehicleID: $0.input.fleetMemberID) },
                 onAccept: handleAccept,
                 onDecline: { rideRequestService.decline() }
             )
@@ -269,7 +303,10 @@ struct HomeScreen: View {
             // Keeps MapKit's legal attribution label clear of the
             // (now physically flush) sheet below — see `VehicleMapView`'s
             // doc comment and MYR-196 punch-list #2.
-            bottomContentInset: peekHeight
+            bottomContentInset: peekHeight,
+            // MYR-277 B — draw the dispatched car→pickup route (leg 1) while the
+            // owner's active ride is heading to the pickup (accepted/arrived).
+            pickupCoordinate: leg1PickupCoordinate
         )
         .id(vehicle.id) // fresh camera state per vehicle on switch
         .ignoresSafeArea()

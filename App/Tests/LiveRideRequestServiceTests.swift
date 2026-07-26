@@ -444,6 +444,107 @@ final class LiveRideRequestServiceTests: XCTestCase {
         XCTAssertNotNil(service.activeRequest?.trackProgress)
     }
 
+    // MARK: MYR-277 A1 — same-device demo: integrate() refreshes the real rider name
+
+    /// The single-account repro: the rider's optimistic `activeRequest` carries NO
+    /// requesterName (the rider never stamps their own display name). The
+    /// `ride_request_created` frame refetches the full server record — which DOES
+    /// carry the name — and `integrate()` must FOLD it onto the tracked request so
+    /// the owner card shows "Thomas Nandola wants a ride", not "Shared viewer".
+    func testCreatedFrameRefreshesRealRequesterNameOntoOptimisticDraft() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-a1", status: .requested, requesterName: nil))
+        // The on-demand detail refetch resolves the real display name.
+        await api.setDetail(Self.wireRide(id: "srv-a1", status: .requested, requesterName: "Thomas Nandola"))
+        let socket = StubRideSocket()
+        let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
+
+        service.submit(Self.sampleInput()) // optimistic draft — requesterName nil
+        service.confirmSend()
+        await eventually { await api.createCount == 1 } // serverRideID == srv-a1
+        XCTAssertNil(service.activeRequest?.input.requesterName, "the optimistic rider draft has no name")
+        await eventually { await socket.isListening }
+
+        // The account-wide ride_request_created frame → detail refetch → integrate.
+        await socket.push(.created(RideRequestCreatedPayload(
+            rideRequestId: "srv-a1", vehicleId: "veh-live", riderId: "u-rider",
+            status: .requested, requesterName: "Thomas Nandola", timestamp: "2026-07-09T18:00:01.000Z"
+        )))
+
+        await eventually { service.activeRequest?.input.requesterName == "Thomas Nandola" }
+        // Still pending (the owner hasn't decided) — the incoming card just shows the real name now.
+        XCTAssertEqual(service.activeRequest?.status, .pending)
+    }
+
+    /// A later frame whose refetch carries NO name must not erase an already-known
+    /// name: the refresh is `refetched ?? current`, never a blind overwrite.
+    func testFrameWithoutNameKeepsExistingRequesterName() async {
+        // No `setDetail`, so the first refetch falls back to `createReturn` (named).
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-a1b", status: .requested, requesterName: "Thomas Nandola"))
+        let socket = StubRideSocket()
+        let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
+
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        await eventually { await socket.isListening }
+
+        // First frame: the refetch carries the name → folded onto the draft.
+        await socket.push(.created(RideRequestCreatedPayload(
+            rideRequestId: "srv-a1b", vehicleId: "veh-live", riderId: "u-rider",
+            status: .requested, requesterName: "Thomas Nandola", timestamp: "2026-07-09T18:00:01.000Z"
+        )))
+        await eventually { service.activeRequest?.input.requesterName == "Thomas Nandola" }
+
+        // Owner accepts: the status-change refetch now carries NO name — the known
+        // name must survive (the fold is `ride.requesterName ?? current`).
+        await api.setDetail(Self.wireRide(id: "srv-a1b", status: .accepted, accepted: true, requesterName: nil))
+        await socket.push(.statusChanged(RideStatusChangedPayload(
+            rideRequestId: "srv-a1b", vehicleId: "veh-live", status: .accepted, timestamp: "2026-07-09T18:05:22.114Z"
+        )))
+        await eventually { service.activeRequest?.status == .accepted }
+        XCTAssertEqual(service.activeRequest?.input.requesterName, "Thomas Nandola", "a nameless refetch never erases the known name")
+    }
+
+    // MARK: MYR-277 C — accept 409 (vehicle in_service/offline) reconciles, not stuck
+
+    /// The backend 409s an accept for an in_service/offline vehicle. The optimistic
+    /// `.accepted` must NOT be swallowed: a refetch reads the ride still `requested`,
+    /// so the service folds it back to `.pending` and the incoming sheet re-appears.
+    func testAccept409ReconcilesBackToPending() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-409a", status: .requested))
+        // The accept POST is refused; the authoritative refetch still reads requested.
+        await api.setAcceptError(RestError.http(status: 409, code: .conflict, message: "vehicle unavailable", subCode: nil))
+        await api.setDetail(Self.wireRide(id: "srv-409a", status: .requested))
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+
+        service.accept()
+        XCTAssertEqual(service.activeRequest?.status, .accepted, "optimistic accepted first")
+        await eventually { await api.acceptCount == 1 }
+        // 409 → refetch reads requested → folded back to pending (sheet re-shows).
+        await eventually { service.activeRequest?.status == .pending }
+        XCTAssertNil(service.activeRequest?.acceptedAt, "the reverted request carries no acceptedAt")
+    }
+
+    /// A 409 whose reconciling refetch ALSO fails: the optimistic accept still can't
+    /// stand (the server never accepted), so it reverts to pending locally.
+    func testAccept409WithFailedRefetchRevertsToPending() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-409b", status: .requested))
+        await api.setAcceptError(RestError.http(status: 409, code: .conflict, message: "vehicle unavailable", subCode: nil))
+        await api.setDetailError(URLError(.notConnectedToInternet))
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+
+        service.accept()
+        await eventually { service.activeRequest?.status == .pending }
+    }
+
     // MARK: MYR-230 deliverable 2 — cold-launch adoption of the rider's open ride
 
     /// A rider who force-quit mid-ride relaunches: `start()` GETs the rider's own
@@ -583,6 +684,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
         status: MyRobotaxiContracts.RideRequestStatus,
         accepted: Bool = false,
         scheduledFor: String? = nil,
+        requesterName: String? = nil,
         pickup: MyRobotaxiContracts.RidePlace = MyRobotaxiContracts.RidePlace(lat: 37.7793, lng: -122.3937, label: "Current location"),
         dropoff: MyRobotaxiContracts.RidePlace = MyRobotaxiContracts.RidePlace(lat: 37.6156, lng: -122.3900, label: "SFO · Terminal 2")
     ) -> RideRequest {
@@ -597,7 +699,8 @@ final class LiveRideRequestServiceTests: XCTestCase {
             scheduledFor: scheduledFor,
             createdAt: Self.isoNow(),
             updatedAt: Self.isoNow(),
-            acceptedAt: accepted ? "2026-07-09T18:05:22.114Z" : nil
+            acceptedAt: accepted ? "2026-07-09T18:05:22.114Z" : nil,
+            requesterName: requesterName
         )
     }
 
@@ -632,6 +735,7 @@ private actor StubRideAPI: RideRequestAPI {
     private var advanceReturn: RideRequest?
     private var advanceError: Error?
     private var detailError: Error?
+    private var acceptError: Error?
 
     private(set) var createCount = 0
     private(set) var acceptCount = 0
@@ -657,6 +761,7 @@ private actor StubRideAPI: RideRequestAPI {
     func setAdvance(_ ride: RideRequest?) { advanceReturn = ride }
     func setAdvanceError(_ error: Error?) { advanceError = error }
     func setDetailError(_ error: Error?) { detailError = error }
+    func setAcceptError(_ error: Error?) { acceptError = error }
 
     func vehicles() async throws -> [VehicleSummary] {
         [VehicleSummary(vehicleId: "veh-live", name: "Lunar", model: "Model Y", year: 2025, color: "Quicksilver",
@@ -680,7 +785,11 @@ private actor StubRideAPI: RideRequestAPI {
         return detailReturn ?? createReturn
     }
     func cancelRideRequest(id: String) async throws -> RideRequest { cancelCount += 1; lastCancelID = id; return createReturn }
-    func acceptRideRequest(id: String) async throws -> RideRequest { acceptCount += 1; lastAcceptID = id; return detailReturn ?? createReturn }
+    func acceptRideRequest(id: String) async throws -> RideRequest {
+        acceptCount += 1; lastAcceptID = id
+        if let acceptError { throw acceptError }
+        return detailReturn ?? createReturn
+    }
     func declineRideRequest(id: String) async throws -> RideRequest { declineCount += 1; lastDeclineID = id; return createReturn }
     private func advance(_ id: String) throws -> RideRequest {
         lastAdvanceID = id

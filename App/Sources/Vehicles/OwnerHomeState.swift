@@ -85,6 +85,26 @@ public final class OwnerHomeState {
         hasSelection ? fleet.badgeStatus(at: selectedVehicleIndex) : .parked
     }
 
+    /// MYR-277 — the fleet row index for a vehicle id, or `nil` when it isn't in
+    /// the loaded fleet (a sim fixture ride's fleet id, or a live ride whose
+    /// vehicle isn't loaded).
+    func vehicleIndex(forID id: String) -> Int? {
+        vehicles.firstIndex { $0.id == id }
+    }
+
+    /// MYR-277 C — the live badge status of the TARGET vehicle of an incoming
+    /// request (joined by id), so the owner sheet can honestly gate Accept when the
+    /// car is in_service/offline. `nil` when the vehicle isn't in the loaded fleet.
+    func badgeStatus(forVehicleID id: String) -> MRTVehicleStatus? {
+        vehicleIndex(forID: id).map { fleet.badgeStatus(at: $0) }
+    }
+
+    /// MYR-277 A2 — the telemetry source of the TARGET vehicle (for its live
+    /// position, used to estimate the car→pickup leg). `nil` when not in the fleet.
+    func telemetry(forVehicleID id: String) -> (any VehicleTelemetrySource)? {
+        vehicleIndex(forID: id).map { fleet.telemetry(at: $0) }
+    }
+
     // MARK: Lifecycle
 
     public func startTelemetry() {
