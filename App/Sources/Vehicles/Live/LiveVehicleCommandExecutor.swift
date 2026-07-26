@@ -561,6 +561,12 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             self.controls.climateMode = .auto
             self.knownFields.insert(.climateMode)
             self.climateModeSettleHold = (want: .auto, until: Date().addingTimeInterval(self.settleWindow))
+            // `auto_conditioning_start` physically turns the HVAC ON, so move the
+            // climate on/off tile in lockstep — optimistically on + held against a
+            // stale `isClimateOn=false` frame — instead of lagging a telemetry frame.
+            self.controls.climateOn = true
+            self.knownFields.insert(.climateOn)
+            self.holdSettle(.climate, want: true)
         }
     }
 

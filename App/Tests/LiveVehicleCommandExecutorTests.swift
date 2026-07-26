@@ -250,6 +250,9 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         XCTAssertEqual(sender.calls, [.autoConditioningStart], "Auto sends the real auto-conditioning command")
         XCTAssertEqual(exec.controls.climateMode, .auto, "optimistic Auto applied on ack")
         XCTAssertTrue(exec.isKnown(.climateMode), "Auto command confirms the mode field")
+        // auto_conditioning_start turns the HVAC on → the on/off tile moves in lockstep.
+        XCTAssertTrue(exec.controls.climateOn, "Auto optimistically turns climate on")
+        XCTAssertTrue(exec.isKnown(.climateOn), "Auto command confirms the climate-on field")
         XCTAssertEqual(exec.uiState(for: .climate), .idle)
     }
 
