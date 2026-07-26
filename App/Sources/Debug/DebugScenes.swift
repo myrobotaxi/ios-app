@@ -103,6 +103,13 @@ enum DebugScene: String, CaseIterable {
     /// "Available after your next drive" state is in-frame for a full-frame
     /// screenshot. Pair with `MRT_OWNER_DETENT=half`.
     case ownerVehicleTires
+    /// MYR-280 — owner Home dense sheet scrolled to the SEAT CLIMATE section so the
+    /// per-seat mode (flame/snowflake icon + Heating/Cooling/Off caption) and the
+    /// Heat/Cool toggle are in-frame for a full-frame drift-gate screenshot. Uses
+    /// the SIMULATED fleet (default vehicle 0 = Cybercab, ventilated → the toggle
+    /// path); pass `MRT_OWNER_VEHICLE=1` for the parked non-vent "Daily" (heat-only
+    /// "SEAT HEATING", no toggle). Pair with `MRT_OWNER_DETENT=half`.
+    case ownerVehicleSeats
     /// MYR-265 — owner Home AFTER accepting a ride: the ride-aware dispatch banner
     /// in its leg-1 "En route to pickup · picking up <Name>" state (seeds an
     /// accepted owner ride). `…Enroute` seeds the leg-2 "<Name> aboard · heading
@@ -205,7 +212,7 @@ enum DebugScene: String, CaseIterable {
         self == .ownerHome || self == .ownerDrives || self == .ownerIncoming
             || self == .ownerScheduled || self == .ownerSettings
             || self == .ownerControlsUnavailable
-            || self == .ownerVehicleDetails || self == .ownerVehicleTires
+            || self == .ownerVehicleDetails || self == .ownerVehicleTires || self == .ownerVehicleSeats
             || self == .ownerDispatched || self == .ownerDispatchedArrived
             || self == .ownerDispatchedEnroute
     }
@@ -234,6 +241,9 @@ enum DebugScene: String, CaseIterable {
         // dense content; anchoring the content's ~55% point to the viewport brings
         // its honest state in-frame at the half detent.
         case .ownerVehicleTires: return .fraction(0.55)
+        // The seat section is the tail of the Climate card, above the vertical
+        // middle; anchoring the content's ~30% point frames it at the half detent.
+        case .ownerVehicleSeats: return .fraction(0.30)
         default: return nil
         }
     }
@@ -416,7 +426,7 @@ enum DebugScene: String, CaseIterable {
         case .modeChooser, .ownerSettings, .riderSettings,
              .scheduledDetails, .scheduledReschedule, .scheduledRequested, .scheduledConfirmCancel,
              .ownerHome, .ownerDrives, .ownerIncoming, .ownerScheduled, .ownerControlsUnavailable,
-             .ownerVehicleDetails, .ownerVehicleTires,
+             .ownerVehicleDetails, .ownerVehicleTires, .ownerVehicleSeats,
              .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute:
             break // chooser / settings / rider live-map / owner scenes don't drive the viewer sheet
         }

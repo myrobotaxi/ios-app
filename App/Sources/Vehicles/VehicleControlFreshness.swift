@@ -69,6 +69,23 @@ enum VehicleControlFreshness {
         }
     }
 
+    /// The "X ago" qualifier to APPEND to a known safety value's tile sub, or
+    /// `nil` to show the bare value. MYR-281: only a GENUINELY STALE value
+    /// (≥ `staleThreshold`) carries the qualifier, so the everyday fresh case keeps
+    /// a short, uniform sub ("Closed", not "Closed · just now") — the "cheap look"
+    /// came from a long qualifier scaling one tile's sub down next to a short one.
+    /// Honesty is preserved: a non-streaming car past the threshold still shows how
+    /// long ago it was heard from (the trunk-open incident), and the footer always
+    /// states "Not live". Requires `showsQualifier` (never fires on the simulated
+    /// path) AND `isStale` (drops the sub-60s "just now"). Pure; injected `now`.
+    static func staleQualifier(isStreaming: Bool?, lastUpdated: Date?, now: Date) -> String? {
+        guard let lastUpdated,
+              showsQualifier(isStreaming: isStreaming, lastUpdated: lastUpdated, now: now),
+              isStale(lastUpdated: lastUpdated, now: now)
+        else { return nil }
+        return agoLabel(since: lastUpdated, now: now)
+    }
+
     /// A compact, bounded "X ago" label for the stale qualifier. Coarse buckets
     /// (minutes / hours / days) keep it inside the tile's narrow subtitle grammar.
     static func agoLabel(since lastUpdated: Date, now: Date) -> String {
