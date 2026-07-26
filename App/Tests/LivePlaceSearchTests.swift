@@ -253,6 +253,99 @@ final class LivePlaceSearchTests: XCTestCase {
         XCTAssertEqual(search.results?.map(\.label), ["Fast Place"])
     }
 
+    // MARK: MYR-278 — "Search Nearby" category rows run a real nearby search
+
+    /// A resolver that records which suggestion titles it was asked to resolve —
+    /// proves a category row is NEVER sent to `MKLocalSearch` for a coordinate.
+    @MainActor
+    private final class RecordingResolver {
+        private(set) var resolvedTitles: [String] = []
+        var table: [String: CLLocationCoordinate2D]
+        init(_ table: [String: CLLocationCoordinate2D]) { self.table = table }
+        var resolver: LivePlaceSearch.ItemResolver {
+            { [self] suggestion in
+                resolvedTitles.append(suggestion.title)
+                return table[suggestion.title].map { MKMapItem(placemark: MKPlacemark(coordinate: $0)) }
+            }
+        }
+    }
+
+    /// A nearby resolver returning fixed named POIs — no MapKit network.
+    private func nearbyResolver(_ items: [(String, CLLocationCoordinate2D)]) -> LivePlaceSearch.NearbyResolver {
+        { _, _ in
+            items.map { name, coordinate in
+                let item = MKMapItem(placemark: MKPlacemark(coordinate: coordinate))
+                item.name = name
+                return item
+            }
+        }
+    }
+
+    /// A "Search Nearby" query completion becomes a category-search ROW — it is
+    /// NOT resolved to one arbitrary coordinate (the MYR-278 break). Concrete
+    /// completions in the same batch still resolve as normal places.
+    func testCategoryCompletionBecomesSearchRowWithoutResolving() async {
+        let engine = FakeEngine()
+        let recording = RecordingResolver(["Blue Bottle Coffee": dallasDowntown])
+        let search = LivePlaceSearch(engine: engine, resolveItem: recording.resolver, debounce: .milliseconds(1))
+        search.update(query: "coffee", regionCenter: frisco)
+        await eventually { !engine.updates.isEmpty }
+        engine.emit([
+            AutocompleteSuggestion(title: "Coffee", subtitle: "Search Nearby", isQueryCategory: true),
+            AutocompleteSuggestion(title: "Blue Bottle Coffee", subtitle: "66 Mint St"),
+        ])
+        await eventually { search.results?.count == 2 }
+
+        let results = search.results!
+        // The category row is a nearby-search trigger, ranked in place (index 0).
+        XCTAssertTrue(RidePlaceMapper.isCategorySearch(results[0]))
+        XCTAssertEqual(results[0].label, "Coffee")
+        // It was NEVER sent to MKLocalSearch for a coordinate.
+        XCTAssertFalse(recording.resolvedTitles.contains("Coffee"))
+        // The concrete completion resolved as a normal, selectable place.
+        XCTAssertFalse(RidePlaceMapper.isCategorySearch(results[1]))
+        XCTAssertEqual(results[1].label, "Blue Bottle Coffee")
+    }
+
+    /// Tapping a category row runs a real nearby search whose POIs are real,
+    /// selectable destinations (distance from the live center, ranking preserved).
+    func testRunNearbySearchPublishesSelectablePois() async {
+        let engine = FakeEngine()
+        let search = LivePlaceSearch(
+            engine: engine,
+            resolveItem: resolver([:]),
+            resolveNearby: nearbyResolver([
+                ("Klyde Warren Coffee", dallasDowntown),
+                ("SF Coffee", sfFernSt),
+            ]),
+            debounce: .milliseconds(1)
+        )
+        search.runNearbySearch(category: "Coffee", regionCenter: frisco)
+        await eventually { search.results?.count == 2 }
+
+        let results = search.results!
+        XCTAssertEqual(results.map(\.label), ["Klyde Warren Coffee", "SF Coffee"])
+        // Every nearby result is a real destination, not another category trigger.
+        XCTAssertFalse(results.contains { RidePlaceMapper.isCategorySearch($0) })
+        // Distance from the live (Frisco) center — Dallas ≈ 20 mi.
+        XCTAssertEqual(results[0].miles, 20.7, accuracy: 3)
+    }
+
+    /// A nearby search with no matches shows the honest empty state (`[]` → "No
+    /// results"), never `nil` (which would fall back to Saved/Recent sections).
+    func testRunNearbySearchEmptyIsHonestEmptyState() async {
+        let engine = FakeEngine()
+        let search = LivePlaceSearch(
+            engine: engine,
+            resolveItem: resolver([:]),
+            resolveNearby: { _, _ in [] },
+            debounce: .milliseconds(1)
+        )
+        search.runNearbySearch(category: "Nonexistent", regionCenter: frisco)
+        await eventually { search.results?.isEmpty == true }
+        XCTAssertEqual(search.results, []) // [] ⇒ "No results", not the default sections
+    }
+
     // MARK: Center-key plumbing (what the view's onChange watches)
 
     func testMapRegionCenterKeyTracksTheResolvedCenter() {

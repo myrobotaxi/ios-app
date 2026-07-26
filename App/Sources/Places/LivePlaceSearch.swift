@@ -16,6 +16,10 @@ struct AutocompleteSuggestion {
     var title: String
     var subtitle: String
     var completion: MKLocalSearchCompletion?
+    /// MYR-278 — true when this is a category / multi-result query completion
+    /// (MapKit's "Search Nearby" rows), which has no single coordinate. Such a
+    /// suggestion becomes a category-search row, NOT a resolvable destination.
+    var isQueryCategory: Bool = false
 }
 
 @MainActor
@@ -55,7 +59,15 @@ final class LocalSearchCompleterEngine: NSObject, AutocompleteEngine, MKLocalSea
 
     nonisolated func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
         let suggestions = completer.results.map {
-            AutocompleteSuggestion(title: $0.title, subtitle: $0.subtitle, completion: $0)
+            AutocompleteSuggestion(
+                title: $0.title,
+                subtitle: $0.subtitle,
+                completion: $0,
+                // MYR-278 — flag MapKit's category / "Search Nearby" query rows
+                // so the pipeline renders them as a nearby-search trigger rather
+                // than resolving them to one arbitrary place.
+                isQueryCategory: RidePlaceMapper.isCategoryCompletion(title: $0.title, subtitle: $0.subtitle)
+            )
         }
         Task { @MainActor [weak self] in
             self?.onSuggestions?(suggestions)
@@ -100,11 +112,18 @@ final class LivePlaceSearch: PlaceSearching {
     /// Injectable so tests can fake resolution without MapKit's network.
     typealias ItemResolver = @MainActor (AutocompleteSuggestion) async -> MKMapItem?
 
+    /// MYR-278 — runs a nearby category `MKLocalSearch` (natural-language query +
+    /// region), returning the matching POIs. Injectable so the nearby-search
+    /// behavior is unit-testable without MapKit's network.
+    typealias NearbyResolver = @MainActor (_ category: String, _ regionCenter: CLLocationCoordinate2D) async -> [MKMapItem]
+
     private(set) var results: [RidePlace]?
 
     /// Kept out of `@Observable` tracking — internal plumbing, not view state.
     @ObservationIgnored private let engine: any AutocompleteEngine
     @ObservationIgnored private let resolveItem: ItemResolver
+    @ObservationIgnored private let resolveNearby: NearbyResolver
+    @ObservationIgnored private var nearbyTask: Task<Void, Never>?
     /// The saved places ranked ahead of live suggestions. EMPTY on the live
     /// composition path (MYR-214) so fixture SF places never poison a live
     /// destination search; real saved places populate this with accounts
@@ -135,12 +154,14 @@ final class LivePlaceSearch: PlaceSearching {
     init(
         engine: (any AutocompleteEngine)? = nil,
         resolveItem: ItemResolver? = nil,
+        resolveNearby: NearbyResolver? = nil,
         savedPlaces: [RidePlace] = [],
         debounce: Duration = .milliseconds(250),
         maxResults: Int = 8
     ) {
         self.engine = engine ?? LocalSearchCompleterEngine()
         self.resolveItem = resolveItem ?? Self.localSearchItem
+        self.resolveNearby = resolveNearby ?? Self.localNearbySearch
         self.savedPlaces = savedPlaces
         self.debounce = debounce
         self.maxResults = maxResults
@@ -162,6 +183,8 @@ final class LivePlaceSearch: PlaceSearching {
         self.regionCenter = regionCenter
         self.query = query
         debounceTask?.cancel()
+        // MYR-278 — a keystroke supersedes any in-flight nearby-category search.
+        nearbyTask?.cancel()
 
         guard !query.isEmpty else {
             // Empty query: back to the default sections immediately, no search.
@@ -186,6 +209,36 @@ final class LivePlaceSearch: PlaceSearching {
             // supersedes it when/if MapKit re-fires.
             if fragment == self.lastFragment, !self.lastSuggestions.isEmpty {
                 self.resolve(self.lastSuggestions)
+            }
+        }
+    }
+
+    // MARK: Nearby category search (MYR-278)
+
+    /// Run a real nearby POI search for a category term and publish the matching
+    /// places as `results`. Invoked when the rider taps a "Search Nearby"
+    /// category row instead of a concrete place. Cancels any in-flight
+    /// autocomplete/resolution so a stale batch can't clobber these results;
+    /// `[]` → the honest "No results" empty state.
+    func runNearbySearch(category: String, regionCenter: CLLocationCoordinate2D) {
+        self.regionCenter = regionCenter
+        // The category term becomes the active query so a later keystroke's
+        // supersede/clear logic (and the empty-query reset) behaves normally.
+        self.query = category
+        debounceTask?.cancel()
+        resolveTask?.cancel()
+        nearbyTask?.cancel()
+
+        let center = regionCenter
+        let resolveNearby = self.resolveNearby
+        let cap = maxResults
+        nearbyTask = Task { [weak self] in
+            let items = await resolveNearby(category, center)
+            guard !Task.isCancelled, let self else { return }
+            // Only publish if this is still the active category search.
+            guard self.query == category else { return }
+            self.results = items.prefix(cap).map {
+                RidePlaceMapper.nearbyRidePlace(from: $0, fallbackTitle: category, regionCenter: center)
             }
         }
     }
@@ -217,7 +270,16 @@ final class LivePlaceSearch: PlaceSearching {
         var prefilled: [(Int, RidePlace)] = []
         var pending: [(Int, AutocompleteSuggestion)] = []
         for (index, suggestion) in top.enumerated() {
-            if let cached = cache[Self.cacheKey(suggestion)] {
+            if suggestion.isQueryCategory {
+                // MYR-278 — a "Search Nearby" category completion has NO single
+                // coordinate; never send it to `MKLocalSearch` (that resolved it
+                // to one arbitrary place, the break). Emit a category-search row
+                // with no network — tapping it runs `runNearbySearch`.
+                prefilled.append((index, RidePlaceMapper.categorySearchPlace(
+                    title: suggestion.title,
+                    regionCenter: center
+                )))
+            } else if let cached = cache[Self.cacheKey(suggestion)] {
                 prefilled.append((index, RidePlaceMapper.ridePlace(
                     at: cached,
                     title: suggestion.title,
@@ -285,6 +347,20 @@ final class LivePlaceSearch: PlaceSearching {
                 continuation.resume(returning: response?.mapItems.first)
             }
         }
+    }
+
+    /// The live nearby resolver (MYR-278): a category natural-language
+    /// `MKLocalSearch` biased to a compact region around the rider, returning
+    /// every matching POI.
+    private static let localNearbySearch: NearbyResolver = { category, center in
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = category
+        request.region = MKCoordinateRegion(
+            center: center,
+            span: MKCoordinateSpan(latitudeDelta: 0.12, longitudeDelta: 0.12)
+        )
+        let response = try? await MKLocalSearch(request: request).start()
+        return response?.mapItems ?? []
     }
 }
 

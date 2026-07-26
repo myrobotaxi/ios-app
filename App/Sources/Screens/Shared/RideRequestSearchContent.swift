@@ -751,7 +751,15 @@ struct RideRequestSearchContent: View {
 
     private func destRow(_ place: RidePlace) -> some View {
         Button {
-            choose(place)
+            // MYR-278 — a "Search Nearby" category row (a MapKit query-type
+            // completion) has NO single coordinate; tapping it must run a real
+            // nearby POI search, not select it as a destination (which selected
+            // an arbitrary place / broke the flow). Concrete rows still choose.
+            if RidePlaceMapper.isCategorySearch(place) {
+                viewerState.runNearbySearch(place)
+            } else {
+                choose(place)
+            }
         } label: {
             HStack(spacing: 14) {
                 Circle()

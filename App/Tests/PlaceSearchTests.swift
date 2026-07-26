@@ -99,4 +99,47 @@ final class PlaceSearchTests: XCTestCase {
         XCTAssertTrue(RidePlaceMapper.matchingSavedPlaces(query: "").isEmpty)
         XCTAssertTrue(RidePlaceMapper.matchingSavedPlaces(query: "zzzznowhere").isEmpty)
     }
+
+    // MARK: MYR-278 — "Search Nearby" category rows
+
+    /// MapKit flags category / multi-result query completions with the literal
+    /// subtitle "Search Nearby"; concrete places carry a real address subtitle.
+    func testCategoryCompletionDetection() {
+        XCTAssertTrue(RidePlaceMapper.isCategoryCompletion(title: "Coffee", subtitle: "Search Nearby"))
+        XCTAssertFalse(RidePlaceMapper.isCategoryCompletion(title: "Blue Bottle", subtitle: "66 Mint St"))
+        XCTAssertFalse(RidePlaceMapper.isCategoryCompletion(title: "", subtitle: "Search Nearby"))
+        XCTAssertFalse(RidePlaceMapper.isCategoryCompletion(title: "Coffee", subtitle: nil))
+    }
+
+    /// A category row is a nearby-search TRIGGER, not a destination: flagged as
+    /// such, its distance hidden (no single place), a magnifying-glass glyph.
+    func testCategorySearchPlaceIsFlaggedRowWithHiddenDistance() {
+        let place = RidePlaceMapper.categorySearchPlace(title: "Coffee", regionCenter: center)
+        XCTAssertTrue(RidePlaceMapper.isCategorySearch(place))
+        XCTAssertEqual(place.label, "Coffee")
+        XCTAssertEqual(place.subtitle, "Search Nearby")
+        XCTAssertEqual(place.miles, 0) // distance hidden — it is not one place
+        XCTAssertEqual(place.icon, "magnifyingglass")
+    }
+
+    /// The MYR-278 guard: a concrete resolved place is NEVER treated as a
+    /// category search, so it selects as a destination normally.
+    func testConcreteRidePlaceIsNotCategorySearch() {
+        let item = MKMapItem(placemark: MKPlacemark(coordinate: center))
+        let place = RidePlaceMapper.ridePlace(from: item, title: "Blue Bottle", subtitle: "66 Mint St", regionCenter: center)
+        XCTAssertFalse(RidePlaceMapper.isCategorySearch(place))
+    }
+
+    /// A POI returned by a nearby `MKLocalSearch` maps to a real, selectable
+    /// destination — the item's name + real coordinate + live-center distance.
+    func testNearbyRidePlaceUsesItemNameAndIsSelectable() {
+        let dest = CLLocationCoordinate2D(latitude: center.latitude + 1, longitude: center.longitude)
+        let item = MKMapItem(placemark: MKPlacemark(coordinate: dest))
+        item.name = "Blue Bottle"
+        let place = RidePlaceMapper.nearbyRidePlace(from: item, fallbackTitle: "Coffee", regionCenter: center)
+        XCTAssertEqual(place.label, "Blue Bottle")
+        XCTAssertFalse(RidePlaceMapper.isCategorySearch(place)) // a real destination, not a trigger
+        XCTAssertEqual(place.coordinate.latitude, dest.latitude, accuracy: 0.0001)
+        XCTAssertEqual(place.miles, 69.05, accuracy: 0.5)
+    }
 }

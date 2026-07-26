@@ -212,6 +212,14 @@ public final class SharedViewerState {
         placeSearch.update(query: query, regionCenter: mapRegionCenter)
     }
 
+    /// MYR-278 — the rider tapped a "Search Nearby" category row: run a real
+    /// nearby POI search for that category (region-biased to the rider) whose
+    /// results replace the list. The row is NOT a destination — it has no single
+    /// coordinate — so this never touches `draftDestination`.
+    public func runNearbySearch(_ place: RidePlace) {
+        placeSearch.runNearbySearch(category: place.label, regionCenter: mapRegionCenter)
+    }
+
     /// Select a destination and advance the flow (MYR-171 / MYR-211 defect B).
     /// If a pickup is already set, straight to Review; otherwise route through
     /// the pin-drop step so the rider confirms their exact pickup spot on the
