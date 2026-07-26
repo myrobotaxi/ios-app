@@ -115,6 +115,11 @@ public enum VehicleControlField: Sendable, Hashable, CaseIterable {
     case locked
     case climateOn
     case targetTemp
+    // The Auto/Cool/Heat segment (MYR-274). Known once the car's HVAC mode is
+    // reconciled from the wire (`hvacAutoMode`/`hvacAcEnabled`) or the owner
+    // commands Auto (`auto_conditioning_start`). Until then it is honestly unknown
+    // (nothing lit) rather than the seeded `.auto` (MYR-228 / MYR-251).
+    case climateMode
     case fanSpeed
     case driverSeat
     case passengerSeat

@@ -110,6 +110,16 @@ enum DebugScene: String, CaseIterable {
     /// path); pass `MRT_OWNER_VEHICLE=1` for the parked non-vent "Daily" (heat-only
     /// "SEAT HEATING", no toggle). Pair with `MRT_OWNER_DETENT=half`.
     case ownerVehicleSeats
+    /// MYR-274 — owner Home dense sheet scrolled to the CLIMATE section so the
+    /// Auto/Cool/Heat mode segment is in-frame for a full-frame drift-gate
+    /// screenshot. Three variants inject `DebugClimateModeFleet` seeded via the
+    /// real reconcile path: `ownerClimateAuto` (car reports On → Auto lit),
+    /// `ownerClimateManual` (Override + AC → Cool lit, display-only), and
+    /// `ownerClimateUnknown` (climate on but mode absent → nothing lit, honest
+    /// unknown). Pair with `MRT_OWNER_DETENT=half`.
+    case ownerClimateAuto
+    case ownerClimateManual
+    case ownerClimateUnknown
     /// MYR-265 — owner Home AFTER accepting a ride: the ride-aware dispatch banner
     /// in its leg-1 "En route to pickup · picking up <Name>" state (seeds an
     /// accepted owner ride). `…Enroute` seeds the leg-2 "<Name> aboard · heading
@@ -213,6 +223,7 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerScheduled || self == .ownerSettings
             || self == .ownerControlsUnavailable
             || self == .ownerVehicleDetails || self == .ownerVehicleTires || self == .ownerVehicleSeats
+            || self == .ownerClimateAuto || self == .ownerClimateManual || self == .ownerClimateUnknown
             || self == .ownerDispatched || self == .ownerDispatchedArrived
             || self == .ownerDispatchedEnroute
     }
@@ -226,6 +237,9 @@ enum DebugScene: String, CaseIterable {
         switch self {
         case .ownerControlsUnavailable: return DebugUnavailableControlsFleet()
         case .ownerVehicleDetails, .ownerVehicleTires: return DebugVehicleDetailsFleet()
+        case .ownerClimateAuto: return DebugClimateModeFleet(variant: .auto)
+        case .ownerClimateManual: return DebugClimateModeFleet(variant: .cool)
+        case .ownerClimateUnknown: return DebugClimateModeFleet(variant: .unknown)
         default: return nil
         }
     }
@@ -244,6 +258,10 @@ enum DebugScene: String, CaseIterable {
         // The seat section is the tail of the Climate card, above the vertical
         // middle; anchoring the content's ~30% point frames it at the half detent.
         case .ownerVehicleSeats: return .fraction(0.30)
+        // The Auto/Cool/Heat segment sits near the TOP of the Climate card (just
+        // below the temp stepper); a small anchor keeps the quick tiles + climate
+        // header + the segment together in-frame at the half detent.
+        case .ownerClimateAuto, .ownerClimateManual, .ownerClimateUnknown: return .fraction(0.12)
         default: return nil
         }
     }
@@ -427,6 +445,7 @@ enum DebugScene: String, CaseIterable {
              .scheduledDetails, .scheduledReschedule, .scheduledRequested, .scheduledConfirmCancel,
              .ownerHome, .ownerDrives, .ownerIncoming, .ownerScheduled, .ownerControlsUnavailable,
              .ownerVehicleDetails, .ownerVehicleTires, .ownerVehicleSeats,
+             .ownerClimateAuto, .ownerClimateManual, .ownerClimateUnknown,
              .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute:
             break // chooser / settings / rider live-map / owner scenes don't drive the viewer sheet
         }

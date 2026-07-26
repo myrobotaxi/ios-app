@@ -15,6 +15,8 @@ import Observation
 // Backend-backed (real command sent, then optimistic state on ack):
 //   • lock tile          → door_lock / door_unlock
 //   • climate on/off     → auto_conditioning_start / auto_conditioning_stop
+//   • climate mode: Auto → auto_conditioning_start (returns the car to auto climate,
+//                          MYR-274). Cool/Heat are NOT commandable (see below).
 //   • set temp ±         → set_temps (driver_temp °C; passenger mirrors)
 //   • trunk tile         → actuate_trunk (rear)
 //   • charge port tile   → charge_port_door_open / charge_port_door_close (v186;
@@ -33,7 +35,10 @@ import Observation
 //
 // NO backend command in the §7.9 catalog (flagged — kept as a local mutation to
 // preserve the control's feel):
-//   • climate mode (Auto/Cool/Heat) → no set-mode command
+//   • climate mode Cool/Heat → no set-mode command; Tesla's API cannot FORCE a
+//                          manual cool/heat mode, so these segments are honest
+//                          DISPLAY-ONLY reflections of the car's reported mode — a
+//                          tap sends NOTHING (MYR-274). Only Auto is actionable.
 //   • fan speed          → no fan command
 //   • media scrub        → no seek-to-position command (local feedback only)
 //   • license plate      → not a Tesla command (no plate field, per MYR-168)
@@ -100,6 +105,16 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// to cool) can't clobber the optimistic seat state, exactly as MYR-272 fixed
     /// for the boolean toggles.
     private var seatSettleHold: [VehicleControlKey: (mode: VehicleSeatClimateMode, level: Int, until: Date)] = [:]
+
+    /// Climate-mode settle-window guard (MYR-274), the Auto/Cool/Heat-segment
+    /// analogue of `settleHold`. Tapping Auto commands `auto_conditioning_start`;
+    /// after it acks we optimistically show `.auto` and record it here with a
+    /// deadline. `reconcileClimateMode` then ignores a DISAGREEING streamed mode
+    /// (a stale `Override` the car keeps reporting for a second or two, or the
+    /// mode simply absent) until the car confirms `On`/Auto or the window lapses —
+    /// so a stale frame can't immediately flip the segment back off Auto, exactly
+    /// as MYR-272 fixed for the boolean toggles.
+    private var climateModeSettleHold: (want: VehicleClimateMode, until: Date)?
 
     init(
         vehicleID: String,
@@ -194,12 +209,10 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             reconcileField(.fanSpeed, key: nil) { self.controls.fanSpeed = min(10, max(0, fan)) }
         }
 
-        // Climate mode (Auto/Cool/Heat) — a pure display refinement (no `isKnown`
-        // seam, no §7.9 command); only asserted when the auto-mode field is a known
-        // On/Override, honest-nil otherwise.
-        if let mode = Self.climateMode(autoMode: state.hvacAutoMode, acEnabled: state.hvacAcEnabled) {
-            controls.climateMode = mode
-        }
+        // Climate mode (Auto/Cool/Heat) — reconcile the car's REAL mode onto the
+        // segment and mark it known, honoring the in-flight/settle discipline so a
+        // stale frame can't clobber a just-commanded Auto (MYR-274).
+        reconcileClimateMode(autoMode: state.hvacAutoMode, acEnabled: state.hvacAcEnabled)
 
         reconcileSeat(.driver, key: .driverSeat, heater: state.seatHeaterLeft, cooler: state.seatCoolerLeft)
         reconcileSeat(.passenger, key: .passengerSeat, heater: state.seatHeaterRight, cooler: state.seatCoolerRight)
@@ -310,6 +323,30 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             controls.passengerSeatHeatLevel = level
             knownFields.insert(.passengerSeat)
         }
+    }
+
+    /// Reconcile the car's reported HVAC mode onto the Auto/Cool/Heat segment
+    /// (MYR-274). Only a KNOWN `On`/`Override` asserts a mode (and marks the field
+    /// known); an `Unknown`/absent frame leaves the segment as-is — it never
+    /// fabricates a mode and never downgrades a value already known (honest-unknown
+    /// is the INITIAL state, before any command or reconcile). While the Auto
+    /// command is in flight the frame is left for the ack; after the ack a settle
+    /// window holds the optimistic Auto against a stale `Override` frame until the
+    /// car confirms `On`/Auto or the deadline lapses (then the car's reality wins).
+    private func reconcileClimateMode(autoMode: VehicleState.HvacAutoMode?, acEnabled: Bool?) {
+        guard let mode = Self.climateMode(autoMode: autoMode, acEnabled: acEnabled) else { return }
+        if uiState(for: .climate).isPending { return } // Auto command still in flight
+        if let hold = climateModeSettleHold {
+            if mode == hold.want {
+                climateModeSettleHold = nil // the car confirmed the commanded mode
+            } else if Date() < hold.until {
+                return // settling — ignore a stale frame that disagrees with the command
+            } else {
+                climateModeSettleHold = nil // timed out — accept the car's reported reality
+            }
+        }
+        controls.climateMode = mode
+        knownFields.insert(.climateMode)
     }
 
     /// Fold the HVAC auto-mode + AC-enabled read-back onto the app's Auto/Cool/Heat
@@ -504,11 +541,36 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         controls.scrubPercent = min(100, max(0, percent))
     }
 
-    // MARK: No backend command — local mutation, flagged (see header)
+    // MARK: Climate mode — Auto is a real command; Cool/Heat are display-only (MYR-274)
 
+    /// The Auto/Cool/Heat segment. Per the product decision (Thomas, MYR-274) —
+    /// "Auto real, Cool/Heat reflect state":
+    ///   • **Auto** is the one actionable control: it sends the real Tesla
+    ///     `auto_conditioning_start`, returning the car to auto climate, then
+    ///     optimistically shows `.auto` on ack with a settle-window hold so a stale
+    ///     `Override`/absent frame can't immediately flip it back (MYR-272 discipline).
+    ///   • **Cool/Heat** are HONEST DISPLAY-ONLY: Tesla's API has no command to force
+    ///     a manual cool/heat mode, so a tap sends NOTHING and mutates NOTHING — the
+    ///     segment merely REFLECTS the mode the car reports (`reconcileClimateMode`).
+    /// Reuses the `.climate` key so an Auto command shares the pending/settle
+    /// discipline of climate on/off (both are HVAC start/stop — never fire two at once).
     func setClimateMode(_ mode: VehicleClimateMode) async throws {
-        controls.climateMode = mode
+        guard mode == .auto else { return } // Cool/Heat are non-commanding reflections
+        await run(.climate, command: .autoConditioningStart) { [weak self] in
+            guard let self else { return }
+            self.controls.climateMode = .auto
+            self.knownFields.insert(.climateMode)
+            self.climateModeSettleHold = (want: .auto, until: Date().addingTimeInterval(self.settleWindow))
+            // `auto_conditioning_start` physically turns the HVAC ON, so move the
+            // climate on/off tile in lockstep — optimistically on + held against a
+            // stale `isClimateOn=false` frame — instead of lagging a telemetry frame.
+            self.controls.climateOn = true
+            self.knownFields.insert(.climateOn)
+            self.holdSettle(.climate, want: true)
+        }
     }
+
+    // MARK: No backend command — local mutation, flagged (see header)
 
     func setFanSpeed(_ speed: Int) async throws {
         // No §7.9 fan command and no wire field — a local-only setting. Touching
