@@ -24,6 +24,15 @@ final class PrimitiveTests: XCTestCase {
         XCTAssertEqual(MiniBattery(pct: 5, charging: true).fillColor, .mrtCharging)
     }
 
+    // MARK: Honest-unknown captions (MYR-255 / MYR-279)
+
+    func testValueAbsenceCaptions() {
+        XCTAssertEqual(MRTValueAbsence.syncing.caption, "Syncing")
+        XCTAssertEqual(MRTValueAbsence.unavailable.caption, "Unavailable")
+        // MYR-279 — TPMS guides the owner rather than a bare "Unavailable".
+        XCTAssertEqual(MRTValueAbsence.afterDrive.caption, "Available after your next drive")
+    }
+
     // MARK: Trip progress
 
     func testTripProgressClamp() {

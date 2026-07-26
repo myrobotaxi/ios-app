@@ -79,11 +79,17 @@ public struct StatRow<Content: View>: View {
 public enum MRTValueAbsence {
     case syncing
     case unavailable
+    /// A value that only exists after the car is driven — e.g. TPMS tire
+    /// pressures, which Tesla surfaces on the stream during/after a drive and
+    /// are absent on a cold parked read (MYR-279). Guides the owner ("drive
+    /// first") instead of the bare, confusing "Unavailable".
+    case afterDrive
 
     var caption: String {
         switch self {
         case .syncing: return "Syncing"
         case .unavailable: return "Unavailable"
+        case .afterDrive: return "Available after your next drive"
         }
     }
 }

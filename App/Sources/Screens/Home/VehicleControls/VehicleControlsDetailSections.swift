@@ -84,14 +84,17 @@ struct TirePressureSection: View {
             }
         }) {
             if pressures == nil {
-                // Not contracted yet — a calm, intentional honest-unknown row
-                // instead of fabricated psi numbers (MYR-228 / MYR-255).
+                // TPMS is genuinely uncontracted (not on the snapshot/stream on a
+                // cold parked read) — a calm, intentional honest state instead of
+                // fabricated psi numbers (MYR-228 / MYR-255). MYR-279: guide the
+                // owner ("Available after your next drive") rather than the bare,
+                // confusing "Unavailable".
                 HStack {
                     Text("Tire pressure")
                         .font(.system(size: 13))
                         .foregroundStyle(Color.mrtTextSec)
                     Spacer(minLength: 12)
-                    MRTUnavailableValue(.unavailable)
+                    MRTUnavailableValue(.afterDrive)
                 }
             } else {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
@@ -175,15 +178,18 @@ struct VehicleDetailsSection: View {
     var body: some View {
         SectionCard(title: "Vehicle details") {
             VStack(spacing: 0) {
-                // Model comes from the summary/state contract — real on live.
+                // MYR-279 — "{year} {model} {trim}" composed from the snapshot
+                // (e.g. "2026 Model Y Performance"), not the partial list model.
                 KV(label: "Model", value: vehicle.model, absence: .unavailable)
-                // Color is contracted (`VehicleState.color`) but may be blank on
-                // the backend → honest-unknown rather than an empty row (MYR-255).
+                // Color is contracted (`VehicleState.color`) but is blank for
+                // onboarded cars today (onboarding doesn't write it yet — MYR-283)
+                // → honest empty state rather than a fabricated color (MYR-279).
                 KV(label: "Color", value: vehicle.colorName, absence: .unavailable)
                 PlateRow(value: plate, onEdit: onEditPlate)
-                // Full VIN + software version are NOT contracted (only vinLast4,
-                // shown in the plate row above). Fixture-only → honest-unknown on
-                // the live path; both are on the MYR-255 backend-gap list.
+                // MYR-279 — full (owner-masked) VIN + Tesla software version now
+                // ride on the snapshot (telemetry PR #325); nil before the first
+                // snapshot streams in → honest-unknown. VIN is owner-only P0 data
+                // shown in the owner's own details screen and is never logged.
                 KV(label: "VIN", value: vehicle.vin, absence: .unavailable)
                 KV(label: "Software", value: vehicle.softwareVersion, absence: .unavailable)
             }

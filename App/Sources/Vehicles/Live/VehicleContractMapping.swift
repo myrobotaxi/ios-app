@@ -182,18 +182,36 @@ enum VehicleContractMapping {
     static func vehicle(summary: VehicleSummary, state: VehicleState? = nil) -> Vehicle {
         let activity: VehicleActivity = state.map(activity(from:))
             ?? placeholderActivity(for: summary)
+        // MYR-279 — make/model, color, full VIN, and software version are sourced
+        // from the full `VehicleState` snapshot once it has arrived: telemetry
+        // PR #325 populates `year`/`model`/`trim`/`color`/`vin`/`softwareVersion`
+        // authoritatively there, while the lean list `VehicleSummary` was showing
+        // a partial model (the client's bare "Model" — a wrong-source display bug).
+        // The snapshot composes the full "{year} {model} {trim}". Fall back to the
+        // summary before the first snapshot streams in.
+        let model = state.map { modelLabel(year: $0.year, model: $0.model, trim: $0.trim) }
+            ?? modelLabel(year: summary.year, model: summary.model)
+        // Prefer the snapshot's color, else the summary's; both may be blank today
+        // (react-frontend onboarding doesn't write color yet — MYR-283) → the
+        // detail row renders an honest empty state rather than a fabricated color.
+        let colorName = nonEmpty(state?.color) ?? summary.color
         return Vehicle(
             id: summary.vehicleId,
             name: nonEmpty(summary.name) ?? summary.model,
-            model: modelLabel(year: summary.year, model: summary.model),
-            colorName: summary.color,
+            model: model,
+            colorName: colorName,
             plate: plateDisplay(vinLast4: summary.vinLast4),
             seatHeat: false,
             // MYR-252 — the seat Heat/Cool affordance follows the car's real
             // `seatVentEnabled` read-back once a snapshot arrives; `false` (no
             // snapshot yet, or car reports vent off) leaves the heating-only UI.
             seatVent: state?.seatVentEnabled ?? false,
-            activity: activity
+            activity: activity,
+            // MYR-279 — the owner's full (owner-masked) VIN + the Tesla software
+            // version now ride on the snapshot; nil before the first snapshot →
+            // the detail rows render honest-unknown. Never logged (owner P0 data).
+            vin: nonEmpty(state?.vin),
+            softwareVersion: nonEmpty(state?.softwareVersion)
         )
     }
 
@@ -230,12 +248,16 @@ enum VehicleContractMapping {
 
     // MARK: - Helpers
 
-    /// `"2024 Model 3 LR"`-style label from the year + model wire fields, matching
-    /// the fixture `Vehicle.model` shape.
-    static func modelLabel(year: Int, model: String) -> String {
-        let trimmed = model.trimmingCharacters(in: .whitespaces)
-        guard year > 0 else { return trimmed }
-        return "\(year) \(trimmed)"
+    /// `"2026 Model Y Performance"`-style label from the year + model + trim wire
+    /// fields (MYR-279), matching the fixture `Vehicle.model` shape. Each part is
+    /// dropped gracefully when absent: a zero year is omitted, and a nil/blank trim
+    /// falls back to "{year} {model}" (e.g. "2026 Model Y").
+    static func modelLabel(year: Int, model: String, trim: String? = nil) -> String {
+        var parts: [String] = []
+        if year > 0 { parts.append("\(year)") }
+        if let model = nonEmpty(model) { parts.append(model) }
+        if let trim = nonEmpty(trim) { parts.append(trim) }
+        return parts.joined(separator: " ")
     }
 
     /// Tesla telemetry has no license-plate field; the VIN last-4 stands in for

@@ -232,6 +232,77 @@ final class VehicleContractMappingTests: XCTestCase {
         XCTAssertFalse(VehicleContractMapping.vehicle(summary: Contracts.summary()).seatVent)
     }
 
+    // MARK: MYR-279 — vehicle-details fields from the live snapshot
+
+    func testVehicleRowComposesFullModelFromLiveStateTrim() {
+        // The wrong-source display bug: the summary carries a partial model, the
+        // snapshot the authoritative "{year} {model} {trim}". A live state wins.
+        var state = Contracts.parkedState()
+        state.model = "Model Y"
+        state.year = 2026
+        state.trim = "Performance"
+        let vehicle = VehicleContractMapping.vehicle(summary: Contracts.summary(model: "Model", year: 0), state: state)
+        XCTAssertEqual(vehicle.model, "2026 Model Y Performance")
+    }
+
+    func testVehicleRowModelFallsBackToSummaryBeforeSnapshot() {
+        // No snapshot yet → the summary's model/year still label the row.
+        let vehicle = VehicleContractMapping.vehicle(summary: Contracts.summary(model: "Model 3 LR", year: 2024))
+        XCTAssertEqual(vehicle.model, "2024 Model 3 LR")
+    }
+
+    func testVehicleRowPopulatesVinAndSoftwareFromLiveState() {
+        var state = Contracts.parkedState()
+        state.vin = "7SAYGDEE9RA123456"
+        state.softwareVersion = "2026.14.3"
+        let vehicle = VehicleContractMapping.vehicle(summary: Contracts.summary(), state: state)
+        XCTAssertEqual(vehicle.vin, "7SAYGDEE9RA123456")
+        XCTAssertEqual(vehicle.softwareVersion, "2026.14.3")
+    }
+
+    func testVehicleRowVinAndSoftwareHonestUnknownBeforeSnapshot() {
+        // No snapshot → nil, so the KV rows render the honest em-dash, not a
+        // fabricated / fixture VIN or version on the live path.
+        let vehicle = VehicleContractMapping.vehicle(summary: Contracts.summary())
+        XCTAssertNil(vehicle.vin)
+        XCTAssertNil(vehicle.softwareVersion)
+    }
+
+    func testVehicleRowBlankVinAndSoftwareMapToHonestUnknown() {
+        // A present-but-blank wire value is treated as absent (honest-unknown),
+        // never rendered as an empty row.
+        var state = Contracts.parkedState()
+        state.vin = "   "
+        state.softwareVersion = ""
+        let vehicle = VehicleContractMapping.vehicle(summary: Contracts.summary(), state: state)
+        XCTAssertNil(vehicle.vin)
+        XCTAssertNil(vehicle.softwareVersion)
+    }
+
+    func testVehicleRowColorHonestEmptyWhenBlankEverywhere() {
+        // Color isn't written by onboarding yet (MYR-283): blank on both summary
+        // and snapshot → an empty colorName that renders the honest em-dash, never
+        // a fabricated color.
+        var state = Contracts.parkedState()
+        state.color = ""
+        let vehicle = VehicleContractMapping.vehicle(summary: Contracts.summary(color: ""), state: state)
+        XCTAssertTrue(vehicle.colorName.isEmpty)
+    }
+
+    func testVehicleRowPrefersSnapshotColorWhenPresent() {
+        var state = Contracts.parkedState()
+        state.color = "Quicksilver"
+        let vehicle = VehicleContractMapping.vehicle(summary: Contracts.summary(color: ""), state: state)
+        XCTAssertEqual(vehicle.colorName, "Quicksilver")
+    }
+
+    func testVehicleRowLiveTirePressuresAbsentForHonestState() {
+        // TPMS is uncontracted → a live-mapped row never carries fixture pressures,
+        // so the Tire section renders the honest "Available after your next drive".
+        let vehicle = VehicleContractMapping.vehicle(summary: Contracts.summary(), state: Contracts.parkedState())
+        XCTAssertNil(vehicle.tirePressures)
+    }
+
     func testVehicleRowUsesPlaceholderActivityBeforeSnapshot() {
         // No live state yet → a parked "Locating…" placeholder for a parked row.
         let vehicle = VehicleContractMapping.vehicle(summary: Contracts.summary(status: .parked))
@@ -266,6 +337,30 @@ final class VehicleContractMappingTests: XCTestCase {
     func testModelLabelOmitsYearWhenZero() {
         XCTAssertEqual(VehicleContractMapping.modelLabel(year: 0, model: "Cybercab"), "Cybercab")
         XCTAssertEqual(VehicleContractMapping.modelLabel(year: 2026, model: "Cybercab"), "2026 Cybercab")
+    }
+
+    // MARK: MYR-279 — model label composes year + model + trim
+
+    func testModelLabelComposesYearModelTrim() {
+        // The client's target: "2026 Model Y Performance".
+        XCTAssertEqual(
+            VehicleContractMapping.modelLabel(year: 2026, model: "Model Y", trim: "Performance"),
+            "2026 Model Y Performance"
+        )
+    }
+
+    func testModelLabelDropsTrimGracefullyWhenAbsent() {
+        // nil / blank trim → "{year} {model}" (e.g. "2026 Model Y"), never a
+        // trailing space or an empty component.
+        XCTAssertEqual(VehicleContractMapping.modelLabel(year: 2026, model: "Model Y", trim: nil), "2026 Model Y")
+        XCTAssertEqual(VehicleContractMapping.modelLabel(year: 2026, model: "Model Y", trim: ""), "2026 Model Y")
+        XCTAssertEqual(VehicleContractMapping.modelLabel(year: 2026, model: "Model Y", trim: "   "), "2026 Model Y")
+    }
+
+    func testModelLabelDropsYearAndModelGracefully() {
+        // A zero year drops just the year; a blank model drops just the model.
+        XCTAssertEqual(VehicleContractMapping.modelLabel(year: 0, model: "Model Y", trim: "Performance"), "Model Y Performance")
+        XCTAssertEqual(VehicleContractMapping.modelLabel(year: 2026, model: "", trim: "Performance"), "2026 Performance")
     }
 
     func testRouteCoordinatesDropMalformedPairs() {

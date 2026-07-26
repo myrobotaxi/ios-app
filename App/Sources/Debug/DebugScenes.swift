@@ -90,6 +90,19 @@ enum DebugScene: String, CaseIterable {
     /// copy full-frame in the simulator (no live backend). Pair with
     /// `MRT_OWNER_DETENT=half` to boot at the controls detent.
     case ownerControlsUnavailable
+    /// MYR-279 — owner Home sheet showing the vehicle-details section with a
+    /// live-like snapshot: make/model "2026 Model Y Performance", full VIN +
+    /// software version populated, and the HONEST empty states for color
+    /// ("— Unavailable") and tire pressure ("Available after your next drive").
+    /// Injects `DebugVehicleDetailsFleet` (no live backend). Pair with
+    /// `MRT_OWNER_DETENT=half` to boot at the controls detent; the details scene
+    /// anchors the dense scroll to the bottom so the section is in-frame.
+    case ownerVehicleDetails
+    /// MYR-279 — same live-like fleet as `ownerVehicleDetails`, but the dense
+    /// sheet is scrolled to the TIRE PRESSURE section so its honest
+    /// "Available after your next drive" state is in-frame for a full-frame
+    /// screenshot. Pair with `MRT_OWNER_DETENT=half`.
+    case ownerVehicleTires
     /// MYR-265 — owner Home AFTER accepting a ride: the ride-aware dispatch banner
     /// in its leg-1 "En route to pickup · picking up <Name>" state (seeds an
     /// accepted owner ride). `…Enroute` seeds the leg-2 "<Name> aboard · heading
@@ -192,6 +205,7 @@ enum DebugScene: String, CaseIterable {
         self == .ownerHome || self == .ownerDrives || self == .ownerIncoming
             || self == .ownerScheduled || self == .ownerSettings
             || self == .ownerControlsUnavailable
+            || self == .ownerVehicleDetails || self == .ownerVehicleTires
             || self == .ownerDispatched || self == .ownerDispatchedArrived
             || self == .ownerDispatchedEnroute
     }
@@ -202,7 +216,26 @@ enum DebugScene: String, CaseIterable {
     /// normal owner paths use the simulated fleet unchanged.
     @MainActor
     var previewFleet: (any VehicleFleet)? {
-        self == .ownerControlsUnavailable ? DebugUnavailableControlsFleet() : nil
+        switch self {
+        case .ownerControlsUnavailable: return DebugUnavailableControlsFleet()
+        case .ownerVehicleDetails, .ownerVehicleTires: return DebugVehicleDetailsFleet()
+        default: return nil
+        }
+    }
+
+    /// MYR-279 — where the dense sheet scroll should rest for the vehicle-details
+    /// capture scenes: the BOTTOM (the details section is the last section) for
+    /// `ownerVehicleDetails`, or the TIRE section anchor for `ownerVehicleTires`.
+    /// `nil` everywhere else, so no other scene's scroll position changes.
+    var sheetScrollTarget: DebugSheetScroll? {
+        switch self {
+        case .ownerVehicleDetails: return .bottom
+        // The Tire pressure section sits a little above the vertical middle of the
+        // dense content; anchoring the content's ~55% point to the viewport brings
+        // its honest state in-frame at the half detent.
+        case .ownerVehicleTires: return .fraction(0.55)
+        default: return nil
+        }
     }
 
     private var isScheduled: Bool {
@@ -383,9 +416,22 @@ enum DebugScene: String, CaseIterable {
         case .modeChooser, .ownerSettings, .riderSettings,
              .scheduledDetails, .scheduledReschedule, .scheduledRequested, .scheduledConfirmCancel,
              .ownerHome, .ownerDrives, .ownerIncoming, .ownerScheduled, .ownerControlsUnavailable,
+             .ownerVehicleDetails, .ownerVehicleTires,
              .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute:
             break // chooser / settings / rider live-map / owner scenes don't drive the viewer sheet
         }
     }
+}
+
+// MARK: - Dense-sheet scroll target (MYR-279 drift-gate)
+
+/// Where a capture scene rests the owner sheet's dense scroll so a specific
+/// section is in-frame for a full-frame screenshot. DEBUG-only.
+enum DebugSheetScroll: Equatable {
+    /// Anchor the scroll to the bottom (the vehicle-details section is last).
+    case bottom
+    /// Anchor the given VERTICAL fraction of the content to the viewport, e.g.
+    /// 0.55 to bring a mid-stack section (Tire pressure) in-frame.
+    case fraction(CGFloat)
 }
 #endif

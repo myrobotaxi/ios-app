@@ -348,7 +348,7 @@ struct HomeScreen: View {
                 // HIGH layer — the full dense content, scrollable exactly as
                 // before. Its ScrollView is the one the engine's scroll handoff
                 // discovers (base + peek layer have none).
-                ScrollView {
+                debugAnchoredScroll {
                     sheetDense(vehicle: vehicle, snapshot: snapshot)
                         .padding(.horizontal, MRTMetrics.pageGutter)
                         .padding(.top, 6) // screens.jsx:542 `padding: '6px 24px 100px'`
@@ -356,6 +356,26 @@ struct HomeScreen: View {
                 }
             }
         )
+    }
+
+    /// The expanded-layer scroll view. Normally a plain `ScrollView`; the
+    /// MYR-279 `ownerVehicleDetails` capture scene anchors it to the BOTTOM so
+    /// the vehicle-details section is in-frame for one full-frame screenshot.
+    /// Release builds compile the plain `ScrollView` — the sheet is untouched.
+    @ViewBuilder
+    private func debugAnchoredScroll<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        #if DEBUG
+        switch DebugScene.current?.sheetScrollTarget {
+        case .bottom:
+            ScrollView { content() }.defaultScrollAnchor(.bottom)
+        case .fraction(let y):
+            ScrollView { content() }.defaultScrollAnchor(UnitPoint(x: 0.5, y: y))
+        case nil:
+            ScrollView { content() }
+        }
+        #else
+        ScrollView { content() }
+        #endif
     }
 
     /// MYR-171 — fires once `IncomingRequestSheet`'s own sending/sent
