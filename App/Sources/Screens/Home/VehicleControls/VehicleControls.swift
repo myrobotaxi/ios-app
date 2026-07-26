@@ -56,7 +56,10 @@ struct VehicleControls: View {
                 seatVent: vehicle.seatVent,
                 executor: executor,
                 cabinTemp: cabinTemp,
-                extTemp: extTemp
+                extTemp: extTemp,
+                // MYR-280 — the seat honest-unknown (Syncing vs Unavailable) reuses
+                // the quick-tile freshness signal; `nil` on the simulated path.
+                isStreaming: isStreaming
             )
 
             MediaSection(
@@ -118,17 +121,15 @@ struct VehicleControls: View {
     private var hasSnapshot: Bool { isStreaming != nil }
 
     /// The stale "X ago" label for a KNOWN safety value (Trunk/Lock), or `nil`
-    /// when genuinely fresh (simulated path, or a streaming car within the
-    /// threshold). A NON-streaming car's known value is never "live", so it
-    /// always carries the qualifier when we have a read time — even if
-    /// `lastUpdated` is recent — so a freshly-offline car never presents old
-    /// state as current (MYR-260). Evaluated against `Date()` at render time.
+    /// when the value is fresh enough to show bare. MYR-281: the qualifier now
+    /// appears ONLY once a value is genuinely STALE (past the freshness
+    /// threshold), so the everyday case keeps a short, uniform sub ("Closed", not
+    /// "Closed · just now") — the sub-60s "just now" is dropped. A non-streaming
+    /// car past the threshold still surfaces how long ago it was heard from, and
+    /// the footer always states "Not live", so honesty (MYR-260) is preserved.
     private var staleAgo: String? {
-        guard let lastUpdated,
-              VehicleControlFreshness.showsQualifier(
-                isStreaming: isStreaming, lastUpdated: lastUpdated, now: Date())
-        else { return nil }
-        return VehicleControlFreshness.agoLabel(since: lastUpdated, now: Date())
+        VehicleControlFreshness.staleQualifier(
+            isStreaming: isStreaming, lastUpdated: lastUpdated, now: Date())
     }
 
     /// The honest freshness footer. The simulated path (no `isStreaming` signal)
@@ -314,15 +315,15 @@ private struct ControlTile: View {
                         .foregroundStyle(subColor)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        // MYR-260 — the honest states add a few physically-wider
-                        // subs ("— Unavailable", "Synced 2h ago", "Open · 2h ago")
-                        // that overran the 0.75 floor and truncated the key word.
-                        // A lower floor lets them shrink to fit instead. SwiftUI
-                        // picks the LARGEST scale ≥ floor that fits, so the shorter
-                        // M1 subs (all of which already fit at ≥ 0.75) are
-                        // unchanged — the simulated / drift-gate scenes stay
-                        // pixel-identical.
-                        .minimumScaleFactor(0.6)
+                        // MYR-281 — NO per-tile scaling. `minimumScaleFactor` let
+                        // each sub pick its own point size (a long sub shrank while
+                        // a short one stayed full), so adjacent tiles rendered the
+                        // sub at visibly different sizes ("looks cheap", client).
+                        // Every sub now renders at the one 11pt size (matching the
+                        // prototype, which is uniform 11px + ellipsis) and
+                        // tail-truncates on overflow like the prototype. The
+                        // freshness qualifier is kept off the fresh common case
+                        // (see `staleAgo`), so the everyday subs stay short.
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

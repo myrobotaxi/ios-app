@@ -91,6 +91,16 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     private var settleHold: [VehicleControlKey: (want: Bool, until: Date)] = [:]
     private let settleWindow: TimeInterval
 
+    /// Seat-climate settle-window guard (MYR-280), the two-field analogue of
+    /// `settleHold`: a seat's committed state is (mode, level), not a bool. After a
+    /// seat command acks we record the commanded (mode, level) + a deadline;
+    /// `reconcileSeat` ignores a DISAGREEING streamed frame for that seat until the
+    /// car confirms it or the deadline lapses — so a stale WS frame (the level the
+    /// car streamed a second ago, or a heater read-back arriving after we switched
+    /// to cool) can't clobber the optimistic seat state, exactly as MYR-272 fixed
+    /// for the boolean toggles.
+    private var seatSettleHold: [VehicleControlKey: (mode: VehicleSeatClimateMode, level: Int, until: Date)] = [:]
+
     init(
         vehicleID: String,
         sender: any VehicleCommandSending,
@@ -254,7 +264,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// the heater level (0 = off) shows in heat mode. Absent on both → stays unknown.
     private func reconcileSeat(_ seat: VehicleSeatPosition, key: VehicleControlKey, heater: Int?, cooler: Int?) {
         guard heater != nil || cooler != nil else { return }
-        if uiState(for: key).isPending { return }
+        if uiState(for: key).isPending { return } // command still in flight
         let mode: VehicleSeatClimateMode
         let level: Int
         if let cooler, cooler > 0 {
@@ -267,6 +277,18 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             // Only a cooler field, reading 0 → cool armed, off.
             mode = .cool
             level = 0
+        }
+        // Post-ack settle window (MYR-280): ignore a streamed seat state that
+        // DISAGREES with the just-commanded (mode, level) until the car confirms it
+        // or the window lapses (then accept the car's reported reality — honest).
+        if let hold = seatSettleHold[key] {
+            if mode == hold.mode && level == hold.level {
+                seatSettleHold[key] = nil // the car confirmed the commanded state
+            } else if Date() < hold.until {
+                return // settling — ignore a stale frame that disagrees
+            } else {
+                seatSettleHold[key] = nil // timed out — accept the car's reality
+            }
         }
         switch seat {
         case .driver:
@@ -371,6 +393,11 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         settleHold[key] = (want: want, until: Date().addingTimeInterval(settleWindow))
     }
 
+    /// Start the post-ack settle window for a commanded seat (see `seatSettleHold`).
+    private func holdSeatSettle(_ key: VehicleControlKey, mode: VehicleSeatClimateMode, level: Int) {
+        seatSettleHold[key] = (mode: mode, level: level, until: Date().addingTimeInterval(settleWindow))
+    }
+
     func setSeatHeatLevel(_ seat: VehicleSeatPosition, level: Int) async throws {
         let clamped = min(3, max(0, level))
         let key = Self.seatKey(seat)
@@ -383,14 +410,17 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             ? .seatCooler(side, uiLevel: clamped)
             : .seatHeater(side, uiLevel: clamped)
         await run(key, command: command) { [weak self] in
+            guard let self else { return }
             switch seat {
             case .driver:
-                self?.controls.driverSeatHeatLevel = clamped
-                self?.knownFields.insert(.driverSeat)
+                self.controls.driverSeatHeatLevel = clamped
+                self.knownFields.insert(.driverSeat)
             case .passenger:
-                self?.controls.passengerSeatHeatLevel = clamped
-                self?.knownFields.insert(.passengerSeat)
+                self.controls.passengerSeatHeatLevel = clamped
+                self.knownFields.insert(.passengerSeat)
             }
+            // Hold the optimistic (mode, level) against a stale frame (MYR-280).
+            self.holdSeatSettle(key, mode: mode, level: clamped)
         }
     }
 
@@ -398,17 +428,21 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         let oldMode = seat == .driver ? controls.driverSeatMode : controls.passengerSeatMode
         let oldLevel = seat == .driver ? controls.driverSeatHeatLevel : controls.passengerSeatHeatLevel
         let apply: @MainActor () -> Void = { [weak self] in
+            guard let self else { return }
             // vehicle-controls.jsx:90 — switching Heat/Cool resets the level.
             switch seat {
             case .driver:
-                self?.controls.driverSeatMode = newMode
-                self?.controls.driverSeatHeatLevel = 0
-                self?.knownFields.insert(.driverSeat)
+                self.controls.driverSeatMode = newMode
+                self.controls.driverSeatHeatLevel = 0
+                self.knownFields.insert(.driverSeat)
             case .passenger:
-                self?.controls.passengerSeatMode = newMode
-                self?.controls.passengerSeatHeatLevel = 0
-                self?.knownFields.insert(.passengerSeat)
+                self.controls.passengerSeatMode = newMode
+                self.controls.passengerSeatHeatLevel = 0
+                self.knownFields.insert(.passengerSeat)
             }
+            // Hold the optimistic mode switch against a stale frame (MYR-280) — e.g.
+            // the heater level the car streamed just before it stopped for cool.
+            self.holdSeatSettle(Self.seatKey(seat), mode: newMode, level: 0)
         }
         // Nothing was actively heating/cooling → the mode switch is a pure local
         // arm change (no vehicle actuation to make).

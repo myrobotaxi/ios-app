@@ -124,4 +124,92 @@ final class VehicleControlFreshnessTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 1_000_000)
         XCTAssertEqual(VehicleControlFreshness.agoLabel(since: now.addingTimeInterval(10), now: now), "just now")
     }
+
+    // MARK: MYR-281 — staleQualifier: qualifier only when GENUINELY stale
+    //
+    // The tile sub drops the sub-60s "just now" so the everyday case stays short +
+    // uniform (the "cheap look" was a long sub scaling down beside a short one);
+    // a genuinely stale value still surfaces "X ago", and the simulated path never
+    // qualifies.
+
+    func testStaleQualifierOmitsFreshStreamingValue() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertNil(VehicleControlFreshness.staleQualifier(
+            isStreaming: true, lastUpdated: now.addingTimeInterval(-20), now: now),
+            "a fresh streaming value shows bare — no qualifier")
+    }
+
+    func testStaleQualifierOmitsRecentNonStreamingValue() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        // Car offline 10s ago: showsQualifier is TRUE, but MYR-281 still omits the
+        // sub-60s "just now" so the tile stays short (footer carries "Not live").
+        XCTAssertNil(VehicleControlFreshness.staleQualifier(
+            isStreaming: false, lastUpdated: now.addingTimeInterval(-10), now: now),
+            "recent non-streaming value drops the noisy 'just now' qualifier")
+    }
+
+    func testStaleQualifierShowsAgoForOldNonStreamingValue() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertEqual(VehicleControlFreshness.staleQualifier(
+            isStreaming: false, lastUpdated: now.addingTimeInterval(-2 * 3600), now: now), "2h ago",
+            "a genuinely stale offline value still surfaces how long ago")
+    }
+
+    func testStaleQualifierShowsAgoForStalledStream() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertEqual(VehicleControlFreshness.staleQualifier(
+            isStreaming: true, lastUpdated: now.addingTimeInterval(-5 * 60), now: now), "5m ago")
+    }
+
+    func testStaleQualifierNilOnSimulatedPath() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertNil(VehicleControlFreshness.staleQualifier(
+            isStreaming: nil, lastUpdated: nil, now: now))
+        XCTAssertNil(VehicleControlFreshness.staleQualifier(
+            isStreaming: nil, lastUpdated: now.addingTimeInterval(-9999), now: now),
+            "nil isStreaming (M1) never qualifies")
+    }
+}
+
+// MARK: - MYR-280 — SeatClimatePresentation (pure seat-section decisions)
+
+final class SeatClimatePresentationTests: XCTestCase {
+
+    func testSupportsCoolWhenVent() {
+        XCTAssertTrue(SeatClimatePresentation.supportsCool(seatVent: true, driverMode: .heat, passengerMode: .heat))
+    }
+
+    func testSupportsCoolWhenASeatReadsCoolEvenWithoutVentFlag() {
+        // The client's incoherence: a seat streaming a cool state on a car whose
+        // vent flag is false must STILL offer the toggle (and read "SEAT CLIMATE"),
+        // never a snowflake stranded under "SEAT HEATING".
+        XCTAssertTrue(SeatClimatePresentation.supportsCool(seatVent: false, driverMode: .cool, passengerMode: .heat))
+        XCTAssertTrue(SeatClimatePresentation.supportsCool(seatVent: false, driverMode: .heat, passengerMode: .cool))
+    }
+
+    func testHeatOnlyCarDoesNotSupportCool() {
+        XCTAssertFalse(SeatClimatePresentation.supportsCool(seatVent: false, driverMode: .heat, passengerMode: .heat))
+    }
+
+    func testSectionLabelIsHonest() {
+        XCTAssertEqual(SeatClimatePresentation.sectionLabel(supportsCool: true), "SEAT CLIMATE")
+        XCTAssertEqual(SeatClimatePresentation.sectionLabel(supportsCool: false), "SEAT HEATING")
+    }
+
+    func testIconIsSingleMetaphorPerMode() {
+        XCTAssertEqual(SeatClimatePresentation.icon(mode: .heat), "flame.fill", "heat is a flame, not a sun")
+        XCTAssertEqual(SeatClimatePresentation.icon(mode: .cool), "snowflake")
+    }
+
+    func testStateCaptionStatesModeInWords() {
+        XCTAssertEqual(SeatClimatePresentation.stateCaption(known: true, mode: .heat, level: 2), "Heating")
+        XCTAssertEqual(SeatClimatePresentation.stateCaption(known: true, mode: .cool, level: 3), "Cooling")
+        XCTAssertEqual(SeatClimatePresentation.stateCaption(known: true, mode: .heat, level: 0), "Off")
+        XCTAssertEqual(SeatClimatePresentation.stateCaption(known: true, mode: .cool, level: 0), "Off",
+            "off is off regardless of the armed mode")
+    }
+
+    func testStateCaptionIsNilWhenUnknownSoCallerShowsFreshnessSub() {
+        XCTAssertNil(SeatClimatePresentation.stateCaption(known: false, mode: .heat, level: 0))
+    }
 }

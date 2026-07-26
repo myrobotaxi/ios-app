@@ -433,6 +433,70 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         XCTAssertFalse(exec.controls.locked)
     }
 
+    // MARK: MYR-280 — seat heat↔cool settle window (stale WS frame must not clobber)
+
+    /// After a seat heat-level command acks, a STALE streamed frame reporting the
+    /// OLD level must NOT revert the optimistic seat state — until the car confirms
+    /// or the window lapses (the MYR-272 discipline, extended to seats).
+    func testSeatLevelSurvivesStaleFrameThenConfirms() async {
+        let exec = makeExecutor(ScriptedCommandSender())
+        // Driver seeds .heat level 2 → command a new level 3.
+        try? await exec.setSeatHeatLevel(.driver, level: 3)
+        XCTAssertEqual(exec.controls.driverSeatHeatLevel, 3, "optimistic level applied on ack")
+
+        // The car keeps streaming the OLD level 2 right after the ack.
+        var stale = Contracts.parkedState(); stale.seatHeaterLeft = 2; stale.seatCoolerLeft = 0
+        exec.reconcile(from: stale)
+        XCTAssertEqual(exec.controls.driverSeatHeatLevel, 3, "stale seat frame ignored within the settle window")
+        XCTAssertEqual(exec.controls.driverSeatMode, .heat)
+
+        // The car finally reflects level 3 — confirmation clears the hold.
+        var confirm = Contracts.parkedState(); confirm.seatHeaterLeft = 3; confirm.seatCoolerLeft = 0
+        exec.reconcile(from: confirm)
+        XCTAssertEqual(exec.controls.driverSeatHeatLevel, 3)
+
+        // Hold cleared → a later GENUINE external change is honored again.
+        exec.reconcile(from: stale)
+        XCTAssertEqual(exec.controls.driverSeatHeatLevel, 2, "after confirmation the live stream drives the seat")
+    }
+
+    /// Switching a seat heat→cool holds the optimistic cool arm against a stale
+    /// HEATER read-back that arrives right after the switch (MYR-280).
+    func testSeatModeSwitchSurvivesStaleHeaterFrame() async {
+        let exec = makeExecutor(ScriptedCommandSender())
+        // Driver seeds .heat level 2 → switch to cool (sends heater OFF, arms cool@0).
+        try? await exec.setSeatClimateMode(.driver, mode: .cool)
+        XCTAssertEqual(exec.controls.driverSeatMode, .cool)
+        XCTAssertEqual(exec.controls.driverSeatHeatLevel, 0)
+
+        // A stale frame still reporting the old heater level 2 must not flip it back.
+        var stale = Contracts.parkedState(); stale.seatHeaterLeft = 2; stale.seatCoolerLeft = 0
+        exec.reconcile(from: stale)
+        XCTAssertEqual(exec.controls.driverSeatMode, .cool, "stale heater frame ignored — seat stays armed cool")
+        XCTAssertEqual(exec.controls.driverSeatHeatLevel, 0)
+
+        // The car confirms cool (armed, off) → hold clears.
+        var confirm = Contracts.parkedState(); confirm.seatHeaterLeft = 0; confirm.seatCoolerLeft = 0
+        exec.reconcile(from: confirm)
+        XCTAssertEqual(exec.controls.driverSeatMode, .cool)
+    }
+
+    /// Honest revert: if the car NEVER confirms the commanded seat state, after the
+    /// window lapses the live stream's contradicting reality wins (MYR-280).
+    func testSeatRevertsToRealityAfterSettleWindow() async {
+        let exec = makeExecutor(ScriptedCommandSender(), settleWindow: 0.05)
+        try? await exec.setSeatHeatLevel(.driver, level: 3)
+        XCTAssertEqual(exec.controls.driverSeatHeatLevel, 3)
+
+        var contradicting = Contracts.parkedState(); contradicting.seatHeaterLeft = 1; contradicting.seatCoolerLeft = 0
+        exec.reconcile(from: contradicting)
+        XCTAssertEqual(exec.controls.driverSeatHeatLevel, 3, "held within the window")
+
+        try? await Task.sleep(for: .milliseconds(80))
+        exec.reconcile(from: contradicting)
+        XCTAssertEqual(exec.controls.driverSeatHeatLevel, 1, "after the window, the car's reality wins (honest)")
+    }
+
     /// Active cooling reconciles to cool mode at the reported level.
     func testSeatCoolerReconcilesToCoolMode() {
         let exec = makeExecutor(ScriptedCommandSender())
