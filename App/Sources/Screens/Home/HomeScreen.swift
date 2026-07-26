@@ -101,7 +101,13 @@ struct HomeScreen: View {
     /// ride is heading to the pickup (leg 1: `.accepted`/`.arrived`); `nil`
     /// otherwise so the owner map only draws the car→pickup route during leg 1.
     private var leg1PickupCoordinate: CLLocationCoordinate2D? {
-        guard let ride = dispatchedRide, ride.status == .accepted || ride.status == .arrived else { return nil }
+        guard let ride = dispatchedRide, ride.status == .accepted || ride.status == .arrived,
+              // Only draw the pickup route when the vehicle ON SCREEN is the one
+              // actually dispatched — otherwise switching the map to another car
+              // mid-dispatch would draw a spurious route from the wrong vehicle
+              // (MYR-277 review).
+              ride.input.fleetMemberID == homeState.selectedVehicle?.id
+        else { return nil }
         return ride.input.pickup.coordinate
     }
 

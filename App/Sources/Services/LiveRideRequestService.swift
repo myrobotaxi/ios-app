@@ -560,7 +560,11 @@ final class LiveRideRequestService: RideRequestService {
             // real "<Name> wants a ride" instead of the neutral "Shared viewer".
             // The two-device owner path builds its record in the `else if` branch
             // below (via `record(from:)`) and is unaffected by this fold.
-            current.input.requesterName = ride.requesterName ?? current.input.requesterName
+            // Prefer a non-empty refetched name; never overwrite a known name with
+            // nil OR an empty string (MYR-277 review — symmetric with preferRicherPlace).
+            if let name = ride.requesterName, !name.trimmingCharacters(in: .whitespaces).isEmpty {
+                current.input.requesterName = name
+            }
             current.input.pickup = Self.preferRicherPlace(local: current.input.pickup, refetched: refetched.input.pickup)
             current.input.destination = Self.preferRicherPlace(local: current.input.destination, refetched: refetched.input.destination)
             // MYR-265: seed the per-leg tracking anchor so a WS-driven status change
