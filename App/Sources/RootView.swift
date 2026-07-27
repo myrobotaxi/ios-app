@@ -449,7 +449,15 @@ struct RootView: View {
                             ownerDrivesState.openDriveID = nil
                         }
                     } else {
-                        DrivesScreen(homeState: ownerHomeState, drivesState: ownerDrivesState, ownerTab: $ownerTab)
+                        // MYR-287 — `isLive` gates the header's lifetime-odometer
+                        // figure (real snapshot odometer live, the prototype's
+                        // 42,184 literal in SIM).
+                        DrivesScreen(
+                            homeState: ownerHomeState,
+                            drivesState: ownerDrivesState,
+                            ownerTab: $ownerTab,
+                            isLive: isLiveMode
+                        )
                     }
                 case "invites":
                     InvitesScreen(shareState: ownerShareState, ownerTab: $ownerTab)
