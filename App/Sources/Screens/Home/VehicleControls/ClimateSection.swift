@@ -111,6 +111,14 @@ struct ClimateSection: View {
             // a seat already reading cool), so a snowflake never sits under a
             // "heating" label with no way to switch it. A genuinely heat-only car
             // keeps the honest "SEAT HEATING" label + no toggle.
+            //
+            // MYR-299 — `seatVent` is now the ventilated-seat CAPABILITY, derived
+            // upstream from the PRESENCE of the seat-cooler read-backs
+            // (`SeatClimatePresentation.hasVentilatedSeats`, applied in
+            // `VehicleContractMapping`). It used to be the `seatVentEnabled` runtime
+            // flag, so the toggle only appeared while the car was already cooling.
+            // Nothing in this view changes: a vented car now simply reads `true`
+            // with both seats off, which is what the client asked for.
             let supportsCool = SeatClimatePresentation.supportsCool(
                 seatVent: seatVent,
                 driverMode: controls.driverSeatMode,

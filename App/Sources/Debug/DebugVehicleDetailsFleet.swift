@@ -37,11 +37,17 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
     var isConnecting: Bool { false }
     var statusMessage: String? { nil }
 
-    init() {
+    /// MYR-299 — when true the snapshot additionally carries the seat read-backs of
+    /// a VENTILATED car with everything OFF: `seatCoolerLeft`/`seatCoolerRight` are
+    /// present at `0` and `seatVentEnabled` is a deliberate `false`. That is the
+    /// client's exact car, and it is precisely the combination the old predicate
+    /// got wrong — so the capture exercises the shipping presence rule end to end
+    /// (through the real `VehicleContractMapping`), not a fixture `seatVent` flag.
+    init(seatCoolingCapable: Bool = false) {
         // A live-like snapshot: full model/year/trim, full VIN + software version,
         // and a BLANK color (onboarding gap, MYR-283). Streaming/online so the
         // footer honestly reads "Live".
-        let state = Self.detailsState()
+        let state = Self.detailsState(seatCoolingCapable: seatCoolingCapable)
         let summary = VehicleSummary(
             vehicleId: "debug-mdy",
             name: "Model Y",
@@ -82,10 +88,11 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
     func handleForeground() {}
     func handleBackground() {}
 
-    /// A parked, streaming `VehicleState` carrying the MYR-279 detail fields.
-    static func detailsState() -> VehicleState {
+    /// A parked, streaming `VehicleState` carrying the MYR-279 detail fields, plus
+    /// (MYR-299, opt-in) the vented-car seat read-backs described on `init`.
+    static func detailsState(seatCoolingCapable: Bool = false) -> VehicleState {
         let iso = ISO8601DateFormatter().string(from: Date())
-        return VehicleState(
+        var state = VehicleState(
             vehicleId: "debug-mdy",
             name: "Model Y",
             model: "Model Y",
@@ -110,6 +117,22 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             fsdMilesSinceReset: 11274,
             lastUpdated: iso
         )
+        if seatCoolingCapable {
+            // Climate ON so `ClimateSection` renders `onContent` — the seat rows
+            // only exist there (the off/unknown branches show the temp summary).
+            state.isClimateOn = true
+            state.fanSpeed = 3
+            state.driverTempSetting = 70
+            // Both seats OFF, but the cooler fields are PRESENT — the capability
+            // signal. `seatVentEnabled: false` is deliberate: under the old
+            // predicate this exact car read heat-only and Cool was unreachable.
+            state.seatHeaterLeft = 0
+            state.seatHeaterRight = 0
+            state.seatCoolerLeft = 0
+            state.seatCoolerRight = 0
+            state.seatVentEnabled = false
+        }
+        return state
     }
 }
 
