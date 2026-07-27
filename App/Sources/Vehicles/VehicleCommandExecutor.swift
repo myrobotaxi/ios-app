@@ -65,24 +65,86 @@ public enum VehicleControlKey: Sendable, Hashable {
     case driverSeat     // remote_seat_heater_request / remote_seat_cooler_request
     case passengerSeat  // remote_seat_heater_request / remote_seat_cooler_request
     case media          // media_toggle_playback / next / prev (one in flight at a time)
+
+    /// The control's name in owner-facing copy (MYR-301). The notice row sits
+    /// BELOW the tile row, so it has to say which control it is talking about —
+    /// the tile's own label is too far away to carry that on its own.
+    public var displayName: String {
+        switch self {
+        case .lock: "Lock"
+        case .climate: "Climate"
+        case .temp: "Temperature"
+        case .trunk: "Trunk"
+        case .chargePort: "Charge port"
+        case .driverSeat: "Driver seat"
+        case .passengerSeat: "Passenger seat"
+        case .media: "Media"
+        }
+    }
+
+    /// The SF Symbol the quick tile uses, reused by the notice row's disc so the
+    /// row is visually tied to the tile that failed (MYR-301). Non-tile controls
+    /// don't need one — they render their notice in place, next to themselves.
+    public var tileIcon: String? {
+        switch self {
+        case .lock: "lock.fill"
+        case .climate: "fan"
+        case .trunk: "car.fill"
+        case .chargePort: "bolt.fill"
+        case .temp, .driverSeat, .passengerSeat, .media: nil
+        }
+    }
+}
+
+/// The owner action a notice can route to (MYR-301). A notice that names a
+/// broken Tesla connection is not just copy — it is a dead end unless the owner
+/// can get to the fix from where they read it, so the notice carries the route
+/// and every surface that renders notices makes it tappable (44pt).
+public enum VehicleCommandNoticeAction: Sendable, Equatable {
+    /// Re-run the Tesla account link (the same flow Settings → Tesla Account →
+    /// "Add another Tesla" / onboarding uses). Re-consent is what grants a
+    /// missing scope (e.g. `vehicle_charging_cmds`).
+    case relinkTesla
+
+    /// The gold pill's label on the notice row.
+    public var label: String {
+        switch self {
+        case .relinkTesla: "Reconnect"
+        }
+    }
 }
 
 /// A honest, non-dramatic notice for a failed/transient command (MYR-249).
 /// Maps 1:1 from the Kit's `RestError.CommandFailureKind` via
 /// `LiveVehicleCommandExecutor.notice(for:)`. Copy is deliberately quiet
 /// (design minimalism) and points at the owner action where one exists.
+///
+/// MYR-301 — a notice now carries THREE things, because the ~80pt control tile
+/// cannot hold a sentence (the client saw "Reconnec…"):
+///   • `tileText` — a SHORT token that fits the tile sub on one line at the one
+///     uniform 11pt size MYR-281 established (no per-tile scaling),
+///   • `message` — the FULL honest sentence, rendered on a full-width surface
+///     (the notice row under the tiles, the seat row's own line, the media line),
+///   • `action` — the route that FIXES it, where one exists.
 public enum VehicleCommandNotice: Sendable, Equatable {
-    case waking          // vehicle_asleep — the server retries; reflect that
+    case waking          // vehicle_asleep — in flight: the server/SDK is retrying
+    case asleep          // vehicle_asleep — settled: it did NOT wake in time (MYR-301)
     case pairKey         // key_not_paired — pair the virtual key in Tesla
     case relink          // permission_denied / not-owned / auth — reconnect Tesla
     case relinkCharging  // permission_denied on a charge-port command — the token
                          // lacks the `vehicle_charging_cmds` scope specifically
     case cooldown        // rate_limited (429) — brief "just a moment"
-    case failed          // command_failed / invalid / offline — couldn't reach the car
+    case rejected        // command_failed (502) — the CAR refused the action (MYR-301)
+    case failed          // transport / invalid / not-found — couldn't reach the car
 
     public var message: String {
         switch self {
         case .waking: "Waking the car\u{2026}"
+        // MYR-301 — 503 `vehicle_asleep` used to settle as "Waking the car…"
+        // (claiming an ongoing wake that had in fact given up) and read as the
+        // same "couldn't reach the car" class as a 502. It is neither: the car is
+        // simply asleep and the wake didn't land in time.
+        case .asleep: "Car is asleep \u{2014} try again shortly"
         case .pairKey: "Pair your key in Tesla"
         case .relink: "Reconnect Tesla to allow this"
         // The charge-port commands need the `vehicle_charging_cmds` scope, which
@@ -90,7 +152,38 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         // so the re-link is unambiguous.
         case .relinkCharging: "Reconnect Tesla for charging access"
         case .cooldown: "Just a moment\u{2026}"
+        // MYR-301 — 502 `command_failed` is a REJECTION by the vehicle, not a
+        // reachability problem: we reached the car and it said no. Saying
+        // "couldn't reach the car" for it is dishonest (and hid the asleep case).
+        case .rejected: "The car didn\u{2019}t accept that"
         case .failed: "Couldn\u{2019}t reach the car"
+        }
+    }
+
+    /// The tile sub token (MYR-301). MUST render within the control tile's inner
+    /// width (~54pt at the uniform 11pt sub size) so it never ellipsizes — see
+    /// `VehicleCommandNoticeTests.testTileTextFitsTheControlTile`, which measures
+    /// every case. The FULL `message` is surfaced on the notice row below the
+    /// tiles, so nothing is hidden by the shortening.
+    public var tileText: String {
+        switch self {
+        case .waking: "Waking\u{2026}"
+        case .asleep: "Asleep"
+        case .pairKey: "Pair key"
+        case .relink, .relinkCharging: "Re-link"
+        case .cooldown: "One sec\u{2026}"
+        case .rejected: "Declined"
+        case .failed: "Failed"
+        }
+    }
+
+    /// The owner action that resolves this notice, or `nil` when there is nothing
+    /// in-app to route to (waking/cooldown resolve themselves; pairing happens in
+    /// the Tesla app; a rejection/unreachable car is retried by tapping again).
+    public var action: VehicleCommandNoticeAction? {
+        switch self {
+        case .relink, .relinkCharging: .relinkTesla
+        case .waking, .asleep, .pairKey, .cooldown, .rejected, .failed: nil
         }
     }
 

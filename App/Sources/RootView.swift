@@ -85,6 +85,11 @@ struct RootView: View {
     // sim-vs-live.
     @State private var ownerHomeState: OwnerHomeState
     @State private var ownerTab = "home"
+    /// MYR-301 — armed when a vehicle-command notice routes the owner to the
+    /// Tesla re-link ("Reconnect Tesla for charging access" → the missing
+    /// `vehicle_charging_cmds` scope). Settings consumes it by opening its
+    /// EXISTING `AddTeslaFlow` on arrival (see `teslaRelinkRoute`).
+    @State private var startTeslaLink = false
     /// MYR-228 — the ONE resolved live/sim flag, kept so `body` can seed the
     /// screen-local scheduled-ride list (`RideHistoryScreen`) empty in live mode.
     /// Every fixture-seeded state above/below is gated on this single decision.
@@ -337,6 +342,16 @@ struct RootView: View {
         )
     }
 
+    /// MYR-301 — where a "Reconnect Tesla" command notice sends the owner: the
+    /// Settings tab, with the existing `AddTeslaFlow` armed. Screens report the
+    /// intent; this view owns the navigation (same shape as `openDriveID`).
+    private var teslaRelinkRoute: TeslaRelinkRoute {
+        TeslaRelinkRoute(
+            selectTab: { ownerTab = $0 },
+            startLink: { startTeslaLink = true }
+        )
+    }
+
     var body: some View {
         ZStack {
             switch screen {
@@ -488,6 +503,10 @@ struct RootView: View {
                         // keeps the fixture sheet); refresh the fleet on link.
                         teslaAuthenticator: teslaAuthenticator,
                         onTeslaLinked: isLiveMode ? { ownerHomeState.startTelemetry() } : nil,
+                        // MYR-301 — a command notice ("Reconnect Tesla for charging
+                        // access") routes here with the flow armed, so the owner
+                        // lands ON the link flow instead of hunting for it.
+                        startTeslaLink: $startTeslaLink,
                         // MYR-258 — live "Remove this car" teardown (§7.12): the real
                         // DELETE + fleet drop (so the car leaves Home + this list at
                         // once) + consent-revoke browser session. nil in SIM keeps
@@ -500,6 +519,9 @@ struct RootView: View {
                         ownerTab: $ownerTab,
                         rideRequestService: rideRequestService,
                         drivesState: ownerDrivesState,
+                        // MYR-301 — the vehicle-controls command notices route
+                        // their fix here (Settings + the link flow armed).
+                        onRelinkTesla: { teslaRelinkRoute() },
                         // MYR-264 — the ONE resolved live flag gates the incoming
                         // request sheet's rider/vehicle identity + the media block
                         // (fixtures render only in SIM / DEBUG scenes).

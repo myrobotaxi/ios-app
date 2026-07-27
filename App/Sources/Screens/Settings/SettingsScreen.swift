@@ -35,6 +35,13 @@ struct SettingsScreen: View {
     var teslaAuthenticator: TeslaAuthenticator? = nil
     /// Fired after a successful live link so the caller can refresh the fleet.
     var onTeslaLinked: (() -> Void)? = nil
+    /// MYR-301 — armed by a vehicle-command re-link notice ("Reconnect Tesla for
+    /// charging access") via `TeslaRelinkRoute`: Settings opens its EXISTING
+    /// `AddTeslaFlow` immediately on arrival, so the notice's fix is one tap, not
+    /// a scavenger hunt through the Tesla Account section. Read declaratively in
+    /// `body` (no `onAppear` race) and cleared when the flow closes. Defaults to a
+    /// constant `false`, so every other host is unchanged.
+    var startTeslaLink: Binding<Bool> = .constant(false)
     /// MYR-258 — the live owner car-offboarding seam (§7.12): the real teardown
     /// call + fleet drop + consent-revoke browser session. Non-nil ONLY on the
     /// live path; when present, the vehicle detail sheet's destructive action runs
@@ -105,15 +112,17 @@ struct SettingsScreen: View {
 
     var body: some View {
         Group {
-            if isAddingTesla {
+            // MYR-301 — either the owner tapped "Add another Tesla" here, or a
+            // command notice routed them in with the flow armed.
+            if isAddingTesla || startTeslaLink.wrappedValue {
                 // jsx:440 `onAddTesla` — replays the existing simulated
                 // pairing celebration and returns to Settings. AddTeslaFlow's
                 // fixture is hardcoded to the Cybercab vehicle (already
                 // linked), so this demonstrates the flow without mutating
                 // `vehiclesState` — see that type's header comment.
                 AddTeslaFlow(
-                    onComplete: { isAddingTesla = false },
-                    onCancel: { isAddingTesla = false },
+                    onComplete: { closeAddTesla() },
+                    onCancel: { closeAddTesla() },
                     // MYR-246 — live path uses the real browser-sheet link
                     // flow; sim (nil) keeps the fixture sheet.
                     authenticate: teslaAuthenticator,
@@ -123,6 +132,13 @@ struct SettingsScreen: View {
                 settingsContent
             }
         }
+    }
+
+    /// Close the link flow whichever way it was opened (MYR-301) — the armed
+    /// route must be disarmed too, or Settings would re-open it forever.
+    private func closeAddTesla() {
+        isAddingTesla = false
+        startTeslaLink.wrappedValue = false
     }
 
     private var settingsContent: some View {

@@ -198,6 +198,9 @@ struct DrivingHeroContent: View {
     let snapshot: VehicleTelemetrySnapshot
     let executor: any VehicleCommandExecutor
     @Binding var isEditingPlate: Bool
+    /// MYR-301 — routes a command re-link notice to the Tesla link flow (see
+    /// `VehicleControls.onRelinkTesla`).
+    var onRelinkTesla: (() -> Void)? = nil
     /// MYR-264 — gates `VehicleControls`' fixture media block (now-playing
     /// title/artist/cover are not on the wire → honest-hidden on live). `false` in
     /// SIM keeps the media section pixel-identical.
@@ -237,6 +240,7 @@ struct DrivingHeroContent: View {
                     fsdMilesSinceReset: snapshot.fsdMilesSinceReset,
                     lastUpdated: snapshot.lastUpdated,
                     isStreaming: snapshot.isStreaming,
+                    onRelinkTesla: onRelinkTesla,
                     isLive: isLive
                 )
             }
@@ -258,6 +262,8 @@ struct ParkedHeroContent: View {
     var status: MRTVehicleStatus = .parked
     let executor: any VehicleCommandExecutor
     @Binding var isEditingPlate: Bool
+    /// MYR-301 — see `DrivingHeroContent.onRelinkTesla`.
+    var onRelinkTesla: (() -> Void)? = nil
     /// MYR-264 — see `DrivingHeroContent.isLive`.
     var isLive: Bool = false
 
@@ -283,6 +289,7 @@ struct ParkedHeroContent: View {
                 fsdMilesSinceReset: snapshot.fsdMilesSinceReset,
                 lastUpdated: snapshot.lastUpdated,
                 isStreaming: snapshot.isStreaming,
+                onRelinkTesla: onRelinkTesla,
                 isLive: isLive
             )
         }

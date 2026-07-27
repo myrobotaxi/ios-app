@@ -18,6 +18,9 @@ struct MediaSection: View {
     /// slider route REAL commands (MYR-249/251) and remain. Always non-nil in SIM,
     /// so the M1 / drift-gate media section is pixel-identical.
     let track: VehicleMediaTrack?
+    /// MYR-301 — routes a media re-link notice to the existing Tesla link flow
+    /// (see `VehicleControls.onRelinkTesla`).
+    var onRelinkTesla: (() -> Void)? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -137,10 +140,9 @@ struct MediaSection: View {
                 // A settled media notice (re-link / pairing / waking / …) on a
                 // quiet centered line — never rendered on the simulated path.
                 if let notice = mediaState.notice {
-                    Text(notice.message)
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(Color.mrtTextSec)
-                        .frame(maxWidth: .infinity)
+                    // MYR-301 — full message (the row is sheet-wide); a re-link
+                    // notice becomes a 44pt tap target routing to the link flow.
+                    VehicleCommandNoticeLine(notice: notice, alignment: .center, onAction: onRelinkTesla)
                         .padding(.top, 10)
                 }
 
