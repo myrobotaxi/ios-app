@@ -53,6 +53,7 @@ final class DebugClimateModeFleet: VehicleFleet {
         let exec = LiveVehicleCommandExecutor(
             vehicleID: vehicle.id,
             sender: DebugClimateNoopSender(),
+            plateEndpoint: DebugPlateEndpoint(),
             driving: false,
             plate: vehicle.plate
         )

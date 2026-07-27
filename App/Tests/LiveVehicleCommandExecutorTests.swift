@@ -13,6 +13,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
 
     private func makeExecutor(
         _ sender: any VehicleCommandSending,
+        plateEndpoint: any VehiclePlateEndpoint = ScriptedPlateEndpoint(),
         driving: Bool = false,
         maxWakeRetries: Int = 1,
         settleWindow: TimeInterval = 15
@@ -20,8 +21,11 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         LiveVehicleCommandExecutor(
             vehicleID: "veh-1",
             sender: sender,
+            plateEndpoint: plateEndpoint,
             driving: driving,
-            plate: "VIN ····0001",
+            // MYR-286 — the RAW owner-entered plate (empty = none set). The
+            // `VIN ····xxxx` string is a DISPLAY fallback and never lives here.
+            plate: "",
             wakeRetryDelay: .zero,
             maxWakeRetries: maxWakeRetries,
             settleWindow: settleWindow

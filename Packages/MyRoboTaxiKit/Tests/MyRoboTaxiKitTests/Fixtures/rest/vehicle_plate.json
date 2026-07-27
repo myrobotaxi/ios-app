@@ -1,0 +1,10 @@
+{
+  "_meta": {
+    "description": "200 response for PUT /api/tesla/vehicles/{vehicleId}/plate (rest-api.md §7.14, MYR-286) — the owner-entered license plate. Authored here from the canonical §7.14 example because the telemetry repo ships no fixture for this endpoint (docs/contracts/fixtures/rest/ covers read paths only); replace with the upstream file the moment one exists. The value is the SERVER-NORMALIZED plate: the owner submitted '  abc 1234  ' and the server trimmed then uppercased it before validating, so the echo is 'ABC 1234'. Interior spacing is preserved verbatim — 'ABC 1234' and 'ABC1234' are different plates in some jurisdictions. Clients adopt THIS value, never the string they typed: there is no WebSocket delta for licensePlate in v1.",
+    "anchoredFRs": ["FR-4.x"],
+    "scenario": "happy-path",
+    "addedBy": "MYR-286"
+  },
+  "vehicleId": "clxyz1234567890abcdef",
+  "licensePlate": "ABC 1234"
+}

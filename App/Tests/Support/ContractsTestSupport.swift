@@ -61,7 +61,8 @@ enum Contracts {
         vehicleId: String = "v2",
         status: VehicleState.Status = .parked,
         chargeLevel: Int = 82,
-        locationName: String = "Embarcadero Center · Lot B"
+        locationName: String = "Embarcadero Center · Lot B",
+        licensePlate: String? = nil
     ) -> VehicleState {
         VehicleState(
             vehicleId: vehicleId,
@@ -94,6 +95,10 @@ enum Contracts {
             etaMinutes: nil,
             tripDistanceRemaining: nil,
             navRouteCoordinates: nil,
+            // MYR-286 — snapshot-only by contract (no WS delta ever carries it).
+            // `nil` by default so every pre-existing test keeps the absent-key
+            // shape and its `VIN ····xxxx` expectations.
+            licensePlate: licensePlate,
             lastUpdated: "2026-07-08T15:48:00Z"
         )
     }
@@ -106,7 +111,8 @@ enum Contracts {
         color: String = "Pearl White",
         vinLast4: String = "9417",
         status: VehicleSummary.Status = .parked,
-        chargeLevel: Int = 82
+        chargeLevel: Int = 82,
+        licensePlate: String? = nil
     ) -> VehicleSummary {
         VehicleSummary(
             vehicleId: vehicleId,
@@ -119,7 +125,8 @@ enum Contracts {
             chargeLevel: chargeLevel,
             estimatedRange: 210,
             lastUpdated: "2026-07-08T15:48:00Z",
-            role: .owner
+            role: .owner,
+            licensePlate: licensePlate
         )
     }
 
@@ -144,6 +151,43 @@ struct StubHTTP: HTTPPerforming {
         let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
         return (body, response)
     }
+}
+
+/// MYR-286 — a scripted `VehiclePlateEndpoint` for the §7.14 plate write. Records
+/// every submitted value (so "the RAW input is sent, not a client-normalized one"
+/// is assertable) and either echoes a scripted NORMALIZED value or throws. Same
+/// lock-guarded `@unchecked Sendable` shape as `ScriptedCommandSender`.
+final class ScriptedPlateEndpoint: VehiclePlateEndpoint, @unchecked Sendable {
+    private let lock = NSLock()
+    /// The value the server echoes back — deliberately DIFFERENT from what the
+    /// caller submits in the round-trip tests, so adopting the echo (rather than
+    /// the raw input) is provable.
+    private var echo: String
+    private var failure: RestError?
+    private var _submitted: [String] = []
+
+    init(normalizedEcho: String = "", failure: RestError? = nil) {
+        self.echo = normalizedEcho
+        self.failure = failure
+    }
+
+    func setLicensePlate(_ plate: String, vehicleID: String) async throws -> VehiclePlateResponse {
+        lock.lock()
+        _submitted.append(plate)
+        let failure = self.failure
+        let echo = self.echo
+        lock.unlock()
+        if let failure { throw failure }
+        return VehiclePlateResponse(vehicleId: vehicleID, licensePlate: echo)
+    }
+
+    /// Every value handed to the endpoint, in order.
+    var submitted: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return _submitted
+    }
+
+    var callCount: Int { submitted.count }
 }
 
 /// A WS channel that never completes its handshake and never emits frames — it

@@ -43,11 +43,18 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
     /// client's exact car, and it is precisely the combination the old predicate
     /// got wrong — so the capture exercises the shipping presence rule end to end
     /// (through the real `VehicleContractMapping`), not a fixture `seatVent` flag.
-    init(seatCoolingCapable: Bool = false) {
+    /// MYR-286 — the owner-entered plate carried on the live-shaped snapshot AND
+    /// the list row, exactly as a real server emits it (contracts 0.15.0). `nil`
+    /// keeps the pre-MYR-286 shape (absent key), so every existing scene renders
+    /// byte-identically; a value drives the plate through the REAL
+    /// `VehicleContractMapping.plateDisplay` precedence and the REAL
+    /// `LiveVehicleCommandExecutor.reconcile`, so a capture that shows the plate
+    /// proves the shipping path does — not a hand-set field.
+    init(seatCoolingCapable: Bool = false, licensePlate: String? = nil) {
         // A live-like snapshot: full model/year/trim, full VIN + software version,
         // and a BLANK color (onboarding gap, MYR-283). Streaming/online so the
         // footer honestly reads "Live".
-        let state = Self.detailsState(seatCoolingCapable: seatCoolingCapable)
+        let state = Self.detailsState(seatCoolingCapable: seatCoolingCapable, licensePlate: licensePlate)
         let summary = VehicleSummary(
             vehicleId: "debug-mdy",
             name: "Model Y",
@@ -59,7 +66,8 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             chargeLevel: 71,
             estimatedRange: 193,
             lastUpdated: state.lastUpdated,
-            role: .owner
+            role: .owner,
+            licensePlate: licensePlate
         )
         // The REAL production mapping: the details rows read exactly what live
         // would render (composed model, snapshot VIN/software, honest color, no
@@ -70,8 +78,13 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
         let exec = LiveVehicleCommandExecutor(
             vehicleID: summary.vehicleId,
             sender: DebugDetailsNoopSender(),
+            // MYR-286 — the REAL §7.14 seam (normalize-then-validate, echo back),
+            // so a Save in the scene exercises the shipping persist path.
+            plateEndpoint: DebugPlateEndpoint(),
             driving: false,
-            plate: VehicleContractMapping.plateDisplay(vinLast4: summary.vinLast4)
+            // The RAW plate (empty when unset) — `controls.plate` is the editable
+            // value, not the `VIN ····xxxx` display fallback (MYR-286).
+            plate: VehicleContractMapping.editablePlate(licensePlate: summary.licensePlate)
         )
         exec.reconcile(from: state)
         executor = exec
@@ -90,7 +103,7 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
 
     /// A parked, streaming `VehicleState` carrying the MYR-279 detail fields, plus
     /// (MYR-299, opt-in) the vented-car seat read-backs described on `init`.
-    static func detailsState(seatCoolingCapable: Bool = false) -> VehicleState {
+    static func detailsState(seatCoolingCapable: Bool = false, licensePlate: String? = nil) -> VehicleState {
         let iso = ISO8601DateFormatter().string(from: Date())
         var state = VehicleState(
             vehicleId: "debug-mdy",
@@ -115,6 +128,9 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             exteriorTemp: 61,
             odometerMiles: 18432,
             fsdMilesSinceReset: 11274,
+            // MYR-286 — snapshot-only by contract (§7.14: no WS delta ever carries
+            // it), so the details capture is exactly the shape a cold read has.
+            licensePlate: licensePlate,
             lastUpdated: iso
         )
         if seatCoolingCapable {

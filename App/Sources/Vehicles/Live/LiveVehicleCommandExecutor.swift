@@ -41,7 +41,14 @@ import Observation
 //                          tap sends NOTHING (MYR-274). Only Auto is actionable.
 //   • fan speed          → no fan command
 //   • media scrub        → no seek-to-position command (local feedback only)
-//   • license plate      → not a Tesla command (no plate field, per MYR-168)
+//
+// NOT a Tesla command, but a REAL backend write (MYR-286):
+//   • license plate      → `PUT /api/tesla/vehicles/{id}/plate` (§7.14) via the
+//                          Kit's `VehiclePlateEndpoint`. Tesla has no plate field
+//                          anywhere, so this is a local owner-scoped DB write —
+//                          no proxy, no Tesla token, no wake, no virtual key.
+//                          Before MYR-286 `setPlate` wrote only to memory and the
+//                          edit sheet silently discarded the owner's input.
 //
 // UX (per MYR-249 task 3): a tap sets the control PENDING (double-tap suppressed
 // by the pending guard); the value flips only once the command is acknowledged
@@ -72,6 +79,19 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
 
     private let vehicleID: String
     private let sender: any VehicleCommandSending
+    /// The §7.14 owner license-plate write (MYR-286). Deliberately a SEPARATE seam
+    /// from `sender`: §7.14 is a local owner-scoped DB write with no Tesla call in
+    /// it, so it can never be asleep, unpaired, or refused by the car — sharing
+    /// the command seam would drag that vocabulary onto a path that cannot produce
+    /// it (see `plateNotice(for:)`).
+    private let plateEndpoint: any VehiclePlateEndpoint
+
+    /// Fired with the SERVER-NORMALIZED plate after a successful §7.14 write, so
+    /// the owner's fleet row can adopt it immediately. There is no WS delta for
+    /// this field (§7.14) — without this hook the switcher / Settings rows would
+    /// keep showing the old plate until the next `GET /api/vehicles`. Set by
+    /// `LiveVehicleFleet`; nil elsewhere.
+    var onPlateSaved: ((String) -> Void)?
     /// Backoff before the single `vehicle_asleep` retry (injectable → `.zero` in
     /// tests for determinism; ~2 s in production, matching the §7.9 wake curve).
     private let wakeRetryDelay: Duration
@@ -121,6 +141,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     init(
         vehicleID: String,
         sender: any VehicleCommandSending,
+        plateEndpoint: any VehiclePlateEndpoint,
         driving: Bool,
         plate: String,
         wakeRetryDelay: Duration = .seconds(2),
@@ -129,6 +150,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     ) {
         self.vehicleID = vehicleID
         self.sender = sender
+        self.plateEndpoint = plateEndpoint
         self.wakeRetryDelay = wakeRetryDelay
         self.maxWakeRetries = maxWakeRetries
         self.settleWindow = settleWindow
@@ -238,6 +260,28 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         // out from under a drag.
         if let vol = state.mediaVolume, !volumeSending, pendingVolume == nil {
             reconcileField(.volume, key: .media) { self.controls.volume = min(100, max(0, vol / 11 * 100)) }
+        }
+
+        // MYR-286 — the owner-entered plate, reconciled exactly like the sibling
+        // fields (skip while a save is in flight; the ack + next read settle it).
+        //
+        // SNAPSHOT-ONLY, by contract: rest-api.md §7.14 states there is NO
+        // WebSocket delta for `licensePlate` in v1 — a `vehicle_update` frame
+        // NEVER carries it and a plate edit fires no push — so this arm only ever
+        // runs on a cold `/snapshot` read, never on a folded delta. (That is the
+        // same reason the Kit's MYR-298 tripwire lists it under
+        // `snapshotOnlyFields` rather than folding it in the merger.)
+        //
+        // The value is stored RAW: an EMPTY string is a real, meaningful answer
+        // ("the owner has not set one") and must be adopted, not skipped, or a
+        // cleared plate would linger on the row forever. The `VIN ····xxxx`
+        // fallback is applied at DISPLAY time by `VehicleContractMapping`, never
+        // baked in here — baking it in is what would put an uneditable VIN into
+        // the edit sheet.
+        if let plate = state.licensePlate {
+            reconcileField(.plate, key: .plate) {
+                self.controls.plate = VehicleContractMapping.editablePlate(licensePlate: plate)
+            }
         }
     }
 
@@ -391,7 +435,11 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     ///     owner response) from being unable to reach it at all.
     /// `.transport`/`.invalidRequest`/`.notFound`/`.other` keep `.failed`.
     static func notice(for kind: RestError.CommandFailureKind, key: VehicleControlKey) -> VehicleCommandNotice {
-        switch kind {
+        // MYR-286 — the plate write is §7.14, not §7.9. No Tesla call happens on
+        // that path at all, so the whole "car" vocabulary below (asleep, waking,
+        // key not paired, the car refused it) is unreachable AND untrue there.
+        if key == .plate { return plateNotice(for: kind) }
+        return switch kind {
         case .vehicleAsleep: .asleep
         case .keyNotPaired: .pairKey
         case .permissionDenied: key == .chargePort ? .relinkCharging : .relink
@@ -399,6 +447,29 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         case .rateLimited: .cooldown
         case .commandFailed: .rejected
         case .invalidRequest, .notFound, .transport, .other: .failed
+        }
+    }
+
+    /// MYR-286 — the §7.14 plate-write error catalog, folded to honest copy.
+    ///
+    ///   • `400 invalid_request` is the ONE outcome that is about the plate
+    ///     itself: the server normalizes (trim + uppercase) and only THEN
+    ///     validates, so this can't be a casing/whitespace complaint — the value
+    ///     really does break the charset or the 10-character cap.
+    ///   • `403 vehicle_not_owned` / `401` are account problems, and take the
+    ///     existing re-link route like every other control.
+    ///   • Everything else (transport, `404 not_found`, `500 internal_error`)
+    ///     means the write simply didn't land. It is NOT "couldn't reach the car":
+    ///     §7.14 never contacts the car, so `.failed`'s copy would be a lie.
+    ///   • `vehicleAsleep` / `keyNotPaired` / `commandFailed` are §7.9-only
+    ///     outcomes this endpoint cannot produce; they are folded into the same
+    ///     honest "couldn't save" rather than being given car-shaped copy.
+    static func plateNotice(for kind: RestError.CommandFailureKind) -> VehicleCommandNotice {
+        switch kind {
+        case .invalidRequest: .invalidPlate
+        case .permissionDenied, .notOwned, .auth: .relink
+        case .rateLimited: .cooldown
+        case .vehicleAsleep, .keyNotPaired, .commandFailed, .notFound, .transport, .other: .plateNotSaved
         }
     }
 
@@ -592,8 +663,46 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         knownFields.insert(.fanSpeed)
     }
 
+    // MARK: - License plate (§7.14 — a real write, but NOT a Tesla command)
+
+    /// Persist the owner-entered plate through `PUT /api/tesla/vehicles/{id}/plate`
+    /// (MYR-286). Before this, the live executor wrote `controls.plate` and nothing
+    /// else — the edit sheet's Save looked like it worked and the value was gone on
+    /// the next launch.
+    ///
+    /// Three deliberate properties:
+    ///
+    ///  • **The SERVER's normalized echo is adopted, never the raw input.** The
+    ///    server trims + uppercases before validating, so `"  abc 1234  "` is
+    ///    stored as `"ABC 1234"`. Showing what the owner typed would leave the UI
+    ///    disagreeing with the database until the next snapshot — and re-deriving
+    ///    the normalization client-side would be a second implementation of a rule
+    ///    the contract says not to re-implement.
+    ///  • **`plate` is sent VERBATIM** for the same reason: normalization is the
+    ///    server's job, and the endpoint is explicitly built to accept messy input.
+    ///  • **The echo is broadcast** via `onPlateSaved`, because §7.14 fires no WS
+    ///    push — the owner's own fleet row would otherwise keep the stale plate
+    ///    until the next `GET /api/vehicles`.
+    ///
+    /// Shares the `.plate` key's pending/notice discipline with the commanded
+    /// controls (double-save suppressed while in flight), but NOT the wake-retry:
+    /// there is no car in this path to wake.
     func setPlate(_ plate: String) async throws {
-        controls.plate = plate
+        guard uiState(for: .plate).isPending == false else { return }
+        uiStates[.plate] = VehicleControlUIState(isPending: true, notice: nil)
+        do {
+            let response = try await plateEndpoint.setLicensePlate(plate, vehicleID: vehicleID)
+            controls.plate = response.licensePlate
+            knownFields.insert(.plate)
+            uiStates[.plate] = .idle
+            onPlateSaved?(response.licensePlate)
+        } catch let error as RestError {
+            uiStates[.plate] = VehicleControlUIState(
+                isPending: false, notice: Self.plateNotice(for: error.commandFailureKind)
+            )
+        } catch {
+            uiStates[.plate] = VehicleControlUIState(isPending: false, notice: .plateNotSaved)
+        }
     }
 
     // MARK: - Seat helpers

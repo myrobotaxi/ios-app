@@ -61,6 +61,7 @@ final class DebugCommandNoticeFleet: VehicleFleet {
         let exec = LiveVehicleCommandExecutor(
             vehicleID: vehicle.id,
             sender: DebugFailingCommandSender(error: Self.error(for: variant)),
+            plateEndpoint: DebugPlateEndpoint(),
             driving: false,
             plate: vehicle.plate,
             wakeRetryDelay: .zero,

@@ -225,8 +225,14 @@ final class LiveVehicleFleet: VehicleFleet {
             LiveVehicleCommandExecutor(
                 vehicleID: summary.vehicleId,
                 sender: rest,
+                plateEndpoint: rest,
                 driving: summary.status == .driving,
-                plate: VehicleContractMapping.plateDisplay(vinLast4: summary.vinLast4)
+                // MYR-286 — the RAW owner-entered plate (empty when unset), NOT
+                // the `VIN ····xxxx` display string: `controls.plate` is what the
+                // edit sheet prefills, and a VIN belongs in the display fallback,
+                // not in an editable text field. The snapshot reconciles it, and
+                // §7.14's echo replaces it on save.
+                plate: VehicleContractMapping.editablePlate(licensePlate: summary.licensePlate)
             )
         }
         executors = liveExecutors
@@ -247,6 +253,21 @@ final class LiveVehicleFleet: VehicleFleet {
         for (source, executor) in zip(sources, liveExecutors) {
             source.liveState.onStateChanged = { [weak executor] state in
                 executor?.reconcile(from: state)
+            }
+        }
+        // MYR-286 — §7.14 fires NO WebSocket push, so a saved plate would not reach
+        // the fleet row (map-header switcher, Settings rows, the rider's chip after
+        // the next list fetch) until the next `GET /api/vehicles`. Adopt the
+        // server's normalized echo straight into the summary row instead: the
+        // `vehicles` computed property re-derives `Vehicle.plate` from it, so every
+        // display surface updates at once and from ONE source of truth.
+        for (index, executor) in liveExecutors.enumerated() {
+            let vehicleID = items[index].vehicleId
+            executor.onPlateSaved = { [weak self] normalized in
+                guard let self,
+                      let row = self.summaries.firstIndex(where: { $0.vehicleId == vehicleID })
+                else { return }
+                self.summaries[row].licensePlate = normalized
             }
         }
         if items.isEmpty {

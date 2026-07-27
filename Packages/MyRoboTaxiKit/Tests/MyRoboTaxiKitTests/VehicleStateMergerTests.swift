@@ -267,8 +267,21 @@ final class VehicleStateMergerTests: XCTestCase {
     /// Identity / catalog fields delivered ONLY on the cold `/snapshot` — they
     /// describe the car, not its live state, and are intentionally not folded from
     /// a `vehicle_update` delta.
+    ///
+    /// MYR-286 — `licensePlate` joins this set rather than `foldCases`, and the
+    /// classification is a CONTRACT statement, not a convenience: rest-api.md §7.14
+    /// is explicit that v1 carries NO WebSocket delta for the field — "a
+    /// `vehicle_update` frame NEVER contains `licensePlate`, and a plate edit fires
+    /// no push". It is an owner-typed identity-row value alongside `name`/`color`
+    /// (not telemetry, and not from Tesla — the Fleet API has no plate anywhere),
+    /// so it reaches clients on the next §7.0 / §7.1 read or by adopting the §7.14
+    /// PUT's own normalized echo. Folding it here would invent a delivery path the
+    /// server does not have. If the server ever DOES start pushing it, move this
+    /// entry to a `foldCases` row and add the merger `case` — this tripwire is
+    /// exactly where that decision belongs.
     private static let snapshotOnlyFields: Set<String> = [
         "vehicleId", "name", "model", "year", "color", "vin", "softwareVersion", "trim",
+        "licensePlate",
     ]
 
     /// The table must account for EVERY property on the generated `VehicleState`.

@@ -95,9 +95,14 @@ struct VehicleControls: View {
 
             LifetimeSection(odometerMiles: odometerMiles, fsdMilesSinceReset: fsdMilesSinceReset)
 
-            VehicleDetailsSection(vehicle: vehicle, plate: controls.plate) {
-                isEditingPlate = true
-            }
+            VehicleDetailsSection(
+                vehicle: vehicle,
+                plate: controls.plate,
+                onEditPlate: { isEditingPlate = true },
+                // MYR-286 — the §7.14 write's pending/notice state. `.idle` on the
+                // simulated path, so M1 / drift-gate scenes are pixel-identical.
+                plateState: executor.uiState(for: .plate)
+            )
 
             // Honest freshness footer (MYR-260): "· Live" only when the car is
             // actually streaming — an offline/in-service car with stale tiles above

@@ -175,10 +175,10 @@ enum VehicleContractMapping {
 
     /// Build a `Vehicle` fleet row from a list-endpoint `VehicleSummary`, folding
     /// in the live full `VehicleState` when one has arrived (its GPS/nav upgrade
-    /// the placeholder activity). `plate` has no Tesla wire field, so the last-4
-    /// of the VIN stands in for human disambiguation in the switcher; seat
-    /// heat/vent aren't in the read contract, so they take neutral `false`
-    /// (VehicleControls degrade gracefully).
+    /// the placeholder activity). `plate` is the owner-entered `licensePlate`
+    /// (contracts 0.15.0) when set, else the VIN last-4 stand-in — see
+    /// ``plateDisplay(licensePlate:vinLast4:)``; seat heat/vent aren't in the read
+    /// contract, so they take neutral `false` (VehicleControls degrade gracefully).
     static func vehicle(summary: VehicleSummary, state: VehicleState? = nil) -> Vehicle {
         let activity: VehicleActivity = state.map(activity(from:))
             ?? placeholderActivity(for: summary)
@@ -200,7 +200,15 @@ enum VehicleContractMapping {
             name: nonEmpty(summary.name) ?? summary.model,
             model: model,
             colorName: colorName,
-            plate: plateDisplay(vinLast4: summary.vinLast4),
+            // MYR-286 — BOTH read surfaces carry the plate. The snapshot wins when
+            // it has one (it is the fresher read and the one a WS reconnect
+            // refetches); the list row is the fallback before the first snapshot
+            // arrives, so the switcher/Settings rows show the real plate on the
+            // very first paint instead of a VIN that flips a second later.
+            plate: plateDisplay(
+                licensePlate: nonEmpty(state?.licensePlate) ?? summary.licensePlate,
+                vinLast4: summary.vinLast4
+            ),
             seatHeat: false,
             // MYR-299 — `seatVent` is the ventilated-seat CAPABILITY (does this car
             // HAVE cooled seats), which is what the Heat/Cool affordance must gate
@@ -269,11 +277,36 @@ enum VehicleContractMapping {
         return parts.joined(separator: " ")
     }
 
-    /// Tesla telemetry has no license-plate field; the VIN last-4 stands in for
-    /// human disambiguation in the switcher. Empty when the VIN is unknown.
-    static func plateDisplay(vinLast4: String) -> String {
+    /// THE plate display resolver (MYR-286). Precedence, in one place so every
+    /// surface agrees:
+    ///
+    ///   1. a non-empty `licensePlate` — the owner-entered plate (contracts
+    ///      0.15.0), already server-normalized (trimmed, uppercased, ≤ 10,
+    ///      `[A-Z0-9 -]`). It is rendered VERBATIM: re-normalizing here would
+    ///      silently rewrite the owner's answer, and rest-api.md §7.1/§7.14 tell
+    ///      consumers not to.
+    ///   2. else the `VIN ····xxxx` fallback built from the VIN last-4 — Tesla
+    ///      telemetry has no plate field anywhere, so this is the honest stand-in
+    ///      for human disambiguation in the switcher / rider chip.
+    ///   3. else `""` — and every caller HIDES the chip on empty rather than
+    ///      rendering a blank box. We never fabricate a plate.
+    ///
+    /// `nil` and `""` mean the SAME thing for `licensePlate` and both take the
+    /// fallback: absent = a pre-MYR-286 server, empty = the always-emitted "not
+    /// set" value. Neither ever means "this car has a plate we couldn't read".
+    static func plateDisplay(licensePlate: String?, vinLast4: String) -> String {
+        if let plate = nonEmpty(licensePlate) { return plate }
         let trimmed = vinLast4.trimmingCharacters(in: .whitespaces)
         return trimmed.isEmpty ? "" : "VIN ····\(trimmed)"
+    }
+
+    /// The owner-entered plate ALONE (no VIN fallback), for the editable owner
+    /// surface: `VehicleControlsSnapshot.plate` holds the RAW value so the edit
+    /// sheet prefills what the owner typed and an unset plate renders the
+    /// designed "Add plate" affordance rather than a VIN the owner can't edit.
+    /// Display surfaces use ``plateDisplay(licensePlate:vinLast4:)`` instead.
+    static func editablePlate(licensePlate: String?) -> String {
+        nonEmpty(licensePlate) ?? ""
     }
 
     /// `[[lon, lat]]` (GeoJSON/Mapbox order, contracts `navRouteCoordinates`) →

@@ -10,11 +10,17 @@ import MyRobotaxiContracts
 // telemetry source is real; the two that do not are called out below.
 //
 // DECISIONS (documented, no invented data):
-//  • `plate`: Tesla telemetry has NO license-plate field. The design draws a
-//    plate chip; the graceful degrade is the VIN last-4 in that chip
-//    ("VIN ····2046", reusing `VehicleContractMapping.plateDisplay`). An empty
-//    VIN yields an empty string → the caller hides the chip rather than showing
-//    a blank box. We never fabricate a plate.
+//  • `plate`: MYR-286 — the REAL owner-entered plate now reaches the rider. It
+//    rides `VehicleSummary.licensePlate` (contracts 0.15.0, deliberately in the
+//    VIEWER role mask too: a plate only the owner can see fails at its one job,
+//    which is letting a rider identify the correct car at pickup). Tesla itself
+//    still has no plate field anywhere, so when the owner hasn't entered one the
+//    chip keeps the VIN last-4 degrade ("VIN ····2046") via the shared
+//    `VehicleContractMapping.plateDisplay`. Empty plate AND empty VIN yields an
+//    empty string → the caller hides the chip rather than showing a blank box.
+//    We never fabricate a plate.
+//    v1 caveat: there is NO WS delta for the plate, so a plate edited mid-ride
+//    reaches the rider on the next `GET /api/vehicles` fetch.
 //  • `etaMin`: there is no live pickup-ETA yet (live routing is MYR-176/177), so
 //    the pickup-leg minutes keep the fixture placeholder. Flagged here so it's
 //    not mistaken for real data.
@@ -42,7 +48,9 @@ enum LiveFleetMemberMapping {
             colorName: nonEmpty(summary.color) ?? "",
             battery: summary.chargeLevel,
             etaMin: RideRequestFixtures.fleet[0].etaMin, // no live pickup ETA yet (MYR-176/177)
-            plate: VehicleContractMapping.plateDisplay(vinLast4: summary.vinLast4),
+            plate: VehicleContractMapping.plateDisplay(
+                licensePlate: summary.licensePlate, vinLast4: summary.vinLast4
+            ),
             // An unavailable vehicle is never "Available now" — fold the gate
             // onto MYR-212's dot/word pair so the row can't say two things.
             isAvailable: unavailability == nil && isAvailable(summary.status),
