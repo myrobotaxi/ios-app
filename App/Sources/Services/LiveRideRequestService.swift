@@ -56,6 +56,26 @@ final class LiveRideRequestService: RideRequestService {
     /// and route toward scheduling — never a decline, never a retry.
     private(set) var vehicleUnavailableFailure: RideVehicleUnavailableFailure?
 
+    /// MYR-292 — which role's flow put the CURRENT `activeRequest` there.
+    ///
+    /// ONE service instance serves both roles (see the header), so "is the held ride
+    /// dead?" cannot be answered from its status alone: a `completed` ride is DEAD on
+    /// the owner's Home (the "Dropped off ✓" banner acknowledges and hides) but very
+    /// much LIVE on the rider's Ride Summary, which renders that exact record until
+    /// "See you soon" calls `completeAndReset()`. Recorded at the five sites that
+    /// ADOPT a record — never on an in-place status mutation, which leaves the origin
+    /// untouched — so the incoming-adoption guards can widen for the owner without
+    /// ever clobbering the rider's summary.
+    enum ActiveRequestOrigin {
+        /// This device's rider submitted it, or adopted its own open ride
+        /// (cold launch / `409 ride_active`).
+        case rider
+        /// Adopted from the OWNER incoming path — a `ride_request_created` frame for
+        /// a ride this device has no local draft for, or the incoming feed seed.
+        case ownerIncoming
+    }
+    private(set) var activeRequestOrigin: ActiveRequestOrigin?
+
     /// The server-assigned ride id for the active request (distinct from the
     /// local `activeRequest.id`, which for a rider-submitted ride is a client
     /// UUID until the create POST returns). Mutations target this id.
@@ -158,6 +178,7 @@ final class LiveRideRequestService: RideRequestService {
         // countdown + real itinerary labels the Booking card animates over all
         // read off this record.
         activeRequest = RideRequestRecord(input: input, status: .pending)
+        activeRequestOrigin = .rider
         serverRideID = nil
 
         // MYR-218 defect 1: DEFER the create POST. The client's dual-simulator
@@ -328,6 +349,7 @@ final class LiveRideRequestService: RideRequestService {
     private func failCreateVehicleUnavailable() {
         guard let request = activeRequest, request.status == .pending else { return }
         activeRequest = nil
+        activeRequestOrigin = nil
         serverRideID = nil
         vehicleUnavailableFailure = RideVehicleUnavailableFailure()
     }
@@ -356,6 +378,7 @@ final class LiveRideRequestService: RideRequestService {
     private func failCreateSessionError() {
         guard let request = activeRequest, request.status == .pending else { return }
         activeRequest = nil
+        activeRequestOrigin = nil
         serverRideID = nil
         sessionFailure = RideSessionFailure()
     }
@@ -564,6 +587,7 @@ final class LiveRideRequestService: RideRequestService {
         pendingSend = nil
         let id = serverRideID
         activeRequest = nil
+        activeRequestOrigin = nil
         serverRideID = nil
         guard let id else { return }
         let api = self.api
@@ -574,6 +598,7 @@ final class LiveRideRequestService: RideRequestService {
         // v1 has no completed lifecycle (MYR-176/177), so the Ride Summary is
         // unreachable in live mode. Reset defensively; nothing to persist.
         activeRequest = nil
+        activeRequestOrigin = nil
         serverRideID = nil
         return nil
     }
@@ -593,7 +618,7 @@ final class LiveRideRequestService: RideRequestService {
         let mapped = RideRequestContractMapping.status(ride.status)
         if mapped == nil {
             // Cancelled / terminal — drop it if it's the ride we're tracking.
-            if isCurrent(ride.id) { activeRequest = nil; serverRideID = nil }
+            if isCurrent(ride.id) { activeRequest = nil; activeRequestOrigin = nil; serverRideID = nil }
             return
         }
         if isCurrent(ride.id) {
@@ -642,10 +667,11 @@ final class LiveRideRequestService: RideRequestService {
             }
             activeRequest = current
             serverRideID = ride.id
-        } else if activeRequest == nil, mapped == .pending {
+        } else if canAdoptIncoming, mapped == .pending {
             // OWNER side: a brand-new incoming request from another device.
             if let record = RideRequestContractMapping.record(from: ride) {
                 activeRequest = record
+                activeRequestOrigin = .ownerIncoming
                 serverRideID = ride.id
             }
         }
@@ -653,6 +679,34 @@ final class LiveRideRequestService: RideRequestService {
 
     private func isCurrent(_ rideID: String) -> Bool {
         rideID == serverRideID || rideID == activeRequest?.id
+    }
+
+    /// MYR-292 — may a brand-new incoming `pending` request take the single
+    /// `activeRequest` slot? Yes when nothing is held, and yes when what is held is
+    /// the OWNER's own adopted ride in the one status that is TERMINAL for the owner:
+    /// `completed`.
+    ///
+    /// The defect this widening fixes: nothing on the owner path ever clears a
+    /// completed ride. `completeAndReset()` is the RIDER summary's "See you soon", and
+    /// the owner's "Dropped off ✓" acknowledgement is deliberately view-side only
+    /// (MYR-267/292 — it must not disturb the rider's card). So the owner sat on a
+    /// dead `.completed` `activeRequest` forever, and because adoption was gated on
+    /// `activeRequest == nil`, every subsequent `ride_created` / `ride_status_changed`
+    /// frame was silently dropped: after ONE completed ride the owner could not
+    /// receive another dispatch until the app was relaunched.
+    ///
+    /// Deliberately NOT widened for:
+    ///  • a RIDER-originated `completed` ride — the rider's Ride Summary is rendering
+    ///    that exact record right now; displacing it would swap the itinerary out from
+    ///    under them and point "See you soon" at a stranger's ride. This is why the
+    ///    guard tests `activeRequestOrigin`, not just the status.
+    ///  • `declined` — the rider's `DeclinedNotice` reads the declined record, and on
+    ///    the owner path a decline has its own handling; out of scope here.
+    ///  • every non-terminal status (`pending`/`accepted`/`arrived`/`enroute`) — a
+    ///    live dispatch still owns the slot and must never be displaced.
+    private var canAdoptIncoming: Bool {
+        guard let held = activeRequest else { return true }
+        return held.status == .completed && activeRequestOrigin == .ownerIncoming
     }
 
     /// MYR-277 A1: prefer the local draft's place, adopting the refetched server
@@ -676,6 +730,7 @@ final class LiveRideRequestService: RideRequestService {
         guard let open = await fetchOpenRiderRide(),
               let record = RideRequestContractMapping.record(from: open) else { return }
         activeRequest = record
+        activeRequestOrigin = .rider
         serverRideID = open.id
     }
 
@@ -692,16 +747,19 @@ final class LiveRideRequestService: RideRequestService {
         if let active, let record = RideRequestContractMapping.record(from: active) {
             serverRideID = active.id
             activeRequest = record
+            activeRequestOrigin = .rider
             return
         }
         guard let open = await fetchOpenRiderRide(),
               let record = RideRequestContractMapping.record(from: open) else {
             activeRequest = nil
+            activeRequestOrigin = nil
             serverRideID = nil
             return
         }
         serverRideID = open.id
         activeRequest = record
+        activeRequestOrigin = .rider
     }
 
     /// GET the rider's own list (newest first) and return the newest OPEN INSTANT
@@ -728,11 +786,23 @@ final class LiveRideRequestService: RideRequestService {
     }
 
     /// Owner incoming feed seed (open requests already in flight at connect time).
-    private func refreshIncoming() async {
-        guard activeRequest == nil else { return }
+    ///
+    /// MYR-292 — gated on the SAME `canAdoptIncoming` predicate as the `integrate`
+    /// adoption arm, deliberately and symmetrically: both are the owner adopting an
+    /// incoming request into the single `activeRequest` slot, so a held ride that is
+    /// dead for the owner (its OWN acknowledged `completed` ride) must not block
+    /// either one, and the rider's live Ride Summary must not be clobbered by either
+    /// one. Two guards for one decision is exactly how the two paths would drift.
+    ///
+    /// Internal rather than `private` so the widened guard has direct unit coverage —
+    /// `start()` runs this once per session, which cannot reproduce a held completed
+    /// ride on its own.
+    func refreshIncoming() async {
+        guard canAdoptIncoming else { return }
         guard let page = try? await api.incomingRideRequests(cursor: nil, limit: 20) else { return }
         guard let first = page.items.first, let record = RideRequestContractMapping.record(from: first) else { return }
         activeRequest = record
+        activeRequestOrigin = .ownerIncoming
         serverRideID = first.id
     }
 

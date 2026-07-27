@@ -138,6 +138,12 @@ enum DebugScene: String, CaseIterable {
     /// start" status line, NO owner CTA (the rider must start). Status-only capture.
     case ownerDispatchedArrived
     case ownerDispatchedEnroute
+    /// MYR-292 — owner Home holding a `completed` ride: the "Dropped off ✓"
+    /// confirmation banner. Boots with the banner UP; after the 5s auto-dismiss the
+    /// same launch shows plain owner Home, and the acknowledgement is recorded on
+    /// `OwnerHomeState` (not view state), so it stays gone across a `HomeScreen`
+    /// remount. Capture at t≈1s and t≈7s to see both halves.
+    case ownerDispatchedCompleted
 
     /// The active scene for this launch, or `nil` for a normal boot. Read
     /// from `MRT_SCENE` (env, the documented `SIMCTL_CHILD_MRT_SCENE=` path);
@@ -234,7 +240,7 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerVehicleDetails || self == .ownerVehicleTires || self == .ownerVehicleSeats
             || self == .ownerClimateAuto || self == .ownerClimateManual || self == .ownerClimateUnknown
             || self == .ownerDispatched || self == .ownerDispatchedArrived
-            || self == .ownerDispatchedEnroute
+            || self == .ownerDispatchedEnroute || self == .ownerDispatchedCompleted
     }
 
     /// MYR-260 — a DEBUG fleet override for scenes that need a specific
@@ -435,6 +441,10 @@ enum DebugScene: String, CaseIterable {
             return record(status: .arrived, progress: RideRequestTiming.autoAcceptInitialProgress)
         case .ownerDispatchedEnroute:
             return record(status: .enroute, progress: 0.5)
+        case .ownerDispatchedCompleted:
+            // MYR-292 — the drop-off is done; the owner's banner reads "Dropped off ✓"
+            // until its auto-dismiss acknowledges the ride on `OwnerHomeState`.
+            return record(status: .completed, progress: 1.0)
         default:
             return nil
         }
@@ -513,7 +523,8 @@ enum DebugScene: String, CaseIterable {
              .ownerHome, .ownerDrives, .ownerIncoming, .ownerScheduled, .ownerControlsUnavailable,
              .ownerVehicleDetails, .ownerVehicleTires, .ownerVehicleSeats,
              .ownerClimateAuto, .ownerClimateManual, .ownerClimateUnknown,
-             .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute:
+             .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute,
+             .ownerDispatchedCompleted:
             break // chooser / settings / rider live-map / owner scenes don't drive the viewer sheet
         }
     }

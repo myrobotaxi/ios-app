@@ -752,6 +752,161 @@ final class LiveRideRequestServiceTests: XCTestCase {
         XCTAssertNil(service.sessionFailure, "not a session failure")
     }
 
+    // MARK: MYR-292 — a held COMPLETED ride must never block the owner's next dispatch
+
+    /// Drive the service into the state the TestFlight defect leaves behind: the
+    /// OWNER holds a `.completed` ride it adopted from the incoming path, and nothing
+    /// will ever clear it (`completeAndReset()` is the RIDER summary's affordance).
+    private func ownerHoldingCompletedRide(id: String, socket: StubRideSocket, api: StubRideAPI) async -> LiveRideRequestService {
+        await api.setIncoming([Self.wireRide(id: id, status: .requested)])
+        let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
+        await eventually { service.activeRequest?.id == id } // owner incoming seed
+        XCTAssertEqual(service.activeRequestOrigin, .ownerIncoming)
+        await eventually { await socket.isListening }
+
+        // …owner accepts, ride runs, owner taps "Dropped off" → completed.
+        await api.setDetail(Self.wireRide(id: id, status: .completed, accepted: true))
+        await socket.push(.statusChanged(RideStatusChangedPayload(
+            rideRequestId: id, vehicleId: "veh-live", status: .completed, timestamp: "2026-07-26T18:30:00.000Z"
+        )))
+        await eventually { service.activeRequest?.status == .completed }
+        return service
+    }
+
+    /// (a) The defect: with a stale `.completed` ride held, a brand-new incoming
+    /// `ride_created` frame used to be silently dropped by the `activeRequest == nil`
+    /// adoption guard — so after ONE drop-off the owner could not receive another
+    /// request until relaunch. The new `pending` ride must DISPLACE the dead one and
+    /// become the tracked request (mutations retarget its server id).
+    func testNewPendingRideDisplacesHeldCompletedOwnerRide() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        let socket = StubRideSocket()
+        let service = await ownerHoldingCompletedRide(id: "srv-done", socket: socket, api: api)
+
+        // A SECOND rider requests the same car.
+        await api.setDetail(Self.wireRide(id: "srv-next", status: .requested, requesterName: "Maya"))
+        await socket.push(.created(RideRequestCreatedPayload(
+            rideRequestId: "srv-next", vehicleId: "veh-live", riderId: "u-rider2",
+            status: .requested, requesterName: "Maya", timestamp: "2026-07-26T18:40:00.000Z"
+        )))
+
+        await eventually { service.activeRequest?.id == "srv-next" }
+        XCTAssertEqual(service.activeRequest?.status, .pending, "the owner's incoming sheet can show again")
+        XCTAssertEqual(service.activeRequestOrigin, .ownerIncoming)
+
+        // The completed ride is released — mutations now target the NEW server id.
+        service.decline()
+        await eventually { await api.declineCount == 1 }
+        let declineID = await api.lastDeclineID
+        XCTAssertEqual(declineID, "srv-next", "the displaced completed ride no longer owns the mutation target")
+    }
+
+    /// (b) The widening is scoped to a NEW `pending` ride. Frames for other rides in
+    /// any non-pending status must not displace the held record — only an incoming
+    /// REQUEST takes the slot.
+    func testHeldCompletedRideIsNotDisplacedByNonPendingFrames() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        let socket = StubRideSocket()
+        let service = await ownerHoldingCompletedRide(id: "srv-done2", socket: socket, api: api)
+
+        let nonPending: [(MyRobotaxiContracts.RideRequestStatus, RideStatusChangedPayload.Status)] = [
+            (.accepted, .accepted), (.arrived, .arrived), (.enroute, .enroute), (.completed, .completed), (.declined, .declined),
+        ]
+        for (detail, frame) in nonPending {
+            await api.setDetail(Self.wireRide(id: "srv-other", status: detail, accepted: true))
+            await socket.push(.statusChanged(RideStatusChangedPayload(
+                rideRequestId: "srv-other", vehicleId: "veh-live", status: frame, timestamp: "2026-07-26T18:45:00.000Z"
+            )))
+        }
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        XCTAssertEqual(service.activeRequest?.id, "srv-done2", "only a pending incoming request may take the slot")
+        XCTAssertEqual(service.activeRequest?.status, .completed)
+    }
+
+    /// (c) The safety guard. The RIDER legitimately holds a `.completed` ride for as
+    /// long as the Ride Summary is on screen — "See you soon" (`completeAndReset()`)
+    /// is what clears it. A new incoming request must NOT clobber that record, or the
+    /// summary would swap its itinerary out from under the rider and "See you soon"
+    /// would file a stranger's ride into history. The guard therefore tests the
+    /// ORIGIN of the held ride, not just its status.
+    func testRiderSummaryCompletedRideIsNeverClobberedByIncomingRequest() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-ride", status: .requested))
+        let socket = StubRideSocket()
+        let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
+
+        // The RIDER's own ride, submitted on this device, runs to completion — the
+        // rider is now sitting on the Ride Summary.
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        XCTAssertEqual(service.activeRequestOrigin, .rider)
+        await eventually { await socket.isListening }
+        await api.setDetail(Self.wireRide(id: "srv-ride", status: .completed, accepted: true))
+        await socket.push(.statusChanged(RideStatusChangedPayload(
+            rideRequestId: "srv-ride", vehicleId: "veh-live", status: .completed, timestamp: "2026-07-26T19:00:00.000Z"
+        )))
+        await eventually { service.activeRequest?.status == .completed }
+        let summaryRideID = service.activeRequest?.id
+
+        // Someone else requests the car while the summary is up.
+        await api.setDetail(Self.wireRide(id: "srv-intruder", status: .requested, requesterName: "Maya"))
+        await socket.push(.created(RideRequestCreatedPayload(
+            rideRequestId: "srv-intruder", vehicleId: "veh-live", riderId: "u-rider2",
+            status: .requested, requesterName: "Maya", timestamp: "2026-07-26T19:01:00.000Z"
+        )))
+        try? await Task.sleep(nanoseconds: 80_000_000)
+
+        XCTAssertEqual(service.activeRequest?.id, summaryRideID, "the rider's summary record survives untouched")
+        XCTAssertEqual(service.activeRequest?.status, .completed)
+        XCTAssertEqual(service.activeRequestOrigin, .rider)
+
+        // …and once the rider taps "See you soon" the slot frees up normally.
+        _ = service.completeAndReset()
+        XCTAssertNil(service.activeRequest)
+        XCTAssertNil(service.activeRequestOrigin)
+    }
+
+    /// (d) `refreshIncoming()` carries the SAME widened guard, symmetrically: it is
+    /// the other half of the owner's incoming adoption, so a dead completed ride must
+    /// not block it either (and, by the same origin test, a rider's live summary
+    /// still does).
+    func testRefreshIncomingAdoptsWaitingRequestOverHeldCompletedRide() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        let socket = StubRideSocket()
+        let service = await ownerHoldingCompletedRide(id: "srv-done3", socket: socket, api: api)
+
+        await api.setIncoming([Self.wireRide(id: "srv-waiting", status: .requested)])
+        await service.refreshIncoming()
+        XCTAssertEqual(service.activeRequest?.id, "srv-waiting", "a waiting request is adopted over the dead completed ride")
+        XCTAssertEqual(service.activeRequest?.status, .pending)
+    }
+
+    /// …and the rider-safety half of the same guard on the `refreshIncoming()` path.
+    func testRefreshIncomingDoesNotAdoptOverRiderCompletedRide() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-rider-sum", status: .requested))
+        let socket = StubRideSocket()
+        let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
+
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        await eventually { await socket.isListening }
+        await api.setDetail(Self.wireRide(id: "srv-rider-sum", status: .completed, accepted: true))
+        await socket.push(.statusChanged(RideStatusChangedPayload(
+            rideRequestId: "srv-rider-sum", vehicleId: "veh-live", status: .completed, timestamp: "2026-07-26T19:10:00.000Z"
+        )))
+        await eventually { service.activeRequest?.status == .completed }
+        // The rider's own record keeps its CLIENT id (the optimistic draft is folded
+        // in place; only `serverRideID` carries the server's cuid).
+        let summaryRideID = service.activeRequest?.id
+
+        await api.setIncoming([Self.wireRide(id: "srv-waiting2", status: .requested)])
+        await service.refreshIncoming()
+        XCTAssertEqual(service.activeRequest?.id, summaryRideID, "the rider's summary is never displaced by the incoming seed")
+        XCTAssertEqual(service.activeRequest?.status, .completed)
+        XCTAssertEqual(service.activeRequestOrigin, .rider)
+    }
+
     // MARK: - Builders
 
     private static func sampleInput() -> RideRequestInput {
@@ -830,6 +985,9 @@ private actor StubRideAPI: RideRequestAPI {
     private let createError: Error?
     private var detailReturn: RideRequest?
     private var rideList: [RideRequest] = []
+    /// MYR-292 — the OWNER incoming feed (`GET /api/ride-requests/incoming`). Empty
+    /// by default so every pre-existing test's owner seed stays a no-op.
+    private var incoming: [RideRequest] = []
 
     private var advanceReturn: RideRequest?
     private var advanceError: Error?
@@ -857,6 +1015,7 @@ private actor StubRideAPI: RideRequestAPI {
 
     func setDetail(_ ride: RideRequest) { detailReturn = ride }
     func setRideList(_ rides: [RideRequest]) { rideList = rides }
+    func setIncoming(_ rides: [RideRequest]) { incoming = rides }
     func setAdvance(_ ride: RideRequest?) { advanceReturn = ride }
     func setAdvanceError(_ error: Error?) { advanceError = error }
     func setDetailError(_ error: Error?) { detailError = error }
@@ -899,7 +1058,7 @@ private actor StubRideAPI: RideRequestAPI {
     func start(rideID: String) async throws -> RideRequest { startCount += 1; return try advance(rideID) }
     func droppedOff(rideID: String) async throws -> RideRequest { droppedOffCount += 1; return try advance(rideID) }
     func incomingRideRequests(cursor: String?, limit: Int) async throws -> RideRequestsListResponse {
-        RideRequestsListResponse(items: [], hasMore: false)
+        RideRequestsListResponse(items: incoming, hasMore: false)
     }
 }
 

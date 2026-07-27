@@ -77,6 +77,36 @@ enum OwnerRideStatusLine {
         }
     }
 
+    /// MYR-292 — whether the owner's top-of-map dispatch card should be on screen for
+    /// the CURRENT active request. Pure (no SwiftUI, no view state) so the whole
+    /// "Dropped off ✓" acknowledgement rule is unit-testable and cannot drift between
+    /// the card, the status line and the CTA — the same reasoning as the rider's
+    /// `SharedViewerScreen.reconciledPhase`.
+    ///
+    /// `acknowledgedID` is the id of the `completed` ride whose confirmation the owner
+    /// has already seen. It is stored on `OwnerHomeState`
+    /// (`acknowledgedCompletedRideID`) — the owner-scoped observable that OUTLIVES
+    /// this screen — rather than in `HomeScreen` `@State`, which `RootView`'s
+    /// `switch ownerTab` destroys on every trip to Drives/Share/Settings. Because the
+    /// input is a plain id, this resolver is idempotent across remounts: a fresh
+    /// `HomeScreen` reading the same `OwnerHomeState` resolves to the same answer.
+    ///
+    ///  • `accepted` / `arrived` / `enroute` → always visible (a live dispatch).
+    ///  • `completed` → visible until acknowledged, then hidden for that ride — on
+    ///    this mount and every later one, including a cold launch straight into an
+    ///    already-completed ride once its auto-dismiss has run.
+    ///  • `pending` (the incoming sheet owns that state) / `declined` / no ride → hidden.
+    static func dispatchCardVisible(status: RideRequestStatus?, rideID: String?, acknowledgedID: String?) -> Bool {
+        // `status` and `rideID` co-vary (both read off the one active record), so a
+        // missing either means "no active ride" — nothing to show.
+        guard let status, let rideID else { return false }
+        switch status {
+        case .accepted, .arrived, .enroute: return true
+        case .completed: return rideID != acknowledgedID
+        case .pending, .declined: return false
+        }
+    }
+
     private static func cleaned(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
         return trimmed
