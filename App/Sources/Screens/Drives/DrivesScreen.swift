@@ -13,6 +13,11 @@ struct DrivesScreen: View {
     @Bindable var homeState: OwnerHomeState
     @Bindable var drivesState: OwnerDrivesState
     @Binding var ownerTab: String
+    /// MYR-287 — the ONE resolved live/sim flag (threaded from `RootView`, the
+    /// same value `HomeScreen` receives). Gates the header's lifetime-odometer
+    /// figure: the prototype's fixture "42,184 mi" is simulated-only; live reads
+    /// the car's real odometer. See `headerSubtitle`.
+    var isLive: Bool = false
 
     private enum Tab: String { case history, upcoming }
     private enum SortKey: String, CaseIterable { case date, distance, duration }
@@ -106,9 +111,12 @@ struct DrivesScreen: View {
             Text("Drives")
                 .mrtTextStyle(.screenTitle)
                 .foregroundStyle(Color.mrtText)
-            // screens.jsx:633 `${VEHICLES[0].name} · 42,184 mi total` —
-            // odometer figure is fixture-only, ported verbatim.
-            Text("\(vehicle?.name ?? "Fleet") · 42,184 mi total")
+            // screens.jsx:633 `${VEHICLES[0].name} · 42,184 mi total`.
+            Text(Self.headerSubtitle(
+                isLive: isLive,
+                vehicleName: vehicle?.name,
+                odometerMiles: homeState.selectedTelemetry?.snapshot.odometerMiles
+            ))
                 .font(.system(size: 13))
                 .foregroundStyle(Color.mrtTextSec)
         }
@@ -116,6 +124,49 @@ struct DrivesScreen: View {
         .padding(.horizontal, MRTMetrics.pageGutter)
         .padding(.top, MRTMetrics.drivesHeaderTop)
         .padding(.bottom, 16)
+    }
+
+    /// The prototype's lifetime-odometer literal (screens.jsx:633). Fixture data
+    /// — simulated / DEBUG-scene renders ONLY (MYR-228).
+    static let simulatedLifetimeOdometerText = "42,184"
+
+    /// MYR-287 — the header line under "Drives" (screens.jsx:633
+    /// `${VEHICLES[0].name} · 42,184 mi total`).
+    ///
+    /// The defect: the whole line was ported verbatim, so a LIVE owner whose car
+    /// reads ~6,347 mi saw the prototype's 42,184 — the vehicle name was real and
+    /// the number beside it was a fixture, which is the most convincing kind of
+    /// lie (CLAUDE.md "No fixtures on the live path" / MYR-228).
+    ///
+    /// LIVE takes the real lifetime odometer from the selected vehicle's telemetry
+    /// snapshot (`VehicleTelemetrySnapshot.odometerMiles` ← `VehicleState.odometerMiles`
+    /// via `VehicleContractMapping`) — the SAME single source the owner sheet's
+    /// Lifetime → Odometer row reads (`LifetimeSection`), so the two surfaces can
+    /// never disagree. Deliberately NOT summed from the drives feed: that feed is
+    /// cursor-paginated (rest-api.md §7.2), so a sum over the loaded pages is a
+    /// partial-page total wearing a lifetime label.
+    ///
+    /// Honest-unknown: before the first snapshot streams the odometer in (or when
+    /// the car isn't streaming it at all), the "· X mi total" suffix is OMITTED
+    /// entirely, leaving just the vehicle name. A header suffix has nowhere to put
+    /// the `MRTUnavailableValue` "— Syncing" treatment the detail ROWS use (that
+    /// primitive is sized to stand where a value would, inside a labeled `KV`
+    /// row); dropping the clause is the same honest-omission choice the other
+    /// headers make for absent values.
+    ///
+    /// SIM keeps the literal verbatim so the `ownerDrives` drift-gate scene stays
+    /// pixel-identical — including the prototype's own quirk that the figure is
+    /// `VEHICLES[0]`'s regardless of which vehicle is selected.
+    ///
+    /// Pure + static so the live/nil/simulated matrix is unit-testable without a
+    /// SwiftUI host.
+    static func headerSubtitle(isLive: Bool, vehicleName: String?, odometerMiles: Int?) -> String {
+        // The live fleet has no selection until the list loads; "Fleet" is a
+        // generic stand-in, not fixture data, so it holds on both paths.
+        let name = vehicleName ?? "Fleet"
+        guard isLive else { return "\(name) · \(simulatedLifetimeOdometerText) mi total" }
+        guard let odometerMiles else { return name }
+        return "\(name) · \(MRTNumber.grouped(odometerMiles)) mi total"
     }
 
     // MARK: Segmented control (screens.jsx:637-646)
