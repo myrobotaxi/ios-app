@@ -314,6 +314,19 @@ struct RootView: View {
         #endif
     }
 
+    /// MYR-312/313 — the live flag `HomeScreen` (and through it the incoming
+    /// request sheet) renders on: the ONE resolved app mode, or — only for the
+    /// DEBUG `ownerScheduledLive` capture scene — a forced `true`, because the
+    /// requester name and the scheduled accept-gate exemption are both LIVE-only
+    /// branches that a simulated capture cannot otherwise reach. `false`
+    /// everywhere else → the fixture persona, pixel-identical (MYR-228).
+    private var incomingRequestIsLive: Bool {
+        #if DEBUG
+        if DebugScene.current?.rendersLiveIncomingRequest == true { return true }
+        #endif
+        return isLiveMode
+    }
+
     /// The profile the Settings surfaces render as real identity. The live user,
     /// or — only for the DEBUG `ownerSettings`/`riderSettings` capture scenes —
     /// the sample profile, so the real-identity Profile section + "Switch mode"
@@ -525,7 +538,7 @@ struct RootView: View {
                         // MYR-264 — the ONE resolved live flag gates the incoming
                         // request sheet's rider/vehicle identity + the media block
                         // (fixtures render only in SIM / DEBUG scenes).
-                        isLive: isLiveMode
+                        isLive: incomingRequestIsLive
                     )
                 }
             case .sharedHome:

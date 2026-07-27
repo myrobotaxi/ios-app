@@ -93,6 +93,20 @@ enum DebugScene: String, CaseIterable {
     case ownerDrives       // owner Drives tab, nothing seeded (live-drives captures)
     case ownerIncoming
     case ownerScheduled
+    /// MYR-312/313 — the owner's SCHEDULED incoming card as the LIVE path renders
+    /// it, in the client's exact reported condition: the request is for Saturday
+    /// 5:30 PM and the target car is IN SERVICE right now. Two things the SIM
+    /// `ownerScheduled` scene can't show, because both are live-only branches:
+    ///   • the REAL requester name (`IncomingRequestDisplay.resolve`'s live arm
+    ///     reads `requesterName`; the sim arm always renders the "Sam" fixture) —
+    ///     MYR-312, which shipped as "Shared viewer wants a ride";
+    ///   • Accept ENABLED against an in-service car — MYR-313's exemption.
+    /// So this scene forces the incoming sheet's LIVE branch
+    /// (`rendersLiveIncomingRequest`) and injects an in-service
+    /// `DebugVehicleDetailsFleet` whose vehicle id the seeded record targets, so
+    /// the real fleet join + the real `isAcceptGated` predicate both run.
+    /// `ownerScheduled` itself is untouched (the sim drift-gate stays identical).
+    case ownerScheduledLive
     /// MYR-260 — owner Home sheet in the honest unknown / stale controls state
     /// (offline car: Lock/Trunk KNOWN-but-stale, Climate/Charge "— Unavailable").
     /// Injects `DebugUnavailableControlsFleet` so the REAL sheet renders the new
@@ -279,9 +293,20 @@ enum DebugScene: String, CaseIterable {
     /// Whether Settings should render with the DEBUG live identity + switch row.
     var showsLiveSettings: Bool { self == .ownerSettings || self == .riderSettings }
 
+    /// MYR-312/313 — whether `HomeScreen`'s incoming-request surface should take
+    /// its LIVE branch even though the simulator composed the simulated app mode.
+    /// The two behaviours under test are live-only by construction (the real
+    /// requester name off `requesterName`, and the accept gate over a real joined
+    /// badge status), so a SIM capture of them is not possible; the same
+    /// `showsLiveSettings` precedent lets a capture scene stand in for the live
+    /// identity it cannot authenticate for. Scoped to this ONE scene, so every
+    /// other scene — `ownerScheduled` and `ownerIncoming` included — keeps its
+    /// simulated, pixel-identical rendering (CLAUDE.md drift gate).
+    var rendersLiveIncomingRequest: Bool { self == .ownerScheduledLive }
+
     private var isOwner: Bool {
         self == .ownerHome || self == .ownerDrives || self == .ownerIncoming
-            || self == .ownerScheduled || self == .ownerSettings
+            || self == .ownerScheduled || self == .ownerScheduledLive || self == .ownerSettings
             || self == .ownerControlsUnavailable
             || self == .ownerVehicleDetails || self == .ownerVehicleTires || self == .ownerVehicleSeats
             || self == .ownerVehicleSeatsVented || self == .ownerVehiclePlate
@@ -305,6 +330,12 @@ enum DebugScene: String, CaseIterable {
         // MYR-286 — same live-like fleet, plus the owner-entered plate on BOTH
         // read surfaces (snapshot + list row), as a real server emits it.
         case .ownerVehiclePlate: return DebugVehicleDetailsFleet(licensePlate: "RBO 2046")
+        // MYR-313 — the same live-like fleet, IN SERVICE: the client's condition
+        // (car in service today, reservation days out). The badge travels through
+        // the real mapping, so `HomeScreen`'s `badgeStatus(forVehicleID:)` hands
+        // the sheet a genuine `.inService` and the capture proves the shipping
+        // `isAcceptGated` exemption, not a bypassed gate.
+        case .ownerScheduledLive: return DebugVehicleDetailsFleet(status: .inService)
         case .ownerClimateAuto: return DebugClimateModeFleet(variant: .auto)
         case .ownerClimateManual: return DebugClimateModeFleet(variant: .cool)
         case .ownerClimateUnknown: return DebugClimateModeFleet(variant: .unknown)
@@ -511,6 +542,17 @@ enum DebugScene: String, CaseIterable {
             return record(status: .pending)
         case .ownerScheduled:
             return record(status: .pending, schedule: Self.sampleSchedule)
+        case .ownerScheduledLive:
+            // MYR-312/313 — the client's card: a Saturday 5:30 PM reservation from
+            // a NAMED requester, targeting the in-service debug vehicle by its real
+            // id (so `HomeScreen`'s fleet join resolves the name + badge status the
+            // live path would).
+            return record(
+                status: .pending,
+                schedule: RideSchedule(day: "Sat", time: "5:30 PM"),
+                fleetMemberID: Self.liveIncomingVehicleID,
+                requesterName: Self.sampleProfile.firstName
+            )
         case .trackingLeg1:
             return record(status: .accepted, progress: 0.08)
         case .trackingLeg2:
@@ -538,13 +580,25 @@ enum DebugScene: String, CaseIterable {
         }
     }
 
-    private func record(status: RideRequestStatus, progress: Double? = nil, schedule: RideSchedule? = nil) -> RideRequestRecord {
+    /// MYR-313 — the vehicle id `DebugVehicleDetailsFleet` publishes. A record that
+    /// targets it JOINS the injected fleet in `HomeScreen`, so the incoming sheet
+    /// resolves the real vehicle name + badge status instead of hiding them.
+    static let liveIncomingVehicleID = "debug-mdy"
+
+    private func record(
+        status: RideRequestStatus,
+        progress: Double? = nil,
+        schedule: RideSchedule? = nil,
+        fleetMemberID: String = RideRequestFixtures.fleet[0].id,
+        requesterName: String? = nil
+    ) -> RideRequestRecord {
         let input = RideRequestInput(
             pickup: DebugScene.samplePickup,
             destination: DebugScene.sampleDestination,
-            fleetMemberID: RideRequestFixtures.fleet[0].id,
+            fleetMemberID: fleetMemberID,
             passenger: nil,
-            schedule: schedule
+            schedule: schedule,
+            requesterName: requesterName
         )
         var rec = RideRequestRecord(input: input, status: status)
         rec.trackProgress = progress
@@ -616,7 +670,8 @@ enum DebugScene: String, CaseIterable {
             viewer.sheetPhase = .summary
         case .modeChooser, .ownerSettings, .riderSettings,
              .scheduledDetails, .scheduledReschedule, .scheduledRequested, .scheduledConfirmCancel,
-             .ownerHome, .ownerDrives, .ownerIncoming, .ownerScheduled, .ownerControlsUnavailable,
+             .ownerHome, .ownerDrives, .ownerIncoming, .ownerScheduled, .ownerScheduledLive,
+             .ownerControlsUnavailable,
              .ownerVehicleDetails, .ownerVehicleTires, .ownerVehicleSeats,
              .ownerVehicleSeatsVented, .ownerVehiclePlate,
              .ownerClimateAuto, .ownerClimateManual, .ownerClimateUnknown,

@@ -88,11 +88,50 @@ final class IncomingRequestSheetLogicTests: XCTestCase {
     }
 
     func testUnavailableReasonNamesTheVehicleAndStatus() {
-        XCTAssertEqual(IncomingRequestSheet.unavailableReason(status: .inService, vehicleName: "Lunar"), "Lunar is in service \u{2014} unavailable")
-        XCTAssertEqual(IncomingRequestSheet.unavailableReason(status: .offline, vehicleName: "Lunar"), "Lunar is offline \u{2014} unavailable")
+        XCTAssertEqual(IncomingRequestSheet.unavailableReason(status: .inService, vehicleName: "Lunar", isScheduled: false), "Lunar is in service \u{2014} unavailable")
+        XCTAssertEqual(IncomingRequestSheet.unavailableReason(status: .offline, vehicleName: "Lunar", isScheduled: false), "Lunar is offline \u{2014} unavailable")
         // Neutral when the name isn't known (live, no fleet join).
-        XCTAssertEqual(IncomingRequestSheet.unavailableReason(status: .offline, vehicleName: nil), "This vehicle is offline \u{2014} unavailable")
+        XCTAssertEqual(IncomingRequestSheet.unavailableReason(status: .offline, vehicleName: nil, isScheduled: false), "This vehicle is offline \u{2014} unavailable")
         // No reason for an available vehicle.
-        XCTAssertNil(IncomingRequestSheet.unavailableReason(status: .parked, vehicleName: "Lunar"))
+        XCTAssertNil(IncomingRequestSheet.unavailableReason(status: .parked, vehicleName: "Lunar", isScheduled: false))
+    }
+
+    // MARK: MYR-313 — SCHEDULED requests are exempt from the current-availability gate
+
+    /// The full instant × status × schedule matrix. The gate answers "can this car
+    /// be dispatched NOW?", which only an INSTANT request is asking: a reservation
+    /// for Saturday must be acceptable while the car is in service today (the
+    /// client's exact report). Mirrors the per-rider `ride_active` guard, the
+    /// per-vehicle one-active-ride index (MYR-266) and MYR-233's rider CTA gate,
+    /// all of which already exempt `scheduled_for IS NOT NULL`.
+    func testAcceptGateMatrixOverStatusAndSchedule() {
+        let statuses: [MRTVehicleStatus?] = [.inService, .offline, .parked, .charging, .driving, nil]
+        for status in statuses {
+            // INSTANT: gated exactly when the vehicle can't be dispatched now.
+            XCTAssertEqual(
+                IncomingRequestSheet.isAcceptGated(status: status, isScheduled: false),
+                IncomingRequestSheet.isVehicleUnavailable(status),
+                "instant request over status \(String(describing: status)) must follow the MYR-277 C gate"
+            )
+            // SCHEDULED: never gated, whatever the car is doing right now.
+            XCTAssertFalse(
+                IncomingRequestSheet.isAcceptGated(status: status, isScheduled: true),
+                "scheduled request over status \(String(describing: status)) must stay acceptable"
+            )
+        }
+    }
+
+    /// The gated reason line is the visible half of the same decision — a scheduled
+    /// request shows the normal helper text ("Accepting reserves …"), never
+    /// "Lunar is in service — unavailable".
+    func testScheduledRequestShowsNoUnavailableReason() {
+        for status in [MRTVehicleStatus.inService, .offline] {
+            XCTAssertNil(
+                IncomingRequestSheet.unavailableReason(status: status, vehicleName: "Lunar", isScheduled: true),
+                "a scheduled request must not carry an availability refusal (status \(status))"
+            )
+            // The instant counterpart still does — the gate is narrowed, not removed.
+            XCTAssertNotNil(IncomingRequestSheet.unavailableReason(status: status, vehicleName: "Lunar", isScheduled: false))
+        }
     }
 }

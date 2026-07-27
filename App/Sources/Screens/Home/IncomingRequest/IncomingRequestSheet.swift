@@ -110,7 +110,11 @@ struct IncomingRequestSheet: View {
             if !sending, !sent {
                 // MYR-277 C — an honest reason replaces the helper line when the
                 // target vehicle can't take the dispatch (in_service/offline).
-                if let reason = Self.unavailableReason(status: vehicleStatus, vehicleName: display(for: request).vehicleName) {
+                if let reason = Self.unavailableReason(
+                    status: vehicleStatus,
+                    vehicleName: display(for: request).vehicleName,
+                    isScheduled: isScheduled(request)
+                ) {
                     unavailableLine(reason)
                         .padding(.top, 12)
                 } else {
@@ -488,7 +492,9 @@ struct IncomingRequestSheet: View {
                 declineButton
                 // MYR-277 C — Decline stays enabled; Accept is disabled (honest,
                 // non-interactive) when the target vehicle is in_service/offline.
-                if Self.isVehicleUnavailable(vehicleStatus) {
+                // MYR-313 — …unless the request is SCHEDULED, which the gate must
+                // not touch (see `isAcceptGated`).
+                if Self.isAcceptGated(status: vehicleStatus, isScheduled: isScheduled(request)) {
                     disabledAcceptButton(request)
                 } else {
                     MRTButton(isScheduled(request) ? "Accept ride" : "Accept & send", variant: .outlineDraw, fullWidth: true) {
@@ -530,16 +536,31 @@ struct IncomingRequestSheet: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// Whether the target vehicle can't take a dispatch (MYR-277 C). Pure + static
-    /// so the gate is unit-testable without SwiftUI.
+    /// Whether the target vehicle can't take a dispatch RIGHT NOW (MYR-277 C).
+    /// Pure + static so the gate is unit-testable without SwiftUI.
     static func isVehicleUnavailable(_ status: MRTVehicleStatus?) -> Bool {
         status == .inService || status == .offline
     }
 
-    /// The reason line text for a gated Accept, or `nil` when the vehicle is
-    /// available (MYR-277 C). Neutral "This vehicle" when the name isn't known.
-    static func unavailableReason(status: MRTVehicleStatus?, vehicleName: String?) -> String? {
-        guard isVehicleUnavailable(status) else { return nil }
+    /// Whether Accept must be muted for this request (MYR-277 C, narrowed by
+    /// MYR-313). The MYR-277 gate answers "can this car be dispatched NOW?", which
+    /// is the right question for an INSTANT request and the wrong one for a
+    /// reservation: the client's car was in service today while the request was for
+    /// Saturday 5:30 PM, and the card refused the accept with "Lunar is in service
+    /// — unavailable". Availability at the reservation instant is the scheduled-ride
+    /// machinery's problem (MYR-179), not accept-time's — exactly as the per-rider
+    /// `ride_active` guard, the per-vehicle one-active-ride index (MYR-266) and
+    /// MYR-233's rider CTA gate all already exempt `scheduled_for IS NOT NULL`.
+    /// So: SCHEDULED requests are never gated on current vehicle status.
+    static func isAcceptGated(status: MRTVehicleStatus?, isScheduled: Bool) -> Bool {
+        !isScheduled && isVehicleUnavailable(status)
+    }
+
+    /// The reason line text for a gated Accept, or `nil` when Accept is live
+    /// (MYR-277 C; `nil` for every scheduled request per MYR-313, which then shows
+    /// the normal helper text). Neutral "This vehicle" when the name isn't known.
+    static func unavailableReason(status: MRTVehicleStatus?, vehicleName: String?, isScheduled: Bool) -> String? {
+        guard isAcceptGated(status: status, isScheduled: isScheduled) else { return nil }
         let name = vehicleName ?? "This vehicle"
         let phrase = status == .offline ? "offline" : "in service"
         return "\(name) is \(phrase) \u{2014} unavailable"

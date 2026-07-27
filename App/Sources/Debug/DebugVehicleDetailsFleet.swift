@@ -50,7 +50,15 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
     /// `VehicleContractMapping.plateDisplay` precedence and the REAL
     /// `LiveVehicleCommandExecutor.reconcile`, so a capture that shows the plate
     /// proves the shipping path does — not a hand-set field.
-    init(seatCoolingCapable: Bool = false, licensePlate: String? = nil) {
+    /// MYR-313 — the badge status the summary carries. Defaults to `.parked` (every
+    /// pre-existing scene is byte-identical); `.inService` is the client's exact
+    /// MYR-313 condition — the car is in service TODAY while a reservation for
+    /// Saturday waits on the owner's decision. It travels through the REAL
+    /// `VehicleContractMapping.badgeStatus` fold, so the capture exercises the
+    /// shipping predicate rather than a hand-set badge.
+    private let badge: MRTVehicleStatus
+
+    init(seatCoolingCapable: Bool = false, licensePlate: String? = nil, status: VehicleSummary.Status = .parked) {
         // A live-like snapshot: full model/year/trim, full VIN + software version,
         // and a BLANK color (onboarding gap, MYR-283). Streaming/online so the
         // footer honestly reads "Live".
@@ -62,7 +70,7 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             year: 2026,
             color: "",
             vinLast4: "3456",
-            status: .parked,
+            status: status,
             chargeLevel: 71,
             estimatedRange: 193,
             lastUpdated: state.lastUpdated,
@@ -73,6 +81,7 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
         // would render (composed model, snapshot VIN/software, honest color, no
         // fixture tires).
         vehicles = [VehicleContractMapping.vehicle(summary: summary, state: state)]
+        badge = VehicleContractMapping.badgeStatus(from: status)
         source = DebugDetailsTelemetrySource(snapshot: VehicleContractMapping.snapshot(from: state))
 
         let exec = LiveVehicleCommandExecutor(
@@ -93,7 +102,7 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
     func telemetry(at index: Int) -> any VehicleTelemetrySource { source }
     func commandExecutor(at index: Int) -> any VehicleCommandExecutor { executor }
     func drivesFeed(at index: Int) -> any DrivesFeed { feed }
-    func badgeStatus(at index: Int) -> MRTVehicleStatus { .parked }
+    func badgeStatus(at index: Int) -> MRTVehicleStatus { badge }
 
     func start() {}
     func stop() {}
