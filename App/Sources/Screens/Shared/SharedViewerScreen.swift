@@ -345,7 +345,12 @@ struct SharedViewerScreen: View {
             case .pinDrop(let returnTo):
                 RideRequestPinDropContent(viewerState: viewerState, returnTo: returnTo, totalHeight: totalHeight)
             case .review:
-                RideRequestReviewContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
+                // MYR-312 — the real identity travels into the submitted draft as
+                // its `requesterName`, so the owner's incoming card names the
+                // requester from the first frame (scheduled requests return
+                // straight to idle, so the owner tab is reachable before the
+                // deferred create POST + WS refetch could supply it).
+                RideRequestReviewContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight, liveProfile: liveProfile)
             case .booking:
                 RideRequestBookingContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
             case .tracking:

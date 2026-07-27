@@ -78,6 +78,33 @@ struct IncomingRequestDisplay: Equatable {
     /// name or the neutral role (never a persona).
     var riderLabel: String { riderName ?? Self.neutralRole }
 
+    /// MYR-312 — the requester name to stamp on a draft this device's OWN rider
+    /// submits, so the owner card is honest from the first frame instead of
+    /// waiting for the server round trip to name the requester.
+    ///
+    /// The bug this closes: `RideRequestInput` gets its `requesterName` off the
+    /// WIRE (`RideRequestContractMapping.record(from:)`), or — for a draft
+    /// submitted right here — from the `integrate` fold once a
+    /// `ride_request_created` frame triggers a refetch (MYR-277 A1). In the
+    /// single-account demo the rider's own optimistic draft therefore carries NO
+    /// name until that round trip completes, and the create POST is DEFERRED by
+    /// the 10s booking grace window (MYR-218). For an INSTANT request the rider
+    /// sits on the Booking card for that window, so the owner surface is only
+    /// reachable after the name has landed. A SCHEDULED request drops straight
+    /// back to idle (`RideRequestReviewContent.confirm`), so the owner tab is one
+    /// tap away with no server ride in existence yet — and the card rendered
+    /// "Shared viewer wants a ride · Scheduled · …", the client's exact report.
+    ///
+    /// The signed-in profile IS the requester on this device, so naming it is the
+    /// honest answer, not a fixture: `nil` profile (SIM / no live identity) keeps
+    /// `resolve`'s fixture-persona branch pixel-identical (MYR-228). The FIRST
+    /// name matches what the server resolves for the same account (MYR-229's
+    /// `firstNameToken` chain), so the later authoritative fold is a no-op
+    /// instead of a visible "Thomas Nandola" → "Thomas" flicker.
+    static func localRequesterName(profile: UserProfile?) -> String? {
+        cleanedName(profile?.firstName)
+    }
+
     /// Trim whitespace; treat an empty wire string as absent (same rule as
     /// `UserProfile.normalized`).
     private static func cleanedName(_ value: String?) -> String? {

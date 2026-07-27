@@ -7,6 +7,12 @@ struct RideRequestReviewContent: View {
     @Bindable var viewerState: SharedViewerState
     var rideRequestService: any RideRequestService
     var totalHeight: CGFloat?
+    /// MYR-312 — the REAL signed-in identity (threaded from `RootView` through
+    /// `SharedViewerScreen`, the MYR-224 pattern). `nil` in SIM / DEBUG scenes.
+    /// Stamped onto the submitted draft as its `requesterName` so the owner's
+    /// incoming card names the requester from the first frame — see
+    /// `IncomingRequestDisplay.localRequesterName`.
+    var liveProfile: UserProfile?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var fleetPickerOpen = false
 
@@ -418,7 +424,12 @@ struct RideRequestReviewContent: View {
             destination: destination,
             fleetMemberID: fleetMember.id,
             passenger: viewerState.draftPassenger,
-            schedule: viewerState.draftSchedule
+            schedule: viewerState.draftSchedule,
+            // MYR-312: this device's signed-in user IS the requester, so the
+            // owner card can name them immediately instead of falling back to
+            // the neutral "Shared viewer" until the create POST + WS refetch
+            // land. `nil` in SIM → the fixture persona, unchanged.
+            requesterName: IncomingRequestDisplay.localRequesterName(profile: liveProfile)
         )
         rideRequestService.submit(input)
         if viewerState.draftSchedule != nil {
