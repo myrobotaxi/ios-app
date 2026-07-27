@@ -25,9 +25,10 @@ let package = Package(
         .library(name: "MyRoboTaxiKit", targets: ["MyRoboTaxiKit"])
     ],
     dependencies: [
-        // MYR-286 — 0.15.0 adds the optional `licensePlate` to BOTH `VehicleState`
-        // and `VehicleSummary` (the owner-entered plate, written via §7.14).
-        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.15.0")
+        // MYR-303/308/314 — 0.16.0 adds the eight optional media now-playing
+        // fields (title/artist/album/station/source/durationMs/elapsedMs/volumeMax)
+        // and the REST-sourced `seatCoolingCapable` seat-spec flag to `VehicleState`.
+        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.16.0")
     ],
     targets: [
         .target(

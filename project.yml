@@ -19,9 +19,10 @@ packages:
   # product explicitly (same version the Kit resolves — SPM dedupes).
   contracts:
     url: https://github.com/myrobotaxi/contracts.git
-    # MYR-286 — 0.15.0 adds the optional `licensePlate` to BOTH `VehicleState`
-    # and `VehicleSummary` (the owner-entered plate; §7.14 is its only writer).
-    from: 0.15.0
+    # MYR-303/308/314 — 0.16.0 adds the eight optional media now-playing fields
+    # (title/artist/album/station/source/durationMs/elapsedMs/volumeMax, all
+    # streamed live) and the REST-only `seatCoolingCapable` seat-spec flag.
+    from: 0.16.0
 
 settings:
   base:
