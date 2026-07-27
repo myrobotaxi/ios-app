@@ -131,8 +131,9 @@ public enum VehicleStateMerger {
             case "locationAddress": if let v = value.stringValue { state.locationAddress = v }
             case "lastUpdated": if let v = value.stringValue { state.lastUpdated = v }
 
-            // Owner control / cabin fields (MYR-272). These were dropped by the
-            // `default` arm, so a LIVE `vehicle_update` toggling climate/lock/trunk
+            // Owner control / cabin fields (MYR-272, completed by MYR-298). These
+            // were dropped by the `default` arm, so a LIVE `vehicle_update`
+            // toggling climate/lock/trunk
             // etc. never folded into `state` — the tiles reflected the field only
             // on a full snapshot (reconnect/sheet-open). The client enabled climate
             // in the car and the app never showed it "On" (only interiorTemp — which
@@ -140,6 +141,16 @@ public enum VehicleStateMerger {
             // tiles via `onStateChanged` → `reconcile`. Each honors an explicit null
             // (clear); the reconcile layer guards against clobbering in-flight
             // optimistic commands, so no extra gating is needed here.
+            //
+            // MYR-298 — MYR-272 hand-enumerated 17 of the 21 contracted cabin
+            // fields and the remaining four (`hvacAutoMode`, `hvacAcEnabled`,
+            // `seatVentEnabled`, `mediaPlaybackStatus`) kept falling into
+            // `default:`: climate mode went stale after the connect snapshot, the
+            // seat-vent capability never arrived, and the media play/pause icon
+            // reflected only local taps. `VehicleStateMergerTests` now derives its
+            // coverage from a canonical table checked against `Mirror`-reflected
+            // `VehicleState` properties, so the next contracts field cannot repeat
+            // this silently.
             case "isClimateOn":
                 if value.isNull { state.isClimateOn = nil } else if let v = value.boolValue { state.isClimateOn = v }
             case "hvacPower":
@@ -159,6 +170,11 @@ public enum VehicleStateMerger {
                 if value.isNull { state.driverTempSetting = nil } else if let v = value.numberValue { state.driverTempSetting = Int(v) }
             case "passengerTempSetting":
                 if value.isNull { state.passengerTempSetting = nil } else if let v = value.numberValue { state.passengerTempSetting = Int(v) }
+            case "hvacAutoMode":
+                if value.isNull { state.hvacAutoMode = nil }
+                else if let v = value.stringValue { state.hvacAutoMode = VehicleState.HvacAutoMode(rawValue: v) }
+            case "hvacAcEnabled":
+                if value.isNull { state.hvacAcEnabled = nil } else if let v = value.boolValue { state.hvacAcEnabled = v }
             case "seatHeaterLeft":
                 if value.isNull { state.seatHeaterLeft = nil } else if let v = value.numberValue { state.seatHeaterLeft = Int(v) }
             case "seatHeaterRight":
@@ -173,6 +189,11 @@ public enum VehicleStateMerger {
                 if value.isNull { state.seatCoolerLeft = nil } else if let v = value.numberValue { state.seatCoolerLeft = Int(v) }
             case "seatCoolerRight":
                 if value.isNull { state.seatCoolerRight = nil } else if let v = value.numberValue { state.seatCoolerRight = Int(v) }
+            case "seatVentEnabled":
+                if value.isNull { state.seatVentEnabled = nil } else if let v = value.boolValue { state.seatVentEnabled = v }
+            case "mediaPlaybackStatus":
+                if value.isNull { state.mediaPlaybackStatus = nil }
+                else if let v = value.stringValue { state.mediaPlaybackStatus = VehicleState.MediaPlaybackStatus(rawValue: v) }
             case "mediaVolume":
                 if value.isNull { state.mediaVolume = nil } else if let v = value.numberValue { state.mediaVolume = v }
 
