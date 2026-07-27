@@ -132,4 +132,72 @@ final class IncomingRequestLiveIdentityTests: XCTestCase {
         // The fixture battery-after formula: max(10, battery - round(miles*0.7)).
         XCTAssertEqual(display.batteryAfter, max(10, member.battery - Int((dest.miles * 0.7).rounded())))
     }
+
+    // MARK: - MYR-312: the SCHEDULED card names the requester from frame 0
+
+    /// A locally-submitted draft (the single-account demo: this device's rider) is
+    /// stamped with the signed-in identity, so the owner card names them before the
+    /// deferred create POST + WS refetch can. A SCHEDULED request drops the rider
+    /// straight back to idle, so that window is exactly when the owner looks — the
+    /// client's "Shared viewer wants a ride · Scheduled · Sat 5:30 PM".
+    func testScheduledDraftFromSignedInRiderShowsTheRealName() {
+        let profile = UserProfile(id: "u-me", name: "Thomas Nandola", email: "thomas@myrobotaxi.app")
+        let record = localDraft(schedule: RideSchedule(day: "Sat", time: "5:30 PM"), profile: profile)
+        let display = IncomingRequestDisplay.resolve(request: record, isLive: true, liveVehicle: liveVehicle())
+
+        // The FIRST name — identical to the server's MYR-229 `firstNameToken`
+        // resolution for the same account, so the later authoritative fold is a
+        // no-op rather than a visible re-render.
+        XCTAssertEqual(display.riderName, "Thomas")
+        XCTAssertEqual(display.avatarInitial, "T")
+        XCTAssertEqual(display.title(hasPassenger: false), "Thomas wants a ride")
+        XCTAssertNotEqual(display.title(hasPassenger: false), "Shared viewer wants a ride")
+    }
+
+    /// The honest fallback is unchanged: an account with no usable name still
+    /// renders the neutral role, never a fabricated persona or an empty subject.
+    func testScheduledDraftWithoutAccountNameKeepsTheNeutralFallback() {
+        for nameless in [nil, "", "   "] as [String?] {
+            let profile = UserProfile(id: "u-me", name: nameless, email: "thomas@myrobotaxi.app")
+            let record = localDraft(schedule: RideSchedule(day: "Sat", time: "5:30 PM"), profile: profile)
+            let display = IncomingRequestDisplay.resolve(request: record, isLive: true, liveVehicle: liveVehicle())
+
+            XCTAssertNil(display.riderName, "name \(String(describing: nameless)) must be treated as absent")
+            XCTAssertEqual(display.title(hasPassenger: false), "Shared viewer wants a ride")
+        }
+    }
+
+    /// SIM has no signed-in profile, so the draft carries no name and the fixture
+    /// persona still renders — the `ownerScheduled` drift-gate scene is untouched.
+    func testSimScheduledDraftKeepsFixturePersona() {
+        let record = localDraft(schedule: RideSchedule(day: "Sat", time: "5:30 PM"), profile: nil)
+        XCTAssertNil(record.input.requesterName)
+
+        let display = IncomingRequestDisplay.resolve(request: record, isLive: false, liveVehicle: nil)
+        XCTAssertEqual(display.title(hasPassenger: false), "Sam wants a ride")
+    }
+
+    /// The stamp is identity, not schedule-specific: an instant draft gets the same
+    /// real name (it was only invisible there because the rider sits on the Booking
+    /// card for the whole 10s grace window).
+    func testInstantDraftGetsTheSameRealName() {
+        let profile = UserProfile(id: "u-me", name: "Thomas Nandola", email: nil)
+        let record = localDraft(schedule: nil, profile: profile)
+        let display = IncomingRequestDisplay.resolve(request: record, isLive: true, liveVehicle: liveVehicle())
+        XCTAssertEqual(display.title(hasPassenger: false), "Thomas wants a ride")
+    }
+
+    /// The draft the rider's Review CTA submits (`RideRequestReviewContent.confirm`),
+    /// built through the SAME resolver so the test can't drift from the shipping call.
+    private func localDraft(schedule: RideSchedule?, profile: UserProfile?) -> RideRequestRecord {
+        let input = RideRequestInput(
+            pickup: RideRequestFixtures.savedPlaces[0],
+            destination: RideRequestFixtures.recentPlaces[1],
+            fleetMemberID: "veh-live",
+            passenger: nil,
+            schedule: schedule,
+            requesterName: IncomingRequestDisplay.localRequesterName(profile: profile)
+        )
+        return RideRequestRecord(input: input, status: .pending)
+    }
 }
