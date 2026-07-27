@@ -119,6 +119,18 @@ enum DebugScene: String, CaseIterable {
     /// path); pass `MRT_OWNER_VEHICLE=1` for the parked non-vent "Daily" (heat-only
     /// "SEAT HEATING", no toggle). Pair with `MRT_OWNER_DETENT=half`.
     case ownerVehicleSeats
+    /// MYR-299 — the SEAT CLIMATE section for a car whose ventilated seats are
+    /// discovered from the WIRE, not from a fixture flag. Injects
+    /// `DebugVehicleDetailsFleet(seatCoolingCapable: true)`: a live-like snapshot
+    /// carrying `seatCoolerLeft`/`seatCoolerRight` PRESENT at `0` with
+    /// `seatVentEnabled: false`, mapped through the production
+    /// `VehicleContractMapping` → `SeatClimatePresentation.hasVentilatedSeats`. So
+    /// the capture proves the shipping predicate: both seats OFF, neither reading
+    /// `.cool`, vent flag false — and the Heat↔Cool toggle is still offered under a
+    /// "SEAT CLIMATE" label. Under the old `seatVentEnabled` gate this exact car
+    /// rendered heat-only with no way to reach Cool (the client's report). Pair
+    /// with `MRT_OWNER_DETENT=half`.
+    case ownerVehicleSeatsVented
     /// MYR-274 — owner Home dense sheet scrolled to the CLIMATE section so the
     /// Auto/Cool/Heat mode segment is in-frame for a full-frame drift-gate
     /// screenshot. Three variants inject `DebugClimateModeFleet` seeded via the
@@ -255,6 +267,7 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerScheduled || self == .ownerSettings
             || self == .ownerControlsUnavailable
             || self == .ownerVehicleDetails || self == .ownerVehicleTires || self == .ownerVehicleSeats
+            || self == .ownerVehicleSeatsVented
             || self == .ownerClimateAuto || self == .ownerClimateManual || self == .ownerClimateUnknown
             || self == .ownerNoticeCharge || self == .ownerNoticeAsleep || self == .ownerNoticeSeat
             || self == .ownerDispatched || self == .ownerDispatchedArrived
@@ -270,6 +283,8 @@ enum DebugScene: String, CaseIterable {
         switch self {
         case .ownerControlsUnavailable: return DebugUnavailableControlsFleet()
         case .ownerVehicleDetails, .ownerVehicleTires: return DebugVehicleDetailsFleet()
+        // MYR-299 — same live-like fleet, plus the vented-car seat read-backs.
+        case .ownerVehicleSeatsVented: return DebugVehicleDetailsFleet(seatCoolingCapable: true)
         case .ownerClimateAuto: return DebugClimateModeFleet(variant: .auto)
         case .ownerClimateManual: return DebugClimateModeFleet(variant: .cool)
         case .ownerClimateUnknown: return DebugClimateModeFleet(variant: .unknown)
@@ -294,7 +309,7 @@ enum DebugScene: String, CaseIterable {
         case .ownerVehicleTires: return .fraction(0.55)
         // The seat section is the tail of the Climate card, above the vertical
         // middle; anchoring the content's ~30% point frames it at the half detent.
-        case .ownerVehicleSeats: return .fraction(0.30)
+        case .ownerVehicleSeats, .ownerVehicleSeatsVented: return .fraction(0.30)
         // The Auto/Cool/Heat segment sits near the TOP of the Climate card (just
         // below the temp stepper); a small anchor keeps the quick tiles + climate
         // header + the segment together in-frame at the half detent.
@@ -550,6 +565,7 @@ enum DebugScene: String, CaseIterable {
              .scheduledDetails, .scheduledReschedule, .scheduledRequested, .scheduledConfirmCancel,
              .ownerHome, .ownerDrives, .ownerIncoming, .ownerScheduled, .ownerControlsUnavailable,
              .ownerVehicleDetails, .ownerVehicleTires, .ownerVehicleSeats,
+             .ownerVehicleSeatsVented,
              .ownerClimateAuto, .ownerClimateManual, .ownerClimateUnknown,
              .ownerNoticeCharge, .ownerNoticeAsleep, .ownerNoticeSeat,
              .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute,
