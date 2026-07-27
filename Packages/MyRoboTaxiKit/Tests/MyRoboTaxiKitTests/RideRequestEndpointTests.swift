@@ -323,4 +323,49 @@ final class RideRequestEndpointTests: XCTestCase {
             XCTAssertNil(active, "missing sibling → nil, caller refetches its open list")
         }
     }
+
+    // MARK: - 409 vehicle_unavailable (MYR-233, MYR-277)
+
+    /// A create refused because the VEHICLE can't take the ride surfaces as a
+    /// plain typed `.http(409, …)` whose code carries the raw wire value —
+    /// `vehicle_unavailable` is not a member of the contracts `ErrorPayload.Code`
+    /// enum as of 0.14.0, so it lands in the forward-compat `.unrecognized` arm.
+    /// `RestError.isVehicleUnavailable` reads that typed value (never the human
+    /// `message`, FR-7.1), so callers branch honestly instead of string-matching.
+    func testVehicleUnavailable409IsTypedAndDetectable() async throws {
+        let body = Data("""
+        { "error": { "code": "vehicle_unavailable", "message": "vehicle has an active ride", "subCode": null } }
+        """.utf8)
+        let (client, _) = client([.init(status: 409, body: body)])
+
+        do {
+            _ = try await client.createRideRequest(RideRequestCreateRequest(
+                vehicleId: "clxyz1234567890abcdef",
+                pickup: RidePlace(lat: 37.7793, lng: -122.3937, label: "Current location"),
+                dropoff: RidePlace(lat: 37.6156, lng: -122.3900, label: "SFO · Terminal 2")
+            ))
+            XCTFail("expected a 409 RestError")
+        } catch let error as RestError {
+            guard case .http(let status, let code, _, _) = error else { return XCTFail("wrong case: \(error)") }
+            XCTAssertEqual(status, 409)
+            XCTAssertEqual(code?.rawValue, "vehicle_unavailable")
+            XCTAssertTrue(error.isVehicleUnavailable)
+            // It must NOT be confused with the rider-scoped `ride_active` 409.
+            if case .rideActive = error { XCTFail("vehicle_unavailable is not ride_active") }
+        }
+    }
+
+    /// The helper is narrow: a different 409, a different status, and the
+    /// non-`.http` cases all read false, so no unrelated failure is ever
+    /// mistaken for a busy vehicle.
+    func testIsVehicleUnavailableIsNarrow() {
+        XCTAssertFalse(RestError.http(status: 409, code: .conflict, message: "x", subCode: nil).isVehicleUnavailable)
+        XCTAssertFalse(RestError.http(status: 409, code: .rideActive, message: "x", subCode: nil).isVehicleUnavailable)
+        XCTAssertFalse(
+            RestError.http(status: 403, code: .unrecognized("vehicle_unavailable"), message: "x", subCode: nil).isVehicleUnavailable,
+            "only a 409 carries this meaning"
+        )
+        XCTAssertFalse(RestError.invalidResponse.isVehicleUnavailable)
+        XCTAssertFalse(RestError.rideActive(active: nil).isVehicleUnavailable)
+    }
 }

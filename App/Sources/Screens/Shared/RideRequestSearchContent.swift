@@ -272,6 +272,7 @@ struct RideRequestSearchContent: View {
             // focus AFTER the settle. Leaving search cancels any pending focus so
             // the keyboard never strands over a mid-exit sheet (MYR-239).
             if newPhase == .search {
+                consumeScheduleRouting() // MYR-233 — arrived here from the Busy CTA
                 scheduleSearchFocus()
             } else {
                 focusTask?.cancel()
@@ -294,6 +295,11 @@ struct RideRequestSearchContent: View {
                 schedDay = schedule.day
                 schedTime = schedule.time
             }
+            // MYR-233 — Review's unavailable-vehicle CTA handed the rider here to
+            // pick a time. Handled on BOTH entry paths (a remount fires `onAppear`;
+            // the hosted idle↔search engine fires the phase `onChange` above) — the
+            // flag is one-shot, so whichever lands first wins and the other no-ops.
+            consumeScheduleRouting()
             #if DEBUG
             if let debugQuery = DebugScene.current?.searchQuery { query = debugQuery } // MYR-200 searchFiltered scene
             #endif
@@ -331,6 +337,21 @@ struct RideRequestSearchContent: View {
             guard viewerState.sheetPhase == .search, pickedDestination == nil else { return }
             destinationFieldFocused = true
         }
+    }
+
+    /// MYR-233 — consume `viewerState.opensScheduleOnSearch` (set by Review's
+    /// unavailable-vehicle CTA) and open the schedule slide-up card. One-shot:
+    /// cleared immediately so a later manual return to Search doesn't re-open it.
+    /// Seeds the picker from an existing draft schedule, like the chip tap does.
+    @MainActor
+    private func consumeScheduleRouting() {
+        guard viewerState.opensScheduleOnSearch else { return }
+        viewerState.opensScheduleOnSearch = false
+        if let schedule = viewerState.draftSchedule {
+            schedDay = schedule.day
+            schedTime = schedule.time
+        }
+        scheduleSheetOpen = true
     }
 
     // MARK: Chips

@@ -120,12 +120,27 @@ struct RideRequestReviewContent: View {
 
                 vehicleRow.padding(.bottom, 16)
 
-                MRTButton(schedule != nil ? "Schedule with \(fleetMember.owner)" : "Request from \(fleetMember.owner)", variant: .outlineDraw, action: confirm)
-                    // MYR-237: inert while the destination's real coordinate is
-                    // still resolving ("Finding route…" shows above) — a
-                    // placeholder submit books a 0.0mi ride to yourself.
-                    .allowsHitTesting(!destinationResolving)
-                    .opacity(destinationResolving ? 0.55 : 1)
+                // MYR-233: an unavailable vehicle can't take an INSTANT request,
+                // so the gold outline-draw "actionable moment" CTA is replaced by
+                // a muted one that routes to scheduling — never a dead, dimmed
+                // gold button. A vehicle that IS available, and any request that
+                // already carries a schedule (scheduled rides are exempt from the
+                // busy rule — contracts `hasActiveRide` doc), keeps the CTA
+                // verbatim, so sim + every existing scene are pixel-identical.
+                if ctaGate.routesToScheduling {
+                    MRTButton(
+                        "Schedule with \(fleetMember.owner) instead",
+                        variant: .outlineMuted,
+                        action: { viewerState.routeToScheduling() }
+                    )
+                } else {
+                    MRTButton(schedule != nil ? "Schedule with \(fleetMember.owner)" : "Request from \(fleetMember.owner)", variant: .outlineDraw, action: confirm)
+                        // MYR-237: inert while the destination's real coordinate is
+                        // still resolving ("Finding route…" shows above) — a
+                        // placeholder submit books a 0.0mi ride to yourself.
+                        .allowsHitTesting(!destinationResolving)
+                        .opacity(destinationResolving ? 0.55 : 1)
+                }
 
                 Text(helperText)
                     .font(.system(size: 11.5))
@@ -262,6 +277,36 @@ struct RideRequestReviewContent: View {
         .mrtSurface(.control, fill: .mrtElevated, radius: 13)
     }
 
+    /// The vehicle row's secondary line. Unchanged for every available vehicle
+    /// (and therefore every fixture / simulated scene); an unavailable one drops
+    /// the status word, which the trailing chip now carries (MYR-233).
+    private var statusLine: String {
+        let prefix = isLiveVehicle ? "\(fleetMember.name) \u{00B7} " : ""
+        guard fleetMember.isRequestable else { return "\(prefix)\(fleetMember.battery)%" }
+        let now = fleetMember.isAvailable && schedule == nil ? " now" : ""
+        return "\(prefix)\(fleetMember.availabilityWord)\(now) \u{00B7} \(fleetMember.battery)%"
+    }
+
+    /// MYR-233 — the Busy / In service / Offline chip. Deliberately MUTED: it
+    /// reuses the same capsule recipe as `RideHistoryScreen`'s "Pending" status
+    /// chip (`mrtRidePendingChipFill` = rgba(255,255,255,0.07), muted dot,
+    /// secondary label) rather than introducing new visual language. NO gold —
+    /// gold is the sacred "actionable moment" accent (CLAUDE.md), and this state
+    /// is precisely the absence of an action.
+    private func unavailableChip(_ unavailability: FleetUnavailability) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(Color.mrtTextMuted).frame(width: 5, height: 5)
+            Text(unavailability.word)
+        }
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(Color.mrtTextSec)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 2)
+        .background(Color.mrtRidePendingChipFill, in: Capsule())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(fleetMember.owner) is \(unavailability.word.lowercased())")
+    }
+
     private var vehicleRow: some View {
         Button {
             if canPickFleet { fleetPickerOpen = true }
@@ -285,13 +330,19 @@ struct RideRequestReviewContent: View {
                         // MYR-212: green dot + "now" only when live status is
                         // bookable; fixtures are always available (identical).
                         Circle().fill(fleetMember.isAvailable ? Color.mrtParked : Color.mrtTextMuted).frame(width: 6, height: 6).shadow(color: (fleetMember.isAvailable ? Color.mrtParked : Color.clear).opacity(0.6), radius: 3)
-                        Text("\(isLiveVehicle ? "\(fleetMember.name) \u{00B7} " : "")\(fleetMember.availabilityWord)\(fleetMember.isAvailable && schedule == nil ? " now" : "") \u{00B7} \(fleetMember.battery)%")
+                        // MYR-233: an unavailable vehicle carries its state word in
+                        // the trailing chip instead, so the status line drops it
+                        // rather than saying "Busy" twice in one row. Identity
+                        // (name/model) and the charge headline are untouched.
+                        Text(statusLine)
                             .font(.system(size: 12))
                             .foregroundStyle(Color.mrtTextSec)
                     }
                 }
                 Spacer(minLength: 0)
-                if canPickFleet {
+                if let unavailability = fleetMember.unavailability {
+                    unavailableChip(unavailability)
+                } else if canPickFleet {
                     HStack(spacing: 3) {
                         Text("Change").font(.system(size: 12, weight: .semibold))
                         Image(systemName: "chevron.down").font(.system(size: 11))
@@ -320,7 +371,25 @@ struct RideRequestReviewContent: View {
         .frame(minHeight: MRTMetrics.minTapTarget)
     }
 
+    /// MYR-233 — the instant-request gate for THIS draft.
+    private var ctaGate: RideRequestCTAGate {
+        RideRequestCTAGate(unavailability: fleetMember.unavailability, isScheduled: schedule != nil)
+    }
+
     private var helperText: String {
+        // MYR-233: honest, specific copy for a gated vehicle — say WHY and what
+        // the rider can do instead. Never "must accept" for a request that can't
+        // be submitted at all.
+        if let reason = ctaGate.reason {
+            switch reason {
+            case .busy:
+                return "\(fleetMember.owner) is on another ride right now \u{2014} schedule a pickup instead"
+            case .inService:
+                return "\(fleetMember.owner) is in service right now \u{2014} schedule a pickup instead"
+            case .offline:
+                return "\(fleetMember.owner) is offline right now \u{2014} schedule a pickup instead"
+            }
+        }
         if let passenger, !passenger.phone.isEmpty {
             let first = passenger.name.split(separator: " ").first.map(String.init) ?? passenger.name
             return "\(fleetMember.owner) must accept \u{2014} then we\u{2019}ll text \(first) the tracking link"
@@ -335,6 +404,11 @@ struct RideRequestReviewContent: View {
         // (it happened). The CTA is disabled while resolving; this is the
         // last-line guard.
         guard !RidePlaceMapper.isUnresolved(destination) else { return }
+        // MYR-233 last-line guard: never POST an instant request against a
+        // vehicle the server would refuse with `409 vehicle_unavailable`. The CTA
+        // is already replaced in that state; this closes the gap if any future
+        // path calls `confirm()` directly.
+        guard ctaGate.allowsSubmit else { return }
         let input = RideRequestInput(
             // MYR-211 defect B: the pickup is always an explicit spot — the
             // pin-drop-confirmed coordinate (captured from the rider's live

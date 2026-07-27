@@ -42,6 +42,33 @@ public struct RidePlace: Identifiable, Sendable, Equatable {
     }
 }
 
+/// MYR-233 — WHY a vehicle cannot take an INSTANT request right now. `nil`
+/// (absent from `FleetMember`) is the only "requestable" value; each case
+/// carries the word the rider sees, so the copy and the gate can never
+/// disagree. Deliberately distinct from MYR-212's `isAvailable`/
+/// `availabilityWord` pair, which also covers `driving` — a car mid-drive is
+/// "not bookable now" but is NOT one of the three states MYR-233 gates the
+/// instant CTA on (see `LiveFleetMemberMapping.unavailability`).
+public enum FleetUnavailability: String, Sendable, Equatable, CaseIterable {
+    /// `VehicleSummary.hasActiveRide == true` — the car is carrying SOMEONE
+    /// ELSE's open instant ride (accepted / arrived / enroute).
+    case busy
+    /// Wire status `in_service`.
+    case inService
+    /// Wire status `offline`.
+    case offline
+
+    /// The rider-facing word — the muted chip's label AND the vehicle row's
+    /// status word. One source so they can never drift.
+    public var word: String {
+        switch self {
+        case .busy: return "Busy"
+        case .inService: return "In service"
+        case .offline: return "Offline"
+        }
+    }
+}
+
 /// Whose Tesla — the Review step's fleet picker (design/app/screens.jsx:15-19
 /// `FLEET`).
 public struct FleetMember: Identifiable, Sendable, Equatable {
@@ -69,8 +96,36 @@ public struct FleetMember: Identifiable, Sendable, Equatable {
     /// a live status like "Driving"/"Offline" for an unavailable live vehicle).
     /// Defaults to "Available" so every fixture row renders identically.
     public let availabilityWord: String
+    /// MYR-233: why this vehicle can't take an INSTANT request right now, or
+    /// `nil` when it can. Drives the Review row's muted Busy/unavailable chip
+    /// and the instant-CTA gate. Defaults to `nil` so every fixture row — and
+    /// therefore every simulated / DEBUG scene — renders exactly as before.
+    public let unavailability: FleetUnavailability?
 
-    public init(id: String, owner: String, relationship: String, name: String, model: String, colorName: String, battery: Int, etaMin: Int, plate: String, isAvailable: Bool = true, availabilityWord: String = "Available") {
+    /// MYR-233 — the single gate the instant-request CTA reads. True when the
+    /// rider may submit an on-demand request against this vehicle.
+    public var isRequestable: Bool { unavailability == nil }
+
+    /// MYR-233 own-ride exception: the same member with any unavailability
+    /// cleared, for the ONE rider who owns the open ride (they see the vehicle
+    /// as their active ride, never as Busy). Also restores the MYR-212
+    /// dot/word pair so the row reads exactly as it did before this issue.
+    public func clearingUnavailability() -> FleetMember {
+        guard let unavailability else { return self }
+        return FleetMember(
+            id: id, owner: owner, relationship: relationship, name: name, model: model,
+            colorName: colorName, battery: battery, etaMin: etaMin, plate: plate,
+            // `busy` rides on top of an otherwise-bookable status (parked /
+            // charging), so clearing it returns the row to "Available"; an
+            // in_service / offline car is still genuinely not bookable, so it
+            // keeps MYR-212's muted dot + live status word.
+            isAvailable: unavailability == .busy,
+            availabilityWord: unavailability == .busy ? "Available" : unavailability.word,
+            unavailability: nil
+        )
+    }
+
+    public init(id: String, owner: String, relationship: String, name: String, model: String, colorName: String, battery: Int, etaMin: Int, plate: String, isAvailable: Bool = true, availabilityWord: String = "Available", unavailability: FleetUnavailability? = nil) {
         self.id = id
         self.owner = owner
         self.relationship = relationship
@@ -82,6 +137,7 @@ public struct FleetMember: Identifiable, Sendable, Equatable {
         self.plate = plate
         self.isAvailable = isAvailable
         self.availabilityWord = availabilityWord
+        self.unavailability = unavailability
     }
 }
 

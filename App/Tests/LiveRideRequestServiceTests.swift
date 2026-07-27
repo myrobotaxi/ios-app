@@ -283,6 +283,105 @@ final class LiveRideRequestServiceTests: XCTestCase {
 
         await eventually { service.activeRequest?.status == .declined }
         XCTAssertNil(service.sessionFailure, "a 409 is a real refusal — not a session failure")
+        XCTAssertNil(service.vehicleUnavailableFailure, "a generic conflict is not a vehicle-unavailable refusal")
+    }
+
+    // MARK: MYR-233 — 409 vehicle_unavailable is not a decline
+
+    /// The typed `409 vehicle_unavailable` on the create POST means the CAR can't
+    /// take this ride (it already carries an open instant ride, or it went
+    /// in_service/offline between the list fetch and the send). No ride was
+    /// created and NOBODY refused the rider, so this must not render as an owner
+    /// decline: the stuck pending clears, `vehicleUnavailableFailure` is raised
+    /// for the honest notice + scheduling route, and no reconcile GET runs.
+    ///
+    /// The code is not (yet) a member of the contracts `ErrorPayload.Code` enum,
+    /// so it arrives as `.unrecognized("vehicle_unavailable")` — exactly what the
+    /// forward-compat arm exists for. We branch on that typed value, never on the
+    /// human message (FR-7.1).
+    func testVehicleUnavailable409ClearsPendingAndFlagsFailureNotDeclined() async {
+        let api = StubRideAPI(
+            created: Self.wireRide(id: "srv-veh", status: .requested),
+            createError: RestError.http(
+                status: 409,
+                code: .unrecognized("vehicle_unavailable"),
+                message: "vehicle is busy",
+                subCode: nil
+            )
+        )
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.liveInput())
+        XCTAssertEqual(service.activeRequest?.status, .pending)
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+
+        await eventually { service.vehicleUnavailableFailure != nil }
+        XCTAssertNil(service.activeRequest, "clears the stuck pending — no frozen Waiting… card")
+        XCTAssertNotEqual(service.activeRequest?.status, .declined, "the car being busy is not an owner decline")
+        XCTAssertNil(service.sessionFailure, "the session is fine — only the vehicle is unavailable")
+        let listCount = await api.rideListCount
+        XCTAssertEqual(listCount, 0, "definitive, not indeterminate — no reconcile GET")
+    }
+
+    /// No retry loop (acceptance criterion 3): the refusal fires exactly ONE
+    /// create POST and never re-POSTs — an identical request would 409 again.
+    func testVehicleUnavailable409NeverRetriesTheCreate() async {
+        let api = StubRideAPI(
+            created: Self.wireRide(id: "srv-veh2", status: .requested),
+            createError: RestError.http(
+                status: 409, code: .unrecognized("vehicle_unavailable"), message: "busy", subCode: nil
+            )
+        )
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.liveInput())
+        service.confirmSend()
+        await eventually { service.vehicleUnavailableFailure != nil }
+        // Give any (unwanted) retry a chance to fire before asserting.
+        try? await Task.sleep(for: .milliseconds(200))
+        let createCount = await api.createCount
+        XCTAssertEqual(createCount, 1, "exactly one POST — no retry loop")
+    }
+
+    /// A repeat refusal must raise a FRESH failure value, so the observing
+    /// `.onChange` fires again instead of coalescing and dropping the notice.
+    func testRepeatVehicleUnavailableRaisesAFreshFailure() async {
+        let error = RestError.http(
+            status: 409, code: .unrecognized("vehicle_unavailable"), message: "busy", subCode: nil
+        )
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-veh3", status: .requested), createError: error)
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.liveInput())
+        service.confirmSend()
+        await eventually { service.vehicleUnavailableFailure != nil }
+        let first = service.vehicleUnavailableFailure
+
+        service.submit(Self.liveInput())
+        service.confirmSend()
+        await eventually { service.vehicleUnavailableFailure != first }
+        XCTAssertNotEqual(service.vehicleUnavailableFailure, first, "a repeat refusal must not coalesce")
+    }
+
+    /// The ACCEPT path (MYR-277 C's reconcile) raises the same typed failure, so
+    /// the single-account demo's rider-who-also-accepts gets the honest copy
+    /// rather than a silent snap-back. The existing reconcile still runs.
+    func testVehicleUnavailable409OnAcceptFlagsFailureAndStillReconciles() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-acc", status: .requested))
+        await api.setDetail(Self.wireRide(id: "srv-acc", status: .requested))
+        await api.setAcceptError(RestError.http(
+            status: 409, code: .unrecognized("vehicle_unavailable"), message: "busy", subCode: nil
+        ))
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+        service.submit(Self.liveInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+
+        service.accept()
+        await eventually { service.vehicleUnavailableFailure != nil }
+        await eventually { service.activeRequest?.status == .pending }
+        XCTAssertEqual(service.activeRequest?.status, .pending, "the refused accept folds back to the incoming card")
     }
 
     // MARK: MYR-270 — owner-driven dispatch v2 (picked-up / start / dropped-off)

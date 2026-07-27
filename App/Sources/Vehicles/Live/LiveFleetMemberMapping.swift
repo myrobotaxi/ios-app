@@ -27,6 +27,12 @@ enum LiveFleetMemberMapping {
 
     static func fleetMember(from summary: VehicleSummary) -> FleetMember {
         let nickname = nonEmpty(summary.name) ?? nonEmpty(summary.model) ?? "Your Tesla"
+        // MYR-233: the instant-request gate. Mapped WITHOUT the own-ride
+        // exception — this layer sees one list row and knows nothing about the
+        // rider's own rides. The exception is folded in exactly once, at the
+        // single read seam (`SharedViewerState.liveFleetMember`), so no caller
+        // can forget it.
+        let unavailability = unavailability(status: summary.status, hasActiveRide: summary.hasActiveRide)
         return FleetMember(
             id: summary.vehicleId,
             owner: nickname, // no owner display name in telemetry — nickname stands in
@@ -37,9 +43,59 @@ enum LiveFleetMemberMapping {
             battery: summary.chargeLevel,
             etaMin: RideRequestFixtures.fleet[0].etaMin, // no live pickup ETA yet (MYR-176/177)
             plate: VehicleContractMapping.plateDisplay(vinLast4: summary.vinLast4),
-            isAvailable: isAvailable(summary.status),
-            availabilityWord: availabilityWord(summary.status)
+            // An unavailable vehicle is never "Available now" — fold the gate
+            // onto MYR-212's dot/word pair so the row can't say two things.
+            isAvailable: unavailability == nil && isAvailable(summary.status),
+            availabilityWord: unavailability?.word ?? availabilityWord(summary.status),
+            unavailability: unavailability
         )
+    }
+
+    // MARK: - MYR-233 — the rider availability predicate
+    //
+    // THE predicate, in one pure function:
+    //
+    //     hasActiveRide == true || status ∈ { inService, offline }
+    //
+    // ...minus the own-ride exception. Three deliberate properties:
+    //
+    //  • TOLERANT DECODE (acceptance criterion 5). `hasActiveRide` is OPTIONAL in
+    //    contracts 0.14.0 — an older server omits it entirely. Absence means
+    //    "availability unknown", NOT "busy": `hasActiveRide == true` is an
+    //    explicit-true test, so `nil` and `false` both read as available. Busy is
+    //    NEVER rendered from absence.
+    //  • `driving` IS NOT HERE, on purpose. MYR-212 already renders a driving car
+    //    with a muted dot + "Driving" (not bookable *now*), but MYR-233's chip +
+    //    instant-CTA gate are scoped to the three states the issue names. A car
+    //    that is driving on someone's open ride reports `hasActiveRide == true`
+    //    anyway and is caught by the first clause; a car merely being driven by
+    //    its owner keeps today's behavior untouched.
+    //  • OWN-RIDE EXCEPTION (acceptance criterion 4). The rider holding the open
+    //    ride sees their active ride, never Busy — their own ride state takes
+    //    precedence client-side (the contract's own consumer guidance). It
+    //    suppresses `busy` ONLY: an in_service / offline car is unavailable to
+    //    everyone, including the rider mid-ride, and saying otherwise would be
+    //    dishonest.
+
+    /// MYR-233 — why `summary` can't take an instant request, or `nil` when it can.
+    /// - Parameters:
+    ///   - status: the list row's wire status.
+    ///   - hasActiveRide: contracts 0.14.0 `VehicleSummary.hasActiveRide`. `nil`
+    ///     (older server) is treated as available — never as Busy.
+    ///   - riderOwnsActiveRide: true when THIS rider owns the vehicle's open ride.
+    static func unavailability(
+        status: VehicleSummary.Status,
+        hasActiveRide: Bool?,
+        riderOwnsActiveRide: Bool = false
+    ) -> FleetUnavailability? {
+        switch status {
+        case .inService: return .inService
+        case .offline: return .offline
+        case .driving, .parked, .charging, .unrecognized:
+            // Explicit-true only: `nil`/`false` → available (tolerant decode).
+            guard hasActiveRide == true, !riderOwnsActiveRide else { return nil }
+            return .busy
+        }
     }
 
     /// Parked / charging read as bookable-now; driving / offline / in-service do

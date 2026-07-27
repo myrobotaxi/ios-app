@@ -2,6 +2,7 @@
 import CoreLocation
 import Foundation
 import DesignSystem
+import MyRobotaxiContracts
 
 // MARK: - Debug scene hook (MYR-200 — permanent verification infrastructure)
 //
@@ -62,6 +63,14 @@ enum DebugScene: String, CaseIterable {
     case trackingArrived
     case summary
     case declined
+    /// MYR-233 — the rider Review sheet with a BUSY vehicle: the muted "Busy"
+    /// chip on the fleet-member row and the non-gold "Schedule with … instead"
+    /// CTA (the instant CTA is gated). Injects a live-shaped `FleetMember`
+    /// (`debugBusyFleetMember`) through `SharedViewerState.debugFleetMemberOverride`
+    /// so the state is screenshot-able headlessly with NO live backend — the
+    /// simulated fixtures can't express it (`FleetMember.unavailability` is nil
+    /// for every fixture, which is what keeps every other scene pixel-identical).
+    case riderBusyVehicle
 
     // Rider scheduled-ride sheet (RideHistoryScreen → ScheduledRideSheet)
     case scheduledDetails
@@ -351,6 +360,56 @@ enum DebugScene: String, CaseIterable {
 
     private static var sampleSchedule: RideSchedule { RideSchedule(day: "Tomorrow", time: "6:30 AM") }
 
+    /// MYR-233 state selector for the `riderBusyVehicle` scene: which unavailable
+    /// state to render (`MRT_BUSY_REASON=busy|inService|offline`, env or
+    /// `-MRT_BUSY_REASON <value>` arg). Defaults to `busy`. One scene covers all
+    /// three states rather than three near-identical scenes — the same shape as
+    /// `MRT_OWNER_DETENT` / `MRT_OWNER_VEHICLE`. DEBUG-only.
+    static var busyReason: FleetUnavailability {
+        let raw: String?
+        if let env = ProcessInfo.processInfo.environment["MRT_BUSY_REASON"], !env.isEmpty {
+            raw = env
+        } else {
+            let args = ProcessInfo.processInfo.arguments
+            let i = args.firstIndex(of: "-MRT_BUSY_REASON")
+            raw = i.flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
+        }
+        return raw.flatMap(FleetUnavailability.init(rawValue:)) ?? .busy
+    }
+
+    /// MYR-233 — a live-SHAPED busy vehicle for the `riderBusyVehicle` capture.
+    /// Built through the REAL mapping (`LiveFleetMemberMapping.fleetMember(from:)`)
+    /// from a contracts `VehicleSummary` with `hasActiveRide: true`, so the scene
+    /// exercises the shipping predicate rather than a hand-set flag — a capture
+    /// that renders Busy proves the mapping does too. Names match MYR-212's live
+    /// join ("Lunar" · Model Y), not a fixture persona.
+    private static var busyFleetMember: FleetMember {
+        // Drive the REAL wire inputs per state, so each capture proves the
+        // predicate's own branch: `busy` comes from `hasActiveRide` on an
+        // otherwise-bookable parked car; the other two come from the status.
+        let reason = busyReason
+        let status: VehicleSummary.Status
+        switch reason {
+        case .busy: status = .parked
+        case .inService: status = .inService
+        case .offline: status = .offline
+        }
+        return LiveFleetMemberMapping.fleetMember(from: VehicleSummary(
+            vehicleId: "debug-busy",
+            name: "Lunar",
+            model: "Model Y",
+            year: 2026,
+            color: "Quicksilver",
+            vinLast4: "2046",
+            status: status,
+            chargeLevel: 68,
+            estimatedRange: 240,
+            lastUpdated: "2026-07-26T12:00:00Z",
+            role: .owner,
+            hasActiveRide: reason == .busy
+        ))
+    }
+
     /// The `activeRequest` record to seed the service with (nil = no request).
     private var seededRecord: RideRequestRecord? {
         switch self {
@@ -428,6 +487,14 @@ enum DebugScene: String, CaseIterable {
         case .review, .reviewPicker:
             viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
+            viewer.sheetPhase = .review
+        case .riderBusyVehicle:
+            // MYR-233 — same Review draft as `.review`, plus the injected busy
+            // live vehicle. Nothing else differs, so the capture isolates exactly
+            // the availability affordances this issue changes.
+            viewer.draftPickup = DebugScene.samplePickup
+            viewer.draftDestination = DebugScene.sampleDestination
+            viewer.debugFleetMemberOverride = DebugScene.busyFleetMember
             viewer.sheetPhase = .review
         case .booking:
             viewer.draftPickup = DebugScene.samplePickup

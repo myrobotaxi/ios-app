@@ -97,6 +97,14 @@ public final class SharedViewerState {
     /// (the jsx overlays it on top of `search`, not a separate screen).
     public var showDeclinedNotice = false
 
+    /// MYR-233 (acceptance criterion 2): the instant CTA on an unavailable
+    /// vehicle routes the rider TOWARD the scheduling flow rather than dead-
+    /// ending. The scheduling affordance is the Search sheet's "Schedule" chip
+    /// slide-up card, so Review sets this and hands back to `.search`;
+    /// `RideRequestSearchContent` consumes it once on appear and opens the card.
+    /// One-shot — cleared by the consumer, and by `resetDraftToIdle()`.
+    public var opensScheduleOnSearch = false
+
     /// Public convenience: the simulated seams (fixtures) — the default for
     /// previews / tests / the sim demo. Delegates to the designated init.
     public convenience init(vehicle: Vehicle = VehicleFixtures.vehicles[0]) {
@@ -654,11 +662,41 @@ public final class SharedViewerState {
         sheetPhase = .review
     }
 
+    /// MYR-233 own-ride exception (acceptance criterion 4): true while THIS
+    /// rider holds an open instant ride. Kept here (not derived) because the
+    /// ride lives in `RideRequestService`, which `SharedViewerState` doesn't
+    /// own — `SharedViewerScreen` mirrors the service's status onto it. When
+    /// true, the vehicle carrying that ride is never shown as Busy: the rider
+    /// sees it as their active ride, exactly as before this issue.
+    public var riderOwnsActiveRide = false
+
+    #if DEBUG
+    /// MYR-233 drift-gate hook: a live-shaped `FleetMember` a capture scene can
+    /// inject so the rider Review row's Busy state is screenshot-able headlessly
+    /// without a live backend (the `riderBusyVehicle` scene). `nil` for every
+    /// other scene and every shipping build, so the simulated experience is
+    /// pixel-identical. Release builds never compile it.
+    public var debugFleetMemberOverride: FleetMember?
+    #endif
+
     /// The live fleet member (nickname / real battery / availability / VIN
     /// plate), or `nil` in sim / before the vehicle list loads — MYR-212
     /// deliverable 4. Review + Booking prefer this over the fixture fleet.
+    ///
+    /// MYR-233: the ONE place the own-ride exception is applied. Folding it here
+    /// (rather than at each of the five read sites) means a rider mid-ride can
+    /// never see Busy on any surface — Review, Booking, Tracking or Summary.
     public var liveFleetMember: FleetMember? {
-        isLiveLocation ? liveVehicleLocator?.fleetMember : nil
+        #if DEBUG
+        if let debugFleetMemberOverride { return resolvingOwnRide(debugFleetMemberOverride) }
+        #endif
+        guard isLiveLocation, let member = liveVehicleLocator?.fleetMember else { return nil }
+        return resolvingOwnRide(member)
+    }
+
+    private func resolvingOwnRide(_ member: FleetMember) -> FleetMember {
+        guard riderOwnsActiveRide, member.unavailability == .busy else { return member }
+        return member.clearingUnavailability()
     }
 
     /// MYR-270 — the streamed nav ETA (minutes) of the ride's car for the rider's
@@ -708,5 +746,15 @@ public final class SharedViewerState {
         draftPassenger = nil
         draftSchedule = nil
         showDeclinedNotice = false
+        opensScheduleOnSearch = false // MYR-233 — one-shot, never outlives the draft
+    }
+
+    /// MYR-233 — leave Review for the SCHEDULING flow because the vehicle can't
+    /// take an instant request right now. Keeps the whole draft (pickup,
+    /// destination, passenger) so the rider only has to pick a time, and arms the
+    /// search sheet's schedule card so the next thing they see IS that picker.
+    public func routeToScheduling() {
+        opensScheduleOnSearch = true
+        sheetPhase = .search
     }
 }
