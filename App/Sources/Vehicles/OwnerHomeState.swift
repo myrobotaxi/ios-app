@@ -21,6 +21,25 @@ public final class OwnerHomeState {
     public var selectedVehicleIndex: Int = 0
     public var sheetDetent: MRTSheetDetent = .peek
 
+    /// MYR-292 — the id of the `completed` ride whose "Dropped off ✓" confirmation
+    /// the owner has already seen (auto-dismissed after a beat, or acknowledged on a
+    /// previous visit to Home). Read through
+    /// `OwnerRideStatusLine.dispatchCardVisible`.
+    ///
+    /// It lives HERE, on the owner-scoped observable, and not in `HomeScreen`
+    /// `@State`, for the same reason `selectedVehicleIndex`/`sheetDetent` do:
+    /// `HomeScreen` is constructed inside a `switch ownerTab` branch of `RootView`,
+    /// so a trip to Drives/Share/Settings DESTROYS the view. With the flag per-mount
+    /// the acknowledgement was forgotten on every tab switch — the shared
+    /// `rideRequestService.activeRequest` still held the `.completed` ride, so the
+    /// banner came back and re-armed its auto-dismiss (MYR-292 defect 1) — and an
+    /// auto-dismiss that landed AFTER the owner left wrote into torn-down `@State`
+    /// storage and was lost entirely.
+    ///
+    /// Owner-local: this never touches the shared `activeRequest`, so the rider's
+    /// Ride Summary is unaffected (MYR-267).
+    public var acknowledgedCompletedRideID: String?
+
     /// The fleet backend (simulated fixtures or live Kit). Internal to the app
     /// module — screens read the projected accessors below, not the fleet.
     let fleet: any VehicleFleet

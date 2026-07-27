@@ -53,11 +53,6 @@ struct HomeScreen: View {
     /// off"). Reset on every status change so a re-shown button is tappable again
     /// (MYR-265 review: never leave the CTA permanently greyed after one advance).
     @State private var dispatchInFlight = false
-    /// The id of a `completed` ride whose "Dropped off ✓" confirmation has been
-    /// shown and auto-dismissed, so the owner's Home banner doesn't stay stuck on
-    /// "Dropped off" forever (MYR-267). Owner-local — does NOT touch the shared
-    /// `activeRequest` (the rider still sees their arrived/summary card).
-    @State private var dismissedCompletedRideID: String?
 
     /// MYR-171 — `IncomingRequestSheet` shows only while there's a request
     /// actually awaiting this owner's decision; once accepted/declined the
@@ -116,16 +111,21 @@ struct HomeScreen: View {
     /// (the incoming sheet handles pending). The owner observes the live status
     /// through the SAME shared `rideRequestService.activeRequest`, folded from each
     /// `ride_status_changed` WS unicast by `LiveRideRequestService.integrate`.
+    ///
+    /// MYR-292 — the visibility rule (including "Dropped off ✓ shows until
+    /// acknowledged, then never again for that ride") is the PURE
+    /// `OwnerRideStatusLine.dispatchCardVisible` resolver, and the acknowledgement it
+    /// reads lives on `OwnerHomeState`, which survives the owner tab switch. It used
+    /// to be `HomeScreen` `@State`, which `RootView`'s `switch ownerTab` destroys —
+    /// so the banner reappeared every time the owner came back to Home.
     private var dispatchedRide: RideRequestRecord? {
-        guard let request = rideRequestService.activeRequest else { return nil }
-        switch request.status {
-        case .accepted, .arrived, .enroute: return request
-        case .completed:
-            // Show "Dropped off ✓" until it auto-dismisses (MYR-267) — then hide,
-            // so the owner's map returns to normal instead of a stuck banner.
-            return request.id == dismissedCompletedRideID ? nil : request
-        case .pending, .declined: return nil
-        }
+        guard let request = rideRequestService.activeRequest,
+              OwnerRideStatusLine.dispatchCardVisible(
+                  status: request.status,
+                  rideID: request.id,
+                  acknowledgedID: homeState.acknowledgedCompletedRideID)
+        else { return nil }
+        return request
     }
 
     /// The owner's ride-aware status line for the dispatched ride — real rider name
@@ -265,22 +265,33 @@ struct HomeScreen: View {
         // Also on appear: `.onChange` skips the initial value, so a ride that is
         // ALREADY `.completed` when Home first renders (e.g. app relaunched right
         // after drop-off) would otherwise never schedule the dismiss and the
-        // "Dropped off ✓" banner would stay stuck (MYR-267 review).
+        // "Dropped off ✓" banner would stay stuck (MYR-267 review). Safe to run on
+        // EVERY mount (MYR-292): the acknowledgement now lives on `OwnerHomeState`,
+        // so a remount over an already-acknowledged ride reads `dispatchedRide == nil`
+        // and this no-ops instead of re-arming the confirmation.
         .onAppear { scheduleDroppedOffDismiss(for: dispatchedRide?.status) }
     }
 
     /// Auto-dismiss the owner's "Dropped off ✓" confirmation after a beat so Home
     /// doesn't stay stuck on it. Owner-local — never touches the shared
     /// `activeRequest`, so the rider's summary is unaffected (MYR-267).
+    ///
+    /// MYR-292: the acknowledgement is written to `OwnerHomeState`, NOT to view
+    /// `@State`. This task outlives the view — the owner can switch to Drives inside
+    /// the 5s window — and the object it writes to must outlive it too, or the write
+    /// lands in torn-down storage and the banner returns on the next visit to Home.
+    /// Capturing the two references (rather than `self`) makes that explicit. Writing
+    /// the same id twice is a no-op, so a duplicate timer armed by a remount inside
+    /// the window is harmless.
     private func scheduleDroppedOffDismiss(for status: RideRequestStatus?) {
         guard status == .completed, let id = rideRequestService.activeRequest?.id,
-              dismissedCompletedRideID != id else { return }
+              homeState.acknowledgedCompletedRideID != id else { return }
+        let service = rideRequestService
+        let state = homeState
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(5))
-            if rideRequestService.activeRequest?.id == id,
-               rideRequestService.activeRequest?.status == .completed {
-                dismissedCompletedRideID = id
-            }
+            guard service.activeRequest?.id == id, service.activeRequest?.status == .completed else { return }
+            state.acknowledgedCompletedRideID = id
         }
     }
 

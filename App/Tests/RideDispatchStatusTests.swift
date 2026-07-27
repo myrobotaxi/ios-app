@@ -170,6 +170,77 @@ final class RideDispatchStatusTests: XCTestCase {
         XCTAssertNil(OwnerRideStatusLine.actionTitle(for: .declined))
     }
 
+    // MARK: MYR-292 — owner dispatch-card visibility + the "Dropped off ✓" acknowledgement
+
+    /// A LIVE dispatch is always on screen, whatever has been acknowledged before —
+    /// an acknowledgement is scoped to ONE completed ride id, never a global mute.
+    func testDispatchCardVisibleForEveryLiveDispatchStatus() {
+        for status in [MyRoboTaxi.RideRequestStatus.accepted, .arrived, .enroute] {
+            XCTAssertTrue(OwnerRideStatusLine.dispatchCardVisible(status: status, rideID: "r1", acknowledgedID: nil))
+            XCTAssertTrue(OwnerRideStatusLine.dispatchCardVisible(status: status, rideID: "r1", acknowledgedID: "r0"),
+                          "a stale acknowledgement of an EARLIER ride never hides a live dispatch")
+            XCTAssertTrue(OwnerRideStatusLine.dispatchCardVisible(status: status, rideID: "r1", acknowledgedID: "r1"),
+                          "only `completed` is acknowledgeable")
+        }
+    }
+
+    /// `pending` belongs to the incoming sheet, `declined` shows nothing, and no ride
+    /// (nil status / nil id) shows nothing.
+    func testDispatchCardHiddenForNonDispatchedStates() {
+        XCTAssertFalse(OwnerRideStatusLine.dispatchCardVisible(status: .pending, rideID: "r1", acknowledgedID: nil))
+        XCTAssertFalse(OwnerRideStatusLine.dispatchCardVisible(status: .declined, rideID: "r1", acknowledgedID: nil))
+        XCTAssertFalse(OwnerRideStatusLine.dispatchCardVisible(status: nil, rideID: "r1", acknowledgedID: nil))
+        XCTAssertFalse(OwnerRideStatusLine.dispatchCardVisible(status: .completed, rideID: nil, acknowledgedID: nil))
+    }
+
+    /// The core rule: "Dropped off ✓" shows until THAT ride is acknowledged.
+    func testDispatchCardCompletedVisibleUntilAcknowledged() {
+        XCTAssertTrue(OwnerRideStatusLine.dispatchCardVisible(status: .completed, rideID: "r1", acknowledgedID: nil),
+                      "the confirmation shows first")
+        XCTAssertFalse(OwnerRideStatusLine.dispatchCardVisible(status: .completed, rideID: "r1", acknowledgedID: "r1"),
+                       "…and hides once acknowledged")
+        XCTAssertTrue(OwnerRideStatusLine.dispatchCardVisible(status: .completed, rideID: "r2", acknowledgedID: "r1"),
+                      "acknowledging one ride never pre-mutes the NEXT completed ride")
+    }
+
+    /// MYR-292 defect 1, the TestFlight repro: the owner dismisses "Dropped off ✓",
+    /// visits Drives/Share/Settings (which DESTROYS `HomeScreen`) and comes back. The
+    /// acknowledgement lives on `OwnerHomeState`, which survives the tab switch, so a
+    /// FRESH resolver call over the same state still resolves hidden. (When the flag
+    /// was `HomeScreen` @State the second call saw `nil` and the banner returned.)
+    @MainActor
+    func testAcknowledgementSurvivesHomeScreenRemount() {
+        let homeState = OwnerHomeState()
+        XCTAssertNil(homeState.acknowledgedCompletedRideID, "nothing acknowledged on a fresh owner shell")
+
+        // Mount 1: the completed banner shows, then its auto-dismiss acknowledges.
+        XCTAssertTrue(OwnerRideStatusLine.dispatchCardVisible(
+            status: .completed, rideID: "r-done", acknowledgedID: homeState.acknowledgedCompletedRideID))
+        homeState.acknowledgedCompletedRideID = "r-done"
+
+        // Mounts 2…n (Drives → Home → Share → Home …): the SAME shared
+        // `activeRequest` is still `.completed`, but the banner stays gone.
+        for _ in 0..<3 {
+            XCTAssertFalse(OwnerRideStatusLine.dispatchCardVisible(
+                status: .completed, rideID: "r-done", acknowledgedID: homeState.acknowledgedCompletedRideID),
+                           "the banner must not reappear on a return to the Home tab")
+        }
+    }
+
+    /// Cold launch straight into an already-`completed` ride: the banner shows on
+    /// first render (so the owner still gets the confirmation), the `.onAppear`
+    /// auto-dismiss acknowledges it, and it stays hidden across every later remount.
+    @MainActor
+    func testColdLaunchIntoCompletedRideShowsThenStaysDismissed() {
+        let homeState = OwnerHomeState()
+        XCTAssertTrue(OwnerRideStatusLine.dispatchCardVisible(
+            status: .completed, rideID: "r-cold", acknowledgedID: homeState.acknowledgedCompletedRideID),
+                      "a relaunch right after drop-off still shows the confirmation once")
+        homeState.acknowledgedCompletedRideID = "r-cold" // the .onAppear-scheduled dismiss
+        XCTAssertFalse(OwnerRideStatusLine.dispatchCardVisible(
+            status: .completed, rideID: "r-cold", acknowledgedID: homeState.acknowledgedCompletedRideID))
+    }
+
     // MARK: builders
 
     private static func appInput() -> RideRequestInput {
