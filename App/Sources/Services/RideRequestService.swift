@@ -37,6 +37,16 @@ public protocol RideRequestService: AnyObject, Observable {
     /// sim (no network) — see the default implementation.
     var sessionFailure: RideSessionFailure? { get }
 
+    /// MYR-233: the most recent `409 vehicle_unavailable` refusal of a ride
+    /// mutation the rider touches — the target vehicle already carries an open
+    /// instant ride, or went in service / offline. Like `sessionFailure` this is
+    /// NOT an owner decline and NOT a stuck pending: it bumps to a fresh value
+    /// per occurrence so `.onChange` fires even on a repeat, and the rider is
+    /// returned to a retryable state pointed at the SCHEDULING flow. Never
+    /// auto-retried — the same POST would 409 again (no retry loop).
+    /// `nil`/never-set in sim (no network) — see the default implementation.
+    var vehicleUnavailableFailure: RideVehicleUnavailableFailure? { get }
+
     /// Submits a new request — mirrors ride-request.jsx's `onSubmit`
     /// (`ReviewContent`'s primary CTA, ride-request.jsx:1234-1237): status
     /// becomes `.pending` immediately so the rider's Review→Booking transition
@@ -108,6 +118,11 @@ public extension RideRequestService {
     /// never fail a live session — it never signals a session failure. Only
     /// `LiveRideRequestService` overrides this (MYR-220).
     var sessionFailure: RideSessionFailure? { nil }
+
+    /// Default: the simulated service (M1) has no network, so no server can
+    /// refuse a mutation with `409 vehicle_unavailable`. Only
+    /// `LiveRideRequestService` overrides this (MYR-233).
+    var vehicleUnavailableFailure: RideVehicleUnavailableFailure? { nil }
 
     /// Default: no send-window deferral. The simulated service (M1) has no
     /// network — its `submit` already installs the full state machine, and the
@@ -195,6 +210,18 @@ public enum RideRequestStatus: String, Sendable, Equatable {
 /// `.onChange` (two identical decline-shaped failures must not coalesce and drop
 /// the retry notice).
 public struct RideSessionFailure: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public init(id: UUID = UUID()) { self.id = id }
+}
+
+/// MYR-233: a ride mutation was refused `409 vehicle_unavailable` — the target
+/// vehicle can't take this ride right now (it already carries an open instant
+/// ride, or it is in service / offline). Distinct from `.declined` (the owner
+/// refused) and from `RideSessionFailure` (the token died): nobody refused the
+/// rider, the CAR is busy, so the honest route is the scheduling flow. Carries a
+/// fresh `id` per occurrence for the same reason `RideSessionFailure` does — two
+/// consecutive refusals must not coalesce and drop the second notice.
+public struct RideVehicleUnavailableFailure: Identifiable, Equatable, Sendable {
     public let id: UUID
     public init(id: UUID = UUID()) { self.id = id }
 }

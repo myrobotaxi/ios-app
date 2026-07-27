@@ -25,7 +25,8 @@ let package = Package(
         .library(name: "MyRoboTaxiKit", targets: ["MyRoboTaxiKit"])
     ],
     dependencies: [
-        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.13.0")
+        // MYR-233 — 0.14.0 adds the optional `VehicleSummary.hasActiveRide`.
+        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.14.0")
     ],
     targets: [
         .target(

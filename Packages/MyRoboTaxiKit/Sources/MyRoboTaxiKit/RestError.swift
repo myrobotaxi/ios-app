@@ -41,4 +41,25 @@ public enum RestError: Error, Sendable {
         if case .http(let status, _, _, _) = self { return status }
         return nil
     }
+
+    /// MYR-233 — `409 vehicle_unavailable` (MYR-277): the target vehicle can't
+    /// take this ride right now (it already carries an open instant ride, or it
+    /// is in service / offline), so the server refused the create or accept.
+    /// Semantically distinct from the generic `conflict` (an illegal STATUS
+    /// TRANSITION) and from `rideActive` (the RIDER already holds an open ride):
+    /// this one is about the VEHICLE, and the honest response is to point the
+    /// rider at scheduling — never a silent retry, which would just 409 again.
+    ///
+    /// The shared contracts `ErrorPayload.Code` enum does not carry
+    /// `vehicle_unavailable` as of 0.14.0, so it decodes to
+    /// `.unrecognized("vehicle_unavailable")`. Matching the typed code's RAW
+    /// WIRE VALUE (never the human `message` — FR-7.1) is exactly the
+    /// forward-compat contract `.unrecognized` exists for, and follows the
+    /// precedent `RestClient.mapError` set for `ride_active`. A later additive
+    /// contracts entry promotes it to a real case and this keeps working
+    /// unchanged, because the promoted case's `rawValue` is the same string.
+    public var isVehicleUnavailable: Bool {
+        guard case .http(let status, let code, _, _) = self else { return false }
+        return status == 409 && code?.rawValue == "vehicle_unavailable"
+    }
 }

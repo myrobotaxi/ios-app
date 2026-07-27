@@ -51,6 +51,11 @@ final class LiveRideRequestService: RideRequestService {
     /// `SharedViewerScreen` to surface a calm retry, never a decline.
     private(set) var sessionFailure: RideSessionFailure?
 
+    /// MYR-233: the latest `409 vehicle_unavailable` refusal (create or accept).
+    /// Observed by the rider's `SharedViewerScreen` to surface honest messaging
+    /// and route toward scheduling — never a decline, never a retry.
+    private(set) var vehicleUnavailableFailure: RideVehicleUnavailableFailure?
+
     /// The server-assigned ride id for the active request (distinct from the
     /// local `activeRequest.id`, which for a rider-submitted ride is a client
     /// UUID until the create POST returns). Mutations target this id.
@@ -251,8 +256,21 @@ final class LiveRideRequestService: RideRequestService {
                 //    (pending/tracking UI), discarding this draft. It is a 409/4xx,
                 //    so like the session split it MUST be caught BEFORE the definitive
                 //    branch (which would wrongly drop it into `.declined`).
+                //  VEHICLE_UNAVAILABLE (MYR-233, §7.8 / MYR-277) — a typed
+                //    `409 vehicle_unavailable`: the target VEHICLE can't take this
+                //    ride (it already carries an open instant ride, or it went
+                //    in_service/offline between the list fetch and the send). Like
+                //    the two splits above this is a 409/4xx, so it MUST be caught
+                //    BEFORE the definitive branch, which would drop it into
+                //    `.declined` — "Alex can't take this ride right now" is a LIE
+                //    about the owner when the car is simply busy. Clear the stuck
+                //    optimistic pending and raise `vehicleUnavailableFailure` so the
+                //    rider gets honest copy + the scheduling route. NEVER retried:
+                //    the identical POST would 409 again (no retry loop).
                 if case RestError.rideActive(let active) = error {
                     await self.adoptRideActive(active)
+                } else if Self.isVehicleUnavailable(error) {
+                    self.failCreateVehicleUnavailable()
                 } else if Self.isSessionFailure(error) {
                     self.failCreateSessionError()
                 } else if Self.isDefinitiveCreateFailure(error) {
@@ -289,6 +307,29 @@ final class LiveRideRequestService: RideRequestService {
     private static func isSessionFailure(_ error: Error) -> Bool {
         guard let rest = error as? RestError else { return false }
         return rest.isAuthFailure || rest.httpStatus == 401
+    }
+
+    /// MYR-233: True when the failure is the typed `409 vehicle_unavailable` —
+    /// the VEHICLE can't take this ride. Branches on the Kit's typed helper
+    /// (`RestError.isVehicleUnavailable`, which matches the typed code's raw wire
+    /// value), never the human message (FR-7.1).
+    private static func isVehicleUnavailable(_ error: Error) -> Bool {
+        (error as? RestError)?.isVehicleUnavailable == true
+    }
+
+    /// MYR-233 VEHICLE_UNAVAILABLE create failure: the server refused the create
+    /// because the car is busy / in service / offline, so NO ride was created.
+    /// Clear the stuck optimistic pending (no frozen "Waiting…", no false
+    /// "Ride declined") WITHOUT touching `.declined`, and raise a fresh
+    /// `vehicleUnavailableFailure` for the rider's `SharedViewerScreen`. The
+    /// DRAFT lives in `SharedViewerState` and is untouched, so the rider can
+    /// schedule the very same trip in one tap. No-op if the request was
+    /// cancelled or already moved on.
+    private func failCreateVehicleUnavailable() {
+        guard let request = activeRequest, request.status == .pending else { return }
+        activeRequest = nil
+        serverRideID = nil
+        vehicleUnavailableFailure = RideVehicleUnavailableFailure()
     }
 
     /// DEFINITIVE create failure: the optimistic pending describes a ride that
@@ -388,6 +429,17 @@ final class LiveRideRequestService: RideRequestService {
             do {
                 _ = try await api.acceptRideRequest(id: id)
             } catch {
+                // MYR-233: a typed `409 vehicle_unavailable` here is the SPECIFIC
+                // reason MYR-277 C added this reconcile — the car went busy /
+                // in_service / offline, so the dispatch was refused. Raise the
+                // honest notice alongside the existing reconcile (which still folds
+                // the authoritative record / reverts), so the single-account demo's
+                // rider-who-also-accepts gets the same honest copy + scheduling
+                // route as the create path instead of a silent snap-back. Still no
+                // retry: the same POST would 409 again.
+                if Self.isVehicleUnavailable(error) {
+                    self?.vehicleUnavailableFailure = RideVehicleUnavailableFailure()
+                }
                 if let ride = try? await api.rideRequest(id: id) {
                     self?.integrate(ride)
                 } else {

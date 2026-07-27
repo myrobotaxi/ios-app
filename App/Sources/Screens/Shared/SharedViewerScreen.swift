@@ -47,6 +47,12 @@ struct SharedViewerScreen: View {
     /// tone; the rider is already returned to a retryable state with the draft
     /// intact by `handleSessionFailure()`.
     @State private var showSessionErrorToast = false
+    /// MYR-233: a calm "car is busy" notice — shown when a live create/accept was
+    /// refused `409 vehicle_unavailable`. Not a decline (nobody refused the
+    /// rider) and not a session failure; the rider is already returned to Review
+    /// with the draft intact by `handleVehicleUnavailable()`, where the CTA now
+    /// routes to scheduling.
+    @State private var showVehicleUnavailableToast = false
     /// MYR-271 — the tracking sheet's settled visible height, reported by
     /// `RiderTrackingSheet` on every settle. The recenter button + the tracking map
     /// camera inset re-anchor ABOVE this so both clear the card in every detent.
@@ -267,6 +273,30 @@ struct SharedViewerScreen: View {
             // retryable state (draft intact) and raise the calm retry notice.
             if failure != nil { handleSessionFailure() }
         }
+        .onChange(of: rideRequestService.vehicleUnavailableFailure) { _, failure in
+            // MYR-233: `409 vehicle_unavailable` is NOT an owner decline — never
+            // let it drive `DeclinedNotice`. Return the rider to Review (draft
+            // intact) where the CTA now routes to scheduling, and raise the calm
+            // notice. No retry is attempted anywhere on this path.
+            if failure != nil { handleVehicleUnavailable() }
+        }
+        // MYR-233 own-ride exception (criterion 4): mirror "this rider holds an
+        // open ride" onto the viewer state, which folds it into `liveFleetMember`
+        // so the rider carrying the ride never sees their own car as Busy. Seeded
+        // on appear and kept in sync as the ride's status advances.
+        .onAppear { syncRiderOwnsActiveRide() }
+        .onChange(of: rideRequestService.activeRequest?.status) { _, _ in
+            syncRiderOwnsActiveRide()
+        }
+        .mrtSuccessToast(
+            isPresented: $showVehicleUnavailableToast,
+            // Honest and specific: name the real reason (the car, not the owner)
+            // and the way forward. Muted tone — this is not an error the rider
+            // caused, and not a refusal.
+            message: "That car just became unavailable. Your trip’s saved — try scheduling it.",
+            systemImage: "calendar",
+            tint: .mrtTextMuted
+        )
         .mrtSuccessToast(
             isPresented: $showSessionErrorToast,
             // Calm, non-alarming copy (design minimalism — cf. the "can't reach"
@@ -901,6 +931,43 @@ struct SharedViewerScreen: View {
             viewerState.sheetPhase = .search
         }
         showSessionErrorToast = true
+    }
+
+    // MARK: MYR-233 — `409 vehicle_unavailable` is NOT a decline
+    //
+    // The server refused the create/accept because the CAR can't take the ride
+    // (it already carries an open instant ride, or it went in service / offline
+    // between the list fetch and the send). No ride was created, and nobody
+    // refused the rider — so this must not render as an owner decline, and must
+    // not leave a "Waiting…" pending card up. Return to Review with the draft
+    // intact: the vehicle row now shows the muted Busy chip and the CTA routes to
+    // scheduling, so the honest next step is one tap away. If the draft is
+    // incomplete, fall back to the search sheet (same shape as MYR-220's).
+    private func handleVehicleUnavailable() {
+        viewerState.showDeclinedNotice = false
+        if viewerState.draftPickup != nil, viewerState.draftDestination != nil {
+            viewerState.sheetPhase = .review
+        } else {
+            viewerState.sheetPhase = .search
+        }
+        showVehicleUnavailableToast = true
+    }
+
+    /// MYR-233 criterion 4 — mirror the rider's own open ride onto the viewer
+    /// state. A ride is "owned and open" while a record exists in a non-terminal
+    /// status; `declined`/`completed` are terminal, so the exception lifts and a
+    /// genuinely busy car reads Busy again on the next list fetch.
+    private func syncRiderOwnsActiveRide() {
+        guard let status = rideRequestService.activeRequest?.status else {
+            viewerState.riderOwnsActiveRide = false
+            return
+        }
+        switch status {
+        case .pending, .accepted, .arrived, .enroute:
+            viewerState.riderOwnsActiveRide = true
+        case .completed, .declined:
+            viewerState.riderOwnsActiveRide = false
+        }
     }
 
     /// The actor named in the declined card. MYR-220 deliverable 2: in LIVE mode
