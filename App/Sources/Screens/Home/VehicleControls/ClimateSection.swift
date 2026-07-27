@@ -17,6 +17,9 @@ struct ClimateSection: View {
     /// MYR-280 — the freshness signal behind the seat honest-unknown (Syncing vs
     /// Unavailable). `nil` on the simulated path (every seat field known).
     var isStreaming: Bool? = nil
+    /// MYR-301 — routes a seat-command re-link notice to the existing Tesla link
+    /// flow (see `VehicleControls.onRelinkTesla`).
+    var onRelinkTesla: (() -> Void)? = nil
 
     /// MYR-280 — a snapshot has arrived (any frame). Mirrors the quick-tile logic.
     private var hasSnapshot: Bool { isStreaming != nil }
@@ -137,6 +140,7 @@ struct ClimateSection: View {
                         hasSnapshot: hasSnapshot,
                         isStreaming: isStreaming,
                         uiState: executor.uiState(for: .driverSeat),
+                        onRelinkTesla: onRelinkTesla,
                         setMode: { mode in Task { try? await executor.setSeatClimateMode(.driver, mode: mode) } },
                         setLevel: { level in Task { try? await executor.setSeatHeatLevel(.driver, level: level) } }
                     )
@@ -149,6 +153,7 @@ struct ClimateSection: View {
                         hasSnapshot: hasSnapshot,
                         isStreaming: isStreaming,
                         uiState: executor.uiState(for: .passengerSeat),
+                        onRelinkTesla: onRelinkTesla,
                         setMode: { mode in Task { try? await executor.setSeatClimateMode(.passenger, mode: mode) } },
                         setLevel: { level in Task { try? await executor.setSeatHeatLevel(.passenger, level: level) } }
                     )
@@ -372,6 +377,8 @@ private struct SeatRow: View {
     /// Live command state (MYR-249). `.idle` on the simulated path, so the M1 /
     /// drift-gate rendering is pixel-identical.
     var uiState: VehicleControlUIState = .idle
+    /// MYR-301 — see `VehicleControls.onRelinkTesla`.
+    var onRelinkTesla: (() -> Void)? = nil
     let setMode: (VehicleSeatClimateMode) -> Void
     let setLevel: (Int) -> Void
 
@@ -439,10 +446,10 @@ private struct SeatRow: View {
                 .fixedSize()
             }
             if let notice = uiState.notice {
-                Text(notice.message)
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(Color.mrtTextSec)
-                    .lineLimit(1)
+                // MYR-301 — the seat row has the full sheet width, so it keeps the
+                // FULL message; a re-link notice becomes a 44pt tap target routing
+                // to the Tesla link flow instead of being a dead end.
+                VehicleCommandNoticeLine(notice: notice, onAction: onRelinkTesla)
                     .padding(.leading, 26)
             }
         }

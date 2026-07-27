@@ -32,6 +32,10 @@ struct HomeScreen: View {
     /// MYR-171 — accepting a *scheduled* request reserves it into Drives →
     /// Upcoming (`addUpcoming`) instead of dispatching now.
     @Bindable var drivesState: OwnerDrivesState
+    /// MYR-301 — where a vehicle-command re-link notice sends the owner (the
+    /// existing Settings → Tesla link flow; `RootView` owns the navigation).
+    /// `nil` in previews — the notice then renders without a tappable fix.
+    var onRelinkTesla: (() -> Void)? = nil
     /// MYR-264 — the ONE resolved live/sim flag (threaded from `RootView`). Gates
     /// every fixture surface below the owner Home: the incoming-request sheet's
     /// rider/vehicle identity and the vehicle-controls media block. `false` in SIM
@@ -483,6 +487,7 @@ struct HomeScreen: View {
                 snapshot: snapshot,
                 executor: executor,
                 isEditingPlate: $isEditingPlate,
+                onRelinkTesla: onRelinkTesla,
                 isLive: isLive
             )
         case .parked(let location):
@@ -493,6 +498,7 @@ struct HomeScreen: View {
                 status: homeState.selectedBadgeStatus,
                 executor: executor,
                 isEditingPlate: $isEditingPlate,
+                onRelinkTesla: onRelinkTesla,
                 isLive: isLive
             )
         }

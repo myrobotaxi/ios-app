@@ -1,0 +1,118 @@
+#if DEBUG
+import DesignSystem
+import Foundation
+import MyRoboTaxiKit
+import MyRobotaxiContracts
+import Observation
+
+// MARK: - DebugCommandNoticeFleet (MYR-301 — drift-gate / screenshot only)
+//
+// A DEBUG-only fleet that boots the REAL owner Home sheet holding a REAL command
+// notice, so the truncation fix and the re-link route are screenshot-verifiable
+// without a live backend (a `permission_denied` needs a token that is missing a
+// scope — not something a capture can arrange).
+//
+// It is built from the shipping path end to end: the production
+// `LiveVehicleCommandExecutor`, seeded through the same `reconcile` a real
+// snapshot uses, then driven with a REAL command against a sender that fails
+// with the REAL §7.9 error. The notice on screen is therefore whatever
+// `RestError.commandFailureKind` → `notice(for:key:)` actually produces — a
+// capture that reads "Re-link" on the tile and the full sentence on the row
+// proves the shipping mapping does too (same discipline as MYR-233's busy
+// fleet-member capture).
+//
+//   • `.chargeRelink` — 403 `permission_denied` on `charge_port_door_open`, i.e.
+//     the client's exact TestFlight bug: a token without `vehicle_charging_cmds`.
+//     Tile sub "Re-link"; the row carries "Reconnect Tesla for charging access"
+//     + the gold Reconnect pill.
+//   • `.asleep`       — 503 `vehicle_asleep` that survives the wake retry, on the
+//     Lock tile. Tile sub "Asleep"; row "Car is asleep — try again shortly"
+//     (MYR-301's 502-vs-503 split; no action — it resolves itself).
+//   • `.seatRelink`   — the same 403 on a seat command, to capture the in-place
+//     notice line inside the Climate card (the surface that already had room for
+//     the full message and now also carries the route).
+//
+// Release builds never compile this file; it is reachable ONLY via the
+// `ownerNoticeCharge` / `ownerNoticeAsleep` / `ownerNoticeSeat` debug scenes, so
+// every other path — including the simulated drift-gate scenes — is untouched.
+enum DebugCommandNoticeVariant { case chargeRelink, asleep, seatRelink }
+
+@Observable
+@MainActor
+final class DebugCommandNoticeFleet: VehicleFleet {
+    let vehicles: [Vehicle]
+    private let source: DebugClimateTelemetrySource
+    private let executor: LiveVehicleCommandExecutor
+    private let feed = SimulatedDrivesFeed()
+
+    var isConnecting: Bool { false }
+    var statusMessage: String? { nil }
+
+    init(variant: DebugCommandNoticeVariant) {
+        let vehicle = VehicleFixtures.vehicles[0]
+        vehicles = [vehicle]
+
+        let readAt = Date()
+        // Reuse the populated live-like snapshot the climate capture scene uses,
+        // so the sheet reads as a real car and the ONLY new thing on screen is
+        // the notice (reuse, don't fork — CLAUDE.md).
+        source = DebugClimateTelemetrySource(lastUpdated: readAt)
+
+        let exec = LiveVehicleCommandExecutor(
+            vehicleID: vehicle.id,
+            sender: DebugFailingCommandSender(error: Self.error(for: variant)),
+            driving: false,
+            plate: vehicle.plate,
+            wakeRetryDelay: .zero,
+            // The asleep capture needs the retry to be EXHAUSTED (that is the
+            // state that used to lie with "Waking the car…"), so no retry here.
+            maxWakeRetries: 0
+        )
+        exec.reconcile(from: DebugClimateModeFleet.climateState(variant: .auto, lastUpdated: readAt))
+        executor = exec
+
+        // Drive the real command; the scripted failure settles the real notice
+        // within a run-loop turn, long before any screenshot is taken.
+        Task { @MainActor in
+            switch variant {
+            case .chargeRelink: try? await exec.setChargePortOpen(true)
+            case .asleep: try? await exec.setLocked(false)
+            case .seatRelink: try? await exec.setSeatHeatLevel(.driver, level: 3)
+            }
+        }
+    }
+
+    /// The REAL §7.9 wire error each variant provokes.
+    private static func error(for variant: DebugCommandNoticeVariant) -> RestError {
+        switch variant {
+        case .chargeRelink, .seatRelink:
+            return .http(status: 403, code: ErrorPayload.Code(rawValue: "permission_denied"), message: nil, subCode: nil)
+        case .asleep:
+            return .http(status: 503, code: ErrorPayload.Code(rawValue: "vehicle_asleep"), message: nil, subCode: nil)
+        }
+    }
+
+    func telemetry(at index: Int) -> any VehicleTelemetrySource { source }
+    func commandExecutor(at index: Int) -> any VehicleCommandExecutor { executor }
+    func drivesFeed(at index: Int) -> any DrivesFeed { feed }
+    func badgeStatus(at index: Int) -> MRTVehicleStatus { .parked }
+
+    func start() {}
+    func stop() {}
+    func setActive(index: Int) {}
+    func handleForeground() {}
+    func handleBackground() {}
+}
+
+// MARK: - DebugFailingCommandSender
+
+/// Fails every command with one fixed `RestError`, so the executor's REAL error
+/// mapping produces the notice under capture.
+private struct DebugFailingCommandSender: VehicleCommandSending {
+    let error: RestError
+
+    func sendCommand(_ command: VehicleCommand, vehicleID: String) async throws -> VehicleCommandResult {
+        throw error
+    }
+}
+#endif

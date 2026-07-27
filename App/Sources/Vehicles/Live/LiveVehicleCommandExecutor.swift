@@ -49,7 +49,9 @@ import Observation
 // maps to an honest `VehicleCommandNotice` (charge-port `permission_denied` names
 // the charging scope). `vehicle_asleep` (503) keeps the control pending with
 // "Waking the car…" and retries once with backoff, reflecting that the server
-// itself woke+retried (§7.9).
+// itself woke+retried (§7.9); if the retry ALSO comes back asleep the notice
+// settles as `.asleep` ("Car is asleep — try again shortly"), which is neither a
+// still-running wake nor the 502 rejection's copy (MYR-301).
 //
 // SAFETY: this type is only ever constructed on the LIVE path (`LiveVehicleFleet`,
 // built only for a live `AppMode`); the simulated demo never touches it. Tests
@@ -378,14 +380,25 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// Map the Kit's typed §7.9 failure onto an honest control notice. `key` lets
     /// a `permission_denied` on the charge port name the charging scope
     /// specifically (`vehicle_charging_cmds`), which the owner's token may lack.
+    ///
+    /// MYR-301 splits two outcomes the old table folded into one line:
+    ///   • 503 `vehicle_asleep` that SURVIVES the wake retry settles as `.asleep`
+    ///     ("Car is asleep — try again shortly"), not as a still-running
+    ///     "Waking the car…" (which claimed a wake that had already given up) and
+    ///     not as the 502's "Couldn't reach the car" (we reached it fine).
+    ///   • 502 `command_failed` settles as `.rejected` — the car received the
+    ///     command and refused it, which is a different fact (and a different
+    ///     owner response) from being unable to reach it at all.
+    /// `.transport`/`.invalidRequest`/`.notFound`/`.other` keep `.failed`.
     static func notice(for kind: RestError.CommandFailureKind, key: VehicleControlKey) -> VehicleCommandNotice {
         switch kind {
-        case .vehicleAsleep: .waking
+        case .vehicleAsleep: .asleep
         case .keyNotPaired: .pairKey
         case .permissionDenied: key == .chargePort ? .relinkCharging : .relink
         case .notOwned, .auth: .relink
         case .rateLimited: .cooldown
-        case .invalidRequest, .commandFailed, .notFound, .transport, .other: .failed
+        case .commandFailed: .rejected
+        case .invalidRequest, .notFound, .transport, .other: .failed
         }
     }
 

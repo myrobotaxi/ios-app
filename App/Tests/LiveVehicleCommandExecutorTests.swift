@@ -96,10 +96,12 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
             Case("vehicle_not_owned", 403, .relink),
             Case("auth_failed", 401, .relink),
             Case("rate_limited", 429, .cooldown),
-            Case("command_failed", 502, .failed),
+            // MYR-301 — 502 is a REJECTION by the car, 503 is a car that never
+            // woke; neither is the generic "couldn't reach the car".
+            Case("command_failed", 502, .rejected),
             Case("invalid_request", 400, .failed),
             Case("not_found", 404, .failed),
-            Case("vehicle_asleep", 503, .waking),
+            Case("vehicle_asleep", 503, .asleep),
         ]
         for c in cases {
             let sender = ScriptedCommandSender([.failure(Self.restError(c.code, c.status))])
@@ -126,7 +128,9 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         XCTAssertEqual(exec.uiState(for: .lock), .idle)
     }
 
-    func testVehicleAsleepExhaustedSurfacesWaking() async {
+    /// MYR-301 — once the wake retry is exhausted the notice must stop claiming a
+    /// wake is still running ("Waking the car…") and say the honest thing.
+    func testVehicleAsleepExhaustedSurfacesAsleep() async {
         let sender = ScriptedCommandSender([
             .failure(Self.restError("vehicle_asleep", 503)),
             .failure(Self.restError("vehicle_asleep", 503)),
@@ -136,7 +140,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         try? await exec.setLocked(false)
 
         XCTAssertEqual(sender.calls.count, 2)
-        XCTAssertEqual(exec.uiState(for: .lock).notice, .waking)
+        XCTAssertEqual(exec.uiState(for: .lock).notice, .asleep)
         XCTAssertFalse(exec.uiState(for: .lock).isPending)
         XCTAssertTrue(exec.controls.locked, "not applied while still asleep")
     }
@@ -210,7 +214,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         try? await exec.setLocked(false)
 
         XCTAssertFalse(exec.isKnown(.locked), "a failed command must NOT confirm the value — stays unknown")
-        XCTAssertEqual(exec.uiState(for: .lock).notice, .failed)
+        XCTAssertEqual(exec.uiState(for: .lock).notice, .rejected)
     }
 
     // MARK: capability — every keyed control is backend-backed now (charge port joined v186)

@@ -129,6 +129,23 @@ enum DebugScene: String, CaseIterable {
     case ownerClimateAuto
     case ownerClimateManual
     case ownerClimateUnknown
+    /// MYR-301 — owner Home dense sheet holding a REAL command notice, so the
+    /// readable-notice fix is screenshot-verifiable. Injects
+    /// `DebugCommandNoticeFleet`, which drives a real command through the
+    /// production `LiveVehicleCommandExecutor` against a sender that fails with
+    /// the real §7.9 error, so the capture exercises the shipping
+    /// `RestError` → notice mapping:
+    ///   • `ownerNoticeCharge` — 403 `permission_denied` on the charge port (the
+    ///     client's TestFlight bug): tile sub "Re-link" (no ellipsis) + the full
+    ///     "Reconnect Tesla for charging access" row with the gold Reconnect pill.
+    ///   • `ownerNoticeAsleep` — 503 `vehicle_asleep`, retry exhausted, on Lock:
+    ///     tile "Asleep" + "Car is asleep — try again shortly" (no action).
+    ///   • `ownerNoticeSeat`   — the same 403 on a seat command: the in-place
+    ///     notice line inside the Climate card, tappable to the link flow.
+    /// Pair with `MRT_OWNER_DETENT=half`.
+    case ownerNoticeCharge
+    case ownerNoticeAsleep
+    case ownerNoticeSeat
     /// MYR-265 — owner Home AFTER accepting a ride: the ride-aware dispatch banner
     /// in its leg-1 "En route to pickup · picking up <Name>" state (seeds an
     /// accepted owner ride). `…Enroute` seeds the leg-2 "<Name> aboard · heading
@@ -239,6 +256,7 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerControlsUnavailable
             || self == .ownerVehicleDetails || self == .ownerVehicleTires || self == .ownerVehicleSeats
             || self == .ownerClimateAuto || self == .ownerClimateManual || self == .ownerClimateUnknown
+            || self == .ownerNoticeCharge || self == .ownerNoticeAsleep || self == .ownerNoticeSeat
             || self == .ownerDispatched || self == .ownerDispatchedArrived
             || self == .ownerDispatchedEnroute || self == .ownerDispatchedCompleted
     }
@@ -255,6 +273,10 @@ enum DebugScene: String, CaseIterable {
         case .ownerClimateAuto: return DebugClimateModeFleet(variant: .auto)
         case .ownerClimateManual: return DebugClimateModeFleet(variant: .cool)
         case .ownerClimateUnknown: return DebugClimateModeFleet(variant: .unknown)
+        // MYR-301 — a REAL settled command notice (see the scene comments).
+        case .ownerNoticeCharge: return DebugCommandNoticeFleet(variant: .chargeRelink)
+        case .ownerNoticeAsleep: return DebugCommandNoticeFleet(variant: .asleep)
+        case .ownerNoticeSeat: return DebugCommandNoticeFleet(variant: .seatRelink)
         default: return nil
         }
     }
@@ -277,6 +299,12 @@ enum DebugScene: String, CaseIterable {
         // below the temp stepper); a small anchor keeps the quick tiles + climate
         // header + the segment together in-frame at the half detent.
         case .ownerClimateAuto, .ownerClimateManual, .ownerClimateUnknown: return .fraction(0.12)
+        // MYR-301 — the notice row sits directly under the quick tiles, so the
+        // same small anchor the climate scenes use frames the tile (with its
+        // shortened sub) and the full-text row together; the seat notice needs
+        // the Climate card's tail, like `ownerVehicleSeats`.
+        case .ownerNoticeCharge, .ownerNoticeAsleep: return .fraction(0.12)
+        case .ownerNoticeSeat: return .fraction(0.30)
         default: return nil
         }
     }
@@ -523,6 +551,7 @@ enum DebugScene: String, CaseIterable {
              .ownerHome, .ownerDrives, .ownerIncoming, .ownerScheduled, .ownerControlsUnavailable,
              .ownerVehicleDetails, .ownerVehicleTires, .ownerVehicleSeats,
              .ownerClimateAuto, .ownerClimateManual, .ownerClimateUnknown,
+             .ownerNoticeCharge, .ownerNoticeAsleep, .ownerNoticeSeat,
              .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute,
              .ownerDispatchedCompleted:
             break // chooser / settings / rider live-map / owner scenes don't drive the viewer sheet

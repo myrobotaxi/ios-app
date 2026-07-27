@@ -34,6 +34,13 @@ struct VehicleControls: View {
     /// render pixel-identically.
     let lastUpdated: Date?
     let isStreaming: Bool?
+    /// MYR-301 — routes a re-link notice ("Reconnect Tesla …") to the app's
+    /// EXISTING Tesla link flow (Settings → Tesla Account → Add another Tesla →
+    /// `AddTeslaFlow`), which is what re-runs consent and picks up a missing
+    /// scope such as `vehicle_charging_cmds`. `nil` on hosts that can't route
+    /// (previews) — the notice then still shows its full text, just without a
+    /// tappable fix.
+    var onRelinkTesla: (() -> Void)? = nil
     /// MYR-264 — the ONE resolved live flag. The now-playing media metadata
     /// (title/artist/cover) is a pure fixture (`VehicleMediaTrack`, not on the
     /// `VehicleState` contract), so it is honest-hidden on live; the transport +
@@ -51,6 +58,12 @@ struct VehicleControls: View {
 
             quickTiles
 
+            // MYR-301 — the FULL text of any quick-tile notice, on a surface wide
+            // enough to hold it, with the fix attached. Nothing renders when every
+            // tile is idle (always, on the simulated path), so M1 / drift-gate
+            // scenes are pixel-identical.
+            tileNoticeRows
+
             ClimateSection(
                 controls: controls,
                 seatVent: vehicle.seatVent,
@@ -59,7 +72,8 @@ struct VehicleControls: View {
                 extTemp: extTemp,
                 // MYR-280 — the seat honest-unknown (Syncing vs Unavailable) reuses
                 // the quick-tile freshness signal; `nil` on the simulated path.
-                isStreaming: isStreaming
+                isStreaming: isStreaming,
+                onRelinkTesla: onRelinkTesla
             )
 
             MediaSection(
@@ -67,7 +81,8 @@ struct VehicleControls: View {
                 executor: executor,
                 // MYR-264 — no fixture track on the live path (media metadata isn't
                 // contracted → honest-hidden); SIM passes the fixture unchanged.
-                track: isLive ? nil : VehicleMediaTrack.all[controls.trackIndex]
+                track: isLive ? nil : VehicleMediaTrack.all[controls.trackIndex],
+                onRelinkTesla: onRelinkTesla
             )
 
             // vehicle-controls.jsx:385 `{!driving && …}` — while driving, live
@@ -159,6 +174,22 @@ struct VehicleControls: View {
             chargeTile
         }
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// The quick tiles that can carry a notice, in the order they are laid out —
+    /// so a notice row appears under the row in the same left-to-right order.
+    private static let tileKeys: [VehicleControlKey] = [.lock, .climate, .trunk, .chargePort]
+
+    /// MYR-301 — one full-text notice row per failing tile. Empty (no view, no
+    /// spacing) whenever every tile is idle, which is ALWAYS on the simulated
+    /// path: `SimulatedVehicleCommandExecutor` returns `.idle` for every key.
+    @ViewBuilder
+    private var tileNoticeRows: some View {
+        ForEach(Self.tileKeys, id: \.self) { key in
+            if let notice = executor.uiState(for: key).notice {
+                VehicleCommandNoticeRow(key: key, notice: notice, onAction: onRelinkTesla)
+            }
+        }
     }
 
     private var lockTile: some View {
@@ -274,7 +305,12 @@ private struct ControlTile: View {
 
     /// The sub line: a settled notice (pairing / re-link / waking / …) takes
     /// precedence over the resting copy so an error is surfaced honestly in place.
-    private var subLine: String { uiState.notice?.message ?? sub }
+    /// MYR-301 — the tile shows the notice's SHORT `tileText`, which fits the
+    /// tile's ~54pt of inner width at the uniform 11pt sub size (MYR-281); the
+    /// full sentence is carried by `VehicleCommandNoticeRow` below the tiles, so
+    /// shortening hides nothing. Before this, the 35-character
+    /// "Reconnect Tesla for charging access" tail-truncated to "Reconnec…".
+    private var subLine: String { uiState.notice?.tileText ?? sub }
     private var subColor: Color { uiState.notice != nil ? .mrtTextSec : (active ? activeColor : .mrtTextMuted) }
 
     var body: some View {
