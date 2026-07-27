@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "description": "Happy-path response for GET /api/vehicles — the SDK's vehicle-enumeration entry point (rest-api.md §7.0). Owner-tier projection: every VehicleSummary field is present. The list is deliberately a thin catalog — no GPS, no nav, no climate (those live in /snapshot). v1 returns owned vehicles only; viewer-merged enumeration is PLANNED.",
+    "description": "Happy-path response for GET /api/vehicles — the SDK's vehicle-enumeration entry point (rest-api.md §7.0). Owner-tier projection: every VehicleSummary field is present. The list is deliberately a thin catalog — no GPS, no nav, no climate (those live in /snapshot). v1 returns owned vehicles only; viewer-merged enumeration is PLANNED. MYR-286 adds the P1 owner-entered `licensePlate`, shown here in BOTH of its states: Stumpy has one, Lightning's owner has not entered one and carries an EMPTY STRING rather than a missing key (the same always-emitted convention as `color`). Consumers keep the `VIN ····xxxx` fallback for the empty case and must never render an empty plate.",
     "anchoredFRs": ["FR-4.x", "FR-5.4", "NFR-3.21"],
     "scenario": "happy-path",
     "addedBy": "MYR-91"
@@ -17,7 +17,8 @@
       "chargeLevel": 78,
       "estimatedRange": 245,
       "lastUpdated": "2026-05-10T17:45:00Z",
-      "role": "owner"
+      "role": "owner",
+      "licensePlate": "ABC 1234"
     },
     {
       "vehicleId": "clmno5678901234ghijkl",
@@ -30,7 +31,8 @@
       "chargeLevel": 42,
       "estimatedRange": 132,
       "lastUpdated": "2026-05-10T17:42:13Z",
-      "role": "owner"
+      "role": "owner",
+      "licensePlate": ""
     }
   ]
 }

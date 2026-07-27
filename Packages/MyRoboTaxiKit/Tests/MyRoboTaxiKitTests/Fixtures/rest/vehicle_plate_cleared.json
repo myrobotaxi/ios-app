@@ -1,0 +1,10 @@
+{
+  "_meta": {
+    "description": "200 response for PUT /api/tesla/vehicles/{vehicleId}/plate (rest-api.md §7.14, MYR-286) after a CLEAR. An empty (or whitespace-only) submission normalizes to the empty string, which is the 'no plate set' value on both the column (TEXT NOT NULL DEFAULT '') and the wire — an ordinary write, not a separate DELETE verb and not a validation failure. The echo is therefore an empty string, NOT a missing key and NOT null. Consumers fall back to their 'VIN ····xxxx' label and must never render an empty plate.",
+    "anchoredFRs": ["FR-4.x"],
+    "scenario": "cleared",
+    "addedBy": "MYR-286"
+  },
+  "vehicleId": "clxyz1234567890abcdef",
+  "licensePlate": ""
+}

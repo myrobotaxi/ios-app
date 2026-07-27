@@ -24,9 +24,14 @@ import Observation
 // Tesla's data has no plate field (see `PlateRow`'s doc comment below, ported
 // from vehicle-controls.jsx:124-125) and there is no Fleet API seek-to-
 // position, so `setScrubPercent` is a plain synchronous local mutation (no
-// await latency while dragging) and `setPlate` — while still `async throws`,
-// to match the day it becomes a real backend `PATCH` — is a distinct concern
-// from the Tesla command surface P11 replaces.
+// await latency while dragging).
+//
+// MYR-286 — `setPlate` is now a REAL backend write, just not a Tesla one: the
+// owner-scoped `PUT /api/tesla/vehicles/{vehicleId}/plate` (rest-api.md §7.14),
+// which is the ONLY writer of `Vehicle.licensePlate` anywhere in the stack. That
+// is why it was always `async throws`. On the live path it persists and adopts
+// the SERVER-NORMALIZED echo; on the simulated path it stays a local mutation so
+// the M1 / drift-gate scenes are pixel-identical.
 
 public enum VehicleClimateMode: String, Sendable, Equatable, CaseIterable {
     case auto, cool, heat
@@ -65,6 +70,13 @@ public enum VehicleControlKey: Sendable, Hashable {
     case driverSeat     // remote_seat_heater_request / remote_seat_cooler_request
     case passengerSeat  // remote_seat_heater_request / remote_seat_cooler_request
     case media          // media_toggle_playback / next / prev (one in flight at a time)
+    /// MYR-286 — the owner-entered license plate. NOT a §7.9 Tesla command: it is
+    /// the local owner-scoped `PUT /api/tesla/vehicles/{id}/plate` (§7.14), which
+    /// touches no Tesla surface at all. It is keyed here anyway because it needs
+    /// exactly the same pending/notice UX as the commanded controls — before
+    /// MYR-286 `setPlate` wrote only to memory and the edit sheet silently
+    /// discarded the owner's input.
+    case plate
 
     /// The control's name in owner-facing copy (MYR-301). The notice row sits
     /// BELOW the tile row, so it has to say which control it is talking about —
@@ -79,6 +91,7 @@ public enum VehicleControlKey: Sendable, Hashable {
         case .driverSeat: "Driver seat"
         case .passengerSeat: "Passenger seat"
         case .media: "Media"
+        case .plate: "Plate"
         }
     }
 
@@ -91,7 +104,9 @@ public enum VehicleControlKey: Sendable, Hashable {
         case .climate: "fan"
         case .trunk: "car.fill"
         case .chargePort: "bolt.fill"
-        case .temp, .driverSeat, .passengerSeat, .media: nil
+        // The plate lives in a labelled details ROW, not a tile — its notice
+        // renders in place, next to itself, so it needs no disc icon.
+        case .temp, .driverSeat, .passengerSeat, .media, .plate: nil
         }
     }
 }
@@ -136,6 +151,12 @@ public enum VehicleCommandNotice: Sendable, Equatable {
     case cooldown        // rate_limited (429) — brief "just a moment"
     case rejected        // command_failed (502) — the CAR refused the action (MYR-301)
     case failed          // transport / invalid / not-found — couldn't reach the car
+    // MYR-286 — the two plate outcomes. The plate is NOT a Tesla command (§7.14 is
+    // a local owner-scoped DB write with no Tesla call in it), so every notice
+    // above that talks about "the car" would be a lie on this path: the car is
+    // never asked, never asleep, and never the thing that refused.
+    case invalidPlate    // 400 invalid_request — the plate itself violates the rule
+    case plateNotSaved   // transport / 404 / 5xx — the write didn't land
 
     public var message: String {
         switch self {
@@ -157,6 +178,16 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         // "couldn't reach the car" for it is dishonest (and hid the asleep case).
         case .rejected: "The car didn\u{2019}t accept that"
         case .failed: "Couldn\u{2019}t reach the car"
+        // MYR-286 — the server normalizes (trim + uppercase) BEFORE validating, so
+        // a 400 means the plate genuinely breaks the rule (charset or the 10-char
+        // cap) rather than that the owner typed it lowercase or with stray spaces.
+        // The copy says what is wrong (the plate, not the car, not the network)
+        // without echoing the rejected value — it is P1 and the server itself
+        // never repeats it back.
+        case .invalidPlate: "That plate doesn\u{2019}t look right"
+        // Reachability / store failure on the plate write. Deliberately NOT
+        // "Couldn't reach the car": no Tesla call is involved in §7.14 at all.
+        case .plateNotSaved: "Couldn\u{2019}t save the plate"
         }
     }
 
@@ -174,6 +205,10 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         case .cooldown: "One sec\u{2026}"
         case .rejected: "Declined"
         case .failed: "Failed"
+        // Never rendered on a tile (the plate is a details row, not a tile), but
+        // the token is measured with the rest so the vocabulary stays uniform.
+        case .invalidPlate: "Check it"
+        case .plateNotSaved: "Not saved"
         }
     }
 
@@ -183,7 +218,11 @@ public enum VehicleCommandNotice: Sendable, Equatable {
     public var action: VehicleCommandNoticeAction? {
         switch self {
         case .relink, .relinkCharging: .relinkTesla
-        case .waking, .asleep, .pairKey, .cooldown, .rejected, .failed: nil
+        // MYR-286 — neither plate notice routes anywhere: the fix for an invalid
+        // plate is to re-open the edit sheet and correct it (the row is already
+        // the tap target), and a failed save is retried by saving again.
+        case .waking, .asleep, .pairKey, .cooldown, .rejected, .failed,
+             .invalidPlate, .plateNotSaved: nil
         }
     }
 
@@ -220,6 +259,12 @@ public enum VehicleControlField: Sendable, Hashable, CaseIterable {
     case chargePortOpen
     case mediaPlaying
     case volume
+    /// MYR-286 — the owner-entered plate. Unlike its siblings this one IS on the
+    /// read contract (`VehicleState.licensePlate`, contracts 0.15.0), so it
+    /// becomes known the moment a snapshot arrives, or when the owner saves one.
+    /// Until then the details row shows the designed "Add plate" affordance and
+    /// the display surfaces fall back to `VIN ····xxxx` — never a fabricated plate.
+    case plate
 }
 
 /// One control's live command state: pending (a command is in flight — suppress
@@ -254,6 +299,14 @@ public struct VehicleControlsSnapshot: Sendable, Equatable {
     public var trackIndex: Int
     public var volume: Double
     public var scrubPercent: Double
+    /// The RAW owner-entered license plate — empty when none is set (MYR-286).
+    /// NOT the display string: the `VIN ····xxxx` fallback belongs to
+    /// `VehicleContractMapping.plateDisplay` and to `Vehicle.plate`, which is what
+    /// the switcher / Settings rows / rider chip render. Keeping this one raw is
+    /// what lets the edit sheet prefill exactly what the owner typed and lets an
+    /// unset plate render the designed "Add plate" affordance instead of a VIN the
+    /// owner cannot edit. The simulated executor seeds it from the fixture plate,
+    /// so M1 is unchanged.
     public var plate: String
 
     public init(

@@ -49,6 +49,7 @@ final class DebugUnavailableControlsFleet: VehicleFleet {
         let exec = LiveVehicleCommandExecutor(
             vehicleID: vehicle.id,
             sender: DebugNoopCommandSender(),
+            plateEndpoint: DebugPlateEndpoint(),
             driving: false,
             plate: vehicle.plate
         )

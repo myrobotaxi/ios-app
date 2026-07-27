@@ -131,6 +131,23 @@ enum DebugScene: String, CaseIterable {
     /// rendered heat-only with no way to reach Cool (the client's report). Pair
     /// with `MRT_OWNER_DETENT=half`.
     case ownerVehicleSeatsVented
+    /// MYR-286 — the owner's Vehicle details section with a REAL owner-entered
+    /// license plate. Injects `DebugVehicleDetailsFleet(licensePlate: "RBO 2046")`,
+    /// so `licensePlate` rides BOTH the live-shaped snapshot and the list row and
+    /// is mapped by the production `VehicleContractMapping` /
+    /// `LiveVehicleCommandExecutor.reconcile` — the Plate row therefore shows the
+    /// plate because the shipping path resolved it, not because a fixture said so.
+    /// Before MYR-286 this row read `VIN ····3456` no matter what the owner typed.
+    /// Its Save also runs the real §7.14 seam (`DebugPlateEndpoint`, normalize then
+    /// validate, echo adopted). Pair with `MRT_OWNER_DETENT=half`.
+    case ownerVehiclePlate
+    /// MYR-286 — the rider's plate CHIP carrying the real plate instead of the
+    /// `VIN ····xxxx` degrade. Same Booking sheet as `booking`, but the live
+    /// vehicle is injected through the REAL `LiveFleetMemberMapping.fleetMember`
+    /// from a `VehicleSummary` with `licensePlate` set (contracts 0.15.0 puts the
+    /// plate in the VIEWER mask too, precisely so a rider can identify the car at
+    /// pickup). A capture that shows the plate therefore proves the mapping does.
+    case riderPlateChip
     /// MYR-274 — owner Home dense sheet scrolled to the CLIMATE section so the
     /// Auto/Cool/Heat mode segment is in-frame for a full-frame drift-gate
     /// screenshot. Three variants inject `DebugClimateModeFleet` seeded via the
@@ -267,7 +284,7 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerScheduled || self == .ownerSettings
             || self == .ownerControlsUnavailable
             || self == .ownerVehicleDetails || self == .ownerVehicleTires || self == .ownerVehicleSeats
-            || self == .ownerVehicleSeatsVented
+            || self == .ownerVehicleSeatsVented || self == .ownerVehiclePlate
             || self == .ownerClimateAuto || self == .ownerClimateManual || self == .ownerClimateUnknown
             || self == .ownerNoticeCharge || self == .ownerNoticeAsleep || self == .ownerNoticeSeat
             || self == .ownerDispatched || self == .ownerDispatchedArrived
@@ -285,6 +302,9 @@ enum DebugScene: String, CaseIterable {
         case .ownerVehicleDetails, .ownerVehicleTires: return DebugVehicleDetailsFleet()
         // MYR-299 — same live-like fleet, plus the vented-car seat read-backs.
         case .ownerVehicleSeatsVented: return DebugVehicleDetailsFleet(seatCoolingCapable: true)
+        // MYR-286 — same live-like fleet, plus the owner-entered plate on BOTH
+        // read surfaces (snapshot + list row), as a real server emits it.
+        case .ownerVehiclePlate: return DebugVehicleDetailsFleet(licensePlate: "RBO 2046")
         case .ownerClimateAuto: return DebugClimateModeFleet(variant: .auto)
         case .ownerClimateManual: return DebugClimateModeFleet(variant: .cool)
         case .ownerClimateUnknown: return DebugClimateModeFleet(variant: .unknown)
@@ -302,7 +322,7 @@ enum DebugScene: String, CaseIterable {
     /// `nil` everywhere else, so no other scene's scroll position changes.
     var sheetScrollTarget: DebugSheetScroll? {
         switch self {
-        case .ownerVehicleDetails: return .bottom
+        case .ownerVehicleDetails, .ownerVehiclePlate: return .bottom
         // The Tire pressure section sits a little above the vertical middle of the
         // dense content; anchoring the content's ~55% point to the viewport brings
         // its honest state in-frame at the half detent.
@@ -459,10 +479,35 @@ enum DebugScene: String, CaseIterable {
         ))
     }
 
+    /// MYR-286 — a live-SHAPED vehicle carrying a real owner-entered plate, for
+    /// the `riderPlateChip` capture. Built through the REAL
+    /// `LiveFleetMemberMapping.fleetMember(from:)` from a contracts
+    /// `VehicleSummary` with `licensePlate` set, so the chip shows "RBO 2046"
+    /// only if the shipping mapping resolves it. The same summary WITHOUT the
+    /// plate is what still yields the `VIN ····2046` degrade — one code path,
+    /// two honest outcomes.
+    private static var platedFleetMember: FleetMember {
+        LiveFleetMemberMapping.fleetMember(from: VehicleSummary(
+            vehicleId: "debug-plated",
+            name: "Lunar",
+            model: "Model Y",
+            year: 2026,
+            color: "Quicksilver",
+            vinLast4: "2046",
+            status: .parked,
+            chargeLevel: 68,
+            estimatedRange: 240,
+            lastUpdated: "2026-07-27T12:00:00Z",
+            role: .owner,
+            hasActiveRide: false,
+            licensePlate: "RBO 2046"
+        ))
+    }
+
     /// The `activeRequest` record to seed the service with (nil = no request).
     private var seededRecord: RideRequestRecord? {
         switch self {
-        case .booking, .pending, .ownerIncoming:
+        case .booking, .pending, .ownerIncoming, .riderPlateChip:
             return record(status: .pending)
         case .ownerScheduled:
             return record(status: .pending, schedule: Self.sampleSchedule)
@@ -553,6 +598,14 @@ enum DebugScene: String, CaseIterable {
             viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
             viewer.sheetPhase = .booking
+        case .riderPlateChip:
+            // MYR-286 — identical to `.booking`, plus the injected live vehicle
+            // carrying a real plate. Nothing else differs, so the capture isolates
+            // exactly the chip this issue changes (plate, not `VIN ····2046`).
+            viewer.draftPickup = DebugScene.samplePickup
+            viewer.draftDestination = DebugScene.sampleDestination
+            viewer.debugFleetMemberOverride = DebugScene.platedFleetMember
+            viewer.sheetPhase = .booking
         case .trackingLeg1, .trackingLeg2, .trackingArriving, .trackingArrived:
             viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
@@ -565,7 +618,7 @@ enum DebugScene: String, CaseIterable {
              .scheduledDetails, .scheduledReschedule, .scheduledRequested, .scheduledConfirmCancel,
              .ownerHome, .ownerDrives, .ownerIncoming, .ownerScheduled, .ownerControlsUnavailable,
              .ownerVehicleDetails, .ownerVehicleTires, .ownerVehicleSeats,
-             .ownerVehicleSeatsVented,
+             .ownerVehicleSeatsVented, .ownerVehiclePlate,
              .ownerClimateAuto, .ownerClimateManual, .ownerClimateUnknown,
              .ownerNoticeCharge, .ownerNoticeAsleep, .ownerNoticeSeat,
              .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute,

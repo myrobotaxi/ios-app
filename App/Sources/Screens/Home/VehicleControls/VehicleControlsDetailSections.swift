@@ -174,6 +174,9 @@ struct VehicleDetailsSection: View {
     let vehicle: Vehicle
     let plate: String
     let onEditPlate: () -> Void
+    /// MYR-286 — the live state of the §7.14 plate write. `.idle` on the simulated
+    /// path (the default), so the M1 / drift-gate scenes stay pixel-identical.
+    var plateState: VehicleControlUIState = .idle
 
     var body: some View {
         SectionCard(title: "Vehicle details") {
@@ -185,7 +188,14 @@ struct VehicleDetailsSection: View {
                 // onboarded cars today (onboarding doesn't write it yet — MYR-283)
                 // → honest empty state rather than a fabricated color (MYR-279).
                 KV(label: "Color", value: vehicle.colorName, absence: .unavailable)
-                PlateRow(value: plate, onEdit: onEditPlate)
+                PlateRow(value: plate, isSaving: plateState.isPending, onEdit: onEditPlate)
+                // MYR-286 — the §7.14 write can fail (an invalid plate, or a save
+                // that didn't land). Surface it in place, on the row's own full
+                // width, using the same notice machinery every other control uses.
+                // Nothing renders when idle → simulated path unchanged.
+                if let notice = plateState.notice {
+                    VehicleCommandNoticeLine(notice: notice)
+                }
                 // MYR-279 — full (owner-masked) VIN + Tesla software version now
                 // ride on the snapshot (telemetry PR #325); nil before the first
                 // snapshot streams in → honest-unknown. VIN is owner-only P0 data
@@ -197,12 +207,24 @@ struct VehicleDetailsSection: View {
     }
 }
 
-/// Editable license plate — Tesla's data doesn't include the plate, so the
-/// owner sets it manually (vehicle-controls.jsx:124-125). Tapping opens
-/// `PlateEditSheet` via `HomeScreen`'s `.mrtConfigSheet`.
+/// Editable license plate — Tesla's data doesn't include the plate anywhere (no
+/// endpoint, no telemetry field, no proto), so the owner sets it manually
+/// (vehicle-controls.jsx:124-125). Tapping opens `PlateEditSheet` via
+/// `HomeScreen`'s `.mrtConfigSheet`; saving persists through §7.14 (MYR-286).
+///
+/// The value shown here is the RAW owner-entered plate, so an unset plate renders
+/// the designed "Add plate" affordance. The `VIN ····xxxx` fallback belongs to the
+/// read-only DISPLAY surfaces (switcher, Settings rows, the rider's chip) — it
+/// would be wrong here, where the value is editable and a VIN is not the answer.
 private struct PlateRow: View {
     let value: String
+    /// MYR-286 — a §7.14 write is in flight; the pencil becomes a spinner so the
+    /// row shows the same in-flight discipline as the commanded controls. Reduce
+    /// Motion falls back to the static pencil (CLAUDE.md).
+    var isSaving: Bool = false
     let onEdit: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: onEdit) {
@@ -217,11 +239,20 @@ private struct PlateRow: View {
                         .tracking(0.6)
                         .monospacedDigit()
                         .foregroundStyle(value.isEmpty ? Color.mrtTextMuted : .mrtText)
-                    Image(systemName: "pencil")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.mrtGold)
-                        .frame(width: 24, height: 24)
-                        .background(Color.mrtStepButtonFill, in: Circle())
+                    if isSaving, !reduceMotion {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.mrtGold)
+                            .frame(width: 24, height: 24)
+                            .background(Color.mrtStepButtonFill, in: Circle())
+                    } else {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.mrtGold)
+                            .opacity(isSaving ? 0.5 : 1)
+                            .frame(width: 24, height: 24)
+                            .background(Color.mrtStepButtonFill, in: Circle())
+                    }
                 }
             }
             .padding(.vertical, 8)

@@ -17,7 +17,7 @@ public protocol SnapshotFetching: Sendable {
 ///
 /// Value type (`Sendable`): all dependencies are immutable, so it is free to
 /// share across tasks without a serialization bottleneck.
-public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehicleCommandSending {
+public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleCommandSending {
     private let environment: BackendEnvironment
     private let tokenProvider: any TokenProvider
     private let http: any HTTPPerforming
@@ -284,6 +284,29 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
             ["tesla", "vehicles", vehicleID],
             method: "DELETE",
             body: nil,
+            allowTokenRefresh: true
+        )
+    }
+
+    // MARK: - Owner license-plate entry (rest-api.md §7.14, MYR-286)
+
+    /// `PUT /api/tesla/vehicles/{vehicleId}/plate` (§7.14) — store the owner's
+    /// license plate for one owned vehicle. Owner-authenticated via the standard
+    /// `perform` pipeline (Bearer + single 401 refresh-retry); `{vehicleId}` is
+    /// the Prisma cuid (NOT a VIN), same key as §7.12.
+    ///
+    /// The body key is `plate` (see ``VehiclePlateUpdateRequest`` — the server
+    /// strict-decodes and 400s on an unknown key); the response echoes the
+    /// server-NORMALIZED value as `licensePlate`, which the caller adopts instead
+    /// of the string it submitted. Idempotent, and an empty `plate` clears.
+    /// No Tesla call is involved at any point — this is a local owner-scoped DB
+    /// write, so the route is always mounted.
+    public func setLicensePlate(_ plate: String, vehicleID: String) async throws -> VehiclePlateResponse {
+        let body = try JSONEncoder().encode(VehiclePlateUpdateRequest(plate: plate))
+        return try await perform(
+            ["tesla", "vehicles", vehicleID, "plate"],
+            method: "PUT",
+            body: body,
             allowTokenRefresh: true
         )
     }

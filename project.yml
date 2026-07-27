@@ -19,9 +19,9 @@ packages:
   # product explicitly (same version the Kit resolves — SPM dedupes).
   contracts:
     url: https://github.com/myrobotaxi/contracts.git
-    # MYR-233 — 0.14.0 adds the optional `VehicleSummary.hasActiveRide`, the
-    # rider Busy/unavailable signal (`LiveFleetMemberMapping.unavailability`).
-    from: 0.14.0
+    # MYR-286 — 0.15.0 adds the optional `licensePlate` to BOTH `VehicleState`
+    # and `VehicleSummary` (the owner-entered plate; §7.14 is its only writer).
+    from: 0.15.0
 
 settings:
   base:
