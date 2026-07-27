@@ -179,6 +179,86 @@ final class SeatClimatePresentationTests: XCTestCase {
         XCTAssertTrue(SeatClimatePresentation.supportsCool(seatVent: true, driverMode: .heat, passengerMode: .heat))
     }
 
+    // MARK: MYR-299 — capability from cooler-field PRESENCE, not runtime state
+
+    /// The capability matrix. A car without ventilated seats never emits Tesla
+    /// protos 237/238, so presence (non-nil, INCLUDING 0) is the capability and
+    /// nil/nil is an honest "no cooled seats".
+    func testHasVentilatedSeatsFromCoolerFieldPresence() {
+        let cases: [(left: Int?, right: Int?, vent: Bool?, want: Bool, why: String)] = [
+            (nil, nil, nil, false,
+             "no cooler fields, no vent flag → the car never emitted 237/238; honest heat-only"),
+            (0, nil, nil, true,
+             "a ZERO driver cooler is present-but-off — the whole point of MYR-299; must offer Cool"),
+            (nil, 0, nil, true,
+             "presence on either side is enough"),
+            (0, 0, nil, true,
+             "both seats off on a vented car — the client's exact case, previously locked out of Cool"),
+            (2, 0, nil, true,
+             "actively cooling driver, passenger off"),
+            (3, 3, nil, true,
+             "both cooling"),
+            (nil, nil, true, true,
+             "no cooler fields yet, but the car says ventilation is ON — belt-and-braces OR-signal"),
+            (nil, nil, false, false,
+             "vent OFF is a runtime reading, NOT proof the hardware is absent — but on its own it is no evidence either, so stay honest"),
+            (0, 0, false, true,
+             "presence wins over the runtime vent flag: this is the shipped bug, a vented car reporting vent=off"),
+        ]
+
+        for c in cases {
+            XCTAssertEqual(
+                SeatClimatePresentation.hasVentilatedSeats(
+                    seatCoolerLeft: c.left, seatCoolerRight: c.right, seatVentEnabled: c.vent
+                ),
+                c.want,
+                "left=\(String(describing: c.left)) right=\(String(describing: c.right)) "
+                    + "vent=\(String(describing: c.vent)): \(c.why)"
+            )
+        }
+    }
+
+    /// Tolerant absence: before the first snapshot every input is nil, and the
+    /// section must stay honestly heat-only rather than guessing either way.
+    func testHasVentilatedSeatsIsFalseBeforeAnySnapshot() {
+        XCTAssertFalse(
+            SeatClimatePresentation.hasVentilatedSeats(
+                seatCoolerLeft: nil, seatCoolerRight: nil, seatVentEnabled: nil
+            )
+        )
+    }
+
+    /// End-to-end through the shipping predicate: a vented car with BOTH seats off
+    /// and no seat reading `.cool` must still offer the toggle. This is the exact
+    /// combination that failed for the client — `supportsCool` used to see
+    /// `seatVent: false` (the runtime flag) and neither mode `.cool`.
+    func testVentedCarWithBothSeatsOffOffersCool() {
+        let capable = SeatClimatePresentation.hasVentilatedSeats(
+            seatCoolerLeft: 0, seatCoolerRight: 0, seatVentEnabled: false
+        )
+        XCTAssertTrue(
+            SeatClimatePresentation.supportsCool(
+                seatVent: capable, driverMode: .heat, passengerMode: .heat
+            ),
+            "a car that emits seat-cooler telemetry HAS cooled seats even with both off"
+        )
+        XCTAssertEqual(SeatClimatePresentation.sectionLabel(supportsCool: capable), "SEAT CLIMATE")
+    }
+
+    /// The contrast half: a genuinely heat-only car is unaffected — it never emits
+    /// 237/238, so it keeps the honest "SEAT HEATING" label and no toggle.
+    func testHeatOnlyCarStillGetsNoToggleUnderTheNewPredicate() {
+        let capable = SeatClimatePresentation.hasVentilatedSeats(
+            seatCoolerLeft: nil, seatCoolerRight: nil, seatVentEnabled: nil
+        )
+        XCTAssertFalse(
+            SeatClimatePresentation.supportsCool(
+                seatVent: capable, driverMode: .heat, passengerMode: .heat
+            )
+        )
+        XCTAssertEqual(SeatClimatePresentation.sectionLabel(supportsCool: capable), "SEAT HEATING")
+    }
+
     func testSupportsCoolWhenASeatReadsCoolEvenWithoutVentFlag() {
         // The client's incoherence: a seat streaming a cool state on a car whose
         // vent flag is false must STILL offer the toggle (and read "SEAT CLIMATE"),

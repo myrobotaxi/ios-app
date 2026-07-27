@@ -224,11 +224,49 @@ final class VehicleContractMappingTests: XCTestCase {
     }
 
     func testVehicleRowSeatVentReflectsLiveState() {
-        // MYR-252 — the seat Heat/Cool affordance follows the car's real
-        // `seatVentEnabled` read-back; absent (no snapshot) stays heating-only.
+        // MYR-252 — the seat Heat/Cool affordance follows the car's real read-back;
+        // absent (no snapshot) stays heating-only. MYR-299 keeps `seatVentEnabled`
+        // as an OR-signal, so this case is unchanged.
         var venting = Contracts.parkedState()
         venting.seatVentEnabled = true
         XCTAssertTrue(VehicleContractMapping.vehicle(summary: Contracts.summary(), state: venting).seatVent)
+        XCTAssertFalse(VehicleContractMapping.vehicle(summary: Contracts.summary()).seatVent)
+    }
+
+    // MARK: MYR-299 — seat-cool capability from cooler-field presence
+
+    /// `Vehicle.seatVent` is the ventilated-seat CAPABILITY, derived from the
+    /// PRESENCE of `seatCoolerLeft`/`seatCoolerRight` on the snapshot. This is the
+    /// mapping-layer half of the client's fix: a car that emits seat-cooler
+    /// telemetry HAS cooled seats even when both read `0`.
+    func testVehicleRowSeatVentIsDerivedFromCoolerFieldPresence() {
+        func seatVent(left: Int?, right: Int?, vent: Bool?) -> Bool {
+            var state = Contracts.parkedState()
+            state.seatCoolerLeft = left
+            state.seatCoolerRight = right
+            state.seatVentEnabled = vent
+            return VehicleContractMapping.vehicle(summary: Contracts.summary(), state: state).seatVent
+        }
+
+        XCTAssertTrue(seatVent(left: 0, right: 0, vent: nil),
+            "both coolers present-but-off — the client's car; must be treated as vented")
+        XCTAssertTrue(seatVent(left: 0, right: 0, vent: false),
+            "presence beats the runtime vent flag — exactly the shipped bug")
+        XCTAssertTrue(seatVent(left: 2, right: nil, vent: nil),
+            "one cooler reporting is enough")
+        XCTAssertTrue(seatVent(left: nil, right: 0, vent: nil),
+            "presence on the passenger side alone is enough")
+        XCTAssertFalse(seatVent(left: nil, right: nil, vent: nil),
+            "a heat-only car never emits protos 237/238 → honest heating-only UI")
+        XCTAssertFalse(seatVent(left: nil, right: nil, vent: false),
+            "vent=false with no cooler fields is not evidence of vented seats")
+        XCTAssertTrue(seatVent(left: nil, right: nil, vent: true),
+            "an explicit vent=true still qualifies (belt-and-braces OR-signal)")
+    }
+
+    /// Tolerant absence: before the first snapshot there is no state at all, so the
+    /// row must read heat-only rather than guessing a capability.
+    func testVehicleRowSeatVentIsFalseBeforeFirstSnapshot() {
         XCTAssertFalse(VehicleContractMapping.vehicle(summary: Contracts.summary()).seatVent)
     }
 
