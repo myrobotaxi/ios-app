@@ -202,10 +202,19 @@ enum VehicleContractMapping {
             colorName: colorName,
             plate: plateDisplay(vinLast4: summary.vinLast4),
             seatHeat: false,
-            // MYR-252 — the seat Heat/Cool affordance follows the car's real
-            // `seatVentEnabled` read-back once a snapshot arrives; `false` (no
-            // snapshot yet, or car reports vent off) leaves the heating-only UI.
-            seatVent: state?.seatVentEnabled ?? false,
+            // MYR-299 — `seatVent` is the ventilated-seat CAPABILITY (does this car
+            // HAVE cooled seats), which is what the Heat/Cool affordance must gate
+            // on. It is derived from the PRESENCE of the seat-cooler read-backs,
+            // because no capability field exists anywhere in the stack. MYR-252's
+            // `seatVentEnabled` is a runtime on/off — a vent spinning right now —
+            // so reading it as the capability (the shipped bug) left a vented car
+            // with both seats off looking heat-only and Cool unreachable. Before
+            // the first snapshot every input is nil → honest heating-only UI.
+            seatVent: SeatClimatePresentation.hasVentilatedSeats(
+                seatCoolerLeft: state?.seatCoolerLeft,
+                seatCoolerRight: state?.seatCoolerRight,
+                seatVentEnabled: state?.seatVentEnabled
+            ),
             activity: activity,
             // MYR-279 — the owner's full (owner-masked) VIN + the Tesla software
             // version now ride on the snapshot; nil before the first snapshot →
