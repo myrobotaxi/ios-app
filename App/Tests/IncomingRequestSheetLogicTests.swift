@@ -134,4 +134,20 @@ final class IncomingRequestSheetLogicTests: XCTestCase {
             XCTAssertNotNil(IncomingRequestSheet.unavailableReason(status: status, vehicleName: "Lunar", isScheduled: false))
         }
     }
+
+    // MARK: MYR-317 — the incoming-queue badge
+
+    /// The chip states a COUNT of other riders waiting, so it only exists when
+    /// somebody actually is. At zero it must be absent entirely — the card (and
+    /// every drift-gate capture of it) is then pixel-identical to before.
+    func testWaitingChipAbsentWhenNothingIsQueued() {
+        XCTAssertNil(IncomingRequestSheet.waitingChipLabel(0))
+        XCTAssertNil(IncomingRequestSheet.waitingChipLabel(-1))
+    }
+
+    func testWaitingChipCountsTheRequestsBehindTheCard() {
+        XCTAssertEqual(IncomingRequestSheet.waitingChipLabel(1), "+1 more waiting")
+        XCTAssertEqual(IncomingRequestSheet.waitingChipLabel(2), "+2 more waiting")
+        XCTAssertEqual(IncomingRequestSheet.waitingChipLabel(12), "+12 more waiting")
+    }
 }

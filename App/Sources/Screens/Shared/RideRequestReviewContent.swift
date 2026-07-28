@@ -293,24 +293,21 @@ struct RideRequestReviewContent: View {
         return "\(prefix)\(fleetMember.availabilityWord)\(now) \u{00B7} \(fleetMember.battery)%"
     }
 
-    /// MYR-233 — the Busy / In service / Offline chip. Deliberately MUTED: it
-    /// reuses the same capsule recipe as `RideHistoryScreen`'s "Pending" status
-    /// chip (`mrtRidePendingChipFill` = rgba(255,255,255,0.07), muted dot,
-    /// secondary label) rather than introducing new visual language. NO gold —
-    /// gold is the sacred "actionable moment" accent (CLAUDE.md), and this state
-    /// is precisely the absence of an action.
+    /// MYR-233 — the Busy / In service / Offline chip. Deliberately MUTED: the
+    /// same capsule recipe as `RideHistoryScreen`'s "Pending" status chip
+    /// (`mrtRidePendingChipFill` = rgba(255,255,255,0.07), muted dot, secondary
+    /// label) rather than new visual language. NO gold — gold is the sacred
+    /// "actionable moment" accent (CLAUDE.md), and this state is precisely the
+    /// absence of an action.
+    ///
+    /// MYR-317 — that recipe now lives ONCE in `DesignSystem.MRTMutedChip` (the
+    /// owner's incoming-queue count chip is its second consumer); this call site
+    /// keeps only the accessibility phrasing, which is row-specific. Pixels are
+    /// unchanged — the primitive is the identical modifier stack.
     private func unavailableChip(_ unavailability: FleetUnavailability) -> some View {
-        HStack(spacing: 5) {
-            Circle().fill(Color.mrtTextMuted).frame(width: 5, height: 5)
-            Text(unavailability.word)
-        }
-        .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(Color.mrtTextSec)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 2)
-        .background(Color.mrtRidePendingChipFill, in: Capsule())
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(fleetMember.owner) is \(unavailability.word.lowercased())")
+        MRTMutedChip(unavailability.word, showsDot: true)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(fleetMember.owner) is \(unavailability.word.lowercased())")
     }
 
     private var vehicleRow: some View {

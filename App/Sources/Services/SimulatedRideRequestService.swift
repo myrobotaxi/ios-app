@@ -45,6 +45,16 @@ public final class SimulatedRideRequestService: RideRequestService {
     }
 
     #if DEBUG
+    /// MYR-317 drift-gate seam: the simulated service has no incoming feed, so the
+    /// owner's "+N more waiting" chip can only be captured by seeding the count
+    /// directly. DEBUG-only — a Release build has no such property and falls back
+    /// to the protocol's `0`, so the shipping simulated path is untouched.
+    private var debugWaitingIncoming = 0
+
+    public var waitingIncomingCount: Int { debugWaitingIncoming }
+
+    func debugSeedWaitingIncoming(_ count: Int) { debugWaitingIncoming = count }
+
     /// MYR-200 debug-scene seam (`DebugScenes.swift`): installs a fully-formed
     /// `activeRequest` WITHOUT arming any timers, so a seeded booking/pending/
     /// tracking scene holds still for a screenshot instead of auto-advancing.
