@@ -164,45 +164,57 @@ struct ParkedSummary: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                HStack(spacing: 10) {
-                    Text(vehicle.name)
-                        .font(.system(size: 18, weight: .semibold))
-                        .tracking(-0.3)
-                        .foregroundStyle(Color.mrtText)
-                    StatusBadge(status)
+            // MYR-316/318 — the HERO HEADER: the vehicle name, its status badge,
+            // the charge figure, and (when there is one) the estimated completion.
+            //
+            // MYR-319 — the completion line is part of THIS block, not a sibling of
+            // the battery bar below it. It used to sit in the summary's flat 8pt
+            // stack, which put it an equal distance from the header above and the
+            // bar below — visually unattached, reading as a caption on the charge
+            // rather than on the In Service badge that gives it its meaning, and
+            // the client's "estimated completion should be at the TOP of the owner
+            // bottom sheet". Grouped at 2pt it is unambiguously the header's own
+            // second line, the first thing in the sheet, and still visible at peek.
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    HStack(spacing: 10) {
+                        Text(vehicle.name)
+                            .font(.system(size: 18, weight: .semibold))
+                            .tracking(-0.3)
+                            .foregroundStyle(Color.mrtText)
+                        StatusBadge(status)
+                    }
+                    Spacer()
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text("\(Int(snapshot.batteryPercent.rounded()))")
+                            .font(.system(size: 18))
+                            .monospacedDigit()
+                            .tracking(-0.3)
+                            .foregroundStyle(Color.mrtText)
+                        Text("%")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.mrtTextMuted)
+                    }
                 }
-                Spacer()
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text("\(Int(snapshot.batteryPercent.rounded()))")
-                        .font(.system(size: 18))
-                        .monospacedDigit()
-                        .tracking(-0.3)
-                        .foregroundStyle(Color.mrtText)
-                    Text("%")
-                        .font(.system(size: 11))
+                // Gated on BOTH the In Service badge and a resolved window
+                // upstream (`VehicleServiceWindow.completionLine`), so honest
+                // absence is unchanged: an in-service car with no known estimate
+                // — the COMMON case, since Tesla holds no appointment record for
+                // most visits — renders this block exactly as it did before, with
+                // no placeholder and no "unknown".
+                if let serviceCompletion {
+                    Text(serviceCompletion)
+                        // 12pt muted — the SAME treatment as this hero's location
+                        // line below, because it is the same kind of thing: a quiet
+                        // qualifier on the headline. Deliberately NOT the design's
+                        // `.label()` eyebrow style, which uppercases at 1.2
+                        // tracking: that vocabulary belongs to SECTION HEADINGS,
+                        // and using it here made a footnote about one car read as a
+                        // heading for everything under it.
+                        .font(.system(size: 12))
                         .foregroundStyle(Color.mrtTextMuted)
+                        .lineLimit(1)
                 }
-            }
-            // MYR-316 — the estimated completion sits DIRECTLY under the status
-            // row, attached to the In Service badge that gives it its meaning,
-            // rather than down in the location line where it would read as a
-            // property of the place. Muted secondary, tokens only, `.label(size:)`
-            // off the design type scale — it qualifies the badge, it does not
-            // compete with the vehicle name.
-            if let serviceCompletion {
-                Text(serviceCompletion)
-                    // 12pt muted — the SAME treatment as this hero's location line
-                    // below, because it is the same kind of thing: a quiet
-                    // qualifier on the headline. Deliberately NOT the design's
-                    // `.label()` eyebrow style, which uppercases at 1.2 tracking:
-                    // that vocabulary belongs to SECTION HEADINGS, and using it
-                    // here made a footnote about one car read as a heading for
-                    // everything under it.
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.mrtTextMuted)
-                    .lineLimit(1)
-                    .padding(.top, 1)
             }
             BatteryBar(pct: snapshot.batteryPercent)
             HStack {
