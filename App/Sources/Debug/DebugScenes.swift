@@ -92,6 +92,14 @@ enum DebugScene: String, CaseIterable {
     case ownerHome         // plain owner Live Map, nothing seeded (live-telemetry captures)
     case ownerDrives       // owner Drives tab, nothing seeded (live-drives captures)
     case ownerIncoming
+    /// MYR-317 — the SAME incoming card with the queue badge up: two more pending
+    /// requests waiting behind it ("+2 more waiting"). The simulated service has no
+    /// incoming FEED (one in-process request is its whole world), so the count is
+    /// seeded through its DEBUG-only `debugSeedWaitingIncoming` — the live service
+    /// derives the identical number from the held incoming page. Everything else is
+    /// `ownerIncoming` verbatim, so the pair is a clean before/after of exactly the
+    /// chip this issue adds.
+    case ownerIncomingQueued
     case ownerScheduled
     /// MYR-312/313 — the owner's SCHEDULED incoming card as the LIVE path renders
     /// it, in the client's exact reported condition: the request is for Saturday
@@ -332,6 +340,7 @@ enum DebugScene: String, CaseIterable {
 
     private var isOwner: Bool {
         self == .ownerHome || self == .ownerDrives || self == .ownerIncoming
+            || self == .ownerIncomingQueued
             || self == .ownerScheduled || self == .ownerScheduledLive || self == .ownerSettings
             || self == .ownerControlsUnavailable
             || self == .ownerVehicleDetails || self == .ownerVehicleTires || self == .ownerVehicleSeats
@@ -430,6 +439,8 @@ enum DebugScene: String, CaseIterable {
     func apply(viewer: SharedViewerState, service: SimulatedRideRequestService) {
         seed(viewer: viewer)
         if let record = seededRecord { service.debugSeed(record) }
+        // MYR-317 — the owner's incoming-queue badge (see `ownerIncomingQueued`).
+        if seededWaitingIncoming > 0 { service.debugSeedWaitingIncoming(seededWaitingIncoming) }
         // MYR-177: stream the car for the leg-fit camera probe when requested.
         if DebugScene.armsTracking { service.debugArmTracking() }
     }
@@ -577,7 +588,7 @@ enum DebugScene: String, CaseIterable {
     /// The `activeRequest` record to seed the service with (nil = no request).
     private var seededRecord: RideRequestRecord? {
         switch self {
-        case .booking, .pending, .ownerIncoming, .riderPlateChip:
+        case .booking, .pending, .ownerIncoming, .ownerIncomingQueued, .riderPlateChip:
             return record(status: .pending)
         case .ownerScheduled:
             return record(status: .pending, schedule: Self.sampleSchedule)
@@ -618,6 +629,11 @@ enum DebugScene: String, CaseIterable {
             return nil
         }
     }
+
+    /// MYR-317 — the queue depth behind the seeded incoming card (0 = no badge).
+    /// Two is the smallest count that proves the plural copy AND that the chip is a
+    /// count rather than a boolean "more" flag.
+    private var seededWaitingIncoming: Int { self == .ownerIncomingQueued ? 2 : 0 }
 
     /// MYR-313 — the vehicle id `DebugVehicleDetailsFleet` publishes. A record that
     /// targets it JOINS the injected fleet in `HomeScreen`, so the incoming sheet
@@ -709,7 +725,8 @@ enum DebugScene: String, CaseIterable {
             viewer.sheetPhase = .summary
         case .modeChooser, .ownerSettings, .riderSettings,
              .scheduledDetails, .scheduledReschedule, .scheduledRequested, .scheduledConfirmCancel,
-             .ownerHome, .ownerDrives, .ownerIncoming, .ownerScheduled, .ownerScheduledLive,
+             .ownerHome, .ownerDrives, .ownerIncoming, .ownerIncomingQueued,
+             .ownerScheduled, .ownerScheduledLive,
              .ownerControlsUnavailable,
              .ownerVehicleDetails, .ownerVehicleTires, .ownerVehicleSeats,
              .ownerVehicleSeatsVented, .ownerVehicleSeatsHeatOnly, .ownerVehiclePlate,

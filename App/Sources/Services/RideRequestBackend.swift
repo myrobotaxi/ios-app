@@ -111,6 +111,128 @@ enum RideRequestContractMapping {
         return RideSchedule(day: day, time: timeFormatter.string(from: date))
     }
 
+    // MARK: - Schedule → wire `scheduledFor` (MYR-179)
+    //
+    // The INVERSE of `schedule(from:)` above, and the piece MYR-179 says was
+    // missing: `LiveRideRequestService.createBody` used to send `scheduledFor:
+    // nil` with a "deferred" comment, so a "Sat 5:30 PM" reservation was an
+    // INSTANT ride server-side (verified in production: every `go_ride_requests`
+    // row had `scheduled_for IS NULL`), and every scheduled exemption — the
+    // per-rider `ride_active` guard, the per-vehicle one-active-ride index
+    // (MYR-266), MYR-313's accept-gate exemption — silently never applied.
+    //
+    // The app's `RideSchedule` is a pair of DISPLAY strings straight off the
+    // picker (`RideRequestFixtures.scheduleDays` × `scheduleTimes`): a day token
+    // ("Today"/"Tomorrow"/"Thu"…"Mon") and a 12-hour wall clock ("5:30 PM").
+    // Resolution therefore needs a calendar + an instant, both INJECTED so the
+    // rule is deterministic under test (the `DriveContractMapping.dateGroup(…,
+    // now:)` precedent) and correct at runtime, where the defaults are the
+    // rider's own device clock and time zone.
+
+    /// Resolve a picked day/time into the RFC 3339 UTC instant the create body
+    /// carries, or `nil` for an on-demand ("Now") request / an unparseable time.
+    ///
+    /// Rules (all evaluated in `calendar`'s time zone — the rider's, at submit):
+    ///  • "Today" (and any unrecognized token): today's date at the picked wall
+    ///    clock, rolled forward ONE day when that instant has already passed —
+    ///    a reservation is never in the past.
+    ///  • "Tomorrow": the next calendar day at the picked wall clock.
+    ///  • A weekday token ("Thu"…"Mon", the picker's explicit days): the NEXT
+    ///    date carrying that weekday, starting from today; when that lands on
+    ///    today and the wall clock has already passed, the following week's.
+    ///
+    /// Encoded UTC with milliseconds — the exact shape the server emits
+    /// ("2026-07-11T06:30:00.000Z"), so a create round-trips through
+    /// `schedule(from:)` to the same card copy the rider saw.
+    static func scheduledFor(
+        from schedule: RideSchedule?,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> String? {
+        guard let date = scheduledDate(from: schedule, now: now, calendar: calendar) else { return nil }
+        return isoUTC.string(from: date)
+    }
+
+    /// The resolved absolute instant behind `scheduledFor(from:)` — split out so
+    /// the encoding matrix can assert the instant itself, not a string.
+    static func scheduledDate(
+        from schedule: RideSchedule?,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Date? {
+        guard let schedule, let clock = clockComponents(schedule.time) else { return nil }
+        let today = calendar.startOfDay(for: now)
+        let token = schedule.day.trimmingCharacters(in: .whitespaces).lowercased()
+
+        let day: Date
+        let rollBy: Int // days added when the resolved instant is already past
+        switch token {
+        case "tomorrow":
+            day = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+            rollBy = 0 // tomorrow's wall clock is never in the past
+        case _ where weekdayIndex(token) != nil:
+            // An EXPLICIT picked weekday: the next date carrying it (today counts).
+            let target = weekdayIndex(token)!
+            let current = calendar.component(.weekday, from: today)
+            let delta = (target - current + 7) % 7
+            day = calendar.date(byAdding: .day, value: delta, to: today) ?? today
+            rollBy = 7 // "Sat" at a time already gone today means NEXT Saturday
+        default:
+            day = today // "Today", and any token the picker grows later
+            rollBy = 1
+        }
+
+        var components = calendar.dateComponents([.year, .month, .day], from: day)
+        components.hour = clock.hour
+        components.minute = clock.minute
+        components.second = 0
+        guard let resolved = calendar.date(from: components) else { return nil }
+        guard resolved <= now, rollBy > 0 else { return resolved }
+        return calendar.date(byAdding: .day, value: rollBy, to: resolved) ?? resolved
+    }
+
+    /// "5:30 PM" → (17, 30). Parsed with a FIXED locale + UTC so the picker's
+    /// English 12-hour strings resolve to plain numbers regardless of the
+    /// device's locale/zone; the zone is applied later by `calendar`.
+    private static func clockComponents(_ time: String) -> (hour: Int, minute: Int)? {
+        guard let parsed = clockParser.date(from: time.trimmingCharacters(in: .whitespaces)) else { return nil }
+        let components = utcCalendar.dateComponents([.hour, .minute], from: parsed)
+        guard let hour = components.hour, let minute = components.minute else { return nil }
+        return (hour, minute)
+    }
+
+    /// "thu" → 5 (`Calendar`'s Sunday-based weekday index), or `nil` when the
+    /// token isn't a weekday (→ the "Today" branch).
+    private static func weekdayIndex(_ token: String) -> Int? {
+        weekdayTokens.firstIndex(of: token).map { $0 + 1 }
+    }
+
+    /// Sunday-first, matching `Calendar.component(.weekday:)`'s 1...7.
+    private static let weekdayTokens = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
+
+    private static let clockParser: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        f.dateFormat = "h:mm a"
+        return f
+    }()
+
+    private static let utcCalendar: Calendar = {
+        var c = Calendar(identifier: .gregorian)
+        c.timeZone = TimeZone(secondsFromGMT: 0)!
+        return c
+    }()
+
+    /// The wire's documented `scheduledFor` shape: RFC 3339 UTC with
+    /// milliseconds, exactly as the server emits it.
+    private static let isoUTC: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        return f
+    }()
+
     /// Map the wire lifecycle onto the app's sheet status (MYR-270 — owner-driven
     /// dispatch v2). `requested → pending`; `accepted → accepted` (leg 1, car → pickup);
     /// `arrived → arrived` (rider picked up, awaiting the rider's Start — a DISTINCT

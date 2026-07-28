@@ -907,6 +907,290 @@ final class LiveRideRequestServiceTests: XCTestCase {
         XCTAssertEqual(service.activeRequestOrigin, .rider)
     }
 
+    // MARK: - MYR-317 — the owner's incoming QUEUE (badge + auto-advance)
+    //
+    // Before this issue the owner held ONE slot and `refreshIncoming` adopted
+    // `page.items.first`, discarding the rest of the page: extra pending requests
+    // (several riders, or several future reservations against the same car) were
+    // invisible, and the next one surfaced only if a fresh WS frame happened to
+    // arrive after the current card resolved. These tests pin the queue's rules and,
+    // just as importantly, that it never becomes a back door around the MYR-292
+    // rider-safety invariants.
+
+    /// An owner with three open requests: the head takes the card, the other two
+    /// are HELD and counted — the badge's number is exactly what the old
+    /// `page.items.first` threw away.
+    func testIncomingPageBeyondTheFirstBecomesTheWaitingQueue() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        await api.setIncoming([
+            Self.wireRide(id: "q-1", status: .requested),
+            Self.wireRide(id: "q-2", status: .requested),
+            Self.wireRide(id: "q-3", status: .requested),
+        ])
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        await service.refreshIncoming()
+        XCTAssertEqual(service.activeRequest?.id, "q-1", "the feed head still takes the card (order unchanged)")
+        XCTAssertEqual(service.waitingIncomingCount, 2, "the rest of the page is held, not discarded")
+        XCTAssertEqual(service.activeRequestOrigin, .ownerIncoming)
+    }
+
+    /// DECLINE → the next queued request surfaces on the same card path, with the
+    /// badge counting down. This is the MYR-317 headline behaviour, and it only
+    /// works because MYR-306 widened `canAdoptIncoming` to an owner `.declined`.
+    func testDeclineAutoAdvancesToTheNextQueuedRequest() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        await api.setIncoming([
+            Self.wireRide(id: "adv-1", status: .requested),
+            Self.wireRide(id: "adv-2", status: .requested),
+            Self.wireRide(id: "adv-3", status: .requested),
+        ])
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+        await service.refreshIncoming()
+        XCTAssertEqual(service.activeRequest?.id, "adv-1")
+
+        service.decline()
+        XCTAssertEqual(service.activeRequest?.id, "adv-2", "the next request surfaces immediately, no relaunch")
+        XCTAssertEqual(service.activeRequest?.status, .pending, "…as a fresh, answerable card")
+        XCTAssertEqual(service.activeRequestOrigin, .ownerIncoming)
+        await eventually { await api.declineCount == 1 }
+        let declineID = await api.lastDeclineID
+        XCTAssertEqual(declineID, "adv-1", "the decline still targeted the resolved ride")
+        // The re-fetch that follows adoption must not resurrect the declined ride
+        // from a page that predates the POST.
+        await eventually { service.waitingIncomingCount == 1 }
+        XCTAssertEqual(service.activeRequest?.id, "adv-2")
+    }
+
+    /// ACCEPT must NOT advance: the accepted ride is a live dispatch that owns the
+    /// slot (the owner is now driving it to the pickup). The queue keeps holding the
+    /// others — the badge is the only thing that changes.
+    func testAcceptKeepsTheDispatchAndNeverAdoptsAQueuedRequest() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        await api.setIncoming([
+            Self.wireRide(id: "acc-1", status: .requested),
+            Self.wireRide(id: "acc-2", status: .requested),
+        ])
+        await api.setDetail(Self.wireRide(id: "acc-1", status: .accepted, accepted: true))
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+        await service.refreshIncoming()
+
+        service.accept()
+        await eventually { await api.acceptCount == 1 }
+        try? await Task.sleep(nanoseconds: 80_000_000) // let the queue re-fetch settle
+        XCTAssertEqual(service.activeRequest?.id, "acc-1", "the dispatched ride keeps the slot")
+        XCTAssertEqual(service.activeRequest?.status, .accepted)
+        XCTAssertEqual(service.waitingIncomingCount, 1, "the other request is still waiting behind it")
+    }
+
+    /// COMPLETION-RELEASE: the owner's own ride reaches `completed` (the drop-off),
+    /// which is the one status that is terminal FOR THE OWNER — the queued request
+    /// then surfaces on its own instead of waiting for a new frame that will never
+    /// come (the exact "one ride and the owner goes deaf" defect).
+    func testCompletedRideAutoAdvancesToTheQueuedRequest() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        let socket = StubRideSocket()
+        await api.setIncoming([
+            Self.wireRide(id: "done-1", status: .requested),
+            Self.wireRide(id: "next-2", status: .requested),
+        ])
+        let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
+        await eventually { service.activeRequest?.id == "done-1" }
+        await eventually { service.waitingIncomingCount == 1 }
+        await eventually { await socket.isListening }
+
+        // The ride runs and the owner taps "Dropped off".
+        await api.setDetail(Self.wireRide(id: "done-1", status: .completed, accepted: true))
+        await api.setIncoming([Self.wireRide(id: "next-2", status: .requested)]) // server drops the finished row
+        await socket.push(.statusChanged(RideStatusChangedPayload(
+            rideRequestId: "done-1", vehicleId: "veh-live", status: .completed, timestamp: "2026-07-27T20:00:00.000Z"
+        )))
+
+        await eventually { service.activeRequest?.id == "next-2" }
+        XCTAssertEqual(service.activeRequest?.status, .pending)
+        XCTAssertEqual(service.waitingIncomingCount, 0)
+    }
+
+    /// A `ride_created` frame that arrives while a card is UP is queued rather than
+    /// dropped (it used to be silently discarded by the adoption guard), and a
+    /// re-delivered frame for the same ride must not count the same rider twice.
+    func testCreatedFrameQueuesBehindTheCurrentCardAndIsDeduped() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        let socket = StubRideSocket()
+        await api.setIncoming([Self.wireRide(id: "held-1", status: .requested)])
+        let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
+        await eventually { service.activeRequest?.id == "held-1" }
+        await eventually { await socket.isListening }
+
+        await api.setDetail(Self.wireRide(id: "arrival-2", status: .requested, requesterName: "Maya"))
+        for _ in 0..<2 {
+            await socket.push(.created(RideRequestCreatedPayload(
+                rideRequestId: "arrival-2", vehicleId: "veh-live", riderId: "u-rider2",
+                status: .requested, requesterName: "Maya", timestamp: "2026-07-27T20:10:00.000Z"
+            )))
+        }
+
+        await eventually { service.waitingIncomingCount == 1 }
+        try? await Task.sleep(nanoseconds: 80_000_000) // let the second frame land
+        XCTAssertEqual(service.waitingIncomingCount, 1, "the same ride is queued once, not twice")
+        XCTAssertEqual(service.activeRequest?.id, "held-1", "the card in front of the owner never moved")
+    }
+
+    /// A QUEUED request that resolves somewhere else (another device accepted it,
+    /// the rider cancelled it) leaves the queue — the owner must never be advanced
+    /// onto a card nobody is waiting on.
+    func testQueuedRequestResolvedRemotelyIsDroppedFromTheQueue() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        let socket = StubRideSocket()
+        await api.setIncoming([
+            Self.wireRide(id: "cur-1", status: .requested),
+            Self.wireRide(id: "gone-2", status: .requested),
+        ])
+        let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
+        await eventually { service.activeRequest?.id == "cur-1" }
+        await eventually { service.waitingIncomingCount == 1 }
+        await eventually { await socket.isListening }
+
+        // The queued ride is accepted elsewhere (or cancelled) — the feed drops it too.
+        await api.setDetail(Self.wireRide(id: "gone-2", status: .accepted, accepted: true))
+        await api.setIncoming([Self.wireRide(id: "cur-1", status: .requested)])
+        await socket.push(.statusChanged(RideStatusChangedPayload(
+            rideRequestId: "gone-2", vehicleId: "veh-live", status: .accepted, timestamp: "2026-07-27T20:20:00.000Z"
+        )))
+        await eventually { service.waitingIncomingCount == 0 }
+
+        // …and resolving the current card now surfaces NOTHING, rather than
+        // advancing the owner onto a ride that is already somebody else's.
+        service.decline()
+        XCTAssertEqual(service.activeRequest?.id, "cur-1", "no dead ride was adopted")
+        XCTAssertEqual(service.activeRequest?.status, .declined, "the declined card stands until a real request arrives")
+        XCTAssertEqual(service.waitingIncomingCount, 0)
+    }
+
+    /// A stale feed page (built before the decline POST landed) still lists the ride
+    /// the owner just answered. It must not be re-queued — or the owner would be
+    /// asked to decide on it a second time, and Accept would 409.
+    func testStaleFeedPageNeverReQueuesAnAlreadyResolvedRequest() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        let stale = [
+            Self.wireRide(id: "stale-1", status: .requested),
+            Self.wireRide(id: "stale-2", status: .requested),
+        ]
+        await api.setIncoming(stale)
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+        await service.refreshIncoming()
+        XCTAssertEqual(service.activeRequest?.id, "stale-1")
+
+        service.decline() // the feed stub keeps returning BOTH rows as `requested`
+        await eventually { await api.declineCount == 1 }
+        await service.refreshIncoming()
+        XCTAssertEqual(service.activeRequest?.id, "stale-2", "the queue advanced once")
+        XCTAssertEqual(service.waitingIncomingCount, 0, "the answered request is not waiting again")
+    }
+
+    // MARK: MYR-306 — an owner-declined ride must not jam adoption
+
+    /// The MYR-306 defect, mirroring the MYR-292 set: `decline()` leaves the record
+    /// on `.declined` and nothing on the owner path clears it, so every later
+    /// incoming frame was dropped until relaunch. An owner-originated declined ride
+    /// is now displaced by the next pending request.
+    func testOwnerDeclinedRideIsDisplacedByNextPendingRequest() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        let socket = StubRideSocket()
+        await api.setIncoming([Self.wireRide(id: "dec-1", status: .requested)])
+        let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
+        await eventually { service.activeRequest?.id == "dec-1" }
+        await eventually { await socket.isListening }
+
+        await api.setIncoming([]) // nothing queued locally — the frame is the only route in
+        service.decline()
+        await eventually { service.activeRequest?.status == .declined }
+
+        // A SECOND rider requests the same car after the decline.
+        await api.setDetail(Self.wireRide(id: "dec-next", status: .requested, requesterName: "Maya"))
+        await socket.push(.created(RideRequestCreatedPayload(
+            rideRequestId: "dec-next", vehicleId: "veh-live", riderId: "u-rider2",
+            status: .requested, requesterName: "Maya", timestamp: "2026-07-27T21:00:00.000Z"
+        )))
+
+        await eventually { service.activeRequest?.id == "dec-next" }
+        XCTAssertEqual(service.activeRequest?.status, .pending, "the owner can answer again without relaunching")
+        XCTAssertEqual(service.activeRequestOrigin, .ownerIncoming)
+    }
+
+    /// The MYR-306 safety half — the reason MYR-292 deliberately left `.declined`
+    /// alone. The RIDER's `DeclinedNotice` renders their own declined record; it is
+    /// `.rider`-origin, so no incoming request may clobber it.
+    func testRiderDeclinedNoticeIsNeverClobberedByIncomingRequest() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-rdec", status: .requested))
+        let socket = StubRideSocket()
+        let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
+
+        // The rider's own request, declined by the owner → the notice is on screen.
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        XCTAssertEqual(service.activeRequestOrigin, .rider)
+        await eventually { await socket.isListening }
+        await api.setDetail(Self.wireRide(id: "srv-rdec", status: .declined))
+        await socket.push(.statusChanged(RideStatusChangedPayload(
+            rideRequestId: "srv-rdec", vehicleId: "veh-live", status: .declined, timestamp: "2026-07-27T21:10:00.000Z"
+        )))
+        await eventually { service.activeRequest?.status == .declined }
+        let noticeRideID = service.activeRequest?.id
+
+        // Someone else requests the car while the notice is up — by frame AND by feed.
+        await api.setDetail(Self.wireRide(id: "rdec-intruder", status: .requested, requesterName: "Maya"))
+        await socket.push(.created(RideRequestCreatedPayload(
+            rideRequestId: "rdec-intruder", vehicleId: "veh-live", riderId: "u-rider2",
+            status: .requested, requesterName: "Maya", timestamp: "2026-07-27T21:11:00.000Z"
+        )))
+        await api.setIncoming([Self.wireRide(id: "rdec-intruder", status: .requested)])
+        await service.refreshIncoming()
+        try? await Task.sleep(nanoseconds: 80_000_000)
+
+        XCTAssertEqual(service.activeRequest?.id, noticeRideID, "the rider's declined record survives untouched")
+        XCTAssertEqual(service.activeRequest?.status, .declined)
+        XCTAssertEqual(service.activeRequestOrigin, .rider)
+        XCTAssertGreaterThanOrEqual(service.waitingIncomingCount, 1, "the owner's request waits instead of clobbering")
+    }
+
+    /// The queue must not become a back door around the MYR-292 rider-summary
+    /// invariant either: with the rider sitting on their completed ride, a whole
+    /// PAGE of incoming requests is held and counted, and not one of them is adopted.
+    func testQueuedRequestsNeverDisplaceTheRiderSummary() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-qsum", status: .requested))
+        let socket = StubRideSocket()
+        let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
+
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        await eventually { await socket.isListening }
+        await api.setDetail(Self.wireRide(id: "srv-qsum", status: .completed, accepted: true))
+        await socket.push(.statusChanged(RideStatusChangedPayload(
+            rideRequestId: "srv-qsum", vehicleId: "veh-live", status: .completed, timestamp: "2026-07-27T21:20:00.000Z"
+        )))
+        await eventually { service.activeRequest?.status == .completed }
+        let summaryRideID = service.activeRequest?.id
+
+        await api.setIncoming([
+            Self.wireRide(id: "qsum-1", status: .requested),
+            Self.wireRide(id: "qsum-2", status: .requested),
+        ])
+        await service.refreshIncoming()
+
+        XCTAssertEqual(service.activeRequest?.id, summaryRideID, "the rider's summary is never displaced")
+        XCTAssertEqual(service.activeRequestOrigin, .rider)
+        XCTAssertEqual(service.waitingIncomingCount, 2, "both requests wait for the slot to free honestly")
+
+        // …and once the rider taps "See you soon", the owner's queue is free to fill.
+        _ = service.completeAndReset()
+        await service.refreshIncoming()
+        XCTAssertEqual(service.activeRequest?.id, "qsum-1")
+        XCTAssertEqual(service.waitingIncomingCount, 1)
+    }
+
     // MARK: - Builders
 
     private static func sampleInput() -> RideRequestInput {

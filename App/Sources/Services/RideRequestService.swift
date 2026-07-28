@@ -47,6 +47,13 @@ public protocol RideRequestService: AnyObject, Observable {
     /// `nil`/never-set in sim (no network) — see the default implementation.
     var vehicleUnavailableFailure: RideVehicleUnavailableFailure? { get }
 
+    /// MYR-317: how many OTHER pending incoming requests are queued BEHIND the one
+    /// `activeRequest` is currently showing the owner. Drives the muted
+    /// "+N more waiting" chip on `IncomingRequestSheet` — the owner's only signal
+    /// that resolving this card is not the end of the queue. `0` whenever nothing
+    /// is waiting, and `0` on the simulated path (see the default implementation).
+    var waitingIncomingCount: Int { get }
+
     /// Submits a new request — mirrors ride-request.jsx's `onSubmit`
     /// (`ReviewContent`'s primary CTA, ride-request.jsx:1234-1237): status
     /// becomes `.pending` immediately so the rider's Review→Booking transition
@@ -123,6 +130,13 @@ public extension RideRequestService {
     /// refuse a mutation with `409 vehicle_unavailable`. Only
     /// `LiveRideRequestService` overrides this (MYR-233).
     var vehicleUnavailableFailure: RideVehicleUnavailableFailure? { nil }
+
+    /// Default: the simulated service (M1) has no incoming FEED — its single
+    /// `activeRequest` is the whole world (one rider, one owner, one in-process
+    /// snapshot), so nothing can ever be queued behind it and the chip never
+    /// renders. Only `LiveRideRequestService` overrides this (MYR-317); the DEBUG
+    /// capture scene seeds the simulated service's own DEBUG-only counter.
+    var waitingIncomingCount: Int { 0 }
 
     /// Default: no send-window deferral. The simulated service (M1) has no
     /// network — its `submit` already installs the full state machine, and the

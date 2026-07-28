@@ -38,9 +38,12 @@ import Observation
 //    car); the fixture fleet-picker → live-vehicle join is future work (needs the
 //    MYR-91 shared-viewer access set + a live Review picker). Display-only fleet
 //    fields fall back to fixtures — see `RideRequestContractMapping`.
-//  • Live scheduled-create time encoding is deferred; live `submit` sends an
-//    on-demand request (the demo is "now"). Server-supplied `scheduledFor` still
-//    decodes for display on the incoming/detail path.
+//
+// MYR-179 (was a gap): a scheduled create now carries a REAL RFC 3339
+// `scheduledFor`, resolved from the rider's picked day/time at the send moment
+// in the rider's own time zone (`RideRequestContractMapping.scheduledFor`). The
+// local optimistic draft + the scheduled sheets keep rendering their display
+// strings; the wire value is authoritative on refetch.
 @Observable
 @MainActor
 final class LiveRideRequestService: RideRequestService {
@@ -75,6 +78,37 @@ final class LiveRideRequestService: RideRequestService {
         case ownerIncoming
     }
     private(set) var activeRequestOrigin: ActiveRequestOrigin?
+
+    /// MYR-317 — the OWNER's incoming QUEUE: every OTHER still-pending incoming
+    /// request, in the server's feed order, waiting behind the one on the card.
+    ///
+    /// The defect: the owner holds ONE `activeRequest` slot, and `refreshIncoming`
+    /// adopted only `page.items.first`. Extra pending requests (several riders, or
+    /// several future reservations against the same car) were invisible — nothing
+    /// was lost server-side, but the owner had no idea anyone else was waiting, and
+    /// the next request surfaced only if a fresh WS frame happened to arrive after
+    /// the current one resolved.
+    ///
+    /// Invariant: this holds ONLY pending requests that are NOT the current one —
+    /// entries are removed on adoption (`adoptNextIncoming`) and on remote
+    /// resolution (`integrate`), so `waitingIncomingCount` is a straight `count`.
+    /// Wire records rather than app records: arrivals come off the wire, and the
+    /// mapping to a `RideRequestRecord` (which fills a client-side trip estimate)
+    /// is worth doing once, at adoption.
+    private(set) var incomingQueue: [RideRequest] = []
+
+    /// MYR-317 — ride ids this session has already RESOLVED: the owner accepted or
+    /// declined them, or a frame showed them resolving somewhere else. The incoming
+    /// feed is fetched concurrently with those mutations, so a page built before the
+    /// decline landed still lists the ride as `requested`; without this filter that
+    /// stale page would put a request the owner has already answered back in the
+    /// queue — and eventually re-present it as a fresh card (whose Accept would 409).
+    /// Session-scoped and small: one id per request the owner handles.
+    private var resolvedIncomingIDs: Set<String> = []
+
+    /// MYR-317 — how many pending incoming requests are waiting BEHIND the current
+    /// card; drives the muted "+N more waiting" chip on `IncomingRequestSheet`.
+    var waitingIncomingCount: Int { incomingQueue.count }
 
     /// The server-assigned ride id for the active request (distinct from the
     /// local `activeRequest.id`, which for a rider-submitted ride is a client
@@ -435,6 +469,11 @@ final class LiveRideRequestService: RideRequestService {
         // vehicle (parallel PR). A swallowed error would strand the owner on a
         // phantom "accepted" — so reconcile on failure instead of fire-and-forget.
         reconcileAcceptOnFailure()
+        // MYR-317: the accepted ride now owns the slot, so `canAdoptIncoming` makes
+        // the adoption half a no-op — but the queue must still be re-read, because
+        // the card the owner just cleared changed how many are waiting behind it.
+        markIncomingResolved()
+        advanceIncoming()
     }
 
     /// MYR-277 C: POST the accept; on SUCCESS keep the optimistic `.accepted` (the
@@ -489,6 +528,14 @@ final class LiveRideRequestService: RideRequestService {
         request.status = .declined
         activeRequest = request
         postMutation { try await $0.declineRideRequest(id: $1) }
+        // MYR-306 + MYR-317: a declined OWNER-originated request releases the slot,
+        // so the next waiting request surfaces on the very next frame — instead of
+        // the old behaviour, where the `.declined` record jammed adoption until the
+        // app was relaunched (MYR-306) and any queued rider stayed invisible. A
+        // RIDER-originated decline (the rider's own `DeclinedNotice`) is refused by
+        // `canAdoptIncoming` and nothing moves.
+        markIncomingResolved()
+        advanceIncoming()
     }
 
     // MARK: MYR-270 — owner-driven dispatch v2 (picked-up / start / dropped-off)
@@ -617,8 +664,15 @@ final class LiveRideRequestService: RideRequestService {
     private func integrate(_ ride: RideRequest) {
         let mapped = RideRequestContractMapping.status(ride.status)
         if mapped == nil {
-            // Cancelled / terminal — drop it if it's the ride we're tracking.
-            if isCurrent(ride.id) { activeRequest = nil; activeRequestOrigin = nil; serverRideID = nil }
+            // Cancelled / terminal — drop it if it's the ride we're tracking, and
+            // (MYR-317) drop it from the queue if it was waiting behind the card:
+            // a rider who cancels while queued must not be surfaced later as a
+            // request the owner can still accept.
+            if isCurrent(ride.id) {
+                activeRequest = nil; activeRequestOrigin = nil; serverRideID = nil
+            } else {
+                dequeueIncoming(id: ride.id)
+            }
             return
         }
         if isCurrent(ride.id) {
@@ -667,14 +721,119 @@ final class LiveRideRequestService: RideRequestService {
             }
             activeRequest = current
             serverRideID = ride.id
-        } else if canAdoptIncoming, mapped == .pending {
-            // OWNER side: a brand-new incoming request from another device.
-            if let record = RideRequestContractMapping.record(from: ride) {
-                activeRequest = record
-                activeRequestOrigin = .ownerIncoming
-                serverRideID = ride.id
-            }
+            // MYR-317 — the tracked ride reached a status that RELEASES the owner's
+            // slot (its own `completed` — the drop-off — or `declined` once MYR-306
+            // widened the guard): surface the next queued request instead of sitting
+            // on a dead card until a fresh frame happens to arrive, which is exactly
+            // how a waiting rider stayed invisible after ONE ride. Narrowed to those
+            // two statuses so a live dispatch's frames don't each re-fetch the feed;
+            // `canAdoptIncoming` is still the thing that decides (a RIDER-originated
+            // completed/declined record is never touched).
+            if mapped == .completed || mapped == .declined { advanceIncoming() }
+        } else if mapped == .pending {
+            // OWNER side: a pending request for some OTHER ride.
+            //
+            // MYR-317 — it is QUEUED first (deduped by id), so it is counted on the
+            // card's "+N more waiting" chip even while another request owns the
+            // slot; before, a frame that arrived with the slot occupied was simply
+            // dropped and that rider became invisible. Adoption then runs under the
+            // unchanged `canAdoptIncoming` guard and takes the queue HEAD (server
+            // feed order), which for a free slot is this very ride.
+            enqueueIncoming(ride)
+            adoptNextIncoming()
+        } else {
+            // MYR-317 — a QUEUED request resolved remotely (another device accepted
+            // or declined it, it ran, it completed): drop it from the queue so the
+            // owner is never advanced onto a request nobody is waiting on.
+            dequeueIncoming(id: ride.id)
         }
+    }
+
+    // MARK: MYR-317 — incoming queue mechanics
+
+    /// Add a pending incoming request to the tail of the queue, deduped by id (a
+    /// re-delivered frame refreshes the held record in place rather than counting
+    /// the same rider twice). Never queues the request already on the card.
+    private func enqueueIncoming(_ ride: RideRequest) {
+        guard RideRequestContractMapping.status(ride.status) == .pending,
+              !isCurrent(ride.id), !resolvedIncomingIDs.contains(ride.id)
+        else { return }
+        if let existing = incomingQueue.firstIndex(where: { $0.id == ride.id }) {
+            incomingQueue[existing] = ride
+        } else {
+            incomingQueue.append(ride)
+        }
+    }
+
+    /// Drop a request from the queue and remember it as resolved, so a stale feed
+    /// page cannot re-queue it.
+    private func dequeueIncoming(id: String) {
+        incomingQueue.removeAll { $0.id == id }
+        resolvedIncomingIDs.insert(id)
+    }
+
+    /// Replace the queue from a freshly fetched incoming page. The page is the
+    /// server's authority on who is still waiting (it returns `requested` rows
+    /// only), so entries it omits are gone. A `ride_request_created` frame that
+    /// raced this fetch can be missed by one round; the next adoption re-fetches,
+    /// and the frame's own `enqueueIncoming` already counted it if it arrived
+    /// after the response landed.
+    ///
+    /// Feed ORDER is preserved exactly as the server returns it (createdAt DESC —
+    /// rest-api.md §7.8): the head this adopts is the same record `page.items.first`
+    /// adopted before this issue, so nothing about WHICH request surfaces first
+    /// changes here. Re-ordering the owner's triage queue (oldest-first vs
+    /// soonest-scheduled-first) is a deliberate server-side decision — MYR-317's
+    /// telemetry half — not something the client should invent per device.
+    private func replaceQueue(with items: [RideRequest]) {
+        incomingQueue = items.filter {
+            RideRequestContractMapping.status($0.status) == .pending
+                && !isCurrent($0.id)
+                && !resolvedIncomingIDs.contains($0.id)
+        }
+    }
+
+    /// Take the queue HEAD into the `activeRequest` slot, if the slot may be taken.
+    ///
+    /// The guard is the SAME `canAdoptIncoming` every other adoption site uses —
+    /// deliberately, so the queue can never become a back door around the
+    /// rider-safety invariants (MYR-292): a live dispatch is never displaced, and a
+    /// RIDER-originated record (their Ride Summary, their `DeclinedNotice`) is never
+    /// clobbered no matter how many owners' requests are waiting.
+    @discardableResult
+    private func adoptNextIncoming() -> Bool {
+        guard canAdoptIncoming else { return false }
+        while !incomingQueue.isEmpty {
+            let next = incomingQueue.removeFirst()
+            guard !isCurrent(next.id),
+                  let record = RideRequestContractMapping.record(from: next),
+                  record.status == .pending
+            else { continue }
+            activeRequest = record
+            activeRequestOrigin = .ownerIncoming
+            serverRideID = next.id
+            return true
+        }
+        return false
+    }
+
+    /// Remember the ride the owner just answered (accept/decline) as resolved, so a
+    /// feed page that was already in flight can't hand it back as still-waiting.
+    private func markIncomingResolved() {
+        if let id = serverRideID { resolvedIncomingIDs.insert(id) }
+    }
+
+    /// The current card resolved (accepted / declined / completed / cancelled):
+    /// surface the next waiting request immediately from the held queue, then
+    /// re-fetch the incoming page so the queue (and the badge) stay fresh — a
+    /// request that arrived while this device was backgrounded is only visible
+    /// through the feed.
+    ///
+    /// Both halves are guarded: the adoption by `canAdoptIncoming`, so an accept
+    /// (a live dispatch now owns the slot) refreshes the count and adopts nothing.
+    private func advanceIncoming() {
+        adoptNextIncoming()
+        Task { @MainActor [weak self] in await self?.refreshIncoming() }
     }
 
     private func isCurrent(_ rideID: String) -> Bool {
@@ -695,18 +854,28 @@ final class LiveRideRequestService: RideRequestService {
     /// frame was silently dropped: after ONE completed ride the owner could not
     /// receive another dispatch until the app was relaunched.
     ///
+    /// MYR-306 extends the same reasoning to `declined`: `decline()` leaves
+    /// `activeRequest` on `.declined` with nothing on the owner path to clear it, so
+    /// an owner who DECLINED a request landed in the identical blocked-adoption state
+    /// MYR-292 fixed for `completed` — every later incoming frame dropped until
+    /// relaunch. MYR-292 deliberately left `.declined` alone because the rider's
+    /// `DeclinedNotice` renders a declined record; now that adoption is ORIGIN-scoped
+    /// that objection is answered by the origin test, not by the status: a rider's
+    /// notice holds a `.rider`-origin record and is still untouchable. This is also
+    /// what makes MYR-317's decline→advance work at all.
+    ///
     /// Deliberately NOT widened for:
-    ///  • a RIDER-originated `completed` ride — the rider's Ride Summary is rendering
-    ///    that exact record right now; displacing it would swap the itinerary out from
-    ///    under them and point "See you soon" at a stranger's ride. This is why the
-    ///    guard tests `activeRequestOrigin`, not just the status.
-    ///  • `declined` — the rider's `DeclinedNotice` reads the declined record, and on
-    ///    the owner path a decline has its own handling; out of scope here.
+    ///  • a RIDER-originated `completed` or `declined` ride — the rider's Ride Summary
+    ///    / `DeclinedNotice` is rendering that exact record right now; displacing it
+    ///    would swap the itinerary out from under them and point "See you soon" at a
+    ///    stranger's ride. This is why the guard tests `activeRequestOrigin`, not just
+    ///    the status.
     ///  • every non-terminal status (`pending`/`accepted`/`arrived`/`enroute`) — a
     ///    live dispatch still owns the slot and must never be displaced.
     private var canAdoptIncoming: Bool {
         guard let held = activeRequest else { return true }
-        return held.status == .completed && activeRequestOrigin == .ownerIncoming
+        guard activeRequestOrigin == .ownerIncoming else { return false }
+        return held.status == .completed || held.status == .declined
     }
 
     /// MYR-277 A1: prefer the local draft's place, adopting the refetched server
@@ -797,13 +966,16 @@ final class LiveRideRequestService: RideRequestService {
     /// Internal rather than `private` so the widened guard has direct unit coverage —
     /// `start()` runs this once per session, which cannot reproduce a held completed
     /// ride on its own.
+    ///
+    /// MYR-317 — this now holds the WHOLE page as the owner's queue instead of taking
+    /// `page.items.first` and discarding the rest, and the fetch is no longer skipped
+    /// when the slot is occupied: the badge's count is exactly the requests this call
+    /// used to throw away. Adoption itself is unchanged — the same guard, the same
+    /// head record.
     func refreshIncoming() async {
-        guard canAdoptIncoming else { return }
         guard let page = try? await api.incomingRideRequests(cursor: nil, limit: 20) else { return }
-        guard let first = page.items.first, let record = RideRequestContractMapping.record(from: first) else { return }
-        activeRequest = record
-        activeRequestOrigin = .ownerIncoming
-        serverRideID = first.id
+        replaceQueue(with: page.items)
+        adoptNextIncoming()
     }
 
     // MARK: Helpers
@@ -821,18 +993,33 @@ final class LiveRideRequestService: RideRequestService {
         Task { _ = try? await op(api, id) }
     }
 
-    private static func createBody(from input: RideRequestInput, vehicleId: String) -> RideRequestCreateRequest {
+    /// MYR-179 — the create body, now carrying a REAL `scheduledFor` for a
+    /// scheduled request. The rider's picked day/time is resolved to an absolute
+    /// instant at the SEND moment (`fireSend`, i.e. the end of the booking grace
+    /// window) against the rider's own clock + time zone, and encoded RFC 3339
+    /// UTC by `RideRequestContractMapping.scheduledFor(from:)`. `nil` for an
+    /// on-demand ("Now") request — the key is then omitted, unchanged.
+    /// `nonisolated` because it is pure — inputs in, wire body out, no actor state —
+    /// so the encoding matrix can drive it directly (same precedent as the static
+    /// failure classifiers above).
+    nonisolated static func createBody(
+        from input: RideRequestInput,
+        vehicleId: String,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> RideRequestCreateRequest {
         RideRequestCreateRequest(
             vehicleId: vehicleId,
             pickup: wirePlace(input.pickup),
             dropoff: wirePlace(input.destination),
             passengerName: input.passenger?.name,
             passengerPhone: input.passenger.flatMap { $0.phone.isEmpty ? nil : $0.phone },
-            scheduledFor: nil // live scheduled-create encoding deferred — see header
+            scheduledFor: RideRequestContractMapping.scheduledFor(
+                from: input.schedule, now: now, calendar: calendar)
         )
     }
 
-    private static func wirePlace(_ place: RidePlace) -> MyRobotaxiContracts.RidePlace {
+    nonisolated private static func wirePlace(_ place: RidePlace) -> MyRobotaxiContracts.RidePlace {
         MyRobotaxiContracts.RidePlace(
             lat: place.coordinate.latitude,
             lng: place.coordinate.longitude,

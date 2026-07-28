@@ -233,6 +233,11 @@ struct HomeScreen: View {
                 resolvedVehicle: incomingRequest.flatMap { incomingVehicle(for: $0) },
                 carPosition: incomingRequest.flatMap { carPosition(for: $0) },
                 vehicleStatus: incomingRequest.flatMap { homeState.badgeStatus(forVehicleID: $0.input.fleetMemberID) },
+                // MYR-317 — how many pending requests are queued behind this card.
+                // The service owns the queue; the sheet only renders the count, and
+                // the NEXT request re-presents through this very same path when the
+                // current one resolves (no new sheet type, no list surface in v1).
+                waitingCount: rideRequestService.waitingIncomingCount,
                 onAccept: handleAccept,
                 onDecline: { rideRequestService.decline() }
             )

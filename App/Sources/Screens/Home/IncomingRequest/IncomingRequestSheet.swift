@@ -44,6 +44,10 @@ struct IncomingRequestSheet: View {
     /// honest reason line. `nil` in SIM / when the vehicle isn't loaded (Accept
     /// stays enabled, unchanged).
     var vehicleStatus: MRTVehicleStatus? = nil
+    /// MYR-317 — how many OTHER pending requests are queued behind this card
+    /// (`RideRequestService.waitingIncomingCount`). `0` (the default, and every
+    /// simulated path) renders the card exactly as before.
+    var waitingCount: Int = 0
     let onAccept: () -> Void
     let onDecline: () -> Void
 
@@ -160,7 +164,27 @@ struct IncomingRequestSheet: View {
                 .font(.system(size: 10, weight: .bold))
                 .tracking(1.2)
                 .foregroundStyle(Color.mrtGold)
+            // MYR-317 — the queue badge. Trailing on the kicker line, where it reads
+            // as a qualifier on "incoming ride request" rather than as part of the
+            // ride's own facts. Muted `MRTMutedChip` (the MYR-233 Busy-chip
+            // primitive): NO gold — the waiting requests are not this card's
+            // actionable moment, and this is a count, not a second CTA. Absent at
+            // `waitingCount == 0`, including the Spacer, so every existing card —
+            // and the `ownerIncoming` / `ownerScheduled` drift-gate scenes — is
+            // pixel-identical.
+            if let label = Self.waitingChipLabel(waitingCount) {
+                Spacer(minLength: 8)
+                MRTMutedChip(label)
+                    .accessibilityLabel("\(waitingCount) more requests waiting")
+            }
         }
+    }
+
+    /// The queue badge's copy, or `nil` when nothing is waiting. Pure + static so
+    /// the count/plural grammar is unit-testable without SwiftUI.
+    static func waitingChipLabel(_ count: Int) -> String? {
+        guard count > 0 else { return nil }
+        return "+\(count) more waiting"
     }
 
     private func header(_ request: RideRequestRecord) -> some View {
