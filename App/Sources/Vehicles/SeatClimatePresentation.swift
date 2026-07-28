@@ -100,6 +100,35 @@ enum SeatClimatePresentation {
         seatVent || driverMode == .cool || passengerMode == .cool
     }
 
+    /// MYR-319 — whether the seat block (label, per-seat rows, Heat↔Cool toggle)
+    /// belongs on screen for this climate state.
+    ///
+    /// The seats are a property of the CAR, not of the climate being on: whether
+    /// this Tesla has cooled seats is answered by the REST spec field
+    /// (`seatCoolingCapable`) on the cold snapshot, and it is true whether the
+    /// HVAC is running or not. The block used to live ONLY inside the climate-ON
+    /// branch, so the client's car — in service, therefore reporting no
+    /// `isClimateOn` at all — could never show it: the snapshot said
+    /// `seatCoolingCapable: true` and the owner still saw no Heat↔Cool toggle
+    /// anywhere in the sheet.
+    ///
+    /// Three states, and only one of them hides it:
+    ///   • climate CONFIRMED ON → shown (unchanged).
+    ///   • climate UNKNOWN (live, car not streaming — the client's case) → shown.
+    ///     The rows already carry their own honest known/unknown handling
+    ///     (`known:` / `hasSnapshot:` / `isStreaming:`, MYR-260/280), so they read
+    ///     "— Unavailable" rather than asserting a seat state nobody confirmed.
+    ///   • climate CONFIRMED OFF → hidden, exactly as the prototype has it: the
+    ///     off card is its own designed layout (a "Turn on" invitation plus the
+    ///     cabin temps), and the seats come back with the HVAC.
+    ///
+    /// The simulated path can only ever be confirmed on/off — the simulated
+    /// executor knows every field — so `.simulated` and every drift-gate scene
+    /// render byte-identically.
+    static func showsSeatBlock(climateOnKnown: Bool, climateOn: Bool) -> Bool {
+        !climateOnKnown || climateOn
+    }
+
     static func sectionLabel(supportsCool: Bool) -> String {
         supportsCool ? "SEAT CLIMATE" : "SEAT HEATING"
     }

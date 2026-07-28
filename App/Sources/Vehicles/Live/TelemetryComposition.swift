@@ -40,7 +40,16 @@ enum TelemetryComposition {
         }
         #endif
         if let config = liveFleetConfig(mode: mode, sessionTokenProvider: sessionTokenProvider) {
-            return OwnerHomeState(fleet: LiveVehicleFleet(config: config))
+            let state = OwnerHomeState(fleet: LiveVehicleFleet(config: config))
+            #if DEBUG
+            // MYR-319 — `MRT_OWNER_DETENT=half` was honored on the simulated and
+            // preview-fleet paths only, so a LIVE-shaped capture (the only way to
+            // see the controls stack fed by a real snapshot) could never be taken
+            // at half: headless tooling cannot drag the sheet. Same DEBUG-only,
+            // capture-tooling-shaped seeding as `initialRefreshPhase` (MYR-315).
+            if DebugScene.initialOwnerDetentHalf { state.sheetDetent = .half }
+            #endif
+            return state
         }
         return OwnerHomeState() // simulated fleet — the default
     }

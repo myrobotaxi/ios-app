@@ -217,6 +217,133 @@ final class ParkedChannelFactory: WebSocketChannelFactory, @unchecked Sendable {
     func makeChannel(url: URL) -> any WebSocketChannel { ParkedWebSocketChannel() }
 }
 
+/// MYR-319 — a WS channel that completes the handshake (`auth_ok` the moment the
+/// socket sends its `auth` frame) and then **emits nothing at all**.
+///
+/// That is not a degenerate case: it is EXACTLY a car that is offline or in
+/// service. Telemetry only streams while a car is awake, so for such a vehicle
+/// the socket is healthy, the subscription is live, and the only data that will
+/// ever arrive is the cold REST `/snapshot` the socket fetches on connect.
+/// `ParkedWebSocketChannel` (which never authenticates) can never reach that
+/// path — its socket stays `.connecting` forever — so no App-target test before
+/// this one exercised the snapshot-only read at fleet level.
+actor AuthenticatingWebSocketChannel: WebSocketChannel {
+    struct Closed: Error {}
+
+    private var inbound: [String] = []
+    private var waiter: CheckedContinuation<String, any Error>?
+    private var closed = false
+    private var sent: [String] = []
+
+    func send(_ text: String) async throws {
+        if closed { throw Closed() }
+        sent.append(text)
+        // `WireCodec` is Kit-internal, so match the wire text (§2.2: the auth
+        // frame is always the first frame after the upgrade).
+        if text.contains(#""type":"auth""#) {
+            enqueue(Self.authOKFrame)
+        }
+    }
+
+    func receive() async throws -> String {
+        if closed { throw Closed() }
+        if !inbound.isEmpty { return inbound.removeFirst() }
+        return try await withCheckedThrowingContinuation { self.waiter = $0 }
+    }
+
+    func ping() async throws { if closed { throw Closed() } }
+
+    func close() async {
+        guard !closed else { return }
+        closed = true
+        if let waiter { self.waiter = nil; waiter.resume(throwing: Closed()) }
+    }
+
+    func sentFrames() -> [String] { sent }
+
+    private func enqueue(_ text: String) {
+        if let waiter { self.waiter = nil; waiter.resume(returning: text) }
+        else { inbound.append(text) }
+    }
+
+    static let authOKFrame =
+        #"{"type":"auth_ok","payload":{"userId":"u1","vehicleCount":1,"issuedAt":"2026-07-26T00:00:00Z"}}"#
+}
+
+final class AuthenticatingChannelFactory: WebSocketChannelFactory, @unchecked Sendable {
+    private let lock = NSLock()
+    private var channels: [AuthenticatingWebSocketChannel] = []
+
+    func makeChannel(url: URL) -> any WebSocketChannel {
+        let channel = AuthenticatingWebSocketChannel()
+        lock.lock(); channels.append(channel); lock.unlock()
+        return channel
+    }
+}
+
+/// MYR-319 — an `HTTPPerforming` that answers by PATH rather than by call order.
+/// The live read path interleaves `GET /api/vehicles` with the socket's
+/// `GET /api/vehicles/{id}/snapshot`, and their order is a race between the REST
+/// load task and the WS handshake — a sequenced stub would make the test's
+/// outcome depend on which won.
+actor RoutedHTTP: HTTPPerforming {
+    /// `(path suffix, status, body)`, matched by `hasSuffix` in declaration order.
+    /// `failFirst` scripts the first N calls to that route as `status` +
+    /// `failureBody` before it starts answering with `body` — the shape of a
+    /// backend that can't reach a SLEEPING car on the first ask.
+    struct Route: Sendable {
+        var suffix: String
+        var status: Int
+        var body: Data
+        var failFirst: Int
+        var failureBody: Data
+
+        init(
+            _ suffix: String,
+            failFirst: Int = 0,
+            status: Int = 200,
+            failureBody: Data = Data(),
+            body: Data
+        ) {
+            self.suffix = suffix
+            self.status = status
+            self.body = body
+            self.failFirst = failFirst
+            self.failureBody = failureBody
+        }
+    }
+
+    private var routes: [Route]
+    private var requests: [URLRequest] = []
+    private var served: [String: Int] = [:]
+
+    init(_ routes: [Route]) { self.routes = routes }
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        requests.append(request)
+        let path = request.url?.path ?? ""
+        guard let index = routes.firstIndex(where: { path.hasSuffix($0.suffix) }) else {
+            let body = Data(#"{"error":{"code":"not_found","message":"\#(path)"}}"#.utf8)
+            return (body, HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
+        }
+        let route = routes[index]
+        let count = (served[route.suffix] ?? 0) + 1
+        served[route.suffix] = count
+        let failing = count <= route.failFirst
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: failing ? route.status : 200,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        return (failing ? route.failureBody : route.body, response)
+    }
+
+    func paths() -> [String] { requests.compactMap { $0.url?.path } }
+    /// How many times a route has been asked — "did the client try again?".
+    func callCount(suffix: String) -> Int { served[suffix] ?? 0 }
+}
+
 /// MYR-315 — a movable clock, so the foreground-refetch debounce is provable
 /// without the test actually sleeping through it.
 final class TestClock: @unchecked Sendable {
