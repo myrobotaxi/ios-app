@@ -121,13 +121,34 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
     /// `VehicleContractMapping.snapshot` + the real `LiveVehicleCommandExecutor
     /// .reconcile`, so a capture that shows "Estimated completion · …" proves the
     /// shipping path resolved it, not a hand-set view property.
+    /// MYR-320 — the three enrichment fields telemetry PR #340 began populating,
+    /// each defaulting to the PRE-#340 shape so every existing scene renders
+    /// byte-identically:
+    ///
+    ///   • `color` — `""` by default (the MYR-283 onboarding gap → honest empty
+    ///     row). A value flows through the EXISTING `VehicleState.color` field, so
+    ///     a capture showing "Quicksilver" is proof the mapping already carried it
+    ///     verbatim and needed no change.
+    ///   • `fsdVersion` — `nil` by default → the FSD row does not exist at all,
+    ///     which is the contract's rule for absence and what keeps the details
+    ///     section identical for every pre-MYR-320 scene.
+    ///   • `serviceWindowSource` — the provenance a write echo would have PROVED.
+    ///     `.unknown` by default → no caption, exactly as before. It is seeded
+    ///     rather than earned because the caption is only reachable after a Save,
+    ///     which headless capture tooling cannot perform — the same
+    ///     standing-in-for-a-tap precedent as `ownerFreshnessWaking`'s `.waking`
+    ///     phase. The CLASSIFIER itself is not stubbed: the value is produced by
+    ///     the shipping `LiveVehicleCommandExecutor.provenance` at the call site.
     init(
         ventedSeatReadBacks: Bool = false,
         seatCoolingCapable: Bool? = nil,
         licensePlate: String? = nil,
         status: VehicleSummary.Status = .parked,
         media: DebugMediaVariant = .neverObserved,
-        serviceEstimatedEndAt: Date? = nil
+        serviceEstimatedEndAt: Date? = nil,
+        color: String = "",
+        fsdVersion: String? = nil,
+        serviceWindowSource: ServiceWindowSource = .unknown
     ) {
         // A live-like snapshot: full model/year/trim, full VIN + software version,
         // and a BLANK color (onboarding gap, MYR-283). Streaming/online so the
@@ -138,14 +159,20 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             licensePlate: licensePlate,
             media: media,
             status: status,
-            serviceEstimatedEndAt: serviceEstimatedEndAt
+            serviceEstimatedEndAt: serviceEstimatedEndAt,
+            color: color,
+            fsdVersion: fsdVersion
         )
         let summary = VehicleSummary(
             vehicleId: "debug-mdy",
             name: "Model Y",
             model: "Model Y",
             year: 2026,
-            color: "",
+            // The list row carries the same color the snapshot does — the mapping
+            // prefers the snapshot and falls back here, so seeding both is what a
+            // real server emits (MYR-320). Neither shape carries `trimLabel` or
+            // `fsdVersion`: both are detail-sheet-only by contract.
+            color: color,
             vinLast4: "3456",
             status: status,
             chargeLevel: 71,
@@ -178,6 +205,19 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             plate: VehicleContractMapping.editablePlate(licensePlate: summary.licensePlate)
         )
         exec.reconcile(from: state)
+        // MYR-320 — the source note the "Service completion date" row shows. Run
+        // through the SHIPPING classifier rather than assigned as a literal, so
+        // the capture still proves the predicate: `.tesla` is the echo disagreeing
+        // with the owner's submission (Tesla's estimate outranked it), `.manual` is
+        // the echo matching it exactly (Tesla had none to apply).
+        if serviceWindowSource != .unknown, let resolved = serviceEstimatedEndAt {
+            exec.debugSeedServiceWindowSource(
+                submitted: serviceWindowSource == .manual
+                    ? resolved                              // the server took the entry verbatim
+                    : resolved.addingTimeInterval(2 * 3600), // the owner guessed later; Tesla won
+                resolved: resolved
+            )
+        }
         executor = exec
     }
 
@@ -200,7 +240,9 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
         licensePlate: String? = nil,
         media: DebugMediaVariant = .neverObserved,
         status: VehicleSummary.Status = .parked,
-        serviceEstimatedEndAt: Date? = nil
+        serviceEstimatedEndAt: Date? = nil,
+        color: String = "",
+        fsdVersion: String? = nil
     ) -> VehicleState {
         let iso = ISO8601DateFormatter().string(from: Date())
         var state = VehicleState(
@@ -208,10 +250,15 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             name: "Model Y",
             model: "Model Y",
             year: 2026,
-            color: "",                       // onboarding gap → honest empty (MYR-283)
+            color: color,                    // "" = the MYR-283 onboarding gap → honest empty
             vin: "7SAYGDEE9RA123456",        // full (owner-masked) VIN
-            softwareVersion: "2026.14.3",
-            trim: "Performance",             // → "2026 Model Y Performance"
+            softwareVersion: "2026.14.3",    // the FIRMWARE build — not the FSD designation
+            // MYR-320 — the RAW BADGE CODE, exactly as the client's own car reports
+            // it. It is set on every details scene ON PURPOSE: the Model row must
+            // read "2026 Model Y Performance" with this field present, which is only
+            // possible if the composer ignores it and uses `trimLabel`. A capture
+            // showing "2026 Model Y p74d" would be the substitution bug, visible.
+            trim: "p74d",
             // MYR-316 — the snapshot status must MATCH the summary's, or the
             // sheet would take its badge from one read surface and its service
             // window from the other (`badgeStatus(forSummary:state:)` prefers the
@@ -256,6 +303,12 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
         // MYR-316 — snapshot-only by contract (no `vehicle_update` ever carries
         // it), so the capture is exactly the shape a cold read has.
         state.serviceEstimatedEndAt = serviceEstimatedEndAt.map(rfc3339.string(from:))
+        // MYR-320 — both snapshot-only by contract (no `vehicle_update` carries
+        // either), so the capture is exactly the shape a cold read has.
+        // `trimLabel` is the DISPLAY-READY sibling of the `trim` badge above and is
+        // always set: composing "2026 Model Y Performance" is its whole job.
+        state.trimLabel = "Performance"
+        state.fsdVersion = fsdVersion
         media.apply(to: &state)
         return state
     }

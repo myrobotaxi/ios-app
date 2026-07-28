@@ -275,6 +275,33 @@ enum DebugScene: String, CaseIterable {
     /// `DebugServiceWindowEndpoint` (validate future → apply Tesla precedence →
     /// echo back).
     case ownerServiceWindowEditor
+    /// MYR-320 — the SAME in-service car, with the "Service completion date" row
+    /// carrying its MANUAL sub-caption ("Set manually — Tesla hasn't provided an
+    /// estimate for this visit"). That caption is only reachable AFTER a save
+    /// whose echo came back matching the owner's submission, which headless
+    /// capture tooling cannot perform, so the fleet seeds the provenance — but
+    /// through the SHIPPING `LiveVehicleCommandExecutor.provenance` classifier, so
+    /// the capture still proves the predicate rather than a hand-set string. Pair
+    /// with `MRT_OWNER_DETENT=half`; the row shares `ownerServiceWindow`'s anchor.
+    case ownerServiceWindowManual
+    /// MYR-320 — the vehicle-details section with EVERY enrichment field the
+    /// client asked for populated at once, off one live-shaped snapshot:
+    ///
+    ///   • Model = "2026 Model Y Performance", composed from `trimLabel`. The
+    ///     snapshot ALSO carries the raw `trim` badge `"p74d"` — so the capture is
+    ///     the substitution proof: the display-safe label is rendered and the badge
+    ///     code is not, and "2026 Model Y p74d" would be the bug made visible.
+    ///   • Color = "Quicksilver", flowing through the EXISTING `VehicleState.color`
+    ///     field (no mapping change) and rendered verbatim, replacing the honest
+    ///     "— Unavailable" every earlier capture shows.
+    ///   • FSD = "FSD (Supervised) v14.3.5", its own row directly after Software —
+    ///     which stays "2026.14.3", because a firmware build and an FSD designation
+    ///     are different facts that move independently.
+    ///
+    /// `ownerVehicleDetails` deliberately keeps the pre-#340 shape (blank color, no
+    /// FSD row), so the pair is a clean before/after of exactly this enrichment.
+    /// Pair with `MRT_OWNER_DETENT=half`; the scroll anchors to the bottom.
+    case ownerVehicleEnriched
     /// MYR-316 — the RIDER's scheduling card, FLOORED. Injects a live-shaped
     /// `FleetMember` carrying `serviceEstimatedEndAt` through the REAL
     /// `LiveFleetMemberMapping.fleetMember(from:)` (a `VehicleSummary` with
@@ -463,6 +490,7 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerDispatchedEnroute || self == .ownerDispatchedCompleted
             || self == .ownerFreshnessStale || self == .ownerFreshnessWaking
             || self == .ownerServiceWindow || self == .ownerServiceWindowEditor
+            || self == .ownerServiceWindowManual || self == .ownerVehicleEnriched
     }
 
     /// MYR-260 — a DEBUG fleet override for scenes that need a specific
@@ -509,6 +537,22 @@ enum DebugScene: String, CaseIterable {
                 status: .inService,
                 serviceEstimatedEndAt: DebugScene.sampleServiceEnd()
             )
+        // MYR-320 — the same in-service car, with the provenance a matching write
+        // echo would have proved, so the row shows its manual sub-caption.
+        case .ownerServiceWindowManual:
+            return DebugVehicleDetailsFleet(
+                status: .inService,
+                serviceEstimatedEndAt: DebugScene.sampleServiceEnd(),
+                serviceWindowSource: .manual
+            )
+        // MYR-320 — every enrichment field at once: a real color off the wire, the
+        // display-ready trim label composing the Model row (alongside the raw badge
+        // it must NOT substitute), and the FSD designation in its own row.
+        case .ownerVehicleEnriched:
+            return DebugVehicleDetailsFleet(
+                color: "Quicksilver",
+                fsdVersion: "FSD (Supervised) v14.3.5"
+            )
         default: return nil
         }
     }
@@ -519,12 +563,13 @@ enum DebugScene: String, CaseIterable {
     /// `nil` everywhere else, so no other scene's scroll position changes.
     var sheetScrollTarget: DebugSheetScroll? {
         switch self {
-        case .ownerVehicleDetails, .ownerVehiclePlate: return .bottom
+        case .ownerVehicleDetails, .ownerVehiclePlate, .ownerVehicleEnriched: return .bottom
         // MYR-316 — the "Expected back" row lives in the Status & location card,
         // which sits below the Media card; this anchor frames it at the half
         // detent. (The summary line the `ownerServiceWindow` capture is really
         // about is at PEEK and needs no anchor.)
-        case .ownerServiceWindow, .ownerServiceWindowEditor: return .fraction(0.62)
+        case .ownerServiceWindow, .ownerServiceWindowEditor, .ownerServiceWindowManual:
+            return .fraction(0.62)
         // The Tire pressure section sits a little above the vertical middle of the
         // dense content; anchoring the content's ~55% point to the viewport brings
         // its honest state in-frame at the half detent.
@@ -902,7 +947,8 @@ enum DebugScene: String, CaseIterable {
              .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute,
              .ownerDispatchedCompleted,
              .ownerFreshnessStale, .ownerFreshnessWaking,
-             .ownerServiceWindow, .ownerServiceWindowEditor:
+             .ownerServiceWindow, .ownerServiceWindowEditor, .ownerServiceWindowManual,
+             .ownerVehicleEnriched:
             break // chooser / settings / rider live-map / owner scenes don't drive the viewer sheet
         }
     }
