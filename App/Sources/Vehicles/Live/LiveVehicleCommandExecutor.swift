@@ -104,6 +104,12 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// blocking the thumb. Best-effort — a slider has no spinner/notice surface.
     private var volumeSending = false
     private var pendingVolume: Double?
+    /// MYR-303 — the car's last-reported `mediaVolumeMax` (contracts 0.16.0), the
+    /// ceiling BOTH directions scale against: wire→UI in `reconcile` and UI→wire in
+    /// `sendVolume`. `nil` until the car streams one (it is near-constant per
+    /// vehicle and changes far less often than the level itself), and the fallback
+    /// is Tesla's usual 11 — treated as the assumption it is, not as a contract.
+    private var observedVolumeMax: Double?
 
     /// Settle-window guard for the commanded boolean toggles (climate/lock/trunk/
     /// charge-port). The in-flight `isPending` guard only protects UNTIL the command
@@ -251,15 +257,43 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
 
         // Media playback — the enum carries an explicit `.unknown`; treat it (and
         // any unrecognized value) as honestly unknown, never a fabricated play/pause.
-        if let status = state.mediaPlaybackStatus, let playing = Self.mediaPlaying(from: status) {
-            reconcileField(.mediaPlaying, key: .media) { self.controls.mediaPlaying = playing }
+        //
+        // MYR-314 — this arm is now the media SESSION gate as well as the icon's
+        // source, and it is deliberately SYMMETRIC: a known status marks the field
+        // known (transport enabled, icon = the car's real state), and an absent /
+        // `Unknown` / unrecognized status UN-knows it again (transport disabled,
+        // "Start media in the car first"). Insert-only known-ness would latch: the
+        // gate would open on the first session and never close when the owner
+        // stopped media in the car, leaving live-looking transport buttons that
+        // command nothing. The optimistic post-ack value is protected by the same
+        // settle window the boolean toggles use, so a stale frame can't flicker the
+        // icon back mid-command (MYR-272 discipline).
+        if let playing = state.mediaPlaybackStatus.flatMap(Self.mediaPlaying(from:)) {
+            reconcileControlled(.mediaPlaying, key: .media, wire: playing) { self.controls.mediaPlaying = $0 }
+        } else {
+            knownFields.remove(.mediaPlaying)
+            settleHold[.media] = nil
         }
 
-        // Media volume — wire 0–11 (fractional) → UI 0–100. Skip while the slider's
-        // own coalescer has a send outstanding so a live frame can't yank the thumb
-        // out from under a drag.
+        // Media volume — wire 0…`mediaVolumeMax` (fractional) → UI 0–100. Skip while
+        // the slider's own coalescer has a send outstanding so a live frame can't
+        // yank the thumb out from under a drag.
+        //
+        // MYR-303 — the ceiling is the car's OWN `mediaVolumeMax` (contracts
+        // 0.16.0) when it has streamed one. The contract is explicit that a client
+        // rendering a volume slider must compute against it rather than hard-code
+        // 11: the ceiling is per-vehicle and varies by model/firmware, so a car with
+        // a max of 10 rendered its full volume as 91% under the old constant.
         if let vol = state.mediaVolume, !volumeSending, pendingVolume == nil {
-            reconcileField(.volume, key: .media) { self.controls.volume = min(100, max(0, vol / 11 * 100)) }
+            let max = Self.volumeMax(state.mediaVolumeMax)
+            observedVolumeMax = state.mediaVolumeMax
+            reconcileField(.volume, key: .media) {
+                self.controls.volume = min(100, Swift.max(0, vol / max * 100))
+            }
+        } else if let wireMax = state.mediaVolumeMax {
+            // Adopt a ceiling that arrives without a level (they are independently
+            // delivered) so the next send scales correctly.
+            observedVolumeMax = wireMax
         }
 
         // MYR-286 — the owner-entered plate, reconciled exactly like the sibling
@@ -405,6 +439,21 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         case .override: return (acEnabled == true) ? .cool : .heat
         case .unknown, .unrecognized, .none: return nil
         }
+    }
+
+    /// Tesla's usual volume ceiling, used ONLY when the car has never reported its
+    /// own `mediaVolumeMax`. The contract permits this fallback but is explicit
+    /// that it is an assumption, not a guarantee — hence the single named constant
+    /// rather than an 11 sprinkled through the scaling math.
+    static let assumedVolumeMax = 11.0
+
+    /// The ceiling to scale the volume slider against: the car's reported maximum
+    /// when it is present and positive, else the assumed 11. A zero/negative wire
+    /// value is rejected rather than propagated — it would divide the whole slider
+    /// by zero.
+    static func volumeMax(_ wire: Double?) -> Double {
+        guard let wire, wire > 0 else { return assumedVolumeMax }
+        return wire
     }
 
     /// Map the media playback enum onto the play/pause boolean. `Unknown` and any
@@ -590,9 +639,18 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     func setMediaPlaying(_ playing: Bool) async throws {
         // media_toggle_playback is a toggle regardless of direction; `playing` is
         // the optimistic target applied on ack.
+        //
+        // MYR-314 — the tap does NOT mark the field known. Known-ness is the wire's
+        // to give (`mediaPlaybackStatus`, streamed live since MYR-298): before this,
+        // a single tap made the app assert a playback state forever, on a car that
+        // might have no media session at all, and the icon then reflected the last
+        // LOCAL tap rather than the car. The optimistic value is still applied on
+        // ack (the tap only reaches here when the wire already opened the gate) and
+        // held against a stale frame for the settle window, exactly like the
+        // boolean toggles.
         await run(.media, command: .mediaTogglePlayback) { [weak self] in
             self?.controls.mediaPlaying = playing
-            self?.knownFields.insert(.mediaPlaying)
+            self?.holdSettle(.media, want: playing)
         }
     }
 
@@ -723,7 +781,10 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     private func sendVolume(_ uiVolume: Double) {
         guard !volumeSending else { pendingVolume = uiVolume; return }
         volumeSending = true
-        let wire = uiVolume / 100 * 11
+        // MYR-303 — scale against the car's OWN ceiling when it has reported one,
+        // so a full slider means full volume on a car whose max isn't 11 (and never
+        // sends a level above what the car accepts).
+        let wire = uiVolume / 100 * Self.volumeMax(observedVolumeMax)
         let sender = self.sender
         let vehicleID = self.vehicleID
         Task { @MainActor [weak self] in

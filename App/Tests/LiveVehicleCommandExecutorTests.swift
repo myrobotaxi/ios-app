@@ -195,7 +195,11 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
             Case(.chargePortOpen) { try? await $0.setChargePortOpen(true) },
             Case(.driverSeat) { try? await $0.setSeatHeatLevel(.driver, level: 2) },
             Case(.passengerSeat) { try? await $0.setSeatHeatLevel(.passenger, level: 1) },
-            Case(.mediaPlaying) { try? await $0.setMediaPlaying(true) },
+            // MYR-314 — `.mediaPlaying` is deliberately NOT in this list any more:
+            // its known-ness is the WIRE's to give (see
+            // `testMyr314MediaKnownComesFromTheWireNotFromATap`). A tap used to
+            // mark it known, which is how the icon came to assert a playback state
+            // on a car with no media session at all.
             Case(.fanSpeed) { try? await $0.setFanSpeed(5) },
             Case(.volume) { try? await $0.setVolume(30) },
         ]
@@ -658,6 +662,133 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         XCTAssertFalse(exec.isKnown(.mediaPlaying), "media Unknown → honest unknown")
         XCTAssertTrue(exec.isKnown(.volume))
         XCTAssertEqual(exec.controls.volume, 100, accuracy: 0.001)
+    }
+
+    // MARK: - MYR-314 — the media session gate (wire-only known-ness)
+
+    /// A tap no longer makes the play/pause state KNOWN. Only the wire does. The
+    /// optimistic value still applies on ack (a tap can only reach here when the
+    /// wire has already opened the gate), but the icon can never end up asserting a
+    /// playback state the car never reported.
+    func testMyr314MediaKnownComesFromTheWireNotFromATap() async {
+        let exec = makeExecutor(ScriptedCommandSender())
+        try? await exec.setMediaPlaying(true)
+        XCTAssertTrue(exec.controls.mediaPlaying, "optimistic-on-ack still applies")
+        XCTAssertFalse(exec.isKnown(.mediaPlaying), "a local tap must not assert a media session")
+
+        var playing = Contracts.parkedState(); playing.mediaPlaybackStatus = .playing
+        exec.reconcile(from: playing)
+        XCTAssertTrue(exec.isKnown(.mediaPlaying), "the wire is what opens the gate")
+    }
+
+    /// The gate is SYMMETRIC: when the car stops reporting a status (session ended,
+    /// `Unknown`, or a forward-compat value we can't read), the field un-knows and
+    /// the transport re-gates. Insert-only known-ness would latch open forever and
+    /// leave live-looking buttons that command nothing.
+    func testMyr314MediaSessionUnKnowsWhenTheWireStopsReportingAStatus() {
+        let exec = makeExecutor(ScriptedCommandSender())
+        var playing = Contracts.parkedState(); playing.mediaPlaybackStatus = .playing
+        exec.reconcile(from: playing)
+        XCTAssertTrue(exec.isKnown(.mediaPlaying))
+
+        var ended = Contracts.parkedState(); ended.mediaPlaybackStatus = nil
+        exec.reconcile(from: ended)
+        XCTAssertFalse(exec.isKnown(.mediaPlaying), "no status on the wire → no session → gated")
+
+        exec.reconcile(from: playing)
+        XCTAssertTrue(exec.isKnown(.mediaPlaying), "and it re-opens when a session comes back")
+
+        var unknown = Contracts.parkedState(); unknown.mediaPlaybackStatus = .unknown
+        exec.reconcile(from: unknown)
+        XCTAssertFalse(exec.isKnown(.mediaPlaying), "an explicit Unknown is not a session")
+
+        exec.reconcile(from: playing)
+        var future = Contracts.parkedState(); future.mediaPlaybackStatus = .unrecognized("Buffering")
+        exec.reconcile(from: future)
+        XCTAssertFalse(exec.isKnown(.mediaPlaying), "an unreadable forward-compat value is not a session either")
+    }
+
+    /// Every playback status the car CAN report maps to an enabled transport with
+    /// the right icon state — Playing/Paused/Stopped are all sessions.
+    func testMyr314EveryRealPlaybackStatusIsASession() {
+        let cases: [(VehicleState.MediaPlaybackStatus, Bool)] = [
+            (.playing, true), (.paused, false), (.stopped, false),
+        ]
+        for (status, playing) in cases {
+            let exec = makeExecutor(ScriptedCommandSender())
+            var state = Contracts.parkedState(); state.mediaPlaybackStatus = status
+            exec.reconcile(from: state)
+            XCTAssertTrue(exec.isKnown(.mediaPlaying), "\(status.rawValue) is a session")
+            XCTAssertEqual(exec.controls.mediaPlaying, playing, "\(status.rawValue) icon state")
+        }
+    }
+
+    /// The icon gets the MYR-272 settle discipline the boolean toggles have: a
+    /// stale frame arriving right after the ack can't flicker it back.
+    func testMyr314PlayPauseSurvivesAStaleFrameThenConfirms() async {
+        let exec = makeExecutor(ScriptedCommandSender())
+        var playing = Contracts.parkedState(); playing.mediaPlaybackStatus = .playing
+        exec.reconcile(from: playing)
+
+        try? await exec.setMediaPlaying(false)
+        XCTAssertFalse(exec.controls.mediaPlaying, "optimistic pause applied on ack")
+
+        exec.reconcile(from: playing)
+        XCTAssertFalse(exec.controls.mediaPlaying, "stale Playing frame ignored inside the settle window")
+
+        var paused = Contracts.parkedState(); paused.mediaPlaybackStatus = .paused
+        exec.reconcile(from: paused)
+        XCTAssertFalse(exec.controls.mediaPlaying)
+
+        exec.reconcile(from: playing)
+        XCTAssertTrue(exec.controls.mediaPlaying, "after confirmation the car drives the icon again")
+    }
+
+    // MARK: - MYR-303 — volume scales against the car's own ceiling
+
+    func testMyr303VolumeReconcilesAgainstTheCarsReportedMax() {
+        let exec = makeExecutor(ScriptedCommandSender())
+        var state = Contracts.parkedState()
+        state.mediaVolume = 5
+        state.mediaVolumeMax = 10      // this car's ceiling is NOT 11
+        exec.reconcile(from: state)
+        XCTAssertEqual(exec.controls.volume, 50, accuracy: 0.001, "5 of 10 is half, not 45%")
+
+        var full = Contracts.parkedState()
+        full.mediaVolume = 10
+        full.mediaVolumeMax = 10
+        let exec2 = makeExecutor(ScriptedCommandSender())
+        exec2.reconcile(from: full)
+        XCTAssertEqual(exec2.controls.volume, 100, accuracy: 0.001, "a maxed-out car must read 100%, not 91%")
+    }
+
+    func testMyr303VolumeFallsBackToElevenWhenTheCarNeverReportedAMax() {
+        let exec = makeExecutor(ScriptedCommandSender())
+        var state = Contracts.parkedState()
+        state.mediaVolume = 11        // no mediaVolumeMax on the wire
+        exec.reconcile(from: state)
+        XCTAssertEqual(exec.controls.volume, 100, accuracy: 0.001)
+    }
+
+    func testMyr303VolumeMaxRejectsAnUnusableCeiling() {
+        XCTAssertEqual(LiveVehicleCommandExecutor.volumeMax(nil), 11)
+        XCTAssertEqual(LiveVehicleCommandExecutor.volumeMax(0), 11, "a zero ceiling would divide the slider by zero")
+        XCTAssertEqual(LiveVehicleCommandExecutor.volumeMax(-3), 11)
+        XCTAssertEqual(LiveVehicleCommandExecutor.volumeMax(10), 10)
+    }
+
+    /// The SEND direction scales too: a full slider on a max-10 car must send 10,
+    /// not an 11 the car would clamp.
+    func testMyr303SentVolumeUsesTheCarsCeiling() async {
+        let sender = ScriptedCommandSender()
+        let exec = makeExecutor(sender)
+        var state = Contracts.parkedState()
+        state.mediaVolume = 5
+        state.mediaVolumeMax = 10
+        exec.reconcile(from: state)
+
+        try? await exec.setVolume(100)
+        await eventually { sender.calls.contains(.adjustVolume(volume: 10)) }
     }
 
     /// The Auto/Cool/Heat fold is honest: only a known On/Override asserts a mode.

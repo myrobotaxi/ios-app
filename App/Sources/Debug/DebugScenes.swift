@@ -145,6 +145,32 @@ enum DebugScene: String, CaseIterable {
     /// rendered heat-only with no way to reach Cool (the client's report). Pair
     /// with `MRT_OWNER_DETENT=half`.
     case ownerVehicleSeatsVented
+    /// MYR-308 — the seat section for a car whose SPEC says it has no cooled seats.
+    /// Injects `DebugVehicleDetailsFleet(ventedSeatReadBacks: true,
+    /// seatCoolingCapable: false)`: the snapshot carries the very cooler read-backs
+    /// (`seatCoolerLeft`/`seatCoolerRight` present at `0`) that make the MYR-299
+    /// presence heuristic fire, AND the contracts-0.16.0 `seatCoolingCapable:
+    /// false` that authoritatively overrules it. The capture is therefore the
+    /// PRECEDENCE proof: honest "SEAT HEATING", flame-only rows, and NO Heat↔Cool
+    /// toggle — the schema forbids even a greyed-out cooling affordance, because it
+    /// would imply hardware this car does not have. Pair with `MRT_OWNER_DETENT=half`.
+    case ownerVehicleSeatsHeatOnly
+    /// MYR-303 — the Media card with a REAL now-playing block off the wire
+    /// (contracts 0.16.0). Injects `DebugVehicleDetailsFleet(media: .playingTrack)`:
+    /// title/artist/album/source plus a real duration + sane elapsed, mapped by the
+    /// production `VehicleContractMapping.nowPlaying` and reconciled by the real
+    /// `LiveVehicleCommandExecutor`, so the capture shows the shipping render — the
+    /// title/artist grammar of the prototype's media card, a passive progress line
+    /// (no thumb: §7.9 has no seek), no invented cover art, and a live transport row
+    /// whose icon is the car's own `Playing`. Pair with `MRT_OWNER_DETENT=half`.
+    case ownerMediaNowPlaying
+    /// MYR-314 — the Media card with NO media session: the car cleared the title to
+    /// `""` (nothing playing) and reports no `mediaPlaybackStatus`. Injects
+    /// `DebugVehicleDetailsFleet(media: .sessionEnded)`. The capture shows both
+    /// halves of that one real situation — the honest idle line instead of the
+    /// track that just ended, and the muted, non-interactive transport row with
+    /// "Start media in the car first". Pair with `MRT_OWNER_DETENT=half`.
+    case ownerMediaNoSession
     /// MYR-286 — the owner's Vehicle details section with a REAL owner-entered
     /// license plate. Injects `DebugVehicleDetailsFleet(licensePlate: "RBO 2046")`,
     /// so `licensePlate` rides BOTH the live-shaped snapshot and the list row and
@@ -309,7 +335,9 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerScheduled || self == .ownerScheduledLive || self == .ownerSettings
             || self == .ownerControlsUnavailable
             || self == .ownerVehicleDetails || self == .ownerVehicleTires || self == .ownerVehicleSeats
-            || self == .ownerVehicleSeatsVented || self == .ownerVehiclePlate
+            || self == .ownerVehicleSeatsVented || self == .ownerVehicleSeatsHeatOnly
+            || self == .ownerVehiclePlate
+            || self == .ownerMediaNowPlaying || self == .ownerMediaNoSession
             || self == .ownerClimateAuto || self == .ownerClimateManual || self == .ownerClimateUnknown
             || self == .ownerNoticeCharge || self == .ownerNoticeAsleep || self == .ownerNoticeSeat
             || self == .ownerDispatched || self == .ownerDispatchedArrived
@@ -326,7 +354,14 @@ enum DebugScene: String, CaseIterable {
         case .ownerControlsUnavailable: return DebugUnavailableControlsFleet()
         case .ownerVehicleDetails, .ownerVehicleTires: return DebugVehicleDetailsFleet()
         // MYR-299 — same live-like fleet, plus the vented-car seat read-backs.
-        case .ownerVehicleSeatsVented: return DebugVehicleDetailsFleet(seatCoolingCapable: true)
+        case .ownerVehicleSeatsVented: return DebugVehicleDetailsFleet(ventedSeatReadBacks: true)
+        // MYR-308 — the read-backs that make the heuristic fire, plus the spec field
+        // that authoritatively says this car has NO cooled seats.
+        case .ownerVehicleSeatsHeatOnly:
+            return DebugVehicleDetailsFleet(ventedSeatReadBacks: true, seatCoolingCapable: false)
+        // MYR-303/314 — the two live media states (see the scene docs).
+        case .ownerMediaNowPlaying: return DebugVehicleDetailsFleet(media: .playingTrack)
+        case .ownerMediaNoSession: return DebugVehicleDetailsFleet(media: .sessionEnded)
         // MYR-286 — same live-like fleet, plus the owner-entered plate on BOTH
         // read surfaces (snapshot + list row), as a real server emits it.
         case .ownerVehiclePlate: return DebugVehicleDetailsFleet(licensePlate: "RBO 2046")
@@ -360,7 +395,11 @@ enum DebugScene: String, CaseIterable {
         case .ownerVehicleTires: return .fraction(0.55)
         // The seat section is the tail of the Climate card, above the vertical
         // middle; anchoring the content's ~30% point frames it at the half detent.
-        case .ownerVehicleSeats, .ownerVehicleSeatsVented: return .fraction(0.30)
+        case .ownerVehicleSeats, .ownerVehicleSeatsVented, .ownerVehicleSeatsHeatOnly: return .fraction(0.30)
+        // The Media card follows the Climate card, a little past the middle of the
+        // dense content; this anchor frames the whole card (now-playing block,
+        // transport row and its gated sub-copy) at the half detent.
+        case .ownerMediaNowPlaying, .ownerMediaNoSession: return .fraction(0.42)
         // The Auto/Cool/Heat segment sits near the TOP of the Climate card (just
         // below the temp stepper); a small anchor keeps the quick tiles + climate
         // header + the segment together in-frame at the half detent.
@@ -673,7 +712,8 @@ enum DebugScene: String, CaseIterable {
              .ownerHome, .ownerDrives, .ownerIncoming, .ownerScheduled, .ownerScheduledLive,
              .ownerControlsUnavailable,
              .ownerVehicleDetails, .ownerVehicleTires, .ownerVehicleSeats,
-             .ownerVehicleSeatsVented, .ownerVehiclePlate,
+             .ownerVehicleSeatsVented, .ownerVehicleSeatsHeatOnly, .ownerVehiclePlate,
+             .ownerMediaNowPlaying, .ownerMediaNoSession,
              .ownerClimateAuto, .ownerClimateManual, .ownerClimateUnknown,
              .ownerNoticeCharge, .ownerNoticeAsleep, .ownerNoticeSeat,
              .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute,
