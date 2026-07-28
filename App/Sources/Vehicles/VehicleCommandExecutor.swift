@@ -98,7 +98,9 @@ public enum VehicleControlKey: Sendable, Hashable {
         case .passengerSeat: "Passenger seat"
         case .media: "Media"
         case .plate: "Plate"
-        case .serviceWindow: "Expected back"
+        // MYR-320 — tracks the row's own relabel, so a notice about this write
+        // names the field the owner just edited.
+        case .serviceWindow: "Service completion date"
         }
     }
 
@@ -188,7 +190,14 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         // the owner's token may not carry (MYR-249) — name the charging permission
         // so the re-link is unambiguous.
         case .relinkCharging: "Reconnect Tesla for charging access"
-        case .cooldown: "Just a moment\u{2026}"
+        // MYR-320 — was "Just a moment…", which the client read on the MEDIA card
+        // as the app stalling rather than as a 429 back-off: an ellipsis with no
+        // subject looks like something is still loading, and on a transport row
+        // that had just been tapped the natural reading was "the skip didn't go
+        // through". The replacement supplies the missing subject — the command WAS
+        // sent, the pause is the rate limit, not a failure — and drops the
+        // in-progress ellipsis for a settled em dash.
+        case .cooldown: "Just sent \u{2014} one moment"
         // MYR-301 — 502 `command_failed` is a REJECTION by the vehicle, not a
         // reachability problem: we reached the car and it said no. Saying
         // "couldn't reach the car" for it is dishonest (and hid the asleep case).
@@ -318,6 +327,42 @@ public struct VehicleControlUIState: Sendable, Equatable {
     public static let idle = VehicleControlUIState()
 }
 
+// MARK: - Service-window provenance (MYR-320)
+
+/// Where the resolved service window came from — as far as the app can HONESTLY
+/// tell, which is the whole point of the type.
+///
+/// THE CONSTRAINT: contracts 0.18.0 carries NO source discriminator on either read
+/// shape. `VehicleState.serviceEstimatedEndAt` is a single resolved instant, and
+/// the server's precedence behind it (Tesla's `service_etc` first, the owner's
+/// entry second) is invisible on the wire — the Kit's own
+/// `VehicleServiceWindowPayloads` says so in as many words: "a client CANNOT tell
+/// from the wire which source produced the value it reads back".
+///
+/// THE ONE PLACE THE APP LEARNS IT ANYWAY: the write echo. The owner submits an
+/// instant; the server answers with what it RESOLVED. If the echo comes back
+/// different, Tesla's estimate demonstrably outranked the entry — Tesla has one,
+/// and it is what is on screen. If the echo matches exactly, precedence had
+/// nothing to apply — Tesla holds no estimate for this visit and the value shown
+/// is the owner's own. Both are OBSERVED FACTS about a round trip that happened,
+/// not inferences about a value read cold.
+///
+/// So `.unknown` is not a failure mode, it is the honest resting state — a fresh
+/// launch reading a stored window knows nothing about its provenance and says
+/// nothing about it. The row renders a source note ONLY in the two proven cases.
+/// (If the read shape ever grows a discriminator, this type is where it lands and
+/// every consumer keeps working.)
+public enum ServiceWindowSource: Sendable, Equatable {
+    /// No proof either way — render NO source note. The state after any cold read.
+    case unknown
+    /// PROVEN: the server's echo disagreed with the owner's submission, so Tesla's
+    /// own estimate is what is being shown.
+    case tesla
+    /// PROVEN: the server adopted the owner's submission verbatim, so Tesla has no
+    /// estimate for this visit and this value was set by hand.
+    case manual
+}
+
 /// Everything a `VehicleControls` tree needs to render one tick of the
 /// controls surface (vehicle-controls.jsx:208-225 `useState` block).
 public struct VehicleControlsSnapshot: Sendable, Equatable {
@@ -355,6 +400,11 @@ public struct VehicleControlsSnapshot: Sendable, Equatable {
     /// Always `nil` on the simulated path, which is what keeps the M1 /
     /// drift-gate sheets pixel-identical: a nil window renders nothing anywhere.
     public var serviceEstimatedEndAt: Date?
+    /// MYR-320 — what the app can HONESTLY say about where
+    /// ``serviceEstimatedEndAt`` came from. `.unknown` (the default, and what a
+    /// cold launch always holds) renders no source note at all. See
+    /// ``ServiceWindowSource``.
+    public var serviceWindowSource: ServiceWindowSource = .unknown
 
     public init(
         locked: Bool,

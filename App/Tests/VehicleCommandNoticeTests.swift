@@ -56,7 +56,9 @@ final class VehicleCommandNoticeTests: XCTestCase {
             Case("vehicle_not_owned", 403, .relink, "Reconnect Tesla to allow this", "Re-link", action: .relinkTesla),
             Case("auth_failed", 401, .relink, "Reconnect Tesla to allow this", "Re-link", action: .relinkTesla),
             Case("key_not_paired", 403, .pairKey, "Pair your key in Tesla", "Pair key"),
-            Case("rate_limited", 429, .cooldown, "Just a moment\u{2026}", "One sec\u{2026}"),
+            // MYR-320 — the media card's 429 read as a stall ("Just a moment…"),
+            // not as a back-off. The copy now confirms the send first.
+            Case("rate_limited", 429, .cooldown, "Just sent \u{2014} one moment", "One sec\u{2026}"),
             // MYR-301 — 503 and 502 no longer share "Couldn't reach the car".
             Case("vehicle_asleep", 503, .asleep, "Car is asleep \u{2014} try again shortly", "Asleep"),
             Case("command_failed", 502, .rejected, "The car didn\u{2019}t accept that", "Declined"),

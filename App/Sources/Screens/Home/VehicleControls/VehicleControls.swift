@@ -83,6 +83,10 @@ struct VehicleControls: View {
             // the same resolver, so the two can never disagree about the time.
             label: VehicleServiceWindow.completionLabel(for: serviceEstimatedEndAt),
             state: executor.uiState(for: .serviceWindow),
+            // MYR-320 — provenance the executor PROVED from a write echo, or
+            // `.unknown` (no caption) when nothing has been proved. Never guessed
+            // here: the view has strictly less information than the executor does.
+            source: controls.serviceWindowSource,
             onEdit: onEditServiceWindow
         )
     }

@@ -114,9 +114,10 @@ public enum VehicleRefreshNotice: Equatable {
     /// 503 `vehicle_asleep` — the wake budget is spent and the car did not come up.
     case asleep
     /// 429 `rate_limited` — the per-vehicle ~60s cooldown. Deliberately NOT the
-    /// generic `.cooldown` copy ("Just a moment…"): here the owner has just
-    /// pulled fresh data, so naming that is both truer and calmer than implying
-    /// something is pending.
+    /// command `.cooldown` copy ("Just sent — one moment", MYR-320): the two
+    /// share a grammar because they are the same back-off, but they name
+    /// different acts — a refresh the owner PULLED versus a command they SENT —
+    /// and each says which one it was.
     case cooldown
     /// Anything else (auth, ownership, transport). The owner's move is the same
     /// in every case — try again — so they are not split into copy the owner
