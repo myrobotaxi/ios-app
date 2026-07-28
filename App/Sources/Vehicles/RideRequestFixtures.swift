@@ -101,6 +101,18 @@ public struct FleetMember: Identifiable, Sendable, Equatable {
     /// and the instant-CTA gate. Defaults to `nil` so every fixture row — and
     /// therefore every simulated / DEBUG scene — renders exactly as before.
     public let unavailability: FleetUnavailability?
+    /// MYR-316 — when this vehicle's CURRENT service visit is estimated to end
+    /// (contracts 0.17.0 `VehicleSummary.serviceEstimatedEndAt`). Non-nil only for
+    /// a car whose status is in_service AND whose visit has a known estimate —
+    /// Tesla's, or the owner's own entry. Drives the rider scheduling picker's
+    /// FLOOR and the muted caption on the scheduling card.
+    ///
+    /// `nil` — the default, and therefore every fixture, and therefore every
+    /// simulated / DEBUG scene — means NO BOUND: scheduling stays fully open. The
+    /// contract states this as a consumer rule in as many words; a client that
+    /// blocked on missing data would make the common case (a service visit with no
+    /// Tesla appointment record) unbookable.
+    public let serviceEstimatedEndAt: Date?
 
     /// MYR-233 — the single gate the instant-request CTA reads. True when the
     /// rider may submit an on-demand request against this vehicle.
@@ -121,11 +133,16 @@ public struct FleetMember: Identifiable, Sendable, Equatable {
             // keeps MYR-212's muted dot + live status word.
             isAvailable: unavailability == .busy,
             availabilityWord: unavailability == .busy ? "Available" : unavailability.word,
-            unavailability: nil
+            unavailability: nil,
+            // MYR-316 — the own-ride exception is about BUSY, never about a
+            // service visit. The window is a fact about the car and survives it
+            // untouched: a rider mid-ride still cannot schedule a pickup before
+            // the car is out of service.
+            serviceEstimatedEndAt: serviceEstimatedEndAt
         )
     }
 
-    public init(id: String, owner: String, relationship: String, name: String, model: String, colorName: String, battery: Int, etaMin: Int, plate: String, isAvailable: Bool = true, availabilityWord: String = "Available", unavailability: FleetUnavailability? = nil) {
+    public init(id: String, owner: String, relationship: String, name: String, model: String, colorName: String, battery: Int, etaMin: Int, plate: String, isAvailable: Bool = true, availabilityWord: String = "Available", unavailability: FleetUnavailability? = nil, serviceEstimatedEndAt: Date? = nil) {
         self.id = id
         self.owner = owner
         self.relationship = relationship
@@ -138,6 +155,7 @@ public struct FleetMember: Identifiable, Sendable, Equatable {
         self.isAvailable = isAvailable
         self.availabilityWord = availabilityWord
         self.unavailability = unavailability
+        self.serviceEstimatedEndAt = serviceEstimatedEndAt
     }
 }
 

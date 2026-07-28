@@ -305,6 +305,7 @@ final class LiveVehicleFleet: VehicleFleet {
                 vehicleID: summary.vehicleId,
                 sender: rest,
                 plateEndpoint: rest,
+                serviceWindowEndpoint: rest,
                 driving: summary.status == .driving,
                 // MYR-286 — the RAW owner-entered plate (empty when unset), NOT
                 // the `VIN ····xxxx` display string: `controls.plate` is what the
@@ -348,6 +349,18 @@ final class LiveVehicleFleet: VehicleFleet {
                 else { return }
                 self.summaries[row].licensePlate = normalized
             }
+            // MYR-316 — identical reasoning for the service window: the write
+            // fires no WebSocket push (the field is snapshot-only by contract), so
+            // adopt the server's RESOLVED echo straight into the summary row. That
+            // row is what the rider-facing `LiveFleetMemberMapping` reads, so the
+            // owner setting an expected-back time moves the rider's scheduling
+            // floor immediately rather than at the next `GET /api/vehicles`.
+            executor.onServiceWindowSaved = { [weak self] resolved in
+                guard let self,
+                      let row = self.summaries.firstIndex(where: { $0.vehicleId == vehicleID })
+                else { return }
+                self.summaries[row].serviceEstimatedEndAt = resolved.map(Self.rfc3339.string(from:))
+            }
         }
         if items.isEmpty {
             statusMessage = "No vehicles linked to this account"
@@ -389,4 +402,15 @@ final class LiveVehicleFleet: VehicleFleet {
     private func makeDetachedState() -> LiveVehicleState {
         LiveVehicleState(vehicleId: "", socket: socket)
     }
+
+    /// MYR-316 — re-encodes the executor's resolved `Date` back into the wire
+    /// shape the summary row holds. Same RFC 3339 UTC + milliseconds form the
+    /// server emits, so the round trip through the row is lossless and the next
+    /// real `GET /api/vehicles` replaces it with an identical string.
+    private static let rfc3339: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        return f
+    }()
 }

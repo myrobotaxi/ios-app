@@ -25,10 +25,13 @@ let package = Package(
         .library(name: "MyRoboTaxiKit", targets: ["MyRoboTaxiKit"])
     ],
     dependencies: [
-        // MYR-303/308/314 — 0.16.0 adds the eight optional media now-playing
-        // fields (title/artist/album/station/source/durationMs/elapsedMs/volumeMax)
-        // and the REST-sourced `seatCoolingCapable` seat-spec flag to `VehicleState`.
-        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.16.0")
+        // MYR-316 — 0.17.0 adds the nullable RFC 3339 `serviceEstimatedEndAt` to
+        // BOTH read shapes (`VehicleState` + `VehicleSummary`): when the car's
+        // CURRENT service visit is estimated to end. REST-derived and
+        // SNAPSHOT-ONLY (a `vehicle_update` frame never carries it), so it is
+        // classified in the merger tripwire's `snapshotOnlyFields`, not folded.
+        // (0.16.0 added the eight media now-playing fields + `seatCoolingCapable`.)
+        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.17.0")
     ],
     targets: [
         .target(

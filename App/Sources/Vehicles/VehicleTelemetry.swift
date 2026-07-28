@@ -74,6 +74,17 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
     /// `VehicleState` can produce one, which keeps the M1 / drift-gate media card
     /// (the `VehicleMediaTrack` fixture) pixel-identical.
     public var nowPlaying: VehicleNowPlaying?
+    /// MYR-316 — when the car's CURRENT service visit is estimated to end
+    /// (contracts 0.17.0 `serviceEstimatedEndAt`). Non-nil only while the wire
+    /// status is `in_service`; the server clears it on any other status, so no
+    /// consumer ages it out. `nil` on the simulated path AND — commonly — on a
+    /// live in-service car whose visit has no Tesla appointment record, which is
+    /// exactly why every consumer treats nil as "no window known" and renders
+    /// nothing / floors nothing rather than as an error.
+    ///
+    /// SNAPSHOT-ONLY by contract: it rides the cold REST read, never a
+    /// `vehicle_update` delta (see the Kit's `VehicleStateMerger`).
+    public var serviceEstimatedEndAt: Date?
 
     public init(
         status: VehicleTelemetryStatus,
@@ -87,7 +98,8 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
         fsdMilesSinceReset: Double? = nil,
         lastUpdated: Date? = nil,
         isStreaming: Bool? = nil,
-        nowPlaying: VehicleNowPlaying? = nil
+        nowPlaying: VehicleNowPlaying? = nil,
+        serviceEstimatedEndAt: Date? = nil
     ) {
         self.status = status
         self.progress = progress
@@ -101,6 +113,7 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
         self.lastUpdated = lastUpdated
         self.isStreaming = isStreaming
         self.nowPlaying = nowPlaying
+        self.serviceEstimatedEndAt = serviceEstimatedEndAt
     }
 }
 

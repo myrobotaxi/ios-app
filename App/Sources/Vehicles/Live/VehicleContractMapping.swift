@@ -108,7 +108,14 @@ enum VehicleContractMapping {
             // MYR-303 — the car's now-playing block (contracts 0.16.0). `nil` until
             // the car has streamed at least one media field, which is what keeps
             // the block honest-hidden rather than showing MYR-264's fixture track.
-            nowPlaying: nowPlaying(from: state)
+            nowPlaying: nowPlaying(from: state),
+            // MYR-316 — when the current service visit is estimated to end
+            // (contracts 0.17.0). Parsed with the SAME tolerant RFC 3339 reader as
+            // `lastUpdated`, so a server emitting fractional seconds and one that
+            // doesn't both resolve. An unparseable string degrades to `nil` — "no
+            // window known" — which is the honest answer and the one every
+            // consumer already handles, rather than a crash or a fabricated date.
+            serviceEstimatedEndAt: state.serviceEstimatedEndAt.flatMap(parseTimestamp)
         )
     }
 

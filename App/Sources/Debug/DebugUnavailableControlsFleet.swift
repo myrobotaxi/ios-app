@@ -50,6 +50,9 @@ final class DebugUnavailableControlsFleet: VehicleFleet {
             vehicleID: vehicle.id,
             sender: DebugNoopCommandSender(),
             plateEndpoint: DebugPlateEndpoint(),
+            // MYR-316 — never exercised in these scenes (none is in service), but
+            // the seam is required; the stub keeps the executor total.
+            serviceWindowEndpoint: DebugServiceWindowEndpoint(),
             driving: false,
             plate: vehicle.plate
         )

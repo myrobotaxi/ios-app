@@ -253,6 +253,39 @@ enum DebugScene: String, CaseIterable {
     /// `MRT_OWNER_DETENT=half` to see it under the controls stack.
     case ownerFreshnessStale
     case ownerFreshnessWaking
+    /// MYR-316 — the owner sheet for a car that is IN SERVICE with a known
+    /// estimated completion. Injects `DebugVehicleDetailsFleet(status:
+    /// .inService, serviceEstimatedEndAt: <next Sat 2 PM>)`, so the instant rides
+    /// BOTH read surfaces (the live-shaped snapshot AND the list row) exactly as a
+    /// real server emits it and travels the production
+    /// `VehicleContractMapping.snapshot` + `badgeStatus` folds. The capture is
+    /// therefore proof of the shipping resolver: the In Service badge and, muted
+    /// directly beneath it, "Estimated completion · Sat ~2:00 PM". Captured at
+    /// PEEK, where the line lives; pair with `MRT_OWNER_DETENT=half` to also see
+    /// the Status & location card's matching In Service chip + "Expected back" row.
+    case ownerServiceWindow
+    /// MYR-316 — the SAME car with the "Expected back" ENTRY sheet open. The sheet
+    /// is otherwise only reachable by tapping a row inside a half-detent scroll,
+    /// which headless capture tooling cannot synthesize, so the scene seeds
+    /// `HomeScreen`'s presentation state directly (`opensServiceWindowEditor`) —
+    /// the same standing-in-for-a-tap precedent as `ownerFreshnessWaking`'s seeded
+    /// `.waking` phase. Everything inside the sheet is real: the picker's range,
+    /// the future-only validation, and a Save that runs the production
+    /// `LiveVehicleCommandExecutor.setServiceWindow` against
+    /// `DebugServiceWindowEndpoint` (validate future → apply Tesla precedence →
+    /// echo back).
+    case ownerServiceWindowEditor
+    /// MYR-316 — the RIDER's scheduling card, FLOORED. Injects a live-shaped
+    /// `FleetMember` carrying `serviceEstimatedEndAt` through the REAL
+    /// `LiveFleetMemberMapping.fleetMember(from:)` (a `VehicleSummary` with
+    /// `status: .inService`), then opens the Schedule slide-up via the existing
+    /// one-shot `opensScheduleOnSearch` hook. The capture shows all three halves
+    /// of the floor at once: the muted caption ("Lunar is in service until ~Sat
+    /// 2 PM"), the dimmed unreachable day/time chips, and a selection already
+    /// pulled forward to the first bookable slot. A capture that renders the floor
+    /// therefore proves `RideScheduleFloor` produced it — the same instant travels
+    /// the shipping mapping, not a hand-set view flag.
+    case riderScheduleFloored
 
     /// The active scene for this launch, or `nil` for a normal boot. Read
     /// from `MRT_SCENE` (env, the documented `SIMCTL_CHILD_MRT_SCENE=` path);
@@ -363,6 +396,30 @@ enum DebugScene: String, CaseIterable {
         self == .ownerFreshnessStale || self == .ownerFreshnessWaking
     }
 
+    /// MYR-316 — whether `HomeScreen` should boot with the "Expected back" entry
+    /// sheet already presented. The sheet opens from a row inside the half-detent
+    /// controls scroll, which headless capture tooling cannot tap; seeding the
+    /// presentation is the same stand-in-for-a-tap move `initialRefreshPhase`
+    /// makes. Scoped to the one scene, so no other capture gains an overlay.
+    var opensServiceWindowEditor: Bool { self == .ownerServiceWindowEditor }
+
+    /// MYR-316 — the service window the owner scenes inject: the NEXT Saturday at
+    /// 2:00 PM local. Computed relative to `now` rather than hardcoded so the
+    /// value is always genuinely in the future (a fixed literal would drift into
+    /// the past and the capture would show an expired window / a disabled Save,
+    /// which is not the state under test). Saturday specifically, because the
+    /// other-day branch of the display formatter ("Sat ~2:00 PM") is the one worth
+    /// capturing — the same-day branch is the degenerate case.
+    static func sampleServiceEnd(now: Date = Date(), calendar: Calendar = .current) -> Date {
+        let today = calendar.startOfDay(for: now)
+        let currentWeekday = calendar.component(.weekday, from: today)
+        // 7 = Saturday in Calendar's Sunday-based indexing; always at least one
+        // day out, so "today is Saturday" still yields a future instant.
+        let delta = ((7 - currentWeekday + 7) % 7 == 0) ? 7 : (7 - currentWeekday + 7) % 7
+        let saturday = calendar.date(byAdding: .day, value: delta, to: today) ?? today
+        return calendar.date(bySettingHour: 14, minute: 0, second: 0, of: saturday) ?? saturday
+    }
+
     /// MYR-315 — the refresh phase the stamp boots parked in. `.waking` is
     /// otherwise unreachable headlessly (it exists only between a tap and the
     /// server's answer, and capture tooling cannot tap). `nil` for every other
@@ -386,6 +443,7 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerDispatched || self == .ownerDispatchedArrived
             || self == .ownerDispatchedEnroute || self == .ownerDispatchedCompleted
             || self == .ownerFreshnessStale || self == .ownerFreshnessWaking
+            || self == .ownerServiceWindow || self == .ownerServiceWindowEditor
     }
 
     /// MYR-260 — a DEBUG fleet override for scenes that need a specific
@@ -425,6 +483,13 @@ enum DebugScene: String, CaseIterable {
         // MYR-315 — a car offline for 7h, so the stamp resolves its stale branch
         // through the real mapping (see `DebugFreshnessFleet`).
         case .ownerFreshnessStale, .ownerFreshnessWaking: return DebugFreshnessFleet()
+        // MYR-316 — an IN SERVICE car with a known estimated completion, on both
+        // read surfaces, exactly as a real server emits it.
+        case .ownerServiceWindow, .ownerServiceWindowEditor:
+            return DebugVehicleDetailsFleet(
+                status: .inService,
+                serviceEstimatedEndAt: DebugScene.sampleServiceEnd()
+            )
         default: return nil
         }
     }
@@ -436,6 +501,11 @@ enum DebugScene: String, CaseIterable {
     var sheetScrollTarget: DebugSheetScroll? {
         switch self {
         case .ownerVehicleDetails, .ownerVehiclePlate: return .bottom
+        // MYR-316 — the "Expected back" row lives in the Status & location card,
+        // which sits below the Media card; this anchor frames it at the half
+        // detent. (The summary line the `ownerServiceWindow` capture is really
+        // about is at PEEK and needs no anchor.)
+        case .ownerServiceWindow, .ownerServiceWindowEditor: return .fraction(0.62)
         // The Tire pressure section sits a little above the vertical middle of the
         // dense content; anchoring the content's ~55% point to the viewport brings
         // its honest state in-frame at the half detent.
@@ -623,6 +693,35 @@ enum DebugScene: String, CaseIterable {
         ))
     }
 
+    /// MYR-316 — a live-SHAPED in-service vehicle carrying a real service window,
+    /// for the `riderScheduleFloored` capture. Built through the REAL
+    /// `LiveFleetMemberMapping.fleetMember(from:)` from a contracts
+    /// `VehicleSummary` with `status: .inService` + `serviceEstimatedEndAt`, so the
+    /// caption and the dimmed chips appear only if the shipping mapping +
+    /// `RideScheduleFloor` actually produce them. The same summary WITHOUT the
+    /// window is what still yields a fully open picker — one code path, two honest
+    /// outcomes.
+    private static var flooredFleetMember: FleetMember {
+        LiveFleetMemberMapping.fleetMember(from: VehicleSummary(
+            vehicleId: "debug-service",
+            name: "Lunar",
+            model: "Model Y",
+            year: 2026,
+            color: "Quicksilver",
+            vinLast4: "2046",
+            status: .inService,
+            chargeLevel: 61,
+            estimatedRange: 166,
+            lastUpdated: "2026-07-28T16:00:00Z",
+            role: .owner,
+            hasActiveRide: false,
+            licensePlate: "RBO 2046",
+            serviceEstimatedEndAt: DebugVehicleDetailsFleet.rfc3339.string(
+                from: DebugScene.sampleServiceEnd()
+            )
+        ))
+    }
+
     /// The `activeRequest` record to seed the service with (nil = no request).
     private var seededRecord: RideRequestRecord? {
         switch self {
@@ -745,6 +844,16 @@ enum DebugScene: String, CaseIterable {
             viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
             viewer.sheetPhase = .booking
+        case .riderScheduleFloored:
+            // MYR-316 — the rider is on Search with a real trip drafted and the
+            // Schedule card armed through the EXISTING one-shot hook MYR-233 added
+            // (rather than a second, scene-only way to open the same card), so the
+            // capture exercises the same entry path a Busy-CTA route takes.
+            viewer.draftPickup = DebugScene.samplePickup
+            viewer.draftDestination = DebugScene.sampleDestination
+            viewer.debugFleetMemberOverride = DebugScene.flooredFleetMember
+            viewer.opensScheduleOnSearch = true
+            viewer.sheetPhase = .search
         case .riderPlateChip:
             // MYR-286 — identical to `.booking`, plus the injected live vehicle
             // carrying a real plate. Nothing else differs, so the capture isolates
@@ -773,7 +882,8 @@ enum DebugScene: String, CaseIterable {
              .ownerNoticeCharge, .ownerNoticeAsleep, .ownerNoticeSeat,
              .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute,
              .ownerDispatchedCompleted,
-             .ownerFreshnessStale, .ownerFreshnessWaking:
+             .ownerFreshnessStale, .ownerFreshnessWaking,
+             .ownerServiceWindow, .ownerServiceWindowEditor:
             break // chooser / settings / rider live-map / owner scenes don't drive the viewer sheet
         }
     }

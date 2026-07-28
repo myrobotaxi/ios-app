@@ -85,6 +85,11 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// the command seam would drag that vocabulary onto a path that cannot produce
     /// it (see `plateNotice(for:)`).
     private let plateEndpoint: any VehiclePlateEndpoint
+    /// MYR-316 — the owner "expected back" write seam. Separate from
+    /// `plateEndpoint` (rather than one "owner writes" endpoint) so each stays a
+    /// one-method protocol a test can stub in isolation, matching the narrowing
+    /// every other seam in this file uses.
+    private let serviceWindowEndpoint: any VehicleServiceWindowEndpoint
 
     /// Fired with the SERVER-NORMALIZED plate after a successful §7.14 write, so
     /// the owner's fleet row can adopt it immediately. There is no WS delta for
@@ -92,6 +97,12 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// keep showing the old plate until the next `GET /api/vehicles`. Set by
     /// `LiveVehicleFleet`; nil elsewhere.
     var onPlateSaved: ((String) -> Void)?
+    /// MYR-316 — fired with the server's RESOLVED window after a successful write,
+    /// for the same reason `onPlateSaved` exists: this field has no WS delta
+    /// (snapshot-only by contract), so without this hook the owner's fleet row and
+    /// the rider-facing summary would keep the stale value until the next
+    /// `GET /api/vehicles`. Set by `LiveVehicleFleet`; nil elsewhere.
+    var onServiceWindowSaved: ((Date?) -> Void)?
     /// Backoff before the single `vehicle_asleep` retry (injectable → `.zero` in
     /// tests for determinism; ~2 s in production, matching the §7.9 wake curve).
     private let wakeRetryDelay: Duration
@@ -148,6 +159,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         vehicleID: String,
         sender: any VehicleCommandSending,
         plateEndpoint: any VehiclePlateEndpoint,
+        serviceWindowEndpoint: any VehicleServiceWindowEndpoint,
         driving: Bool,
         plate: String,
         wakeRetryDelay: Duration = .seconds(2),
@@ -157,6 +169,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         self.vehicleID = vehicleID
         self.sender = sender
         self.plateEndpoint = plateEndpoint
+        self.serviceWindowEndpoint = serviceWindowEndpoint
         self.wakeRetryDelay = wakeRetryDelay
         self.maxWakeRetries = maxWakeRetries
         self.settleWindow = settleWindow
@@ -316,6 +329,30 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             reconcileField(.plate, key: .plate) {
                 self.controls.plate = VehicleContractMapping.editablePlate(licensePlate: plate)
             }
+        }
+
+        // MYR-316 — the resolved service window, reconciled exactly like the plate
+        // above and SNAPSHOT-ONLY for the same contractual reason (a
+        // `vehicle_update` frame never carries `serviceEstimatedEndAt`), so this
+        // arm only ever runs on a cold `/snapshot` read.
+        //
+        // Unconditional, NOT `if let`: nil is a real, meaningful answer here —
+        // "no window is known", which is both the common case (Tesla has no
+        // appointment record) and what a car leaving `in_service` produces, since
+        // the server clears the field on that transition. Skipping the nil would
+        // leave a completed visit's estimate on screen forever, and — worse —
+        // would leave the rider's scheduling floor standing after the car came
+        // back. This is the one place a nil MUST be adopted rather than ignored.
+        // `knownFields` is the MYR-251 "has this been confirmed?" ledger, and it
+        // must NOT be set from an ABSENT wire value (the MYR-228 honesty
+        // tripwire). So the VALUE is adopted unconditionally while the KNOWN flag
+        // is only raised for an actual window — which reads correctly either way:
+        // "known" here means "we hold a window", and holding none is the state the
+        // nil already expresses.
+        let resolvedWindow = state.serviceEstimatedEndAt.flatMap(VehicleContractMapping.parseTimestamp)
+        if uiState(for: .serviceWindow).isPending == false {
+            controls.serviceEstimatedEndAt = resolvedWindow
+            if resolvedWindow != nil { knownFields.insert(.serviceWindow) }
         }
     }
 
@@ -762,6 +799,77 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             uiStates[.plate] = VehicleControlUIState(isPending: false, notice: .plateNotSaved)
         }
     }
+
+    // MARK: - Service window (MYR-316 — a real write, but NOT a Tesla command)
+
+    /// Persist the owner's "expected back" time through
+    /// `PUT /api/tesla/vehicles/{id}/service-window` (MYR-316). `nil` clears.
+    ///
+    /// The properties that matter, all of which mirror `setPlate` because the two
+    /// endpoints are the same KIND of thing (an owner-scoped DB write with no
+    /// Tesla call anywhere in it):
+    ///
+    ///  • **The server's RESOLVED echo is adopted, never the submitted instant.**
+    ///    This is sharper here than it is for the plate: the server keeps a fixed
+    ///    SOURCE PRECEDENCE in which Tesla's own `service_data.service_etc`
+    ///    OUTRANKS the owner's entry. An owner who types 4 PM against a Tesla
+    ///    estimate of 2 PM gets 2 PM back, and the row must show 2 PM — the value
+    ///    the rider's scheduling floor will actually be built from. Showing what
+    ///    the owner typed would put the sheet and the floor into disagreement.
+    ///    The app deliberately does NOT try to detect or explain which source won:
+    ///    the wire carries no discriminator, and inventing one would be a guess.
+    ///  • **A past instant is rejected LOCALLY first** (`VehicleServiceWindow
+    ///    .isEnterable`), so the common mistake costs no round trip. The 400 arm
+    ///    below is the defensive path for the case the local check cannot catch —
+    ///    a sheet left open until the picked time passed.
+    ///  • **The echo is broadcast** via `onServiceWindowSaved`, because there is
+    ///    no WS push for this field (snapshot-only by contract).
+    ///
+    /// Shares the `.serviceWindow` key's pending/notice discipline with the
+    /// commanded controls (a double-save while in flight is suppressed), but NOT
+    /// the wake-retry: there is no car in this path to wake.
+    func setServiceWindow(_ expectedEndAt: Date?) async throws {
+        guard uiState(for: .serviceWindow).isPending == false else { return }
+        uiStates[.serviceWindow] = VehicleControlUIState(isPending: true, notice: nil)
+        do {
+            let response = try await serviceWindowEndpoint.setServiceWindow(
+                expectedEndAt: expectedEndAt.map(Self.rfc3339.string(from:)),
+                vehicleID: vehicleID
+            )
+            let resolved = response.serviceEstimatedEndAt.flatMap(VehicleContractMapping.parseTimestamp)
+            controls.serviceEstimatedEndAt = resolved
+            knownFields.insert(.serviceWindow)
+            uiStates[.serviceWindow] = .idle
+            onServiceWindowSaved?(resolved)
+        } catch let error as RestError {
+            uiStates[.serviceWindow] = VehicleControlUIState(
+                isPending: false, notice: Self.serviceWindowNotice(for: error.commandFailureKind)
+            )
+        } catch {
+            uiStates[.serviceWindow] = VehicleControlUIState(isPending: false, notice: .serviceWindowNotSaved)
+        }
+    }
+
+    /// The service-window write's own notice vocabulary. NONE of the §7.9
+    /// car-shaped notices apply: no Tesla call happens on this path, so the car is
+    /// never asked, never asleep, and never the thing that refused. `400
+    /// invalid_request` is the ONE semantic failure (the instant is not in the
+    /// future); everything else — auth, ownership, not-found, transport, 5xx — is
+    /// "the write didn't land", which is a single fact the owner acts on the same
+    /// way (try again).
+    private static func serviceWindowNotice(for kind: RestError.CommandFailureKind) -> VehicleCommandNotice {
+        kind == .invalidRequest ? .serviceWindowPast : .serviceWindowNotSaved
+    }
+
+    /// RFC 3339 UTC with milliseconds — the exact shape the server emits and
+    /// accepts, matching `RideRequestContractMapping`'s `scheduledFor` encoder so
+    /// the two owner/rider-side instants are written identically.
+    private static let rfc3339: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        return f
+    }()
 
     // MARK: - Seat helpers
 

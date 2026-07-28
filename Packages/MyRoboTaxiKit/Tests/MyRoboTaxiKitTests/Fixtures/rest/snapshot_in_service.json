@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "description": "Full VehicleState snapshot (GET /api/vehicles/{vehicleId}/snapshot) for a car that is IN SERVICE with a known estimated completion (MYR-316, contracts 0.17.0). serviceEstimatedEndAt is meaningful only alongside status 'in_service' — the server clears it automatically on any other status, which is why the sibling parked fixture (snapshot.json) omits it entirely. Authored here from the contracts 0.17.0 field docs; replace with the upstream file the moment one exists.",
+    "anchoredFRs": ["FR-1.1", "FR-2.1"],
+    "scenario": "in-service",
+    "addedBy": "MYR-316"
+  },
+  "vehicleId": "clxyz1234567890abcdef",
+  "name": "Lunar",
+  "model": "Model Y",
+  "year": 2026,
+  "color": "Quicksilver",
+  "status": "in_service",
+  "speed": 0,
+  "heading": 0,
+  "latitude": 37.7955,
+  "longitude": -122.3937,
+  "locationName": "Tesla Service · San Francisco",
+  "locationAddress": "999 Brannan St, San Francisco",
+  "chargeLevel": 61,
+  "estimatedRange": 166,
+  "interiorTemp": 70,
+  "exteriorTemp": 63,
+  "odometerMiles": 18432,
+  "fsdMilesSinceReset": 11274,
+  "serviceEstimatedEndAt": "2026-08-01T21:00:00.000Z",
+  "lastUpdated": "2026-07-28T16:00:00Z"
+}
