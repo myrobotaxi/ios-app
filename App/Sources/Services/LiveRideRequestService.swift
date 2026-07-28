@@ -698,18 +698,28 @@ final class LiveRideRequestService: RideRequestService {
     /// frame was silently dropped: after ONE completed ride the owner could not
     /// receive another dispatch until the app was relaunched.
     ///
+    /// MYR-306 extends the same reasoning to `declined`: `decline()` leaves
+    /// `activeRequest` on `.declined` with nothing on the owner path to clear it, so
+    /// an owner who DECLINED a request landed in the identical blocked-adoption state
+    /// MYR-292 fixed for `completed` — every later incoming frame dropped until
+    /// relaunch. MYR-292 deliberately left `.declined` alone because the rider's
+    /// `DeclinedNotice` renders a declined record; now that adoption is ORIGIN-scoped
+    /// that objection is answered by the origin test, not by the status: a rider's
+    /// notice holds a `.rider`-origin record and is still untouchable. This is also
+    /// what makes MYR-317's decline→advance work at all.
+    ///
     /// Deliberately NOT widened for:
-    ///  • a RIDER-originated `completed` ride — the rider's Ride Summary is rendering
-    ///    that exact record right now; displacing it would swap the itinerary out from
-    ///    under them and point "See you soon" at a stranger's ride. This is why the
-    ///    guard tests `activeRequestOrigin`, not just the status.
-    ///  • `declined` — the rider's `DeclinedNotice` reads the declined record, and on
-    ///    the owner path a decline has its own handling; out of scope here.
+    ///  • a RIDER-originated `completed` or `declined` ride — the rider's Ride Summary
+    ///    / `DeclinedNotice` is rendering that exact record right now; displacing it
+    ///    would swap the itinerary out from under them and point "See you soon" at a
+    ///    stranger's ride. This is why the guard tests `activeRequestOrigin`, not just
+    ///    the status.
     ///  • every non-terminal status (`pending`/`accepted`/`arrived`/`enroute`) — a
     ///    live dispatch still owns the slot and must never be displaced.
     private var canAdoptIncoming: Bool {
         guard let held = activeRequest else { return true }
-        return held.status == .completed && activeRequestOrigin == .ownerIncoming
+        guard activeRequestOrigin == .ownerIncoming else { return false }
+        return held.status == .completed || held.status == .declined
     }
 
     /// MYR-277 A1: prefer the local draft's place, adopting the refetched server
