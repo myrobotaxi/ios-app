@@ -310,13 +310,16 @@ final class VehicleContractMappingTests: XCTestCase {
 
     // MARK: MYR-279 — vehicle-details fields from the live snapshot
 
-    func testVehicleRowComposesFullModelFromLiveStateTrim() {
+    func testVehicleRowComposesFullModelFromLiveStateTrimLabel() {
         // The wrong-source display bug: the summary carries a partial model, the
-        // snapshot the authoritative "{year} {model} {trim}". A live state wins.
+        // snapshot the authoritative "{year} {model} {trimLabel}". A live state
+        // wins. MYR-320 — the suffix is the DISPLAY-READY label, and the raw badge
+        // riding alongside it must not appear.
         var state = Contracts.parkedState()
         state.model = "Model Y"
         state.year = 2026
-        state.trim = "Performance"
+        state.trimLabel = "Performance"
+        state.trim = "p74d"
         let vehicle = VehicleContractMapping.vehicle(summary: Contracts.summary(model: "Model", year: 0), state: state)
         XCTAssertEqual(vehicle.model, "2026 Model Y Performance")
     }
@@ -415,28 +418,178 @@ final class VehicleContractMappingTests: XCTestCase {
         XCTAssertEqual(VehicleContractMapping.modelLabel(year: 2026, model: "Cybercab"), "2026 Cybercab")
     }
 
-    // MARK: MYR-279 — model label composes year + model + trim
+    // MARK: MYR-279/320 — model label composes year + model + TRIM LABEL
 
-    func testModelLabelComposesYearModelTrim() {
-        // The client's target: "2026 Model Y Performance".
+    /// The client's target: "2026 Model Y Performance", composed from the
+    /// DISPLAY-READY `trimLabel`.
+    func testModelLabelComposesYearModelTrimLabel() {
         XCTAssertEqual(
-            VehicleContractMapping.modelLabel(year: 2026, model: "Model Y", trim: "Performance"),
+            VehicleContractMapping.modelLabel(year: 2026, model: "Model Y", trimLabel: "Performance"),
             "2026 Model Y Performance"
         )
     }
 
-    func testModelLabelDropsTrimGracefullyWhenAbsent() {
-        // nil / blank trim → "{year} {model}" (e.g. "2026 Model Y"), never a
-        // trailing space or an empty component.
-        XCTAssertEqual(VehicleContractMapping.modelLabel(year: 2026, model: "Model Y", trim: nil), "2026 Model Y")
-        XCTAssertEqual(VehicleContractMapping.modelLabel(year: 2026, model: "Model Y", trim: ""), "2026 Model Y")
-        XCTAssertEqual(VehicleContractMapping.modelLabel(year: 2026, model: "Model Y", trim: "   "), "2026 Model Y")
+    func testModelLabelDropsTrimLabelGracefullyWhenAbsent() {
+        // nil / blank label → "{year} {model}" (e.g. "2026 Model Y"), never a
+        // trailing space or an empty component. Absence is COMMON AND NORMAL — a
+        // server predating MYR-320, an incomplete vehicle-config read, or a car
+        // with no performance designation at all.
+        XCTAssertEqual(VehicleContractMapping.modelLabel(year: 2026, model: "Model Y", trimLabel: nil), "2026 Model Y")
+        XCTAssertEqual(VehicleContractMapping.modelLabel(year: 2026, model: "Model Y", trimLabel: ""), "2026 Model Y")
+        XCTAssertEqual(VehicleContractMapping.modelLabel(year: 2026, model: "Model Y", trimLabel: "   "), "2026 Model Y")
     }
 
     func testModelLabelDropsYearAndModelGracefully() {
         // A zero year drops just the year; a blank model drops just the model.
-        XCTAssertEqual(VehicleContractMapping.modelLabel(year: 0, model: "Model Y", trim: "Performance"), "Model Y Performance")
-        XCTAssertEqual(VehicleContractMapping.modelLabel(year: 2026, model: "", trim: "Performance"), "2026 Performance")
+        XCTAssertEqual(
+            VehicleContractMapping.modelLabel(year: 0, model: "Model Y", trimLabel: "Performance"),
+            "Model Y Performance"
+        )
+        XCTAssertEqual(
+            VehicleContractMapping.modelLabel(year: 2026, model: "", trimLabel: "Performance"),
+            "2026 Performance"
+        )
+    }
+
+    /// The value is rendered VERBATIM — no re-casing, no reformatting. It arrives
+    /// display-ready from Tesla and the contract forbids rewriting it.
+    func testModelLabelRendersTheTrimLabelVerbatim() {
+        XCTAssertEqual(
+            VehicleContractMapping.modelLabel(year: 2026, model: "Model S", trimLabel: "Plaid"),
+            "2026 Model S Plaid"
+        )
+        XCTAssertEqual(
+            VehicleContractMapping.modelLabel(year: 2026, model: "Model 3", trimLabel: "Long Range AWD"),
+            "2026 Model 3 Long Range AWD"
+        )
+    }
+
+    // MARK: MYR-320 — the raw `trim` badge is never displayed
+
+    /// THE composition matrix, over the two wire fields that both describe trim.
+    /// The row that matters most is the third: a car whose config carries a badge
+    /// code but no display label falls back to "{year} {model}" — it must NOT
+    /// substitute the code, which on the client's own car is the string "p74d".
+    func testModelCompositionMatrixOverTrimLabelAndTrimBadge() {
+        struct Case {
+            let trimLabel: String?
+            let trim: String?
+            let expected: String
+            let line: UInt
+            init(trimLabel: String?, trim: String?, _ expected: String, line: UInt = #line) {
+                self.trimLabel = trimLabel; self.trim = trim
+                self.expected = expected; self.line = line
+            }
+        }
+        let cases: [Case] = [
+            // Both present — the client's real car. The label wins; the badge is
+            // invisible.
+            Case(trimLabel: "Performance", trim: "p74d", "2026 Model Y Performance"),
+            // Label present, no badge — unchanged.
+            Case(trimLabel: "Performance", trim: nil, "2026 Model Y Performance"),
+            // NO label, badge present — the regression this guards. Fall back to
+            // "{year} {model}"; never "2026 Model Y p74d".
+            Case(trimLabel: nil, trim: "p74d", "2026 Model Y"),
+            // Blank label with a badge behind it — same rule; blank == absent.
+            Case(trimLabel: "", trim: "p74d", "2026 Model Y"),
+            // Neither — the pre-MYR-279 shape.
+            Case(trimLabel: nil, trim: nil, "2026 Model Y"),
+        ]
+        for c in cases {
+            var state = Contracts.parkedState()
+            state.year = 2026
+            state.model = "Model Y"
+            state.trimLabel = c.trimLabel
+            state.trim = c.trim
+            let vehicle = VehicleContractMapping.vehicle(summary: Contracts.summary(), state: state)
+            XCTAssertEqual(vehicle.model, c.expected, line: c.line)
+            if let trim = c.trim {
+                XCTAssertFalse(
+                    vehicle.model.contains(trim),
+                    "the raw trim badge \"\(trim)\" must never reach a display surface",
+                    line: c.line
+                )
+            }
+        }
+    }
+
+    /// The lean list row carries no trim of either kind (both are detail-sheet
+    /// fields by contract), so the pre-snapshot fallback is "{year} {model}".
+    func testModelFallsBackToTheSummaryBeforeTheFirstSnapshot() {
+        let vehicle = VehicleContractMapping.vehicle(
+            summary: Contracts.summary(model: "Model Y", year: 2026), state: nil
+        )
+        XCTAssertEqual(vehicle.model, "2026 Model Y")
+    }
+
+    // MARK: MYR-320 — color renders verbatim once the wire carries it
+
+    /// Telemetry PR #340 populates the EXISTING `VehicleState.color`, so no
+    /// mapping change was needed — this pins that the value survives untouched
+    /// (no lowercasing, no title-casing) and that the honest-empty behaviour the
+    /// row shipped with is intact for a server that still sends "".
+    func testColorFlowsThroughVerbatimAndStaysHonestlyEmptyWhenBlank() {
+        var state = Contracts.parkedState()
+        state.color = "Quicksilver"
+        XCTAssertEqual(
+            VehicleContractMapping.vehicle(summary: Contracts.summary(), state: state).colorName,
+            "Quicksilver"
+        )
+
+        // The snapshot leads; the summary is the fallback before it arrives.
+        state.color = ""
+        var summary = Contracts.summary()
+        summary.color = "Deep Blue Metallic"
+        XCTAssertEqual(
+            VehicleContractMapping.vehicle(summary: summary, state: state).colorName,
+            "Deep Blue Metallic"
+        )
+
+        summary.color = ""
+        XCTAssertEqual(
+            VehicleContractMapping.vehicle(summary: summary, state: state).colorName, "",
+            "both blank stays blank \u{2014} the row renders its honest empty state, never a fabricated color"
+        )
+    }
+
+    // MARK: MYR-320 — the FSD designation
+
+    /// Mapped verbatim off the snapshot and NEVER derived from `softwareVersion`:
+    /// the firmware build and the FSD designation are independent strings, which
+    /// is exactly why they are two rows.
+    func testFsdVersionMapsVerbatimAndIsIndependentOfSoftwareVersion() {
+        var state = Contracts.parkedState()
+        state.softwareVersion = "2026.20.1 9a8b7c6"
+        state.fsdVersion = "FSD (Supervised) v14.3.5"
+        let vehicle = VehicleContractMapping.vehicle(summary: Contracts.summary(), state: state)
+        XCTAssertEqual(vehicle.fsdVersion, "FSD (Supervised) v14.3.5")
+        XCTAssertEqual(vehicle.softwareVersion, "2026.20.1 9a8b7c6")
+    }
+
+    /// Absence is nil, not a placeholder — the row is omitted entirely. A blank
+    /// string normalizes to nil for the same reason: a server that emits "" must
+    /// produce no row rather than an empty value.
+    func testFsdVersionIsNilWhenAbsentOrBlankSoTheRowIsOmitted() {
+        var state = Contracts.parkedState()
+        XCTAssertNil(state.fsdVersion, "the wire field is optional and absent by default")
+        XCTAssertNil(VehicleContractMapping.vehicle(summary: Contracts.summary(), state: state).fsdVersion)
+
+        state.fsdVersion = "   "
+        XCTAssertNil(VehicleContractMapping.vehicle(summary: Contracts.summary(), state: state).fsdVersion)
+
+        XCTAssertNil(
+            VehicleContractMapping.vehicle(summary: Contracts.summary(), state: nil).fsdVersion,
+            "snapshot-only \u{2014} the list row never carries it"
+        )
+    }
+
+    /// The FIXTURE fleet carries no FSD designation, which is what keeps the
+    /// simulated sheet and every drift-gate scene pixel-identical: this row is not
+    /// in the prototype's details list and appears only on a real snapshot.
+    func testSimulatedFleetCarriesNoFsdVersion() {
+        for vehicle in VehicleFixtures.vehicles {
+            XCTAssertNil(vehicle.fsdVersion, "\(vehicle.name) must not carry a fixture FSD designation")
+        }
     }
 
     func testRouteCoordinatesDropMalformedPairs() {

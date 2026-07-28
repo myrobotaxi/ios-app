@@ -16,6 +16,14 @@ import XCTest
 //   model "Model Y" · odometerMiles 6349 · seatCoolingCapable true ·
 //   status in_service.
 //
+// MYR-320 — telemetry PR #340 enriched that same verified snapshot with three
+// more facts, so the fixture carries them too: color "Quicksilver", the
+// display-ready trimLabel "Performance", and fsdVersion
+// "FSD (Supervised) v14.3.5". `trim` stays "p74d" — the RAW BADGE CODE this car
+// actually reports, and the string the owner saw in the Model row before this
+// issue ("2026 Model Y p74d"). Keeping both fields on the fixture is what makes
+// the assertions below a substitution proof rather than a formatting check.
+//
 // Yet the owner saw the VEHICLE DETAILS section empty and no Heat↔Cool seat
 // toggle. This test drives the REAL path — `LiveVehicleFleet` → `TelemetrySocket`
 // (authenticating channel, zero frames) → REST snapshot → `LiveVehicleState` →
@@ -38,7 +46,7 @@ final class OwnerVehicleDetailsLivePathTests: XCTestCase {
             name: "Lunar",
             model: "Model Y",
             year: 2026,
-            color: "",
+            color: "Quicksilver",
             vinLast4: "3795",
             status: .inService,
             chargeLevel: 71,
@@ -58,7 +66,7 @@ final class OwnerVehicleDetailsLivePathTests: XCTestCase {
             name: "Lunar",
             model: "Model Y",
             year: 2026,
-            color: "",
+            color: "Quicksilver",
             vin: "7SAYGDET7TA613795",
             softwareVersion: "2026.20.6.6",
             trim: "p74d",
@@ -82,6 +90,12 @@ final class OwnerVehicleDetailsLivePathTests: XCTestCase {
             // authoritative MYR-308 field. No cooler READ-BACKS are present,
             // because a non-streaming car never streams any.
             seatCoolingCapable: true,
+            // MYR-320 — the two contracts-0.18.0 detail-sheet strings, in their
+            // wire positions. `trimLabel` sits alongside the `trim: "p74d"` above
+            // it, deliberately: the Model row must compose from this one and
+            // ignore that one.
+            trimLabel: "Performance",
+            fsdVersion: "FSD (Supervised) v14.3.5",
             lastUpdated: "2026-07-26T15:40:00.000Z"
         )
     }
@@ -122,9 +136,19 @@ final class OwnerVehicleDetailsLivePathTests: XCTestCase {
         await eventually { fleet.telemetry(at: 0).snapshot.odometerMiles != nil }
 
         let vehicle = fleet.vehicles[0]
-        XCTAssertEqual(vehicle.model, "2026 Model Y p74d", "the composed model from the snapshot")
+        // MYR-320 — composed from the DISPLAY-READY `trimLabel`. The same snapshot
+        // carries `trim: "p74d"`, which is what this row used to render; that the
+        // badge code is absent here is the substitution proof.
+        XCTAssertEqual(vehicle.model, "2026 Model Y Performance", "the composed model from the snapshot")
+        XCTAssertFalse(vehicle.model.contains("p74d"), "the raw trim badge must never reach a display surface")
         XCTAssertEqual(vehicle.vin, "7SAYGDET7TA613795", "VEHICLE DETAILS · VIN")
         XCTAssertEqual(vehicle.softwareVersion, "2026.20.6.6", "VEHICLE DETAILS · Software")
+        // MYR-320 — the two enriched rows, both rendered verbatim off the same
+        // cold read. Color needed no mapping change (it has always flowed through
+        // `VehicleState.color`); this asserts it arrives non-empty now that the
+        // server populates it, so the row stops showing its honest empty state.
+        XCTAssertEqual(vehicle.colorName, "Quicksilver", "VEHICLE DETAILS · Color")
+        XCTAssertEqual(vehicle.fsdVersion, "FSD (Supervised) v14.3.5", "VEHICLE DETAILS · FSD")
         XCTAssertTrue(
             vehicle.seatVent,
             "seatCoolingCapable=true must reach the row, or the Heat↔Cool toggle never renders")
@@ -157,7 +181,9 @@ final class OwnerVehicleDetailsLivePathTests: XCTestCase {
         let vehicle = fleet.vehicles[0]
         XCTAssertEqual(vehicle.vin, "7SAYGDET7TA613795")
         XCTAssertEqual(vehicle.softwareVersion, "2026.20.6.6")
-        XCTAssertEqual(vehicle.model, "2026 Model Y p74d")
+        XCTAssertEqual(vehicle.model, "2026 Model Y Performance")
+        XCTAssertEqual(vehicle.colorName, "Quicksilver")
+        XCTAssertEqual(vehicle.fsdVersion, "FSD (Supervised) v14.3.5")
         XCTAssertTrue(vehicle.seatVent)
         XCTAssertFalse(fleet.isConnecting)
 
