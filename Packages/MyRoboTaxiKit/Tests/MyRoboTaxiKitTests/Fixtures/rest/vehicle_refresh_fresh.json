@@ -1,0 +1,10 @@
+{
+  "_meta": {
+    "description": "200 response for POST /api/tesla/vehicles/{vehicleId}/refresh (rest-api.md §7.15, MYR-315) — the NO-OP outcome. The vehicle streamed recently enough that waking it would waste part of its wake budget, so the server made no Tesla call at all and returned the read time it already had. This is a SUCCESS, not a failure: the client must not retry, must not claim a wake happened, and must trust lastUpdated as authoritative. Authored here from the canonical §7.15 example because the telemetry repo ships no fixture for this endpoint (docs/contracts/fixtures/rest/ covers read paths only); replace with the upstream file the moment one exists.",
+    "anchoredFRs": ["FR-4.x"],
+    "scenario": "happy-path",
+    "addedBy": "MYR-315"
+  },
+  "status": "fresh",
+  "lastUpdated": "2026-07-27T16:04:12Z"
+}

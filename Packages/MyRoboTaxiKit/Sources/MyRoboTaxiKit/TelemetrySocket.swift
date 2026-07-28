@@ -335,6 +335,13 @@ public actor TelemetrySocket {
     /// then fetch + emit the snapshot (D-1 on success, D-2 on failure).
     private func activateSubscription(vehicleId: String, channel: any WebSocketChannel, generation gen: Int) async {
         try? await channel.send(WireCodec.encodeFrame(type: .subscribe, payload: SubscribePayload(vehicleId: vehicleId)))
+        await fetchAndEmitSnapshot(vehicleId: vehicleId, generation: gen)
+    }
+
+    /// Move the vehicle's groups to `.loading` (D-7), fetch the cold snapshot and
+    /// emit it (D-1 on success, D-2 on failure). Extracted so the on-demand
+    /// refresh below re-uses the EXACT path a (re)connect takes.
+    private func fetchAndEmitSnapshot(vehicleId: String, generation gen: Int) async {
         setDataState(vehicleId: vehicleId, groups: AtomicGroup.allCases, to: .loading)
         do {
             let snapshot = try await snapshotSource.snapshot(vehicleId: vehicleId)
@@ -345,6 +352,26 @@ public actor TelemetrySocket {
             guard gen == generation else { return }
             setDataState(vehicleId: vehicleId, groups: AtomicGroup.allCases, to: .error)
         }
+    }
+
+    /// MYR-315 — re-fetch the §7.1 snapshot for an ALREADY-SUBSCRIBED vehicle and
+    /// deliver it down the same `.snapshot` event path a reconnect uses, so the
+    /// value lands in `LiveVehicleState` (and every view above it) through the
+    /// normal pipeline rather than a second, parallel one.
+    ///
+    /// The two callers are both "the world may have moved without us": the app
+    /// coming back to the foreground after a spell in the background, and the
+    /// owner explicitly asking for a newer read (§7.15, which returns only a
+    /// timestamp — the STATE still has to come from §7.1).
+    ///
+    /// A no-op when the vehicle is not subscribed: there is no stream to emit on,
+    /// and fetching for a vehicle nobody is watching would spend a request to
+    /// update nothing. Failures are absorbed into `.error` data state exactly as on
+    /// reconnect — a refresh that can't reach the server must never clear the
+    /// last-known snapshot (NFR-3.12/3.13).
+    public func refreshSnapshot(vehicleId: String) async {
+        guard subscribers[vehicleId] != nil else { return }
+        await fetchAndEmitSnapshot(vehicleId: vehicleId, generation: generation)
     }
 
     private func routeVehicleUpdate(_ payload: VehicleUpdatePayload) {
