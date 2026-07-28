@@ -456,13 +456,47 @@ struct HomeScreen: View {
         }
     }
 
+    /// MYR-315 — the freshness stamp model, or `nil` to render no stamp.
+    ///
+    /// LIVE ONLY, by two independent gates. The prototype has no recency stamp
+    /// anywhere in the owner sheet (its single freshness element is the controls
+    /// footer, `vehicle-controls.jsx:428`), so rendering one in SIM would be a
+    /// visual invention AND would break every drift-gate scene's byte-identity
+    /// (CLAUDE.md). It is also simply not honest there: the simulated snapshot
+    /// carries no `isStreaming`/`lastUpdated`, so `VehicleFreshnessStamp.recency`
+    /// returns nil for it regardless — the `isLive` check just makes the intent
+    /// explicit at the seam where every other fixture gate lives (MYR-228).
+    ///
+    /// Reading `homeState.refreshTick` here is deliberate: the label is derived
+    /// from `Date()`, which `@Observable` has no reason to re-evaluate for a car
+    /// that isn't streaming, so the tick is what re-renders the stamp on a tap.
+    private func freshnessStamp(snapshot: VehicleTelemetrySnapshot) -> VehicleFreshnessStampModel? {
+        guard isLive else { return nil }
+        _ = homeState.refreshTick
+        guard let recency = VehicleFreshnessStamp.recency(
+            isStreaming: snapshot.isStreaming,
+            lastUpdated: snapshot.lastUpdated,
+            now: Date()
+        ) else { return nil }
+        return VehicleFreshnessStampModel(
+            recency: recency,
+            phase: homeState.refreshPhase,
+            action: { homeState.refreshSelectedVehicle() }
+        )
+    }
+
     /// The LOW crossfade layer — the summary hero only (peek). Identical pixels
     /// to the top of `sheetDense` so the crossfade reads as a stationary summary.
     @ViewBuilder
     private func sheetSummary(vehicle: Vehicle, snapshot: VehicleTelemetrySnapshot) -> some View {
         switch vehicle.activity {
         case .driving(let trip):
-            DrivingSummary(vehicle: vehicle, trip: trip, snapshot: snapshot)
+            DrivingSummary(
+                vehicle: vehicle,
+                trip: trip,
+                snapshot: snapshot,
+                freshness: freshnessStamp(snapshot: snapshot)
+            )
         case .parked(let location):
             ParkedSummary(
                 vehicle: vehicle,
@@ -470,7 +504,8 @@ struct HomeScreen: View {
                 snapshot: snapshot,
                 // Live: reflect the real wire status (parked/charging/offline/
                 // in_service→neutral) in the design badge. Simulated: `.parked`.
-                status: homeState.selectedBadgeStatus
+                status: homeState.selectedBadgeStatus,
+                freshness: freshnessStamp(snapshot: snapshot)
             )
         }
     }
@@ -493,7 +528,10 @@ struct HomeScreen: View {
                 executor: executor,
                 isEditingPlate: $isEditingPlate,
                 onRelinkTesla: onRelinkTesla,
-                isLive: isLive
+                isLive: isLive,
+                // The SAME model the peek layer gets — the crossfade dissolves the
+                // two summaries into each other, so they must match line for line.
+                freshness: freshnessStamp(snapshot: snapshot)
             )
         case .parked(let location):
             ParkedHeroContent(
@@ -504,7 +542,8 @@ struct HomeScreen: View {
                 executor: executor,
                 isEditingPlate: $isEditingPlate,
                 onRelinkTesla: onRelinkTesla,
-                isLive: isLive
+                isLive: isLive,
+                freshness: freshnessStamp(snapshot: snapshot)
             )
         }
     }

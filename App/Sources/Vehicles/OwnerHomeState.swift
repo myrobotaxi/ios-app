@@ -1,4 +1,6 @@
 import DesignSystem
+import Foundation
+import MyRoboTaxiKit
 import Observation
 
 // MARK: - Owner home state (MYR-167; fleet seam MYR-201)
@@ -39,6 +41,25 @@ public final class OwnerHomeState {
     /// Owner-local: this never touches the shared `activeRequest`, so the rider's
     /// Ride Summary is unaffected (MYR-267).
     public var acknowledgedCompletedRideID: String?
+
+    /// MYR-315 — the freshness stamp's transient state (waking / acknowledged /
+    /// notice). Owner-scoped for the same reason `acknowledgedCompletedRideID` is:
+    /// `HomeScreen` is built inside a `switch ownerTab` branch of `RootView`, so a
+    /// trip to Drives destroys the view — and a wake can easily outlive that. Held
+    /// here, an in-flight "Waking Lunar…" is still in flight (and still resolves)
+    /// when the owner comes back.
+    public private(set) var refreshPhase: VehicleRefreshPhase = .idle
+
+    /// Bumped whenever the owner taps the stamp. The stamp's label is derived from
+    /// `Date()`, which SwiftUI has no reason to re-evaluate on its own for a car
+    /// that isn't streaming; reading this in the stamp's body makes a tap
+    /// re-render it, which IS the acknowledgement in the already-current case.
+    public private(set) var refreshTick = 0
+
+    /// In-flight guard: a second tap while a wake is running must not start a
+    /// second §7.15 call (the endpoint would answer `429` and the owner would read
+    /// their own double-tap as a failure).
+    private var refreshTask: Task<Void, Never>?
 
     /// The fleet backend (simulated fixtures or live Kit). Internal to the app
     /// module — screens read the projected accessors below, not the fleet.
@@ -155,6 +176,85 @@ public final class OwnerHomeState {
 
     public func handleForeground() { fleet.handleForeground() }
     public func handleBackground() { fleet.handleBackground() }
+
+    // MARK: Manual refresh (MYR-315)
+
+    /// The owner tapped the freshness stamp.
+    ///
+    /// Three outcomes, decided by the PURE `VehicleFreshnessStamp.wakes` rule:
+    ///   • already current (streaming, or read within the shared staleness
+    ///     threshold) → acknowledge only. No §7.15 call: it would spend part of a
+    ///     finite wake budget, or come back `429` from the endpoint's own cooldown,
+    ///     to tell us what we already know.
+    ///   • stale / never read → run the refresh with "Waking <name>…" showing,
+    ///     because a wake takes seconds and a silent stamp reads as a dead tap.
+    ///   • failure → the honest notice (asleep / cooldown / couldn't reach).
+    ///
+    /// On success the phase simply returns to `.idle`: the REFRESHED DATA arrives
+    /// through the normal telemetry pipeline (the fleet re-fetches the snapshot and
+    /// emits it on the vehicle's stream), so the stamp re-renders from the same
+    /// source it always did rather than from this call's return value.
+    public func refreshSelectedVehicle(now: Date = Date()) {
+        guard refreshTask == nil else { return }
+        refreshTick += 1
+
+        let snapshot = selectedTelemetry?.snapshot
+        guard VehicleFreshnessStamp.wakes(
+            isStreaming: snapshot?.isStreaming,
+            lastUpdated: snapshot?.lastUpdated,
+            now: now
+        ) else {
+            refreshPhase = .acknowledged
+            clearAcknowledgement()
+            return
+        }
+
+        let index = selectedVehicleIndex
+        guard let name = selectedVehicle?.name else { return }
+        refreshPhase = .waking(name)
+        refreshTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.fleet.refreshVehicle(at: index)
+                self.refreshPhase = .idle
+            } catch {
+                self.refreshPhase = .notice(VehicleRefreshNotice.resolve(
+                    commandFailureKind: Self.failureKind(for: error)))
+            }
+            self.refreshTask = nil
+        }
+    }
+
+    /// Hold the no-op acknowledgement just long enough to register as a response,
+    /// then fall back to the plain stamp. Guarded on the phase so a real refresh
+    /// started in the meantime is never clobbered.
+    private func clearAcknowledgement() {
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(900))
+            guard let self, self.refreshPhase == .acknowledged else { return }
+            self.refreshPhase = .idle
+        }
+    }
+
+    /// Fold the Kit's typed §7.9 error catalog onto the slice this surface acts on.
+    /// `RestError.commandFailureKind` is the ONE place these codes are interpreted —
+    /// never the human message (FR-7.1).
+    private static func failureKind(for error: Error) -> VehicleRefreshFailureKind {
+        guard let restError = error as? RestError else { return .other }
+        switch restError.commandFailureKind {
+        case .vehicleAsleep: return .vehicleAsleep
+        case .rateLimited: return .rateLimited
+        default: return .other
+        }
+    }
+
+    #if DEBUG
+    /// Drift-gate only: park the stamp in a given phase so the waking / notice
+    /// states are capturable full-frame without a tap (headless tooling can't tap).
+    func debugSeedRefreshPhase(_ phase: VehicleRefreshPhase) {
+        refreshPhase = phase
+    }
+    #endif
 }
 
 // MARK: - Read-only linked-vehicles source (MYR-243)
