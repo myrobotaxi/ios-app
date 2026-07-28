@@ -47,6 +47,12 @@ struct VehicleControls: View {
     /// volume controls route REAL commands (MYR-249/251) and stay. `false` in SIM
     /// keeps the media section pixel-identical.
     var isLive: Bool = false
+    /// MYR-303 — the REAL now-playing block off the wire (contracts 0.16.0),
+    /// threaded from the telemetry snapshot like every other read-only live value
+    /// in this sheet (temps, odometer, freshness). `nil` in SIM and on a live car
+    /// that has never streamed a media field → the Media card renders exactly what
+    /// MYR-264 left it as.
+    var nowPlaying: VehicleNowPlaying? = nil
 
     private var controls: VehicleControlsSnapshot { executor.controls }
 
@@ -82,6 +88,10 @@ struct VehicleControls: View {
                 // MYR-264 — no fixture track on the live path (media metadata isn't
                 // contracted → honest-hidden); SIM passes the fixture unchanged.
                 track: isLive ? nil : VehicleMediaTrack.all[controls.trackIndex],
+                // MYR-303 — the live now-playing block. Non-nil ONLY when a real
+                // `VehicleState` carried media fields, so it can never displace
+                // the SIM fixture above.
+                nowPlaying: nowPlaying,
                 onRelinkTesla: onRelinkTesla
             )
 

@@ -104,8 +104,44 @@ enum VehicleContractMapping {
             // unknown value honestly (Syncing vs Unavailable) and qualify a
             // stale last-known value ("· synced X ago").
             lastUpdated: parseTimestamp(state.lastUpdated),
-            isStreaming: isStreaming(state.status)
+            isStreaming: isStreaming(state.status),
+            // MYR-303 — the car's now-playing block (contracts 0.16.0). `nil` until
+            // the car has streamed at least one media field, which is what keeps
+            // the block honest-hidden rather than showing MYR-264's fixture track.
+            nowPlaying: nowPlaying(from: state)
         )
+    }
+
+    /// The live now-playing reading, or `nil` when the car has NEVER streamed any
+    /// of the six now-playing fields (the media block then hides entirely — the
+    /// MYR-264 rule: an unknown track is drawn as nothing, never as a placeholder).
+    ///
+    /// The `null` / `""` distinction survives this mapping intact and is resolved
+    /// downstream by `VehicleNowPlaying`: all-`nil` here means "never observed"
+    /// (hide), whereas a present-but-empty title means "nothing playing" (the
+    /// honest idle line). Collapsing empties to `nil` here would erase that.
+    ///
+    /// `mediaVolumeMax` is deliberately NOT part of this value: it is a volume
+    /// SCALE fact, not now-playing content, and it belongs to the executor's
+    /// volume reconcile (`LiveVehicleCommandExecutor.volumeMax`).
+    static func nowPlaying(from state: VehicleState) -> VehicleNowPlaying? {
+        let reading = VehicleNowPlaying(
+            title: state.mediaNowPlayingTitle,
+            artist: state.mediaNowPlayingArtist,
+            album: state.mediaNowPlayingAlbum,
+            station: state.mediaNowPlayingStation,
+            source: state.mediaPlaybackSource,
+            durationMs: state.mediaNowPlayingDurationMs,
+            elapsedMs: state.mediaNowPlayingElapsedMs
+        )
+        let everObserved = state.mediaNowPlayingTitle != nil
+            || state.mediaNowPlayingArtist != nil
+            || state.mediaNowPlayingAlbum != nil
+            || state.mediaNowPlayingStation != nil
+            || state.mediaPlaybackSource != nil
+            || state.mediaNowPlayingDurationMs != nil
+            || state.mediaNowPlayingElapsedMs != nil
+        return everObserved ? reading : nil
     }
 
     /// Fraction 0…1 of the active navigation route already travelled, derived
