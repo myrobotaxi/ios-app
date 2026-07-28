@@ -270,6 +270,44 @@ final class VehicleContractMappingTests: XCTestCase {
         XCTAssertFalse(VehicleContractMapping.vehicle(summary: Contracts.summary()).seatVent)
     }
 
+    // MARK: MYR-308 — the REST seat SPEC threads through the mapping
+
+    /// The mapping-layer half of MYR-308: `Vehicle.seatVent` now prefers the
+    /// contracts-0.16.0 `seatCoolingCapable`, and only falls back to the MYR-299
+    /// presence heuristic when the field is absent. Asserted through the SHIPPING
+    /// mapping, because that is what every surface reads.
+    func testVehicleRowSeatVentPrefersTheSpecFieldOverThePresenceHeuristic() {
+        func seatVent(capable: Bool?, left: Int?, right: Int?, vent: Bool? = nil) -> Bool {
+            var state = Contracts.parkedState()
+            state.seatCoolingCapable = capable
+            state.seatCoolerLeft = left
+            state.seatCoolerRight = right
+            state.seatVentEnabled = vent
+            return VehicleContractMapping.vehicle(summary: Contracts.summary(), state: state).seatVent
+        }
+
+        XCTAssertFalse(
+            seatVent(capable: false, left: 0, right: 0),
+            "an explicit spec false hides the Heat/Cool affordance even though the presence heuristic would fire"
+        )
+        XCTAssertFalse(
+            seatVent(capable: false, left: 3, right: 3, vent: true),
+            "the spec outranks every telemetry signal — the car has no cooled seats"
+        )
+        XCTAssertTrue(
+            seatVent(capable: true, left: nil, right: nil),
+            "the spec says capable before any cooler telemetry has arrived"
+        )
+        XCTAssertTrue(
+            seatVent(capable: nil, left: 0, right: 0, vent: false),
+            "absent spec (pre-0.16.0 server) → the MYR-299 heuristic still carries the client's car"
+        )
+        XCTAssertFalse(
+            seatVent(capable: nil, left: nil, right: nil),
+            "absent spec and no telemetry → honest heat-only"
+        )
+    }
+
     // MARK: MYR-279 — vehicle-details fields from the live snapshot
 
     func testVehicleRowComposesFullModelFromLiveStateTrim() {

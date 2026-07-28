@@ -241,7 +241,9 @@ struct DrivingHeroContent: View {
                     lastUpdated: snapshot.lastUpdated,
                     isStreaming: snapshot.isStreaming,
                     onRelinkTesla: onRelinkTesla,
-                    isLive: isLive
+                    isLive: isLive,
+                    // MYR-303 — the live now-playing block (nil in SIM).
+                    nowPlaying: snapshot.nowPlaying
                 )
             }
         }
@@ -290,7 +292,9 @@ struct ParkedHeroContent: View {
                 lastUpdated: snapshot.lastUpdated,
                 isStreaming: snapshot.isStreaming,
                 onRelinkTesla: onRelinkTesla,
-                isLive: isLive
+                isLive: isLive,
+                // MYR-303 — the live now-playing block (nil in SIM).
+                nowPlaying: snapshot.nowPlaying
             )
         }
     }

@@ -197,6 +197,64 @@ public enum VehicleStateMerger {
             case "mediaVolume":
                 if value.isNull { state.mediaVolume = nil } else if let v = value.numberValue { state.mediaVolume = v }
 
+            // MARK: Media now-playing (MYR-303 — contracts 0.16.0)
+            //
+            // All eight fields STREAM LIVE on `vehicle_update` (Tesla
+            // fleet-telemetry **Media** group, pushed ON CHANGE), so they FOLD
+            // here with the standard null-clear semantics — exactly like the
+            // MYR-298 siblings `mediaPlaybackStatus`/`mediaVolume` they arrive
+            // alongside. Leaving them in `default:` is the MYR-272/298 regression
+            // class: the track would change in the car and the sheet would keep
+            // the title from the last cold snapshot.
+            //
+            // For the five TEXT fields an explicit `""` is a VALUE, not a clear.
+            // The wire distinguishes two different facts:
+            //   • JSON `null`  → NEVER OBSERVED  → nil (the display hides).
+            //   • `""`         → NOTHING PLAYING → an empty string the UI must
+            //                     adopt (the track ended; the display CLEARS to
+            //                     its honest idle state rather than keeping the
+            //                     last title on screen).
+            // Collapsing `""` to nil here would erase that distinction and leave
+            // a finished track showing forever, so only `isNull` nils the
+            // property and every other string — empty included — is assigned.
+            case "mediaNowPlayingTitle":
+                if value.isNull { state.mediaNowPlayingTitle = nil }
+                else if let v = value.stringValue { state.mediaNowPlayingTitle = v }
+            case "mediaNowPlayingArtist":
+                if value.isNull { state.mediaNowPlayingArtist = nil }
+                else if let v = value.stringValue { state.mediaNowPlayingArtist = v }
+            case "mediaNowPlayingAlbum":
+                if value.isNull { state.mediaNowPlayingAlbum = nil }
+                else if let v = value.stringValue { state.mediaNowPlayingAlbum = v }
+            case "mediaNowPlayingStation":
+                if value.isNull { state.mediaNowPlayingStation = nil }
+                else if let v = value.stringValue { state.mediaNowPlayingStation = v }
+            case "mediaPlaybackSource":
+                if value.isNull { state.mediaPlaybackSource = nil }
+                else if let v = value.stringValue { state.mediaPlaybackSource = v }
+            // Numeric members: folded VERBATIM. The 18000000 ms radio sentinel is
+            // a real wire value that must survive the fold intact — the merger
+            // routes, it does not interpret; suppressing the scrubber against the
+            // sentinel is the CONSUMER's job (`VehicleNowPlaying.progress`).
+            case "mediaNowPlayingDurationMs":
+                if value.isNull { state.mediaNowPlayingDurationMs = nil }
+                else if let v = value.numberValue { state.mediaNowPlayingDurationMs = Int(v) }
+            case "mediaNowPlayingElapsedMs":
+                if value.isNull { state.mediaNowPlayingElapsedMs = nil }
+                else if let v = value.numberValue { state.mediaNowPlayingElapsedMs = Int(v) }
+            case "mediaVolumeMax":
+                if value.isNull { state.mediaVolumeMax = nil }
+                else if let v = value.numberValue { state.mediaVolumeMax = v }
+
+            // NOT FOLDED, deliberately: `seatCoolingCapable` (contracts 0.16.0).
+            // It is a SPEC fact read from Tesla's REST `vehicle_config`
+            // (`has_seat_cooling`), not telemetry — Tesla has no proto for it and
+            // never streams it, so "a `vehicle_update` frame NEVER contains
+            // seatCoolingCapable" (vehicle-state-schema.md). Folding it would
+            // invent a delivery path the server does not have. It reaches clients
+            // on REST reads only, like the sibling `trim`, and is declared in the
+            // MYR-298 tripwire's `snapshotOnlyFields` for exactly that reason.
+
             default:
                 break // unknown / forward-compat field — ignore
             }

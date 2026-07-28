@@ -66,6 +66,14 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
     /// is not coming). `nil` on the simulated path (treated as live), keeping M1
     /// pixel-identical.
     public var isStreaming: Bool?
+    /// MYR-303 — the car's now-playing block (contracts 0.16.0 media fields),
+    /// mapped by `VehicleContractMapping.nowPlaying(from:)`. `nil` on the simulated
+    /// path AND on a live car that has never streamed a media field, so the Media
+    /// card hides the block rather than showing a placeholder track (MYR-264). Its
+    /// non-nil-ness is therefore the live-media signal itself: nothing but a real
+    /// `VehicleState` can produce one, which keeps the M1 / drift-gate media card
+    /// (the `VehicleMediaTrack` fixture) pixel-identical.
+    public var nowPlaying: VehicleNowPlaying?
 
     public init(
         status: VehicleTelemetryStatus,
@@ -78,7 +86,8 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
         odometerMiles: Int? = nil,
         fsdMilesSinceReset: Double? = nil,
         lastUpdated: Date? = nil,
-        isStreaming: Bool? = nil
+        isStreaming: Bool? = nil,
+        nowPlaying: VehicleNowPlaying? = nil
     ) {
         self.status = status
         self.progress = progress
@@ -91,6 +100,7 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
         self.fsdMilesSinceReset = fsdMilesSinceReset
         self.lastUpdated = lastUpdated
         self.isStreaming = isStreaming
+        self.nowPlaying = nowPlaying
     }
 }
 

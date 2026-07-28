@@ -262,6 +262,19 @@ final class VehicleStateMergerTests: XCTestCase {
         opt("trunkOpen", .bool(false), \.trunkOpen, false),
         opt("mediaPlaybackStatus", .string("Playing"), \.mediaPlaybackStatus, .playing),
         opt("mediaVolume", .number(5.5), \.mediaVolume, 5.5),
+
+        // Media now-playing (MYR-303, contracts 0.16.0). All eight stream live on
+        // the Tesla fleet-telemetry **Media** group, so all eight are FOLD rows —
+        // the schema says each is a "Live WS vehicle_update field", which is the
+        // whole basis for the fold/snapshot-only split this table encodes.
+        opt("mediaNowPlayingTitle", .string("Midnight City"), \.mediaNowPlayingTitle, "Midnight City"),
+        opt("mediaNowPlayingArtist", .string("M83"), \.mediaNowPlayingArtist, "M83"),
+        opt("mediaNowPlayingAlbum", .string("Hurry Up, We\u{2019}re Dreaming"), \.mediaNowPlayingAlbum, "Hurry Up, We\u{2019}re Dreaming"),
+        opt("mediaNowPlayingStation", .string("KEXP 90.3"), \.mediaNowPlayingStation, "KEXP 90.3"),
+        opt("mediaPlaybackSource", .string("Spotify"), \.mediaPlaybackSource, "Spotify"),
+        opt("mediaNowPlayingDurationMs", .number(243_000), \.mediaNowPlayingDurationMs, 243_000),
+        opt("mediaNowPlayingElapsedMs", .number(92_000), \.mediaNowPlayingElapsedMs, 92_000),
+        opt("mediaVolumeMax", .number(11), \.mediaVolumeMax, 11),
     ] }
 
     /// Identity / catalog fields delivered ONLY on the cold `/snapshot` — they
@@ -279,9 +292,22 @@ final class VehicleStateMergerTests: XCTestCase {
     /// server does not have. If the server ever DOES start pushing it, move this
     /// entry to a `foldCases` row and add the merger `case` — this tripwire is
     /// exactly where that decision belongs.
+    ///
+    /// MYR-308 — `seatCoolingCapable` (contracts 0.16.0) joins the set on the same
+    /// contract grounds. It is a SPEC/CAPABILITY fact ("is this car EQUIPPED with
+    /// ventilated seats"), read by the server from Tesla's REST
+    /// `vehicle_data.vehicle_config.has_seat_cooling`. Tesla does NOT stream it —
+    /// there is no proto field for it at all — and the schema is explicit that "a
+    /// `vehicle_update` frame NEVER contains seatCoolingCapable"; it arrives on
+    /// REST reads only, exactly like the sibling `trim` that is plucked from the
+    /// same `vehicle_config` blob and already sits in this set. Note the contrast
+    /// with its RUNTIME sibling `seatVentEnabled` (proto 254), which IS streamed
+    /// and therefore IS a `foldCases` row: capability vs. current state is exactly
+    /// the distinction MYR-299/308 turn on.
     private static let snapshotOnlyFields: Set<String> = [
         "vehicleId", "name", "model", "year", "color", "vin", "softwareVersion", "trim",
         "licensePlate",
+        "seatCoolingCapable",
     ]
 
     /// The table must account for EVERY property on the generated `VehicleState`.
@@ -367,6 +393,90 @@ final class VehicleStateMergerTests: XCTestCase {
         XCTAssertEqual(result.state.seatVentEnabled, true, "seat-vent capability must arrive on the live path")
         XCTAssertEqual(result.state.mediaPlaybackStatus, .playing, "play/pause must reflect the car, not just local taps")
         XCTAssertTrue(result.changedGroups.isEmpty, "cabin fields carry no dataState dimension")
+    }
+
+    // MARK: - Media now-playing (MYR-303 / MYR-308, contracts 0.16.0)
+
+    /// The eight now-playing fields fold from ONE live delta, called out by name so
+    /// a regression reads as itself rather than as a table-coverage failure (the
+    /// MYR-298 lesson). Without the fold the sheet would show the title from the
+    /// last cold snapshot while the car played something else.
+    func testMyr303MediaNowPlayingFieldsFoldOnLiveDelta() throws {
+        let result = VehicleStateMerger.apply(fields: [
+            "mediaNowPlayingTitle": .string("Nightcall"),
+            "mediaNowPlayingArtist": .string("Kavinsky"),
+            "mediaNowPlayingAlbum": .string("OutRun"),
+            "mediaNowPlayingStation": .string("KEXP 90.3"),
+            "mediaPlaybackSource": .string("Spotify"),
+            "mediaNowPlayingDurationMs": .number(263_000),
+            "mediaNowPlayingElapsedMs": .number(41_000),
+            "mediaVolumeMax": .number(11),
+        ], to: try baseState())
+
+        XCTAssertEqual(result.state.mediaNowPlayingTitle, "Nightcall")
+        XCTAssertEqual(result.state.mediaNowPlayingArtist, "Kavinsky")
+        XCTAssertEqual(result.state.mediaNowPlayingAlbum, "OutRun")
+        XCTAssertEqual(result.state.mediaNowPlayingStation, "KEXP 90.3")
+        XCTAssertEqual(result.state.mediaPlaybackSource, "Spotify")
+        XCTAssertEqual(result.state.mediaNowPlayingDurationMs, 263_000)
+        XCTAssertEqual(result.state.mediaNowPlayingElapsedMs, 41_000)
+        XCTAssertEqual(result.state.mediaVolumeMax, 11)
+        XCTAssertTrue(result.changedGroups.isEmpty, "media fields carry no dataState dimension")
+    }
+
+    /// The `""` vs `null` distinction the five TEXT fields turn on: an EMPTY STRING
+    /// is a VALUE ("nothing is playing" — the track ended, clear the display), while
+    /// only a JSON null means "never observed" and nils the property. Collapsing the
+    /// two would leave a finished track's title on screen forever.
+    func testMyr303EmptyMediaTextIsAValueAndOnlyNullClears() throws {
+        var seeded = try baseState()
+        seeded.mediaNowPlayingTitle = "Midnight City"
+        seeded.mediaNowPlayingArtist = "M83"
+        seeded.mediaNowPlayingStation = "KEXP 90.3"
+        seeded.mediaPlaybackSource = "Spotify"
+
+        let ended = VehicleStateMerger.apply(fields: [
+            "mediaNowPlayingTitle": .string(""),
+            "mediaNowPlayingArtist": .string(""),
+        ], to: seeded).state
+        XCTAssertEqual(ended.mediaNowPlayingTitle, "", "an empty title is 'nothing playing', not 'never observed'")
+        XCTAssertEqual(ended.mediaNowPlayingArtist, "")
+        XCTAssertNotNil(ended.mediaNowPlayingTitle, "`\"\"` must NOT collapse to nil — the two states drive different UI")
+
+        let cleared = VehicleStateMerger.apply(fields: [
+            "mediaNowPlayingTitle": .null,
+            "mediaNowPlayingStation": .null,
+            "mediaPlaybackSource": .null,
+        ], to: ended).state
+        XCTAssertNil(cleared.mediaNowPlayingTitle, "an explicit JSON null clears to 'never observed'")
+        XCTAssertNil(cleared.mediaNowPlayingStation)
+        XCTAssertNil(cleared.mediaPlaybackSource)
+    }
+
+    /// The 18000000 ms radio sentinel folds VERBATIM. The merger routes wire values;
+    /// interpreting the sentinel (suppressing the scrubber) is the consumer's job,
+    /// and rewriting it here would hide the fact from every consumer at once.
+    func testMyr303RadioDurationSentinelFoldsVerbatim() throws {
+        let result = VehicleStateMerger.apply(
+            fields: ["mediaNowPlayingDurationMs": .number(18_000_000)], to: try baseState()
+        )
+        XCTAssertEqual(result.state.mediaNowPlayingDurationMs, 18_000_000)
+    }
+
+    /// MYR-308 — `seatCoolingCapable` is REST-sourced and must NOT fold from a
+    /// `vehicle_update`, even when the server (wrongly) includes it: Tesla has no
+    /// proto for the field and the schema states a delta NEVER carries it, so
+    /// honoring one would invent a delivery path and let a stray frame flip a
+    /// hardware fact. It reaches the app on the cold `/snapshot` only.
+    func testMyr308SeatCoolingCapableIsNotFoldedFromALiveDelta() throws {
+        var state = try baseState()
+        state.seatCoolingCapable = true
+        let result = VehicleStateMerger.apply(fields: ["seatCoolingCapable": .bool(false)], to: state)
+        XCTAssertEqual(
+            result.state.seatCoolingCapable, true,
+            "a vehicle_update must not change a REST-only spec field (schema: a delta NEVER contains it)"
+        )
+        XCTAssertTrue(Self.snapshotOnlyFields.contains("seatCoolingCapable"))
     }
 
     /// Unknown wire values on the two MYR-298 string enums survive as

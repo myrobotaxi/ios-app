@@ -44,12 +44,33 @@ enum SeatClimatePresentation {
     ///
     /// Tolerant of absence throughout: before the first snapshot every input is
     /// `nil` and the section stays honestly heat-only until the car says otherwise.
+    ///
+    /// MYR-308 — contracts 0.16.0 finally carries the REAL capability:
+    /// `seatCoolingCapable`, read by the server from Tesla's REST
+    /// `vehicle_data.vehicle_config.has_seat_cooling`. It OUTRANKS the heuristic in
+    /// both directions, because it is a fact about the car rather than an inference
+    /// from what the car happens to be emitting:
+    ///
+    ///   • `true`  → capable. (The heuristic agrees in practice; the spec is simply
+    ///     available sooner — a car that has never actuated a cooler still says so.)
+    ///   • `false` → NOT capable, AUTHORITATIVELY. The schema is explicit that a
+    ///     client "MUST NOT offer seat-cooling controls — no greyed-out row, no
+    ///     disabled slider that implies the hardware exists". So an explicit false
+    ///     BEATS the presence heuristic even if cooler read-backs are somehow
+    ///     present (a firmware quirk emitting 0s on a heat-only car is exactly the
+    ///     false positive MYR-299's presence rule cannot see on its own).
+    ///   • `nil`   → absent: the server predates MYR-308 or has not completed a
+    ///     vehicle-config read yet. The schema requires the fall-back to the MYR-299
+    ///     telemetry-presence heuristic — NOT hiding the control outright, which
+    ///     would re-break the client's ventilated car on every pre-0.16.0 server.
     static func hasVentilatedSeats(
+        seatCoolingCapable: Bool? = nil,
         seatCoolerLeft: Int?,
         seatCoolerRight: Int?,
         seatVentEnabled: Bool?
     ) -> Bool {
-        seatCoolerLeft != nil || seatCoolerRight != nil || seatVentEnabled == true
+        if let seatCoolingCapable { return seatCoolingCapable }
+        return seatCoolerLeft != nil || seatCoolerRight != nil || seatVentEnabled == true
     }
 
     /// Whether the seat section should offer the Heat/Cool toggle and read as
@@ -64,6 +85,13 @@ enum SeatClimatePresentation {
     /// from cooler-field presence), not the `seatVentEnabled` runtime flag it used
     /// to be. The active-cooling OR-branch stays as a safety net for a car that
     /// reports a cool level before its capability is otherwise established.
+    ///
+    /// MYR-308 keeps that safety net even though `seatCoolingCapable: false` is
+    /// authoritative, and deliberately so: the branch fires only when a seat is
+    /// ACTIVELY reading cool, which a heat-only car cannot report. If the two
+    /// signals ever did contradict each other, a seat visibly cooling under a
+    /// "SEAT HEATING" label with no way to switch it back is the exact incoherence
+    /// MYR-280 was filed for — the live reading wins over the spec sheet there.
     static func supportsCool(
         seatVent: Bool,
         driverMode: VehicleSeatClimateMode,
