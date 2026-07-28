@@ -217,6 +217,64 @@ final class ParkedChannelFactory: WebSocketChannelFactory, @unchecked Sendable {
     func makeChannel(url: URL) -> any WebSocketChannel { ParkedWebSocketChannel() }
 }
 
+/// MYR-315 — a movable clock, so the foreground-refetch debounce is provable
+/// without the test actually sleeping through it.
+final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: Date
+
+    init(_ start: Date = Date(timeIntervalSince1970: 1_800_000_000)) { self.current = start }
+
+    var now: Date {
+        lock.lock(); defer { lock.unlock() }
+        return current
+    }
+
+    func advance(_ interval: TimeInterval) {
+        lock.lock(); defer { lock.unlock() }
+        current = current.addingTimeInterval(interval)
+    }
+}
+
+/// Deterministic `HTTPPerforming` that replays a scripted response SEQUENCE.
+/// (App-target twin of the Kit test's `RecordingHTTP`; the App tests can't see the
+/// Kit test target's doubles.)
+///
+/// MYR-315 moved it here from `DriveContractMappingTests` and grew it two things
+/// the resume tests need: a per-stub STATUS (so a 503 can be scripted) and a
+/// request RECORDER (so "did the resume actually refetch?" is answerable —
+/// `StubHTTP` answers every request identically, which cannot distinguish
+/// "refetched" from "never asked"). Once the script runs out the LAST stub
+/// repeats, so a test only scripts the responses it cares about.
+actor SequencedHTTP: HTTPPerforming {
+    struct Stub: Sendable {
+        var status: Int
+        var body: Data
+        init(status: Int = 200, body: Data) { self.status = status; self.body = body }
+    }
+
+    private var stubs: [Stub]
+    private var requests: [URLRequest] = []
+
+    init(_ stubs: [Stub]) { self.stubs = stubs }
+
+    /// Bodies-only convenience for the pagination tests, which script a sequence
+    /// of 200s and don't inspect the requests.
+    init(_ bodies: [Data]) { self.stubs = bodies.map { Stub(body: $0) } }
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        requests.append(request)
+        let stub = stubs.count > 1 ? stubs.removeFirst() : (stubs.first ?? Stub(status: 500, body: Data()))
+        let response = HTTPURLResponse(url: request.url!, statusCode: stub.status, httpVersion: nil, headerFields: nil)!
+        return (stub.body, response)
+    }
+
+    func capturedRequests() -> [URLRequest] { requests }
+    func requestCount() -> Int { requests.count }
+    /// Paths in order, the readable form for "what did this resume actually do".
+    func paths() -> [String] { requests.compactMap { $0.url?.path } }
+}
+
 extension BackendEnvironment {
     /// A well-formed but never-dialed environment for fleet tests.
     static let test = BackendEnvironment(
