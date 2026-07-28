@@ -399,7 +399,7 @@ enum DebugScene: String, CaseIterable {
         // The Media card follows the Climate card, a little past the middle of the
         // dense content; this anchor frames the whole card (now-playing block,
         // transport row and its gated sub-copy) at the half detent.
-        case .ownerMediaNowPlaying, .ownerMediaNoSession: return .fraction(0.42)
+        case .ownerMediaNowPlaying, .ownerMediaNoSession: return .fraction(0.39)
         // The Auto/Cool/Heat segment sits near the TOP of the Climate card (just
         // below the temp stepper); a small anchor keeps the quick tiles + climate
         // header + the segment together in-frame at the half detent.
