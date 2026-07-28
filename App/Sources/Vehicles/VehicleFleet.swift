@@ -65,12 +65,24 @@ protocol VehicleFleet: AnyObject, Observable {
     /// source/executor/feed; the simulated fleet has no live teardown backend and
     /// ignores it (default no-op below).
     func remove(vehicleID: String)
+
+    /// MYR-315 (§7.15) — ask the server for a newer read of one vehicle, waking it
+    /// if the budget allows, then bring the resulting state down the NORMAL
+    /// telemetry pipeline (the §7.15 response carries only a timestamp). Throws the
+    /// typed `RestError` so the caller can fold `vehicle_asleep` / `rate_limited`
+    /// onto honest copy. The simulated fleet has no server to ask and its fixtures
+    /// are definitionally current, so it reports `.unsupported` (default below) and
+    /// the stamp never renders there anyway.
+    func refreshVehicle(at index: Int) async throws -> VehicleRefreshOutcome
 }
 
 extension VehicleFleet {
     /// Default: no removal (the simulated fleet's fixture list is immutable — the
     /// live teardown flow is a live-path affordance only, MYR-258/228).
     func remove(vehicleID: String) {}
+
+    /// Default: nothing to refresh (simulated + every DEBUG capture fleet).
+    func refreshVehicle(at index: Int) async throws -> VehicleRefreshOutcome { .unsupported }
 }
 
 // MARK: - SimulatedVehicleFleet (M1 default)

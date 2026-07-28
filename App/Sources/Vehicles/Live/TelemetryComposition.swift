@@ -30,6 +30,12 @@ enum TelemetryComposition {
         if let fleet = DebugScene.current?.previewFleet {
             let state = OwnerHomeState(fleet: fleet)
             if DebugScene.initialOwnerDetentHalf { state.sheetDetent = .half }
+            // MYR-315 — park the freshness stamp in a given phase (only
+            // `ownerFreshnessWaking` sets one): the waking state lives between a tap
+            // and the server's answer, which headless capture tooling cannot reach.
+            if let phase = DebugScene.current?.initialRefreshPhase {
+                state.debugSeedRefreshPhase(phase)
+            }
             return state
         }
         #endif

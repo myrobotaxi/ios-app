@@ -314,15 +314,20 @@ struct RootView: View {
         #endif
     }
 
-    /// MYR-312/313 — the live flag `HomeScreen` (and through it the incoming
-    /// request sheet) renders on: the ONE resolved app mode, or — only for the
-    /// DEBUG `ownerScheduledLive` capture scene — a forced `true`, because the
-    /// requester name and the scheduled accept-gate exemption are both LIVE-only
-    /// branches that a simulated capture cannot otherwise reach. `false`
-    /// everywhere else → the fixture persona, pixel-identical (MYR-228).
-    private var incomingRequestIsLive: Bool {
+    /// MYR-312/313 — the live flag `HomeScreen` renders on: the ONE resolved app
+    /// mode, or — only for specific DEBUG capture scenes — a forced `true`, for
+    /// surfaces whose behaviour is LIVE-only by construction and therefore
+    /// unreachable from a simulated capture:
+    ///   • `ownerScheduledLive` (MYR-312/313) — the real requester name and the
+    ///     scheduled accept-gate exemption;
+    ///   • `ownerFreshnessStale` / `ownerFreshnessWaking` (MYR-315) — the freshness
+    ///     stamp, which has no prototype counterpart and no honest simulated input.
+    /// `false` everywhere else → the fixture persona and no stamp,
+    /// pixel-identical (MYR-228).
+    private var ownerHomeIsLive: Bool {
         #if DEBUG
         if DebugScene.current?.rendersLiveIncomingRequest == true { return true }
+        if DebugScene.current?.rendersLiveVehicleFreshness == true { return true }
         #endif
         return isLiveMode
     }
@@ -537,8 +542,10 @@ struct RootView: View {
                         onRelinkTesla: { teslaRelinkRoute() },
                         // MYR-264 — the ONE resolved live flag gates the incoming
                         // request sheet's rider/vehicle identity + the media block
-                        // (fixtures render only in SIM / DEBUG scenes).
-                        isLive: incomingRequestIsLive
+                        // (fixtures render only in SIM / DEBUG scenes). MYR-315 —
+                        // it also gates the freshness stamp, which the prototype
+                        // has no counterpart for.
+                        isLive: ownerHomeIsLive
                     )
                 }
             case .sharedHome:

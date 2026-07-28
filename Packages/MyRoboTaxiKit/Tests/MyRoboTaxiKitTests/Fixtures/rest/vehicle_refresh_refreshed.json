@@ -1,0 +1,10 @@
+{
+  "_meta": {
+    "description": "200 response for POST /api/tesla/vehicles/{vehicleId}/refresh (rest-api.md §7.15, MYR-315) — the WOKE-AND-READ outcome. The vehicle was asleep, the server spent part of its wake budget, brought it up and performed a one-shot read; lastUpdated is that new read. Carries fractional seconds deliberately: the backend emits both RFC3339 shapes, and a client that only parses the non-fractional one silently loses the timestamp on exactly this path. The refreshed STATE is not in this body — the client re-fetches §7.1 to get it.",
+    "anchoredFRs": ["FR-4.x"],
+    "scenario": "happy-path",
+    "addedBy": "MYR-315"
+  },
+  "status": "refreshed",
+  "lastUpdated": "2026-07-27T16:09:48.512Z"
+}

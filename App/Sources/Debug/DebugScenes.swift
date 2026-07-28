@@ -238,6 +238,21 @@ enum DebugScene: String, CaseIterable {
     /// `OwnerHomeState` (not view state), so it stays gone across a `HomeScreen`
     /// remount. Capture at t≈1s and t≈7s to see both halves.
     case ownerDispatchedCompleted
+    /// MYR-315 — the owner sheet's freshness stamp, which exists only on the live
+    /// path (the prototype has no such element and a simulated snapshot carries no
+    /// freshness signals to be honest with). Both scenes inject
+    /// `DebugFreshnessFleet` — a car OFFLINE for 7h, mapped by the production
+    /// `VehicleContractMapping` — and force `HomeScreen`'s live rendering:
+    ///   • `ownerFreshnessStale`  — the resting stamp, "Synced 7h ago", beneath the
+    ///     parked hero. This is the honesty gap MYR-315 closes: before it, the peek
+    ///     sheet showed a 7-hour-old battery figure with nothing saying so.
+    ///   • `ownerFreshnessWaking` — the same sheet mid-tap, "Waking Lunar…". Seeded
+    ///     as a phase rather than tapped, because headless capture tooling cannot
+    ///     synthesize the touch.
+    /// Both capture at PEEK by default (where the stamp matters most); pair with
+    /// `MRT_OWNER_DETENT=half` to see it under the controls stack.
+    case ownerFreshnessStale
+    case ownerFreshnessWaking
 
     /// The active scene for this launch, or `nil` for a normal boot. Read
     /// from `MRT_SCENE` (env, the documented `SIMCTL_CHILD_MRT_SCENE=` path);
@@ -338,6 +353,25 @@ enum DebugScene: String, CaseIterable {
     /// simulated, pixel-identical rendering (CLAUDE.md drift gate).
     var rendersLiveIncomingRequest: Bool { self == .ownerScheduledLive }
 
+    /// MYR-315 — whether owner Home should render its LIVE surfaces even though the
+    /// simulator composed the simulated app mode. Same precedent as
+    /// `rendersLiveIncomingRequest` / `showsLiveSettings`: the freshness stamp is
+    /// live-only by construction, so a SIM capture of it is impossible without
+    /// this. Scoped to the two freshness scenes, so every other scene keeps its
+    /// simulated, byte-identical rendering (CLAUDE.md drift gate).
+    var rendersLiveVehicleFreshness: Bool {
+        self == .ownerFreshnessStale || self == .ownerFreshnessWaking
+    }
+
+    /// MYR-315 — the refresh phase the stamp boots parked in. `.waking` is
+    /// otherwise unreachable headlessly (it exists only between a tap and the
+    /// server's answer, and capture tooling cannot tap). `nil` for every other
+    /// scene, so no other capture's stamp state changes.
+    @MainActor
+    var initialRefreshPhase: VehicleRefreshPhase? {
+        self == .ownerFreshnessWaking ? .waking("Lunar") : nil
+    }
+
     private var isOwner: Bool {
         self == .ownerHome || self == .ownerDrives || self == .ownerIncoming
             || self == .ownerIncomingQueued
@@ -351,6 +385,7 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerNoticeCharge || self == .ownerNoticeAsleep || self == .ownerNoticeSeat
             || self == .ownerDispatched || self == .ownerDispatchedArrived
             || self == .ownerDispatchedEnroute || self == .ownerDispatchedCompleted
+            || self == .ownerFreshnessStale || self == .ownerFreshnessWaking
     }
 
     /// MYR-260 — a DEBUG fleet override for scenes that need a specific
@@ -387,6 +422,9 @@ enum DebugScene: String, CaseIterable {
         case .ownerNoticeCharge: return DebugCommandNoticeFleet(variant: .chargeRelink)
         case .ownerNoticeAsleep: return DebugCommandNoticeFleet(variant: .asleep)
         case .ownerNoticeSeat: return DebugCommandNoticeFleet(variant: .seatRelink)
+        // MYR-315 — a car offline for 7h, so the stamp resolves its stale branch
+        // through the real mapping (see `DebugFreshnessFleet`).
+        case .ownerFreshnessStale, .ownerFreshnessWaking: return DebugFreshnessFleet()
         default: return nil
         }
     }
@@ -734,7 +772,8 @@ enum DebugScene: String, CaseIterable {
              .ownerClimateAuto, .ownerClimateManual, .ownerClimateUnknown,
              .ownerNoticeCharge, .ownerNoticeAsleep, .ownerNoticeSeat,
              .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute,
-             .ownerDispatchedCompleted:
+             .ownerDispatchedCompleted,
+             .ownerFreshnessStale, .ownerFreshnessWaking:
             break // chooser / settings / rider live-map / owner scenes don't drive the viewer sheet
         }
     }

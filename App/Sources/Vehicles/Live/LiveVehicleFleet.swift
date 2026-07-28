@@ -30,17 +30,22 @@ final class LiveVehicleFleet: VehicleFleet {
         var http: (any HTTPPerforming)?
         /// Injected WS channel factory for tests (nil → the URLSession factory).
         var channelFactory: (any WebSocketChannelFactory)?
+        /// MYR-315 — injected clock for the foreground-refetch debounce (nil →
+        /// `Date.init`), so the policy is provable without a 10s sleep.
+        var now: (() -> Date)?
 
         init(
             environment: BackendEnvironment,
             tokenProvider: any TokenProvider,
             http: (any HTTPPerforming)? = nil,
-            channelFactory: (any WebSocketChannelFactory)? = nil
+            channelFactory: (any WebSocketChannelFactory)? = nil,
+            now: (() -> Date)? = nil
         ) {
             self.environment = environment
             self.tokenProvider = tokenProvider
             self.http = http
             self.channelFactory = channelFactory
+            self.now = now
         }
     }
 
@@ -64,11 +69,18 @@ final class LiveVehicleFleet: VehicleFleet {
     private var hasLoaded = false
     private var activeIndex = 0
     private var loadTask: Task<Void, Never>?
+    /// MYR-315 — when the app last went to `.background`, so the resume can tell a
+    /// glance at Control Center from a genuine spell away (see
+    /// `ForegroundRefetchPolicy`). `nil` before the first background transition.
+    private var backgroundedAt: Date?
+    /// Injected clock, so the foreground debounce is testable without sleeping.
+    private let now: () -> Date
 
     private(set) var statusMessage: String?
 
     init(config: Config) {
         environment = config.environment
+        now = config.now ?? Date.init
         let http = config.http ?? URLSession(configuration: RestClient.defaultConfiguration())
         rest = RestClient(environment: config.environment, tokenProvider: config.tokenProvider, http: http)
         socket = TelemetrySocket(
@@ -153,19 +165,71 @@ final class LiveVehicleFleet: VehicleFleet {
         if started, sources.indices.contains(activeIndex) { sources[activeIndex].start() }
     }
 
+    /// MYR-201 nudged the socket here and, if a prior load had FAILED, retried it.
+    /// That left the ordinary case — a healthy fleet, the app backgrounded for an
+    /// hour — refetching nothing: iOS suspends the process, the socket is quietly
+    /// dead for the whole spell, and the sheet re-renders whatever was last in
+    /// memory until the watchdog eventually notices. MYR-315 adds the two refetches
+    /// that make coming back to the app mean something, behind a debounce so a
+    /// glance at another app doesn't cost two requests:
+    ///
+    ///   1. the WS reconnect nudge (unchanged — cheap, and correct at any interval),
+    ///   2. the fleet LIST (`GET /api/vehicles`), which is what carries a car that
+    ///      went in-service / a plate edited on another device,
+    ///   3. the selected vehicle's SNAPSHOT, down the same `.snapshot` event path a
+    ///      reconnect uses, so every view above it updates from one source.
     func handleForeground() {
         let socket = self.socket
+        // Always nudge: it costs nothing when the socket is healthy, and it is the
+        // fastest path back when it isn't.
         Task { await socket.handleForegroundTransition() }
-        // If a prior load failed or never happened, retry on foreground — the
-        // low-friction recovery the design prefers over a retry button.
-        if started, statusMessage != nil || !hasLoaded {
+
+        let backgroundedFor = backgroundedAt.map { now().timeIntervalSince($0) }
+        backgroundedAt = nil
+        guard started else { return }
+
+        // Pre-existing recovery: a load that failed or never happened is retried on
+        // EVERY resume, debounce or not — it is the low-friction recovery the design
+        // prefers over a retry button, and there is nothing to preserve.
+        if statusMessage != nil || !hasLoaded {
             loadFleet()
+            return
         }
+        guard ForegroundRefetchPolicy.shouldRefetch(backgroundedFor: backgroundedFor) else { return }
+        loadFleet()
+        refreshActiveSnapshot()
     }
 
     func handleBackground() {
+        backgroundedAt = now()
         let socket = self.socket
         Task { await socket.handleBackgroundTransition() }
+    }
+
+    // MARK: - On-demand refresh (MYR-315, rest-api.md §7.15)
+
+    /// Ask the server for a newer read of one vehicle, then pull the resulting
+    /// STATE down the normal pipeline. §7.15 answers with a status + a timestamp
+    /// only — it is the wake, not the read — so the snapshot refetch is what
+    /// actually updates the sheet. It runs on BOTH statuses: `fresh` means the
+    /// server has newer data than we may have folded, not that we already hold it.
+    func refreshVehicle(at index: Int) async throws -> VehicleRefreshOutcome {
+        guard summaries.indices.contains(index) else { return .unsupported }
+        let vehicleID = summaries[index].vehicleId
+        let response = try await rest.refreshVehicle(id: vehicleID)
+        await socket.refreshSnapshot(vehicleId: vehicleID)
+        return response.status.didWake ? .refreshed : .fresh
+    }
+
+    /// Re-fetch the SELECTED vehicle's snapshot. Only the active vehicle holds a
+    /// socket subscription (deliverable 1), so it is the only one with a stream to
+    /// deliver on — refetching the others would be a request per car to update
+    /// nothing.
+    private func refreshActiveSnapshot() {
+        guard summaries.indices.contains(activeIndex) else { return }
+        let vehicleID = summaries[activeIndex].vehicleId
+        let socket = self.socket
+        Task { await socket.refreshSnapshot(vehicleId: vehicleID) }
     }
 
     /// MYR-258 (§7.12) — drop a vehicle after its authoritative backend teardown.
@@ -217,6 +281,21 @@ final class LiveVehicleFleet: VehicleFleet {
 
     private func applyLoaded(_ items: [VehicleSummary]) {
         hasLoaded = true
+
+        // MYR-315 — a REPEAT load (the foreground refetch) of an unchanged fleet
+        // must adopt the new row values WITHOUT rebuilding the live objects below.
+        // Rebuilding drops every accumulated `LiveVehicleState`, so the selected
+        // vehicle's `state` goes nil, `isConnecting` flips true, and `HomeScreen`
+        // replaces the whole map+sheet with "Connecting to your vehicles…" — on
+        // every single resume. The rows themselves (status, charge, plate) are
+        // exactly what we came back for, so they are taken; the sources, executors
+        // and drive feeds keep their subscriptions, reconcile hooks and pagination.
+        if !sources.isEmpty, summaries.map(\.vehicleId) == items.map(\.vehicleId) {
+            summaries = items
+            statusMessage = nil
+            return
+        }
+
         summaries = items
         sources = items.map { summary in
             LiveVehicleTelemetrySource(liveState: LiveVehicleState(vehicleId: summary.vehicleId, socket: socket))

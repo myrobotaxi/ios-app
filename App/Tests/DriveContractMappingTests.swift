@@ -231,15 +231,5 @@ final class DriveContractMappingTests: XCTestCase {
     }
 }
 
-/// Deterministic `HTTPPerforming` that replays a scripted response sequence.
-/// (App-target twin of the Kit test's `RecordingHTTP`; the App tests can't see
-/// the Kit test target's doubles.)
-actor SequencedHTTP: HTTPPerforming {
-    private var bodies: [Data]
-    init(_ bodies: [Data]) { self.bodies = bodies }
-    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-        let body = bodies.isEmpty ? Data() : bodies.removeFirst()
-        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
-        return (body, response)
-    }
-}
+// `SequencedHTTP` now lives in `Support/ContractsTestSupport.swift` (MYR-315),
+// where it also records requests + carries per-stub statuses.

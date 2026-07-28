@@ -43,6 +43,9 @@ struct DrivingSummary: View {
     let vehicle: Vehicle
     let trip: DrivingTrip
     let snapshot: VehicleTelemetrySnapshot
+    /// MYR-315 — the tappable recency stamp, appended beneath the hero. `nil` on
+    /// the simulated path (and in previews), where the hero is unchanged.
+    var freshness: VehicleFreshnessStampModel? = nil
 
     private var rangeMi: Int { Int(((snapshot.batteryPercent / 100) * 272).rounded()) }
 
@@ -119,6 +122,7 @@ struct DrivingSummary: View {
 
             TripProgressBar(progress: snapshot.progress, compact: true)
         }
+        .mrtFreshnessStamp(freshness)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -133,6 +137,8 @@ struct ParkedSummary: View {
     /// simulated M1 hero is unchanged; the live path (MYR-201) passes the real
     /// wire status so a charging/offline vehicle shows the matching badge.
     var status: MRTVehicleStatus = .parked
+    /// MYR-315 — see `DrivingSummary.freshness`.
+    var freshness: VehicleFreshnessStampModel? = nil
 
     /// The elapsed-since-parked label, or `nil` when the park-start is unknown
     /// (live path — no contracted park-start; MYR-268) so the view omits it
@@ -184,6 +190,7 @@ struct ParkedSummary: View {
                 }
             }
         }
+        .mrtFreshnessStamp(freshness)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -205,6 +212,11 @@ struct DrivingHeroContent: View {
     /// title/artist/cover are not on the wire → honest-hidden on live). `false` in
     /// SIM keeps the media section pixel-identical.
     var isLive: Bool = false
+    /// MYR-315 — the SAME stamp model the peek layer gets. It must be passed here
+    /// too: the crossfade hosts both layers at once and dissolves between them, so
+    /// a summary that differed by one line between the layers would visibly tear
+    /// mid-drag (MYR-236 round 5.3).
+    var freshness: VehicleFreshnessStampModel? = nil
 
     var body: some View {
         // Outer gap 22 (screens.jsx:449 `gap: 22`) between the summary block and
@@ -214,7 +226,7 @@ struct DrivingHeroContent: View {
             // Summary — rendered identically to the peek `DrivingSummary` so the
             // crossfade reads as a stationary summary with controls fading in
             // beneath it (MYR-236 round 5.3).
-            DrivingSummary(vehicle: vehicle, trip: trip, snapshot: snapshot)
+            DrivingSummary(vehicle: vehicle, trip: trip, snapshot: snapshot, freshness: freshness)
 
             VStack(alignment: .leading, spacing: 0) {
                 Divider().overlay(Color.mrtBorder).padding(.vertical, 8)
@@ -268,6 +280,8 @@ struct ParkedHeroContent: View {
     var onRelinkTesla: (() -> Void)? = nil
     /// MYR-264 — see `DrivingHeroContent.isLive`.
     var isLive: Bool = false
+    /// MYR-315 — see `DrivingHeroContent.freshness`.
+    var freshness: VehicleFreshnessStampModel? = nil
 
     var body: some View {
         // Outer gap 14 (screens.jsx:585 `gap: 14`) between the summary and the
@@ -276,7 +290,13 @@ struct ParkedHeroContent: View {
             // Summary — rendered identically to the peek `ParkedSummary` so the
             // crossfade reads as a stationary summary with controls fading in
             // beneath it (MYR-236 round 5.3).
-            ParkedSummary(vehicle: vehicle, location: location, snapshot: snapshot, status: status)
+            ParkedSummary(
+                vehicle: vehicle,
+                location: location,
+                snapshot: snapshot,
+                status: status,
+                freshness: freshness
+            )
 
             VehicleControls(
                 vehicle: vehicle,

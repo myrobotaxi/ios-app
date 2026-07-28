@@ -17,7 +17,7 @@ public protocol SnapshotFetching: Sendable {
 ///
 /// Value type (`Sendable`): all dependencies are immutable, so it is free to
 /// share across tasks without a serialization bottleneck.
-public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleCommandSending {
+public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleRefreshing, VehicleCommandSending {
     private let environment: BackendEnvironment
     private let tokenProvider: any TokenProvider
     private let http: any HTTPPerforming
@@ -307,6 +307,31 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
             ["tesla", "vehicles", vehicleID, "plate"],
             method: "PUT",
             body: body,
+            allowTokenRefresh: true
+        )
+    }
+
+    // MARK: - Owner on-demand refresh (rest-api.md §7.15, MYR-315)
+
+    /// `POST /api/tesla/vehicles/{vehicleId}/refresh` (§7.15) — ask the server for
+    /// a newer read of one owned vehicle. Owner-authenticated via the standard
+    /// `perform` pipeline (Bearer + single 401 refresh-retry); `{vehicleId}` is the
+    /// Prisma cuid (NOT a VIN), the same key as §7.12/§7.14. No request body.
+    ///
+    /// Two DISTINCT 200s (see ``VehicleRefreshResponse``): `fresh` (the car
+    /// streamed recently — the server deliberately did nothing) and `refreshed`
+    /// (it woke the car and read it). Both carry the authoritative `lastUpdated`,
+    /// so a caller never infers freshness from "the call succeeded".
+    ///
+    /// The failures are typed, not stringly: `503 vehicle_asleep` folds to
+    /// `.vehicleAsleep` and `429 rate_limited` to `.rateLimited` through the
+    /// EXISTING `RestError.commandFailureKind` catalog — this endpoint reuses the
+    /// §7.9 error vocabulary rather than inventing a second one.
+    public func refreshVehicle(id: String) async throws -> VehicleRefreshResponse {
+        try await perform(
+            ["tesla", "vehicles", id, "refresh"],
+            method: "POST",
+            body: nil,
             allowTokenRefresh: true
         )
     }
