@@ -181,6 +181,7 @@ final class VehicleNowPlayingTests: XCTestCase {
 
     /// The simulated path never produces a reading — which is exactly what keeps
     /// the M1 / drift-gate media card on its fixture track, pixel-identical.
+    @MainActor
     func testSimulatedTelemetryHasNoNowPlaying() {
         let sim = SimulatedVehicleTelemetrySource(activity: .parked(
             ParkedLocation(label: "Home", coordinate: .init(latitude: 37.77, longitude: -122.41), parkedSince: nil)
