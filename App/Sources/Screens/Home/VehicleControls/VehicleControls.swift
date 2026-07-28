@@ -53,10 +53,39 @@ struct VehicleControls: View {
     /// that has never streamed a media field → the Media card renders exactly what
     /// MYR-264 left it as.
     var nowPlaying: VehicleNowPlaying? = nil
+    /// MYR-316 — the real badge state, for the Status & location chip. `.parked`
+    /// (the default) is the literal chip this view shipped with, so SIM is
+    /// pixel-identical; a live in-service car now says so instead of "Parked".
+    var badgeStatus: MRTVehicleStatus = .parked
+    /// MYR-316 — opens the "Expected back" entry sheet (owned by `HomeScreen`'s
+    /// root `mrtConfigSheet`, exactly like the plate editor). `nil` on hosts that
+    /// don't present it (previews).
+    var onEditServiceWindow: (() -> Void)? = nil
+    /// MYR-316 — the resolved service window driving the expected-back row.
+    /// Threaded from the telemetry snapshot like every other read-only live value
+    /// in this sheet. `nil` on the simulated path → the row does not exist.
+    var serviceEstimatedEndAt: Date? = nil
 
     private var controls: VehicleControlsSnapshot { executor.controls }
 
     private var rangeMi: Int { Int(((batteryPercent / 100) * 272).rounded()) } // vehicle-controls.jsx:228
+
+    /// MYR-316 — the expected-back row's model, or `nil` when there is no service
+    /// visit to talk about. Two independent conditions, both required: the car is
+    /// IN SERVICE (the badge state, off the wire) and the host supplied an edit
+    /// route. The simulated path satisfies neither, so M1 / drift-gate scenes are
+    /// untouched.
+    private var serviceWindowRow: ServiceWindowRowModel? {
+        guard badgeStatus == .inService, let onEditServiceWindow else { return nil }
+        return ServiceWindowRowModel(
+            value: serviceEstimatedEndAt,
+            // The row shows the SAME formatted label the summary hero shows, from
+            // the same resolver, so the two can never disagree about the time.
+            label: VehicleServiceWindow.completionLabel(for: serviceEstimatedEndAt),
+            state: executor.uiState(for: .serviceWindow),
+            onEdit: onEditServiceWindow
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -98,7 +127,15 @@ struct VehicleControls: View {
             // vehicle-controls.jsx:385 `{!driving && …}` — while driving, live
             // speed/heading/range already live at the top of the sheet.
             if !driving, let parkedLocation {
-                StatusLocationSection(location: parkedLocation, rangeMi: rangeMi)
+                StatusLocationSection(
+                    location: parkedLocation,
+                    rangeMi: rangeMi,
+                    status: badgeStatus,
+                    // MYR-316 — the row exists ONLY for a car actually in service.
+                    // Everything inside it (including a nil time) is then honest;
+                    // outside that state it would be a row about nothing.
+                    serviceWindow: serviceWindowRow
+                )
             }
 
             TirePressureSection(pressures: vehicle.tirePressures)

@@ -113,12 +113,21 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
     /// media card's live states are captureable through the real mapping/reconcile.
     private let badge: MRTVehicleStatus
 
+    /// MYR-316 — the service window carried on BOTH read surfaces (the live-shaped
+    /// snapshot AND the list row), exactly as a real server emits it: an RFC 3339
+    /// instant, and ONLY alongside `status: .inService` (the server clears it on
+    /// every other status). `nil` — the default — keeps every pre-existing scene
+    /// byte-identical. A value travels the production
+    /// `VehicleContractMapping.snapshot` + the real `LiveVehicleCommandExecutor
+    /// .reconcile`, so a capture that shows "Estimated completion · …" proves the
+    /// shipping path resolved it, not a hand-set view property.
     init(
         ventedSeatReadBacks: Bool = false,
         seatCoolingCapable: Bool? = nil,
         licensePlate: String? = nil,
         status: VehicleSummary.Status = .parked,
-        media: DebugMediaVariant = .neverObserved
+        media: DebugMediaVariant = .neverObserved,
+        serviceEstimatedEndAt: Date? = nil
     ) {
         // A live-like snapshot: full model/year/trim, full VIN + software version,
         // and a BLANK color (onboarding gap, MYR-283). Streaming/online so the
@@ -127,7 +136,9 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             ventedSeatReadBacks: ventedSeatReadBacks,
             seatCoolingCapable: seatCoolingCapable,
             licensePlate: licensePlate,
-            media: media
+            media: media,
+            status: status,
+            serviceEstimatedEndAt: serviceEstimatedEndAt
         )
         let summary = VehicleSummary(
             vehicleId: "debug-mdy",
@@ -141,7 +152,8 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             estimatedRange: 193,
             lastUpdated: state.lastUpdated,
             role: .owner,
-            licensePlate: licensePlate
+            licensePlate: licensePlate,
+            serviceEstimatedEndAt: serviceEstimatedEndAt.map(Self.rfc3339.string(from:))
         )
         // The REAL production mapping: the details rows read exactly what live
         // would render (composed model, snapshot VIN/software, honest color, no
@@ -156,6 +168,10 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             // MYR-286 — the REAL §7.14 seam (normalize-then-validate, echo back),
             // so a Save in the scene exercises the shipping persist path.
             plateEndpoint: DebugPlateEndpoint(),
+            // MYR-316 — the REAL write seam (validate future, apply Tesla
+            // precedence, echo back), so a Save in the scene exercises the
+            // shipping persist path rather than a local assignment.
+            serviceWindowEndpoint: DebugServiceWindowEndpoint(),
             driving: false,
             // The RAW plate (empty when unset) — `controls.plate` is the editable
             // value, not the `VIN ····xxxx` display fallback (MYR-286).
@@ -182,7 +198,9 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
         ventedSeatReadBacks: Bool = false,
         seatCoolingCapable: Bool? = nil,
         licensePlate: String? = nil,
-        media: DebugMediaVariant = .neverObserved
+        media: DebugMediaVariant = .neverObserved,
+        status: VehicleSummary.Status = .parked,
+        serviceEstimatedEndAt: Date? = nil
     ) -> VehicleState {
         let iso = ISO8601DateFormatter().string(from: Date())
         var state = VehicleState(
@@ -194,7 +212,11 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             vin: "7SAYGDEE9RA123456",        // full (owner-masked) VIN
             softwareVersion: "2026.14.3",
             trim: "Performance",             // → "2026 Model Y Performance"
-            status: .parked,
+            // MYR-316 — the snapshot status must MATCH the summary's, or the
+            // sheet would take its badge from one read surface and its service
+            // window from the other (`badgeStatus(forSummary:state:)` prefers the
+            // snapshot). Defaulting to `.parked` keeps every earlier scene as it was.
+            status: status == .inService ? .inService : .parked,
             speed: 0,
             heading: 0,
             latitude: 37.7955,
@@ -231,9 +253,20 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             state.seatCoolerRight = 0
             state.seatVentEnabled = false
         }
+        // MYR-316 — snapshot-only by contract (no `vehicle_update` ever carries
+        // it), so the capture is exactly the shape a cold read has.
+        state.serviceEstimatedEndAt = serviceEstimatedEndAt.map(rfc3339.string(from:))
         media.apply(to: &state)
         return state
     }
+
+    /// RFC 3339 UTC with milliseconds — the shape the server emits.
+    static let rfc3339: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        return f
+    }()
 }
 
 // MARK: - DebugDetailsTelemetrySource

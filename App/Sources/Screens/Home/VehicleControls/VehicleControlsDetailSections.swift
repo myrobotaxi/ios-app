@@ -16,6 +16,19 @@ import DesignSystem
 struct StatusLocationSection: View {
     let location: ParkedLocation
     let rangeMi: Int
+    /// MYR-316 — the REAL badge state for this section's trailing chip. Defaults
+    /// to `.parked`, which is exactly the hardcoded chip this section shipped
+    /// with, so the simulated path and every drift-gate scene are pixel-identical.
+    /// It has to be a parameter now: this section renders for any non-driving
+    /// vehicle, so an IN SERVICE car was previously labelled "Parked" here — and
+    /// the expected-back row below would then sit under a chip contradicting it.
+    var status: MRTVehicleStatus = .parked
+    /// MYR-316 — the owner's "expected back" entry. `nil` (the default) hides the
+    /// row entirely, which is what keeps the simulated sheet unchanged: the row
+    /// belongs to a service visit and has no meaning for a car that is simply
+    /// parked. Non-nil means "this car is in service" — the value INSIDE may still
+    /// be nil, which is the honest "no time set yet" state, not an error.
+    var serviceWindow: ServiceWindowRowModel? = nil
 
     /// Elapsed-since-parked, or `nil` when the park-start is unknown (live — no
     /// contracted park-start; MYR-268) so the "Parked" row is omitted rather than
@@ -32,12 +45,12 @@ struct StatusLocationSection: View {
         SectionCard(title: "Status & location", trailing: {
             HStack(spacing: 6) {
                 Circle()
-                    .fill(Color.mrtParked)
+                    .fill(status.color)
                     .frame(width: 7, height: 7)
-                    .shadow(color: .mrtParked.opacity(2.0 / 3.0), radius: 3.5)
-                Text("Parked")
+                    .shadow(color: status.color.opacity(2.0 / 3.0), radius: 3.5)
+                Text(status.label)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.mrtParked)
+                    .foregroundStyle(status.color)
             }
         }) {
             VStack(spacing: 0) {
@@ -46,8 +59,228 @@ struct StatusLocationSection: View {
                     KV(label: "Parked", value: parkedDuration)
                 }
                 KV(label: "Range", value: "\(rangeMi) mi")
+                // MYR-316 — the owner's expected-back entry, in the STATUS section
+                // because that is where the In Service fact already lives; putting
+                // it in Vehicle details (beside the plate) would file a piece of
+                // TIMING next to a piece of IDENTITY. Rendered only for a car
+                // actually in service, so nothing changes anywhere else.
+                if let serviceWindow {
+                    ExpectedBackRow(model: serviceWindow)
+                    // The write can fail (a time that passed while the sheet sat
+                    // open, or a save that didn't land). Surface it in place, on
+                    // the row's own full width, with the same notice machinery
+                    // every other control uses.
+                    if let notice = serviceWindow.state.notice {
+                        VehicleCommandNoticeLine(notice: notice)
+                    }
+                }
             }
         }
+    }
+}
+
+// MARK: - Expected back (MYR-316)
+
+/// What the "Expected back" row needs to render and act. Bundled rather than
+/// passed as four parallel arguments so the row's ONE meaningful distinction —
+/// "there is a service visit" (non-nil model) vs. "there is a known time within
+/// it" (non-nil `value`) — is impossible to collapse by accident at a call site.
+struct ServiceWindowRowModel: Equatable {
+    /// The server's RESOLVED estimate, or `nil` when none is known yet. Nil is a
+    /// legitimate, common state — Tesla holds no appointment record for most
+    /// visits — so the row invites an entry rather than reporting a problem.
+    var value: Date?
+    /// The formatted display for `value` ("Sat ~2:00 PM"), pre-resolved by
+    /// `VehicleServiceWindow` so this view holds no date logic of its own.
+    var label: String?
+    /// The write's pending/notice state (`VehicleControlUIState`).
+    var state: VehicleControlUIState = .idle
+    /// Opens the entry sheet.
+    var onEdit: () -> Void
+
+    static func == (lhs: ServiceWindowRowModel, rhs: ServiceWindowRowModel) -> Bool {
+        lhs.value == rhs.value && lhs.label == rhs.label && lhs.state == rhs.state
+    }
+}
+
+/// The editable expected-back row — deliberately the same shape as `PlateRow`
+/// (label, value-or-affordance, gold pencil in a disc, 44pt tap target), because
+/// it is the same KIND of thing: an owner-entered fact the car cannot report.
+///
+/// Tesla's own `service_etc` OUTRANKS the owner's entry server-side, and the wire
+/// carries NO way to tell which source produced the value shown — so the row does
+/// not try. It always offers the edit: an owner whose entry is currently being
+/// outranked can still record what they expect, and the server keeps applying
+/// precedence. Claiming "Tesla set this, you can't change it" would be a guess
+/// dressed as a fact, and locking the row on that guess would be worse.
+private struct ExpectedBackRow: View {
+    let model: ServiceWindowRowModel
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button(action: model.onEdit) {
+            HStack {
+                Text("Expected back")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.mrtTextSec)
+                Spacer(minLength: 12)
+                HStack(spacing: 8) {
+                    Text(model.label ?? "Set a time")
+                        .font(.system(size: 13, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(model.label == nil ? Color.mrtTextMuted : .mrtText)
+                        .lineLimit(1)
+                    if model.state.isPending, !reduceMotion {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.mrtGold)
+                            .frame(width: 24, height: 24)
+                            .background(Color.mrtStepButtonFill, in: Circle())
+                    } else {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.mrtGold)
+                            .opacity(model.state.isPending ? 0.5 : 1)
+                            .frame(width: 24, height: 24)
+                            .background(Color.mrtStepButtonFill, in: Circle())
+                    }
+                }
+            }
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Service-window edit sheet (MYR-316)
+
+/// The owner's "expected back" editor — the `PlateEditSheet` recipe with a
+/// date-time picker in place of the text field, presented through the same
+/// `mrtConfigSheet` modifier at `HomeScreen`'s root (grab handle, slide-up,
+/// scrim, no ✕: backdrop-tap and an explicit Cancel).
+///
+/// Validation mirrors the server EXACTLY — "must be in the future" — and nothing
+/// more (`VehicleServiceWindow.isEnterable`). The picker's own `in:` range makes
+/// a past selection largely unreachable, and the explicit check catches the case
+/// a range cannot: a sheet left open until the chosen time passed. Save is
+/// disabled rather than failing, so the owner is told before the round trip.
+struct ServiceWindowEditSheet: View {
+    /// The currently resolved window, or `nil` when none is set.
+    let initialValue: Date?
+    let vehicleName: String
+    let onCancel: () -> Void
+    /// `nil` CLEARS the owner's entry. Note that clearing does not necessarily
+    /// null the displayed value: if Tesla holds an estimate it keeps winning under
+    /// the server's precedence, and the echo will carry Tesla's instant back.
+    let onSave: (Date?) -> Void
+
+    @State private var picked: Date
+    /// Re-evaluated on save rather than continuously: a per-second timer to grey
+    /// out a button would be motion the design does not want, and the check is
+    /// cheap at exactly the moment it matters.
+    @State private var now = Date()
+
+    init(
+        initialValue: Date?,
+        vehicleName: String,
+        onCancel: @escaping () -> Void,
+        onSave: @escaping (Date?) -> Void
+    ) {
+        self.initialValue = initialValue
+        self.vehicleName = vehicleName
+        self.onCancel = onCancel
+        self.onSave = onSave
+        // Seed at the existing value when there is one, else a sensible near
+        // future (an hour out, rounded) — never "now", which is the one instant
+        // guaranteed to be invalid by the time it is submitted.
+        _picked = State(initialValue: initialValue ?? Self.defaultSuggestion())
+    }
+
+    private var isValid: Bool { VehicleServiceWindow.isEnterable(picked, now: now) }
+    private var isChanged: Bool { picked != initialValue }
+    private var canSave: Bool { isValid && isChanged }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Expected back")
+                .font(.system(size: 19, weight: .semibold))
+                .tracking(-0.3)
+                .foregroundStyle(Color.mrtText)
+                .padding(.bottom, 6)
+            // Says WHY this matters (it is not a note-to-self: it moves what
+            // riders can book) and is honest that Tesla may override it, without
+            // pretending we can tell the owner which source is currently winning.
+            Text("When do you expect \(vehicleName) back from service? Riders can't schedule a pickup before then. If Tesla reports its own estimate, that one is used.")
+                .font(.system(size: 12.5))
+                .lineSpacing(3)
+                .foregroundStyle(Color.mrtTextSec)
+                .padding(.bottom, 20)
+
+            Text("EXPECTED COMPLETION")
+                .font(.system(size: 10.5, weight: .semibold))
+                .tracking(0.9)
+                .foregroundStyle(Color.mrtTextMuted)
+                .padding(.bottom, 9)
+
+            DatePicker(
+                "Expected completion",
+                selection: $picked,
+                // The server's rule, expressed in the control itself so the
+                // common mistake is unreachable rather than merely rejected.
+                in: Date()...,
+                displayedComponents: [.date, .hourAndMinute]
+            )
+            .labelsHidden()
+            .datePickerStyle(.compact)
+            .tint(.mrtGold)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 12)
+            .padding(.horizontal, 16)
+            .background(Color.mrtControlSegmentTrack, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(isValid ? Color.mrtBorder : Color.mrtDialogRed.opacity(0.4), lineWidth: 1)
+            )
+
+            Text(isValid ? "Riders can book from about 15 minutes after this." : "Pick a time in the future.")
+                .font(.system(size: 11))
+                .foregroundStyle(isValid ? Color.mrtTextMuted : Color.mrtDialogRed)
+                .padding(.top, 9)
+                .padding(.horizontal, 2)
+
+            VStack(spacing: 9) {
+                MRTButton("Save", variant: .gold) {
+                    now = Date() // re-check against the clock AT the tap
+                    if canSave { onSave(picked) }
+                }
+                .opacity(canSave ? 1 : 0.4)
+                .allowsHitTesting(canSave)
+                // The clear affordance, shown only when there is something to
+                // clear. Ghost, not destructive-red: removing an estimate is an
+                // ordinary correction, not a dangerous act.
+                if initialValue != nil {
+                    MRTButton("Clear", variant: .ghost) { onSave(nil) }
+                }
+                MRTButton("Cancel", variant: .ghost, action: onCancel)
+            }
+            .padding(.top, 22)
+        }
+        .padding(.horizontal, MRTMetrics.pageGutter)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
+    }
+
+    /// An hour from now, rounded down to the half hour — a plausible starting
+    /// point that is unambiguously in the future and lines up with the rider
+    /// picker's own 30-minute slots.
+    private static func defaultSuggestion(now: Date = Date(), calendar: Calendar = .current) -> Date {
+        let hourOut = now.addingTimeInterval(3600)
+        var components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: hourOut)
+        components.minute = (components.minute ?? 0) < 30 ? 0 : 30
+        components.second = 0
+        return calendar.date(from: components) ?? hourOut
     }
 }
 

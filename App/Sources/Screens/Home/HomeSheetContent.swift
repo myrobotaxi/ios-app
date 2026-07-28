@@ -139,6 +139,17 @@ struct ParkedSummary: View {
     var status: MRTVehicleStatus = .parked
     /// MYR-315 — see `DrivingSummary.freshness`.
     var freshness: VehicleFreshnessStampModel? = nil
+    /// MYR-316 — "Estimated completion \u{00B7} Sat ~2:00 PM", or `nil` to render
+    /// NOTHING. Non-nil only when the badge above it says In Service AND the
+    /// server resolved a window (`VehicleServiceWindow.completionLine`), which is
+    /// the whole gate: an in-service car with no known estimate — the COMMON case,
+    /// since Tesla has no appointment record for most visits — renders exactly as
+    /// it did before this issue, with no "unknown" and no placeholder.
+    ///
+    /// Always nil on the simulated path (nothing there is in service and the
+    /// simulated snapshot carries no window), so every drift-gate scene is
+    /// byte-identical.
+    var serviceCompletion: String? = nil
 
     /// The elapsed-since-parked label, or `nil` when the park-start is unknown
     /// (live path — no contracted park-start; MYR-268) so the view omits it
@@ -172,6 +183,26 @@ struct ParkedSummary: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Color.mrtTextMuted)
                 }
+            }
+            // MYR-316 — the estimated completion sits DIRECTLY under the status
+            // row, attached to the In Service badge that gives it its meaning,
+            // rather than down in the location line where it would read as a
+            // property of the place. Muted secondary, tokens only, `.label(size:)`
+            // off the design type scale — it qualifies the badge, it does not
+            // compete with the vehicle name.
+            if let serviceCompletion {
+                Text(serviceCompletion)
+                    // 12pt muted — the SAME treatment as this hero's location line
+                    // below, because it is the same kind of thing: a quiet
+                    // qualifier on the headline. Deliberately NOT the design's
+                    // `.label()` eyebrow style, which uppercases at 1.2 tracking:
+                    // that vocabulary belongs to SECTION HEADINGS, and using it
+                    // here made a footnote about one car read as a heading for
+                    // everything under it.
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.mrtTextMuted)
+                    .lineLimit(1)
+                    .padding(.top, 1)
             }
             BatteryBar(pct: snapshot.batteryPercent)
             HStack {
@@ -282,6 +313,13 @@ struct ParkedHeroContent: View {
     var isLive: Bool = false
     /// MYR-315 — see `DrivingHeroContent.freshness`.
     var freshness: VehicleFreshnessStampModel? = nil
+    /// MYR-316 — the SAME line the peek layer gets, for the same crossfade reason
+    /// `freshness` is threaded here: both layers are hosted at once and dissolved
+    /// into each other, so a summary differing by one line between them would
+    /// visibly tear mid-drag (MYR-236 round 5.3).
+    var serviceCompletion: String? = nil
+    /// MYR-316 — opens the "Expected back" entry sheet. `nil` in previews.
+    var onEditServiceWindow: (() -> Void)? = nil
 
     var body: some View {
         // Outer gap 14 (screens.jsx:585 `gap: 14`) between the summary and the
@@ -295,7 +333,8 @@ struct ParkedHeroContent: View {
                 location: location,
                 snapshot: snapshot,
                 status: status,
-                freshness: freshness
+                freshness: freshness,
+                serviceCompletion: serviceCompletion
             )
 
             VehicleControls(
@@ -314,7 +353,13 @@ struct ParkedHeroContent: View {
                 onRelinkTesla: onRelinkTesla,
                 isLive: isLive,
                 // MYR-303 — the live now-playing block (nil in SIM).
-                nowPlaying: snapshot.nowPlaying
+                nowPlaying: snapshot.nowPlaying,
+                // MYR-316 — the real badge (so the Status chip can say In Service)
+                // and the expected-back entry route. Both default to their
+                // pre-MYR-316 values on the simulated path.
+                badgeStatus: status,
+                onEditServiceWindow: onEditServiceWindow,
+                serviceEstimatedEndAt: snapshot.serviceEstimatedEndAt
             )
         }
     }

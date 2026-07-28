@@ -55,7 +55,21 @@ enum LiveFleetMemberMapping {
             // onto MYR-212's dot/word pair so the row can't say two things.
             isAvailable: unavailability == nil && isAvailable(summary.status),
             availabilityWord: unavailability?.word ?? availabilityWord(summary.status),
-            unavailability: unavailability
+            unavailability: unavailability,
+            // MYR-316 — the rider-side scheduling floor. Parsed off the list row
+            // (contracts 0.17.0), which is the ONLY surface the rider reads: this
+            // mapping is built from `GET /api/vehicles`, and the field is
+            // snapshot-only by contract, so a floor set by the owner reaches the
+            // rider on the next list fetch (or immediately, via the owner fleet's
+            // `onServiceWindowSaved` echo, on a single-account device).
+            //
+            // Deliberately NOT gated on `status == .inService` here: the server
+            // already guarantees a non-service row carries null, and re-deriving
+            // that guarantee client-side would silently swallow a real value if the
+            // two ever disagreed. An unparseable string degrades to nil — "no
+            // bound" — never to a fabricated instant.
+            serviceEstimatedEndAt: summary.serviceEstimatedEndAt
+                .flatMap(VehicleContractMapping.parseTimestamp)
         )
     }
 

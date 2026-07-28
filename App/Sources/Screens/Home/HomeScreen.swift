@@ -49,6 +49,10 @@ struct HomeScreen: View {
     /// screen's root so the scrim covers the whole screen, matching every
     /// other shared overlay in this codebase (ConfirmDialog, SuccessToast).
     @State private var isEditingPlate = false
+    /// MYR-316 — drives the "Expected back" `mrtConfigSheet`. Applied at this
+    /// screen's root for the same reason `isEditingPlate` is: the scrim must cover
+    /// the whole screen, matching every other shared overlay in this codebase.
+    @State private var isEditingServiceWindow = Self.initialServiceWindowEditorPresented
     /// MYR-171 — `RouteSentToast`'s content, `nil` when hidden. Set by
     /// `handleAccept` the moment `IncomingRequestSheet`'s local choreography
     /// finishes; cleared by the toast's own auto-dismiss timer.
@@ -179,6 +183,18 @@ struct HomeScreen: View {
         }
     }
 
+    /// MYR-316 — DEBUG capture hook: the `ownerServiceWindowEditor` scene boots
+    /// with the entry sheet already up, because it opens from a row inside the
+    /// half-detent controls scroll and headless capture tooling cannot tap. Release
+    /// builds compile a plain `false`, so the sheet is only ever owner-opened.
+    private static var initialServiceWindowEditorPresented: Bool {
+        #if DEBUG
+        DebugScene.current?.opensServiceWindowEditor == true
+        #else
+        false
+        #endif
+    }
+
     var body: some View {
         ZStack {
             if let vehicle = homeState.selectedVehicle,
@@ -217,6 +233,23 @@ struct HomeScreen: View {
                     onSave: { newPlate in
                         Task { try? await executor.setPlate(newPlate) }
                         isEditingPlate = false
+                    }
+                )
+            }
+        }
+        .mrtConfigSheet(isPresented: $isEditingServiceWindow, showsCloseButton: false) {
+            if let executor = homeState.selectedCommandExecutor, let vehicle = homeState.selectedVehicle {
+                ServiceWindowEditSheet(
+                    // The RESOLVED window (server-side precedence already applied),
+                    // so the picker opens on whatever is actually in force —
+                    // Tesla's estimate or the owner's own — rather than on a
+                    // remembered local draft that may have been outranked.
+                    initialValue: executor.controls.serviceEstimatedEndAt,
+                    vehicleName: vehicle.name,
+                    onCancel: { isEditingServiceWindow = false },
+                    onSave: { expectedEndAt in
+                        Task { try? await executor.setServiceWindow(expectedEndAt) }
+                        isEditingServiceWindow = false
                     }
                 )
             }
@@ -485,6 +518,26 @@ struct HomeScreen: View {
         )
     }
 
+    /// MYR-316 — the "Estimated completion \u{00B7} …" line, or `nil` to render
+    /// nothing.
+    ///
+    /// Gated on BOTH halves of the contract's own rule: the badge must say In
+    /// Service AND the server must have resolved a window. Either alone renders
+    /// nothing — an in-service car with no Tesla appointment record (the common
+    /// case) simply has no line, and a value left in memory after the car came
+    /// back cannot outlive the badge change.
+    ///
+    /// Nothing gates this on `isLive` explicitly, and nothing needs to: the
+    /// simulated fleet has no in-service vehicle and its snapshots carry no
+    /// window, so `completionLine` returns nil there by construction and every
+    /// drift-gate scene stays byte-identical.
+    private func serviceCompletionLine(snapshot: VehicleTelemetrySnapshot) -> String? {
+        VehicleServiceWindow.completionLine(
+            for: snapshot.serviceEstimatedEndAt,
+            isInService: homeState.selectedBadgeStatus == .inService
+        )
+    }
+
     /// The LOW crossfade layer — the summary hero only (peek). Identical pixels
     /// to the top of `sheetDense` so the crossfade reads as a stationary summary.
     @ViewBuilder
@@ -505,7 +558,8 @@ struct HomeScreen: View {
                 // Live: reflect the real wire status (parked/charging/offline/
                 // in_service→neutral) in the design badge. Simulated: `.parked`.
                 status: homeState.selectedBadgeStatus,
-                freshness: freshnessStamp(snapshot: snapshot)
+                freshness: freshnessStamp(snapshot: snapshot),
+                serviceCompletion: serviceCompletionLine(snapshot: snapshot)
             )
         }
     }
@@ -543,7 +597,11 @@ struct HomeScreen: View {
                 isEditingPlate: $isEditingPlate,
                 onRelinkTesla: onRelinkTesla,
                 isLive: isLive,
-                freshness: freshnessStamp(snapshot: snapshot)
+                freshness: freshnessStamp(snapshot: snapshot),
+                // The SAME line the peek layer gets — the crossfade dissolves the
+                // two summaries into each other, so they must match line for line.
+                serviceCompletion: serviceCompletionLine(snapshot: snapshot),
+                onEditServiceWindow: { isEditingServiceWindow = true }
             )
         }
     }

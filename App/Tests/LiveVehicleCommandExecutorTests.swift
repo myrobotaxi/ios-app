@@ -14,6 +14,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
     private func makeExecutor(
         _ sender: any VehicleCommandSending,
         plateEndpoint: any VehiclePlateEndpoint = ScriptedPlateEndpoint(),
+        serviceWindowEndpoint: any VehicleServiceWindowEndpoint = ScriptedServiceWindowEndpoint(),
         driving: Bool = false,
         maxWakeRetries: Int = 1,
         settleWindow: TimeInterval = 15
@@ -22,6 +23,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
             vehicleID: "veh-1",
             sender: sender,
             plateEndpoint: plateEndpoint,
+            serviceWindowEndpoint: serviceWindowEndpoint,
             driving: driving,
             // MYR-286 — the RAW owner-entered plate (empty = none set). The
             // `VIN ····xxxx` string is a DISPLAY fallback and never lives here.
@@ -34,6 +36,112 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
 
     private static func restError(_ code: String, _ status: Int) -> RestError {
         .http(status: status, code: ErrorPayload.Code(rawValue: code), message: nil, subCode: nil)
+    }
+
+    // MARK: - MYR-316 service window (an owner write, NOT a Tesla command)
+
+    /// The load-bearing property: the executor adopts the SERVER'S RESOLVED echo,
+    /// not the instant it submitted. Tesla's `service_etc` outranks the owner's
+    /// entry server-side, so an owner who types 4 PM against a Tesla estimate of
+    /// 2 PM must end up showing 2 PM — the value the rider's floor is built from.
+    /// A client that echoed its own submission would put the owner sheet and the
+    /// rider picker into permanent disagreement.
+    @MainActor
+    func testSetServiceWindowAdoptsTheServerResolvedEchoNotTheSubmission() async throws {
+        let owner = ISO8601DateFormatter().date(from: "2026-08-01T23:00:00Z")!
+        let tesla = "2026-08-01T21:00:00.000Z"
+        let endpoint = ScriptedServiceWindowEndpoint(resolved: tesla)
+        let executor = makeExecutor(ScriptedCommandSender(), serviceWindowEndpoint: endpoint)
+
+        try await executor.setServiceWindow(owner)
+
+        XCTAssertEqual(
+            executor.controls.serviceEstimatedEndAt,
+            ISO8601DateFormatter().date(from: "2026-08-01T21:00:00Z"),
+            "Tesla's estimate outranks the owner's entry — the echo is the truth"
+        )
+        let submitted = await endpoint.submitted()
+        XCTAssertEqual(
+            submitted, ISO8601DateFormatter().date(from: "2026-08-01T23:00:00Z"),
+            "the owner's instant still travels to the server verbatim"
+        )
+        XCTAssertEqual(executor.uiState(for: .serviceWindow), .idle)
+        XCTAssertTrue(executor.isKnown(.serviceWindow))
+    }
+
+    /// A CLEAR sends nil and adopts whatever the server resolves — which may still
+    /// be non-nil if Tesla holds an estimate.
+    @MainActor
+    func testSetServiceWindowClearAdoptsTheResolvedNull() async throws {
+        let endpoint = ScriptedServiceWindowEndpoint(resolved: nil)
+        let executor = makeExecutor(ScriptedCommandSender(), serviceWindowEndpoint: endpoint)
+
+        try await executor.setServiceWindow(nil)
+        XCTAssertNil(executor.controls.serviceEstimatedEndAt)
+    }
+
+    /// The two failure shapes fold onto DISTINCT notices, and neither blames "the
+    /// car" — no Tesla call happens on this path.
+    @MainActor
+    func testServiceWindowFailuresFoldOntoTheirOwnNotices() async throws {
+        let past = makeExecutor(
+            ScriptedCommandSender(),
+            serviceWindowEndpoint: ScriptedServiceWindowEndpoint(failure: Self.restError("invalid_request", 400))
+        )
+        try await past.setServiceWindow(Date().addingTimeInterval(3600))
+        XCTAssertEqual(past.uiState(for: .serviceWindow).notice, .serviceWindowPast)
+        XCTAssertFalse(past.uiState(for: .serviceWindow).isPending)
+
+        let unreachable = makeExecutor(
+            ScriptedCommandSender(),
+            serviceWindowEndpoint: ScriptedServiceWindowEndpoint(failure: Self.restError("internal_error", 500))
+        )
+        try await unreachable.setServiceWindow(Date().addingTimeInterval(3600))
+        XCTAssertEqual(unreachable.uiState(for: .serviceWindow).notice, .serviceWindowNotSaved)
+
+        for notice in [VehicleCommandNotice.serviceWindowPast, .serviceWindowNotSaved] {
+            XCTAssertFalse(
+                notice.message.lowercased().contains("car"),
+                "\(notice) blames the car for a write that never touches Tesla"
+            )
+            XCTAssertNil(notice.action, "neither service-window failure is fixed by re-linking Tesla")
+        }
+    }
+
+    /// The snapshot reconcile must adopt a NIL window — that is what a car
+    /// leaving service produces (the server clears the field), and skipping it
+    /// would strand the rider's floor after the car came back.
+    @MainActor
+    func testReconcileAdoptsBothAValueAndItsClearing() async throws {
+        let executor = makeExecutor(ScriptedCommandSender())
+
+        var inService = Self.serviceState(serviceEstimatedEndAt: "2026-08-01T21:00:00.000Z")
+        executor.reconcile(from: inService)
+        XCTAssertEqual(
+            executor.controls.serviceEstimatedEndAt,
+            ISO8601DateFormatter().date(from: "2026-08-01T21:00:00Z")
+        )
+
+        inService.status = .parked
+        inService.serviceEstimatedEndAt = nil
+        executor.reconcile(from: inService)
+        XCTAssertNil(
+            executor.controls.serviceEstimatedEndAt,
+            "a car out of service must not keep its old window — the floor would outlive the visit"
+        )
+    }
+
+    private static func serviceState(serviceEstimatedEndAt: String?) -> VehicleState {
+        var state = VehicleState(
+            vehicleId: "veh-1", name: "Lunar", model: "Model Y", year: 2026, color: "Quicksilver",
+            status: .inService, speed: 0, heading: 0, latitude: 37.79, longitude: -122.39,
+            locationName: "Tesla Service", locationAddress: "999 Brannan St",
+            chargeLevel: 61, estimatedRange: 166, interiorTemp: 70, exteriorTemp: 63,
+            odometerMiles: 18432, fsdMilesSinceReset: 11274,
+            lastUpdated: "2026-07-29T10:00:00Z"
+        )
+        state.serviceEstimatedEndAt = serviceEstimatedEndAt
+        return state
     }
 
     // MARK: control action → command + optimistic apply
@@ -881,5 +989,36 @@ final class GatedCommandSender: VehicleCommandSending, @unchecked Sendable {
     func callCount() -> Int {
         lock.lock(); defer { lock.unlock() }
         return count
+    }
+}
+
+
+// MARK: - MYR-316 fakes
+
+/// A scripted stand-in for the service-window write. `resolved` is what the
+/// SERVER decides the window is, which is deliberately separate from what the
+/// caller submits — that separation is the whole point of the endpoint's echo.
+private actor ScriptedServiceWindowEndpoint: VehicleServiceWindowEndpoint {
+    private let resolved: String?
+    private let failure: RestError?
+    private var lastSubmitted: String?
+
+    init(resolved: String? = nil, failure: RestError? = nil) {
+        self.resolved = resolved
+        self.failure = failure
+    }
+
+    func setServiceWindow(expectedEndAt: String?, vehicleID: String) async throws -> VehicleServiceWindowResponse {
+        lastSubmitted = expectedEndAt
+        if let failure { throw failure }
+        return VehicleServiceWindowResponse(vehicleId: vehicleID, serviceEstimatedEndAt: resolved)
+    }
+
+    /// The instant the executor actually sent, decoded back for assertion.
+    func submitted() -> Date? {
+        guard let lastSubmitted else { return nil }
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.date(from: lastSubmitted) ?? ISO8601DateFormatter().date(from: lastSubmitted)
     }
 }

@@ -227,6 +227,15 @@ struct RideChip: View {
     let title: String
     let selected: Bool
     var monospaced: Bool = false
+    /// MYR-316 — the chip names a real option that is not available right now (a
+    /// scheduling slot before the vehicle is back from service). It stays VISIBLE
+    /// and dimmed rather than disappearing: a picker whose contents silently
+    /// changed shape would leave the rider wondering what happened to the morning,
+    /// while a dimmed row plus the card's caption ("Lunar is in service until …")
+    /// makes the cause legible. Untappable, and hidden from accessibility
+    /// interaction, so it can't be reached by any route. `false` by default → every
+    /// existing chip renders exactly as before.
+    var unavailable: Bool = false
     let action: () -> Void
 
     var body: some View {
@@ -243,6 +252,9 @@ struct RideChip: View {
         }
         .buttonStyle(.plain)
         .frame(minHeight: MRTMetrics.minTapTarget - 18)
+        .opacity(unavailable ? 0.32 : 1)
+        .allowsHitTesting(!unavailable)
+        .accessibilityHidden(unavailable)
     }
 }
 

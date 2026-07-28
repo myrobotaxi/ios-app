@@ -62,6 +62,9 @@ final class DebugCommandNoticeFleet: VehicleFleet {
             vehicleID: vehicle.id,
             sender: DebugFailingCommandSender(error: Self.error(for: variant)),
             plateEndpoint: DebugPlateEndpoint(),
+            // MYR-316 — never exercised in these scenes (none is in service), but
+            // the seam is required; the stub keeps the executor total.
+            serviceWindowEndpoint: DebugServiceWindowEndpoint(),
             driving: false,
             plate: vehicle.plate,
             wakeRetryDelay: .zero,

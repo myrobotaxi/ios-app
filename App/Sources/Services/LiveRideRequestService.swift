@@ -58,6 +58,8 @@ final class LiveRideRequestService: RideRequestService {
     /// Observed by the rider's `SharedViewerScreen` to surface honest messaging
     /// and route toward scheduling — never a decline, never a retry.
     private(set) var vehicleUnavailableFailure: RideVehicleUnavailableFailure?
+    /// MYR-316 — see `RideRequestService.scheduleWindowFailure`.
+    private(set) var scheduleWindowFailure: RideScheduleWindowFailure?
 
     /// MYR-292 — which role's flow put the CURRENT `activeRequest` there.
     ///
@@ -322,10 +324,25 @@ final class LiveRideRequestService: RideRequestService {
                 //    optimistic pending and raise `vehicleUnavailableFailure` so the
                 //    rider gets honest copy + the scheduling route. NEVER retried:
                 //    the identical POST would 409 again (no retry loop).
+                //  SERVICE WINDOW (MYR-316) — a typed `400 invalid_request` on a
+                //    request that carries a SCHEDULE: the server refused the
+                //    pickup time because it falls before the vehicle's
+                //    `serviceEstimatedEndAt`. It is a 400, so like the three
+                //    splits above it MUST be caught BEFORE the definitive branch,
+                //    which would drop it into `.declined` — telling the rider the
+                //    owner refused them when in fact the car is still in the shop
+                //    is exactly the class of lie MYR-233 removed for `busy`.
+                //    Scoped to SCHEDULED creates on purpose: `invalid_request` is
+                //    a generic code, and attributing every 400 to a service window
+                //    would mislabel real malformed-input failures. An instant
+                //    ("Now") request cannot hit this rule at all — it carries no
+                //    `scheduledFor` for the server to compare.
                 if case RestError.rideActive(let active) = error {
                     await self.adoptRideActive(active)
                 } else if Self.isVehicleUnavailable(error) {
                     self.failCreateVehicleUnavailable()
+                } else if Self.isScheduleWindowRefusal(error, input: input) {
+                    self.failCreateScheduleWindow()
                 } else if Self.isSessionFailure(error) {
                     self.failCreateSessionError()
                 } else if Self.isDefinitiveCreateFailure(error) {
@@ -370,6 +387,36 @@ final class LiveRideRequestService: RideRequestService {
     /// value), never the human message (FR-7.1).
     private static func isVehicleUnavailable(_ error: Error) -> Bool {
         (error as? RestError)?.isVehicleUnavailable == true
+    }
+
+    /// MYR-316: True when the failure is a typed `400 invalid_request` on a ride
+    /// that carries a SCHEDULE — i.e. the server's service-window refusal.
+    ///
+    /// Branches on the typed status + code, NEVER the human message (FR-7.1),
+    /// even though that message is the only thing that names the estimated end.
+    /// The narrowing to scheduled requests is what keeps this from swallowing
+    /// genuine malformed-input 400s: an on-demand create has no `scheduledFor`,
+    /// so the server has nothing to compare a window against and this rule cannot
+    /// have fired.
+    private static func isScheduleWindowRefusal(_ error: Error, input: RideRequestInput) -> Bool {
+        guard input.schedule != nil, let rest = error as? RestError else { return false }
+        guard case .http(let status, let code, _, _) = rest else { return false }
+        return status == 400 && code?.rawValue == "invalid_request"
+    }
+
+    /// MYR-316 SERVICE-WINDOW create failure: the server refused the create
+    /// because the requested pickup precedes the car's estimated return, so NO
+    /// ride was created. Clear the stuck optimistic pending WITHOUT touching
+    /// `.declined` (nobody declined) and raise a fresh `scheduleWindowFailure`.
+    /// The rider's DRAFT lives in `SharedViewerState` and is untouched, so
+    /// re-picking a time keeps the whole trip. Never auto-retried: the identical
+    /// POST would 400 again.
+    private func failCreateScheduleWindow() {
+        guard let request = activeRequest, request.status == .pending else { return }
+        activeRequest = nil
+        activeRequestOrigin = nil
+        serverRideID = nil
+        scheduleWindowFailure = RideScheduleWindowFailure()
     }
 
     /// MYR-233 VEHICLE_UNAVAILABLE create failure: the server refused the create
@@ -501,6 +548,16 @@ final class LiveRideRequestService: RideRequestService {
                 // retry: the same POST would 409 again.
                 if Self.isVehicleUnavailable(error) {
                     self?.vehicleUnavailableFailure = RideVehicleUnavailableFailure()
+                }
+                // MYR-316 — the ACCEPT half of the service-window refusal. An
+                // owner accepting a SCHEDULED request whose pickup precedes the
+                // car's estimated return gets the same typed 400, and the same
+                // honest notice + re-pick route as the create path, rather than a
+                // silent snap-back to the incoming card with no explanation. Same
+                // scoping rule: only for a request that actually carries a
+                // schedule. Still no retry — the same POST would 400 again.
+                if let input = self?.activeRequest?.input, Self.isScheduleWindowRefusal(error, input: input) {
+                    self?.scheduleWindowFailure = RideScheduleWindowFailure()
                 }
                 if let ride = try? await api.rideRequest(id: id) {
                     self?.integrate(ride)

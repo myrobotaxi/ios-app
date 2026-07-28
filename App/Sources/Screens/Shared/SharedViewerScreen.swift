@@ -53,6 +53,12 @@ struct SharedViewerScreen: View {
     /// with the draft intact by `handleVehicleUnavailable()`, where the CTA now
     /// routes to scheduling.
     @State private var showVehicleUnavailableToast = false
+    /// MYR-316 — a scheduled request was refused because the pickup precedes the
+    /// vehicle's estimated return from service. Raised by
+    /// `handleScheduleWindowFailure()`, which lands the rider back on Search with
+    /// the schedule picker OPEN and re-floored, so the correction is the very next
+    /// thing they touch.
+    @State private var showScheduleWindowToast = false
     /// MYR-271 — the tracking sheet's settled visible height, reported by
     /// `RiderTrackingSheet` on every settle. The recenter button + the tracking map
     /// camera inset re-anchor ABOVE this so both clear the card in every detent.
@@ -280,6 +286,13 @@ struct SharedViewerScreen: View {
             // notice. No retry is attempted anywhere on this path.
             if failure != nil { handleVehicleUnavailable() }
         }
+        .onChange(of: rideRequestService.scheduleWindowFailure) { _, failure in
+            // MYR-316: a `400 invalid_request` on a SCHEDULED ride is NOT an owner
+            // decline — never let it drive `DeclinedNotice`. Send the rider back to
+            // the schedule picker (draft intact), which re-derives its floor from
+            // the fleet row and will now dim the slot they picked.
+            if failure != nil { handleScheduleWindowFailure() }
+        }
         // MYR-233 own-ride exception (criterion 4): mirror "this rider holds an
         // open ride" onto the viewer state, which folds it into `liveFleetMember`
         // so the rider carrying the ride never sees their own car as Busy. Seeded
@@ -294,6 +307,16 @@ struct SharedViewerScreen: View {
             // and the way forward. Muted tone — this is not an error the rider
             // caused, and not a refusal.
             message: "That car just became unavailable. Your trip’s saved — try scheduling it.",
+            systemImage: "calendar",
+            tint: .mrtTextMuted
+        )
+        .mrtSuccessToast(
+            isPresented: $showScheduleWindowToast,
+            // Honest and specific about WHAT is wrong (the time, not the rider,
+            // not the owner) without quoting the server's sentence — the picker
+            // itself now shows which slots are reachable, which is more useful
+            // than a number in a toast. Muted: nothing failed, a time moved.
+            message: "That pickup is before the car is back from service. Pick a later time.",
             systemImage: "calendar",
             tint: .mrtTextMuted
         )
@@ -956,6 +979,22 @@ struct SharedViewerScreen: View {
             viewerState.sheetPhase = .search
         }
         showVehicleUnavailableToast = true
+    }
+
+    // MARK: MYR-316 — `400 invalid_request` on a scheduled ride is NOT a decline
+    //
+    // The server refused because the requested pickup precedes the vehicle's
+    // estimated return from service. No ride was created and nobody refused the
+    // rider — they simply picked a time the car cannot make. Return to Search
+    // with the draft intact AND arm the schedule card (the same one-shot
+    // `opensScheduleOnSearch` hook MYR-233 uses), so the picker — re-floored from
+    // the fleet row — is the next thing on screen rather than something the rider
+    // has to go find.
+    private func handleScheduleWindowFailure() {
+        viewerState.showDeclinedNotice = false
+        viewerState.opensScheduleOnSearch = true
+        viewerState.sheetPhase = .search
+        showScheduleWindowToast = true
     }
 
     /// MYR-233 criterion 4 — mirror the rider's own open ride onto the viewer

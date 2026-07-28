@@ -77,6 +77,12 @@ public enum VehicleControlKey: Sendable, Hashable {
     /// MYR-286 `setPlate` wrote only to memory and the edit sheet silently
     /// discarded the owner's input.
     case plate
+    /// MYR-316 — the owner's "expected back" entry. Like `.plate` this is NOT a
+    /// §7.9 Tesla command but a local owner-scoped write (`PUT
+    /// /api/tesla/vehicles/{id}/service-window`), keyed here for the identical
+    /// pending/notice UX. Distinct from `.plate` because the two can be in flight
+    /// independently and their failures say different things.
+    case serviceWindow
 
     /// The control's name in owner-facing copy (MYR-301). The notice row sits
     /// BELOW the tile row, so it has to say which control it is talking about —
@@ -92,6 +98,7 @@ public enum VehicleControlKey: Sendable, Hashable {
         case .passengerSeat: "Passenger seat"
         case .media: "Media"
         case .plate: "Plate"
+        case .serviceWindow: "Expected back"
         }
     }
 
@@ -106,7 +113,9 @@ public enum VehicleControlKey: Sendable, Hashable {
         case .chargePort: "bolt.fill"
         // The plate lives in a labelled details ROW, not a tile — its notice
         // renders in place, next to itself, so it needs no disc icon.
-        case .temp, .driverSeat, .passengerSeat, .media, .plate: nil
+        // The plate and the expected-back time both live in labelled details
+        // ROWS, not tiles — their notices render in place, next to themselves.
+        case .temp, .driverSeat, .passengerSeat, .media, .plate, .serviceWindow: nil
         }
     }
 }
@@ -157,6 +166,13 @@ public enum VehicleCommandNotice: Sendable, Equatable {
     // never asked, never asleep, and never the thing that refused.
     case invalidPlate    // 400 invalid_request — the plate itself violates the rule
     case plateNotSaved   // transport / 404 / 5xx — the write didn't land
+    // MYR-316 — the two service-window outcomes. Same reasoning as the plate
+    // pair: no Tesla call happens on this path, so nothing here may blame "the
+    // car". A 400 here means the instant is not in the future — which the entry
+    // sheet already prevents locally, so seeing it means the clock moved under a
+    // sheet left open, and the copy says exactly that rather than something vague.
+    case serviceWindowPast     // 400 invalid_request — the instant is no longer future
+    case serviceWindowNotSaved // transport / 404 / 5xx — the write didn't land
 
     public var message: String {
         switch self {
@@ -188,6 +204,13 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         // Reachability / store failure on the plate write. Deliberately NOT
         // "Couldn't reach the car": no Tesla call is involved in §7.14 at all.
         case .plateNotSaved: "Couldn\u{2019}t save the plate"
+        // MYR-316 — name the real problem (a time that has passed) and imply the
+        // fix (pick a later one) without scolding. The owner most likely left the
+        // sheet open past the time they picked.
+        case .serviceWindowPast: "Pick a time in the future"
+        // Reachability / store failure. Deliberately NOT "Couldn't reach the car":
+        // no Tesla call is involved in this write at all.
+        case .serviceWindowNotSaved: "Couldn\u{2019}t save the expected time"
         }
     }
 
@@ -209,6 +232,10 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         // the token is measured with the rest so the vocabulary stays uniform.
         case .invalidPlate: "Check it"
         case .plateNotSaved: "Not saved"
+        // MYR-316 — likewise never tile-rendered (the expected-back time is a
+        // details row), but tokenized with the rest so the vocabulary stays uniform.
+        case .serviceWindowPast: "Too soon"
+        case .serviceWindowNotSaved: "Not saved"
         }
     }
 
@@ -221,8 +248,12 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         // MYR-286 — neither plate notice routes anywhere: the fix for an invalid
         // plate is to re-open the edit sheet and correct it (the row is already
         // the tap target), and a failed save is retried by saving again.
+        // MYR-316 — same for the service window: a past instant is fixed by
+        // re-opening the row and picking a later one; a failed save is retried
+        // by saving again. Neither is a broken Tesla connection.
         case .waking, .asleep, .pairKey, .cooldown, .rejected, .failed,
-             .invalidPlate, .plateNotSaved: nil
+             .invalidPlate, .plateNotSaved,
+             .serviceWindowPast, .serviceWindowNotSaved: nil
         }
     }
 
@@ -265,6 +296,12 @@ public enum VehicleControlField: Sendable, Hashable, CaseIterable {
     /// Until then the details row shows the designed "Add plate" affordance and
     /// the display surfaces fall back to `VIN ····xxxx` — never a fabricated plate.
     case plate
+    /// MYR-316 — the owner's "expected back" entry. Like `.plate` it IS on the
+    /// read contract (`VehicleState.serviceEstimatedEndAt`, contracts 0.17.0), so
+    /// it becomes known the moment a snapshot arrives or the owner saves one.
+    /// Until then the row shows its "Set a time" affordance rather than a
+    /// fabricated estimate.
+    case serviceWindow
 }
 
 /// One control's live command state: pending (a command is in flight — suppress
@@ -308,6 +345,16 @@ public struct VehicleControlsSnapshot: Sendable, Equatable {
     /// owner cannot edit. The simulated executor seeds it from the fixture plate,
     /// so M1 is unchanged.
     public var plate: String
+    /// MYR-316 — the RAW resolved service window (`serviceEstimatedEndAt`), or
+    /// `nil` when none is known. This is the value the "Expected back" row shows
+    /// and the entry sheet prefills; it is the SERVER'S RESOLVED value, which may
+    /// be Tesla's estimate rather than the owner's own entry (the wire carries no
+    /// source discriminator, and the owner does not need one — the server keeps
+    /// Tesla-precedence and the app simply renders what it resolved).
+    ///
+    /// Always `nil` on the simulated path, which is what keeps the M1 /
+    /// drift-gate sheets pixel-identical: a nil window renders nothing anywhere.
+    public var serviceEstimatedEndAt: Date?
 
     public init(
         locked: Bool,
@@ -325,7 +372,8 @@ public struct VehicleControlsSnapshot: Sendable, Equatable {
         trackIndex: Int,
         volume: Double,
         scrubPercent: Double,
-        plate: String
+        plate: String,
+        serviceEstimatedEndAt: Date? = nil
     ) {
         self.locked = locked
         self.climateOn = climateOn
@@ -343,6 +391,7 @@ public struct VehicleControlsSnapshot: Sendable, Equatable {
         self.volume = volume
         self.scrubPercent = scrubPercent
         self.plate = plate
+        self.serviceEstimatedEndAt = serviceEstimatedEndAt
     }
 }
 
@@ -369,6 +418,10 @@ public protocol VehicleCommandExecutor: AnyObject, Observable {
     func skipTrack(_ direction: VehicleTrackDirection) async throws
     func setVolume(_ volume: Double) async throws
     func setPlate(_ plate: String) async throws
+    /// MYR-316 — persist the owner's "expected back" time (`nil` clears). Like
+    /// `setPlate` this is NOT a Tesla command: it is an owner-scoped write whose
+    /// response carries the server's RESOLVED window, which the executor adopts.
+    func setServiceWindow(_ expectedEndAt: Date?) async throws
 
     /// Continuous scrub drag — not a vehicle command (see header); synchronous
     /// so the slider tracks the finger with no await latency.
@@ -505,6 +558,15 @@ public final class SimulatedVehicleCommandExecutor: VehicleCommandExecutor {
 
     public func setScrubPercent(_ percent: Double) {
         controls.scrubPercent = min(100, max(0, percent))
+    }
+
+    /// MYR-316 — M1 has no backend and no in-service vehicle in its fixtures, so
+    /// this writes locally like every other simulated setter. It exists to keep
+    /// the seam total; nothing in the simulated fleet ever calls it, and the
+    /// simulated `serviceEstimatedEndAt` stays nil, so every drift-gate scene
+    /// renders exactly as it did before this issue.
+    public func setServiceWindow(_ expectedEndAt: Date?) async throws {
+        controls.serviceEstimatedEndAt = expectedEndAt
     }
 
     public func setPlate(_ plate: String) async throws {

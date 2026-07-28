@@ -351,6 +351,10 @@ struct RideRequestSearchContent: View {
             schedDay = schedule.day
             schedTime = schedule.time
         }
+        // MYR-316 — the MYR-233 route lands here precisely because the car is
+        // unavailable, so this is the likeliest of the three entry points to open
+        // on a blocked slot.
+        reconcileScheduleSelectionToFloor()
         scheduleSheetOpen = true
     }
 
@@ -366,6 +370,8 @@ struct RideRequestSearchContent: View {
                     schedDay = schedule.day
                     schedTime = schedule.time
                 }
+                // MYR-316 — never OPEN on a slot the floor forbids.
+                reconcileScheduleSelectionToFloor()
                 scheduleSheetOpen = true
             }
             Rectangle().fill(Color.mrtBorder).frame(width: MRTMetrics.hairline, height: 16)
@@ -385,6 +391,7 @@ struct RideRequestSearchContent: View {
         Button {
             schedDay = schedule.day
             schedTime = schedule.time
+            reconcileScheduleSelectionToFloor() // MYR-316
             scheduleSheetOpen = true
         } label: {
             HStack(spacing: 7) {
@@ -871,30 +878,142 @@ struct RideRequestSearchContent: View {
         RideSlideUpCard(onDismiss: { scheduleSheetOpen = false }) {
             RideSlideUpCardTitle(title: "Schedule pickup") { scheduleSheetOpen = false }
 
+            // MYR-316 — why the early slots are dimmed. Muted, one line, and shown
+            // ONLY when the target vehicle actually has a known service window; a
+            // car that is not in service (or one whose visit has no estimate — the
+            // common case) renders this card exactly as it always has.
+            if let caption = serviceCaption {
+                Text(caption)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Color.mrtTextMuted)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 14)
+            }
+
             RideEyebrowText(text: "Day", size: 10.5).padding(.bottom, 9)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 7) {
                     ForEach(RideRequestFixtures.scheduleDays, id: \.self) { day in
-                        RideChip(title: day, selected: schedDay == day) { schedDay = day }
+                        // A day is only out when EVERY one of its times is out —
+                        // the boundary day (car back at 2 PM) stays pickable.
+                        let dayAllowed = !RideScheduleFloor.allowedTimes(
+                            on: day, times: RideRequestFixtures.scheduleTimes, floor: schedulingFloor
+                        ).isEmpty
+                        RideChip(title: day, selected: schedDay == day, unavailable: !dayAllowed) {
+                            schedDay = day
+                            // Moving to a day whose earlier slots are blocked must
+                            // not leave a blocked TIME selected — otherwise the CTA
+                            // would silently disable itself with no visible cause.
+                            reconcileScheduleSelectionToFloor()
+                        }
                     }
                 }
             }
             .padding(.bottom, 18)
 
             RideEyebrowText(text: "Time", size: 10.5).padding(.bottom, 9)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 7) {
-                    ForEach(RideRequestFixtures.scheduleTimes, id: \.self) { time in
-                        RideChip(title: time, selected: schedTime == time, monospaced: true) { schedTime = time }
+            // MYR-316 — the time row is a long horizontal scroller, and the floor
+            // can MOVE the selection (to the first bookable slot) without the
+            // rider touching anything. A selection they cannot see is worse than
+            // no selection: the CTA would name a time that is nowhere on screen.
+            // So scroll it into view whenever it changes. Only ever a scroll
+            // POSITION — with no floor the selection never moves on its own and
+            // this settles on the same default slot the card has always opened on.
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 7) {
+                        ForEach(RideRequestFixtures.scheduleTimes, id: \.self) { time in
+                            let allowed = RideScheduleFloor.allows(
+                                day: schedDay, time: time, floor: schedulingFloor
+                            )
+                            RideChip(
+                                title: time, selected: schedTime == time,
+                                monospaced: true, unavailable: !allowed
+                            ) { schedTime = time }
+                            .id(time)
+                        }
+                    }
+                }
+                .onAppear { proxy.scrollTo(schedTime, anchor: .center) }
+                .onChange(of: schedTime) { _, time in
+                    // Reduce Motion still scrolls — it is a position change, not
+                    // decorative motion — but without the spring (CLAUDE.md).
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
+                        proxy.scrollTo(time, anchor: .center)
                     }
                 }
             }
             .padding(.bottom, 20)
 
             MRTButton("Set pickup \u{00B7} \(schedDay) \(schedTime)", variant: .gold) {
+                guard isSelectedSlotBookable else { return }
                 viewerState.draftSchedule = RideSchedule(day: schedDay, time: schedTime)
                 scheduleSheetOpen = false
             }
+            // The last line of defence: with every slot in the picker's horizon
+            // behind the floor there is nothing valid to commit, so the CTA is
+            // honestly inert rather than sending a request the server would refuse.
+            .opacity(isSelectedSlotBookable ? 1 : 0.4)
+            .allowsHitTesting(isSelectedSlotBookable)
+        }
+    }
+
+    // MARK: MYR-316 — the service-window scheduling floor
+
+    /// The vehicle this schedule is being picked FOR. The rider's draft always
+    /// carries a fleet-member id (seeded at idle, re-pointed by the Review
+    /// picker), and `fleetMember(forID:)` resolves it to the live join in live
+    /// mode or the fixture row in sim — where `serviceEstimatedEndAt` is always
+    /// nil, which is what keeps every simulated scene pixel-identical.
+    private var targetVehicle: FleetMember {
+        viewerState.fleetMember(forID: viewerState.draftFleetMemberID)
+    }
+
+    /// The earliest bookable instant, or `nil` for NO BOUND.
+    private var schedulingFloor: Date? {
+        VehicleServiceWindow.earliestSelectable(
+            serviceEstimatedEndAt: targetVehicle.serviceEstimatedEndAt
+        )
+    }
+
+    /// "Lunar is in service until ~Sat 2 PM", or `nil`.
+    private var serviceCaption: String? {
+        VehicleServiceWindow.schedulingCaption(
+            vehicleName: targetVehicle.owner,
+            serviceEstimatedEndAt: targetVehicle.serviceEstimatedEndAt
+        )
+    }
+
+    private var isSelectedSlotBookable: Bool {
+        RideScheduleFloor.allows(day: schedDay, time: schedTime, floor: schedulingFloor)
+    }
+
+    /// Pull the current selection forward to the first bookable slot when the
+    /// floor has put it out of reach.
+    ///
+    /// Called when the picker OPENS and whenever the day changes, rather than
+    /// continuously: it must not fight the rider mid-selection, and a slot that
+    /// is legal when chosen stays chosen. When nothing in the picker's horizon
+    /// clears the floor it leaves the selection alone — the dimmed chips and the
+    /// inert CTA then tell the truth, which is better than silently jumping the
+    /// rider to a slot that is also invalid.
+    @MainActor
+    private func reconcileScheduleSelectionToFloor() {
+        guard let floor = schedulingFloor,
+              !RideScheduleFloor.allows(day: schedDay, time: schedTime, floor: floor)
+        else { return }
+        if let first = RideScheduleFloor.allowedTimes(
+            on: schedDay, times: RideRequestFixtures.scheduleTimes, floor: floor
+        ).first {
+            schedTime = first
+        } else if let slot = RideScheduleFloor.firstAllowedSlot(
+            days: RideRequestFixtures.scheduleDays,
+            times: RideRequestFixtures.scheduleTimes,
+            floor: floor
+        ) {
+            schedDay = slot.day
+            schedTime = slot.time
         }
     }
 }

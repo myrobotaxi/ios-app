@@ -47,6 +47,18 @@ public protocol RideRequestService: AnyObject, Observable {
     /// `nil`/never-set in sim (no network) — see the default implementation.
     var vehicleUnavailableFailure: RideVehicleUnavailableFailure? { get }
 
+    /// MYR-316: the most recent `400 invalid_request` refusal of a SCHEDULED ride
+    /// mutation — the server rejected the pickup time because it falls before the
+    /// target vehicle's `serviceEstimatedEndAt`. Like the two failures above this
+    /// is NOT an owner decline: nobody refused the rider, the car simply is not
+    /// back yet. Should be UNREACHABLE in practice (the picker floors at the same
+    /// instant the server checks), so it exists for the races the floor cannot
+    /// cover — a window that moved while the sheet was open, or a rider on a build
+    /// whose fleet row was fetched before the owner set the time. Bumps to a fresh
+    /// value per occurrence for the same reason its siblings do.
+    /// `nil`/never-set in sim (no network) — see the default implementation.
+    var scheduleWindowFailure: RideScheduleWindowFailure? { get }
+
     /// MYR-317: how many OTHER pending incoming requests are queued BEHIND the one
     /// `activeRequest` is currently showing the owner. Drives the muted
     /// "+N more waiting" chip on `IncomingRequestSheet` — the owner's only signal
@@ -130,6 +142,11 @@ public extension RideRequestService {
     /// refuse a mutation with `409 vehicle_unavailable`. Only
     /// `LiveRideRequestService` overrides this (MYR-233).
     var vehicleUnavailableFailure: RideVehicleUnavailableFailure? { nil }
+
+    /// Default: the simulated service (M1) has no network, so no server can
+    /// refuse a scheduled mutation on a service window. Only
+    /// `LiveRideRequestService` overrides this (MYR-316).
+    var scheduleWindowFailure: RideScheduleWindowFailure? { nil }
 
     /// Default: the simulated service (M1) has no incoming FEED — its single
     /// `activeRequest` is the whole world (one rider, one owner, one in-process
@@ -236,6 +253,22 @@ public struct RideSessionFailure: Identifiable, Equatable, Sendable {
 /// fresh `id` per occurrence for the same reason `RideSessionFailure` does — two
 /// consecutive refusals must not coalesce and drop the second notice.
 public struct RideVehicleUnavailableFailure: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public init(id: UUID = UUID()) { self.id = id }
+}
+
+/// MYR-316: a SCHEDULED ride mutation was refused `400 invalid_request` because
+/// the requested pickup precedes the vehicle's estimated return from service.
+/// Distinct from `.declined` (the owner refused), from
+/// `RideVehicleUnavailableFailure` (the car is busy RIGHT NOW, and the answer is
+/// to schedule), and from `RideSessionFailure` (the token died) — here the rider
+/// already IS scheduling, and the only thing wrong is which time they picked.
+///
+/// The server names the estimated end in its human message, but this type does
+/// NOT carry it: the app must not parse a server sentence to drive UI (FR-7.1),
+/// and it does not need to — the rider's own fleet row holds the same instant, so
+/// the picker re-floors itself from typed data on the way back.
+public struct RideScheduleWindowFailure: Identifiable, Equatable, Sendable {
     public let id: UUID
     public init(id: UUID = UUID()) { self.id = id }
 }
