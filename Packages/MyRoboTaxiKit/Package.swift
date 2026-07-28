@@ -25,13 +25,21 @@ let package = Package(
         .library(name: "MyRoboTaxiKit", targets: ["MyRoboTaxiKit"])
     ],
     dependencies: [
-        // MYR-316 — 0.17.0 adds the nullable RFC 3339 `serviceEstimatedEndAt` to
-        // BOTH read shapes (`VehicleState` + `VehicleSummary`): when the car's
-        // CURRENT service visit is estimated to end. REST-derived and
-        // SNAPSHOT-ONLY (a `vehicle_update` frame never carries it), so it is
-        // classified in the merger tripwire's `snapshotOnlyFields`, not folded.
-        // (0.16.0 added the eight media now-playing fields + `seatCoolingCapable`.)
-        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.17.0")
+        // MYR-320 — 0.18.0 adds two nullable DETAIL-SHEET strings to `VehicleState`
+        // ONLY (deliberately not to the lean `VehicleSummary` list row):
+        //   • `trimLabel` — the DISPLAY-READY trim designation ("Performance"),
+        //     read from Tesla REST `vehicle_config.performance_package`. It is the
+        //     only one of the trim pair a consumer may render; the sibling `trim`
+        //     stays the raw badge CODE ("p74d") for classification.
+        //   • `fsdVersion` — the FSD software designation as Tesla names it
+        //     ("FSD (Supervised) v14.3.5"), from the newest release-notes title.
+        //     Free-form: rendered verbatim, never parsed or compared.
+        // Both are REST-derived and SNAPSHOT-ONLY (a `vehicle_update` frame never
+        // carries either), so both are classified in the merger tripwire's
+        // `snapshotOnlyFields` rather than folded — see `VehicleStateMerger`.
+        // (0.17.0 added `serviceEstimatedEndAt`; 0.16.0 the eight media
+        // now-playing fields + `seatCoolingCapable`.)
+        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.18.0")
     ],
     targets: [
         .target(

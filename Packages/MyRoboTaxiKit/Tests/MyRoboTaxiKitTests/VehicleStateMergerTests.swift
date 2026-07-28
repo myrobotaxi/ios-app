@@ -312,11 +312,19 @@ final class VehicleStateMergerTests: XCTestCase {
     /// folding it would invent a delivery path the server does not have. It also
     /// needs no client-side expiry: the server clears it when the car leaves
     /// `in_service`, so a driving/parked row never carries a stale window.
+    /// MYR-320 — `trimLabel` and `fsdVersion` (contracts 0.18.0) join on the same
+    /// grounds as the sibling `trim` already in this set. `trimLabel` is plucked
+    /// from the same REST `vehicle_config` blob (`performance_package`);
+    /// `fsdVersion` comes from the TITLE of the newest `release_notes` entry —
+    /// a REST surface with no `vehicle_data` field and no proto behind it at all.
+    /// The schema states for both that "a `vehicle_update` frame NEVER contains"
+    /// them, so folding either would invent a delivery path the server lacks.
     private static let snapshotOnlyFields: Set<String> = [
         "vehicleId", "name", "model", "year", "color", "vin", "softwareVersion", "trim",
         "licensePlate",
         "seatCoolingCapable",
         "serviceEstimatedEndAt",
+        "trimLabel", "fsdVersion",
     ]
 
     /// The table must account for EVERY property on the generated `VehicleState`.
@@ -509,6 +517,39 @@ final class VehicleStateMergerTests: XCTestCase {
         // client that honored a phantom null would drop a live floor early.
         let cleared = VehicleStateMerger.apply(fields: ["serviceEstimatedEndAt": .null], to: state)
         XCTAssertEqual(cleared.state.serviceEstimatedEndAt, "2026-07-28T21:00:00.000Z")
+    }
+
+    /// MYR-320 — the two contracts-0.18.0 detail-sheet strings are REST-derived,
+    /// so a live delta claiming to carry either must be IGNORED. Both are asserted
+    /// for a VALUE and for an explicit NULL: a folded null would blank the owner's
+    /// details rows off a frame the server never sends, which reads as "we lost
+    /// your car's trim/FSD" rather than the honest absence the rows are built for.
+    func testMyr320TrimLabelAndFsdVersionAreNotFoldedFromALiveDelta() throws {
+        var state = try baseState()
+        state.trimLabel = "Performance"
+        state.fsdVersion = "FSD (Supervised) v14.3.5"
+
+        let phantom = VehicleStateMerger.apply(fields: [
+            "trimLabel": .string("Long Range"),
+            "fsdVersion": .string("FSD (Supervised) v99.0.0"),
+        ], to: state)
+        XCTAssertEqual(
+            phantom.state.trimLabel, "Performance",
+            "a vehicle_update must not change a REST-only field (schema: a delta NEVER contains trimLabel)"
+        )
+        XCTAssertEqual(
+            phantom.state.fsdVersion, "FSD (Supervised) v14.3.5",
+            "a vehicle_update must not change a REST-only field (schema: a delta NEVER contains fsdVersion)"
+        )
+
+        let cleared = VehicleStateMerger.apply(fields: [
+            "trimLabel": .null, "fsdVersion": .null,
+        ], to: state)
+        XCTAssertEqual(cleared.state.trimLabel, "Performance")
+        XCTAssertEqual(cleared.state.fsdVersion, "FSD (Supervised) v14.3.5")
+
+        XCTAssertTrue(Self.snapshotOnlyFields.contains("trimLabel"))
+        XCTAssertTrue(Self.snapshotOnlyFields.contains("fsdVersion"))
     }
 
     /// Unknown wire values on the two MYR-298 string enums survive as
