@@ -51,6 +51,18 @@ public struct Vehicle: Identifiable, Equatable, Sendable {
     /// (contracts v0.13.0 — MYR-279); `nil` before the first snapshot →
     /// honest-unknown. Fixture supplies a value for the SIMULATED path.
     public let softwareVersion: String?
+    /// MYR-320 — the car's FSD software designation exactly as Tesla names it
+    /// ("FSD (Supervised) v14.3.5"), from `VehicleState.fsdVersion` (contracts
+    /// 0.18.0). DISTINCT from `softwareVersion`, which is the installed firmware
+    /// build ("2026.14.3"): the two strings move independently and neither can be
+    /// derived from the other, which is why they are two rows rather than one.
+    ///
+    /// `nil` means the row is OMITTED ENTIRELY — no "Unknown", no placeholder dash
+    /// — because absence is common and normal (a server predating MYR-320, or a
+    /// release-notes read that hasn't completed) and never means the car lacks FSD.
+    /// The fixture leaves it nil, so the SIMULATED sheet is unchanged: this row is
+    /// not in the prototype's details list and appears only on a real snapshot.
+    public let fsdVersion: String?
     /// Per-wheel tire pressures. Not contracted → fixture-only; `nil` live →
     /// honest-unknown (MYR-255 gap list).
     public let tirePressures: TirePressures?
@@ -66,6 +78,7 @@ public struct Vehicle: Identifiable, Equatable, Sendable {
         activity: VehicleActivity,
         vin: String? = nil,
         softwareVersion: String? = nil,
+        fsdVersion: String? = nil,
         tirePressures: TirePressures? = nil
     ) {
         self.id = id
@@ -78,6 +91,7 @@ public struct Vehicle: Identifiable, Equatable, Sendable {
         self.activity = activity
         self.vin = vin
         self.softwareVersion = softwareVersion
+        self.fsdVersion = fsdVersion
         self.tirePressures = tirePressures
     }
 }

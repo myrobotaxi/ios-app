@@ -266,6 +266,17 @@ public enum VehicleStateMerger {
             // declared in the MYR-298 tripwire's `snapshotOnlyFields` for exactly
             // that reason. (It also needs no client-side ageing out: the server
             // clears it automatically the moment the car leaves `in_service`.)
+            //
+            // NOT FOLDED, deliberately: `trimLabel` and `fsdVersion` (contracts
+            // 0.18.0, MYR-320). Both are REST-derived detail-sheet facts read on
+            // the SAME non-waking connectivity-edge / periodic read family as the
+            // sibling `trim` that already sits in `snapshotOnlyFields`:
+            // `trimLabel` comes from `vehicle_config.performance_package`, and
+            // `fsdVersion` from the TITLE of the newest `GET
+            // /api/1/vehicles/{vin}/release_notes` entry — a surface with no
+            // `vehicle_data` field and no proto behind it at all. The schema says
+            // plainly that a `vehicle_update` frame NEVER contains either, so
+            // folding them would invent a delivery path the server does not have.
 
             default:
                 break // unknown / forward-compat field — ignore

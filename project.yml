@@ -19,10 +19,13 @@ packages:
   # product explicitly (same version the Kit resolves — SPM dedupes).
   contracts:
     url: https://github.com/myrobotaxi/contracts.git
-    # MYR-303/308/314 — 0.16.0 adds the eight optional media now-playing fields
-    # (title/artist/album/station/source/durationMs/elapsedMs/volumeMax, all
-    # streamed live) and the REST-only `seatCoolingCapable` seat-spec flag.
-    from: 0.16.0
+    # MYR-320 — 0.18.0 adds the two REST-only detail-sheet strings on
+    # `VehicleState`: `trimLabel` (display-ready "Performance"; the raw `trim`
+    # badge code is never rendered) and `fsdVersion` ("FSD (Supervised) v14.3.5",
+    # rendered verbatim). Both snapshot-only. (0.17.0 added
+    # `serviceEstimatedEndAt`; 0.16.0 the media now-playing fields +
+    # `seatCoolingCapable`.)
+    from: 0.18.0
 
 settings:
   base:

@@ -35,16 +35,28 @@ public enum VehicleServiceWindow {
 
     /// The owner-facing completion time, or `nil` when nothing honest can be said.
     ///
-    /// Two shapes, because a bare "2:00 PM" is ambiguous the moment the estimate
+    /// Two shapes, because a bare "7:09 PM" is ambiguous the moment the estimate
     /// isn't today — and a service visit routinely spans days:
-    ///   • SAME calendar day  → `"~2:00 PM"`
-    ///   • ANY other day      → `"Sat ~2:00 PM"` (weekday + time)
+    ///   • SAME calendar day  → `"7:09 PM"`
+    ///   • ANY other day      → `"Sat, Aug 2 \u{00B7} 7:09 PM"`
     ///
-    /// The `~` is load-bearing: this is an ESTIMATE (Tesla's or the owner's), not
-    /// a commitment, and the copy must not read like an appointment the app can
-    /// guarantee. A weekday name (rather than a date) is enough because a service
-    /// visit that runs more than a week out is not a case this line is trying to
-    /// serve — and the entry sheet shows the full date for anyone who needs it.
+    /// MYR-320, client-directed, two changes from the MYR-316 shape:
+    ///
+    /// 1. NO TILDE. The `~` was meant to mark this as an estimate rather than a
+    ///    commitment, but in front of a wall-clock time it read as noise at best
+    ///    and as a typo at worst — and the word "Estimated" in the label beside it
+    ///    already carries that meaning, in language, where it is unambiguous. A
+    ///    glyph the copy does not need is a glyph that makes the copy look broken.
+    ///    ``containsApproximationGlyph(_:)`` is the tripwire that keeps it gone.
+    /// 2. A REAL DATE, not a bare weekday. "Sat" alone is only unambiguous inside
+    ///    a seven-day horizon and silently wraps outside one — a visit estimated
+    ///    for the Saturday after next reads as this Saturday. "Sat, Aug 2" keeps
+    ///    the weekday (which is what an owner actually plans around) and adds the
+    ///    date that makes it verifiable.
+    ///
+    /// The two halves are joined by the SAME `\u{00B7}` separator the label uses,
+    /// so the whole line reads as one consistently punctuated series rather than
+    /// mixing separators at different levels.
     public static func completionLabel(
         for end: Date?,
         now: Date = Date(),
@@ -52,12 +64,38 @@ public enum VehicleServiceWindow {
     ) -> String? {
         guard let end else { return nil }
         let time = timeFormatter(calendar: calendar).string(from: end)
-        guard !calendar.isDate(end, inSameDayAs: now) else { return "~\(time)" }
-        return "\(weekdayFormatter(calendar: calendar).string(from: end)) ~\(time)"
+        guard !calendar.isDate(end, inSameDayAs: now) else { return time }
+        return "\(dateFormatter(calendar: calendar).string(from: end)) \u{00B7} \(time)"
     }
+
+    /// The label the owner's completion line leads with (MYR-320, client-directed).
+    ///
+    /// Says all three things the line needs to say before the value: that this is
+    /// about SERVICE, that it is an ESTIMATE, and that it is a COMPLETION time.
+    /// The MYR-316 line said only "Estimated completion", which left "estimated
+    /// completion of WHAT" to be inferred from a badge sitting on the row above.
+    public static let completionLabelPrefix = "Service Estimated Completion"
+
+    /// The approved COMPACT variant of ``completionLabelPrefix``, kept here rather
+    /// than in a view so the choice between the two is a stated decision with a
+    /// measurable test behind it instead of a per-surface guess.
+    ///
+    /// NOT SHIPPED on the owner hero: the full prefix measures ~296pt at the hero's
+    /// 12pt (~274pt at 11pt) against a 345pt peek content width — see
+    /// `VehicleServiceWindowTests.testCompletionLineFitsThePeekWidthAtTheHeroTypeScale`,
+    /// which measures the WORST-CASE date/time rather than a convenient example.
+    /// It is retained because that headroom is a measurement, not a guarantee: a
+    /// surface with a narrower content box (or a future longer prefix) has an
+    /// approved shortening to reach for rather than an invented one.
+    public static let compactCompletionLabelPrefix = "Est. Completion"
 
     /// The full line the owner sheet renders beneath the In Service badge, or
     /// `nil` to render NOTHING (honest absence — no "unknown", no placeholder).
+    ///
+    /// "Service Estimated Completion \u{00B7} Sat, Aug 2 \u{00B7} 7:09 PM", or
+    /// "Service Estimated Completion \u{00B7} 7:09 PM" when the estimate is today.
+    /// LABEL + VALUE: the line names what it is before it states a number, which is
+    /// what lets it stand alone if the badge above it ever scrolls away.
     ///
     /// Gated on the status as well as the value: the contract clears the field
     /// automatically when the car leaves `in_service`, but a client that had
@@ -68,10 +106,22 @@ public enum VehicleServiceWindow {
         for end: Date?,
         isInService: Bool,
         now: Date = Date(),
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        compact: Bool = false
     ) -> String? {
         guard isInService, let label = completionLabel(for: end, now: now, calendar: calendar) else { return nil }
-        return "Estimated completion \u{00B7} \(label)"
+        return "\(compact ? compactCompletionLabelPrefix : completionLabelPrefix) \u{00B7} \(label)"
+    }
+
+    /// Whether a string carries the approximation glyph this issue removed.
+    ///
+    /// Exists so "no tilde ANYWHERE" is an assertable property of every formatter
+    /// output rather than a promise scattered across doc comments — the MYR-320
+    /// tests run the whole date matrix through it. Both the ASCII `~` and the
+    /// typographic `\u{2248}` count: reintroducing the idea in a prettier glyph
+    /// would be the same regression.
+    public static func containsApproximationGlyph(_ text: String) -> Bool {
+        text.contains("~") || text.contains("\u{2248}")
     }
 
     // MARK: - 2. Owner entry validation
@@ -121,16 +171,19 @@ public enum VehicleServiceWindow {
     }
 
     /// The muted caption on the scheduling card: "Lunar is in service until
-    /// ~Sat 2 PM". `nil` when there is no window — the card then renders exactly
-    /// as it always has.
+    /// Sat, Aug 2 \u{00B7} 7:09 PM". `nil` when there is no window — the card then
+    /// renders exactly as it always has.
     ///
-    /// The time here is COMPACT ("2 PM", not "2:00 PM") because it sits inside a
-    /// sentence rather than in a value slot, and ":00" reads as precision this
-    /// number does not have. The weekday is dropped when the estimate is today,
-    /// for the same reason it is in ``completionLabel(for:now:calendar:)``.
+    /// MYR-320 — the instant is formatted by ``completionLabel(for:now:calendar:)``,
+    /// the SAME resolver the owner's line uses, so the rider and the owner can
+    /// never see the same window written two different ways. That replaces MYR-316's
+    /// separate in-sentence form (`~Sat 2 PM`, with ":00" dropped on the hour),
+    /// which was a second date grammar maintained in parallel for a stylistic
+    /// reason the client's no-tilde direction has now overruled: one clean format
+    /// everywhere beats a bespoke one per surface.
     ///
     /// Note the caption names the ESTIMATED END, not the floor: the buffer is an
-    /// implementation detail of which slots we offer, and quoting "2:15 PM" would
+    /// implementation detail of which slots we offer, and quoting "7:24 PM" would
     /// imply a precision the estimate does not carry. The picker's disabled slots
     /// are where the buffer becomes visible.
     public static func schedulingCaption(
@@ -139,13 +192,10 @@ public enum VehicleServiceWindow {
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> String? {
-        guard let end else { return nil }
         let name = vehicleName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return nil }
-        let time = compactTime(end, calendar: calendar)
-        let when = calendar.isDate(end, inSameDayAs: now)
-            ? "~\(time)"
-            : "~\(weekdayFormatter(calendar: calendar).string(from: end)) \(time)"
+        guard !name.isEmpty,
+              let when = completionLabel(for: end, now: now, calendar: calendar)
+        else { return nil }
         return "\(name) is in service until \(when)"
     }
 
@@ -160,16 +210,12 @@ public enum VehicleServiceWindow {
         formatter(dateFormat: "h:mm a", calendar: calendar)
     }
 
-    /// "2 PM" on the hour, "2:30 PM" otherwise — the in-sentence form. Dropping a
-    /// ":00" that carries no information is what keeps the caption reading like a
-    /// sentence instead of a timestamp.
-    private static func compactTime(_ date: Date, calendar: Calendar) -> String {
-        let onTheHour = calendar.component(.minute, from: date) == 0
-        return formatter(dateFormat: onTheHour ? "h a" : "h:mm a", calendar: calendar).string(from: date)
-    }
-
-    private static func weekdayFormatter(calendar: Calendar) -> DateFormatter {
-        formatter(dateFormat: "EEE", calendar: calendar)
+    /// "Sat, Aug 2" — weekday AND date (MYR-320). The weekday alone is what an
+    /// owner plans around, but it only disambiguates inside a seven-day horizon;
+    /// the month/day is what keeps a Saturday two weeks out from reading as this
+    /// Saturday. No year: an estimate that far out is not a case this line serves.
+    private static func dateFormatter(calendar: Calendar) -> DateFormatter {
+        formatter(dateFormat: "EEE, MMM d", calendar: calendar)
     }
 
     private static func formatter(dateFormat: String, calendar: Calendar) -> DateFormatter {

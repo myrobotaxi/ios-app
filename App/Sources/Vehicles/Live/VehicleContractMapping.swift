@@ -230,9 +230,14 @@ enum VehicleContractMapping {
         // PR #325 populates `year`/`model`/`trim`/`color`/`vin`/`softwareVersion`
         // authoritatively there, while the lean list `VehicleSummary` was showing
         // a partial model (the client's bare "Model" — a wrong-source display bug).
-        // The snapshot composes the full "{year} {model} {trim}". Fall back to the
-        // summary before the first snapshot streams in.
-        let model = state.map { modelLabel(year: $0.year, model: $0.model, trim: $0.trim) }
+        // The snapshot composes the full "{year} {model} {trimLabel}". Fall back to
+        // the summary before the first snapshot streams in — the lean list row has
+        // no trim of either kind (deliberately: both are detail-sheet fields).
+        //
+        // MYR-320 — the suffix is `trimLabel` ("Performance"), not the raw `trim`
+        // badge code ("p74d"). See `modelLabel` for why the two are not
+        // interchangeable and why a nil label falls back rather than substituting.
+        let model = state.map { modelLabel(year: $0.year, model: $0.model, trimLabel: $0.trimLabel) }
             ?? modelLabel(year: summary.year, model: summary.model)
         // Prefer the snapshot's color, else the summary's; both may be blank today
         // (react-frontend onboarding doesn't write color yet — MYR-283) → the
@@ -280,7 +285,13 @@ enum VehicleContractMapping {
             // version now ride on the snapshot; nil before the first snapshot →
             // the detail rows render honest-unknown. Never logged (owner P0 data).
             vin: nonEmpty(state?.vin),
-            softwareVersion: nonEmpty(state?.softwareVersion)
+            softwareVersion: nonEmpty(state?.softwareVersion),
+            // MYR-320 — the FSD designation, snapshot-only (contracts 0.18.0) and
+            // passed through VERBATIM: the shape of this string is Tesla's own and
+            // may change, so the contract forbids parsing, re-casing or comparing
+            // it. Blank is normalized to nil so a server that emits "" omits the
+            // row rather than rendering an empty value.
+            fsdVersion: nonEmpty(state?.fsdVersion)
         )
     }
 
@@ -317,15 +328,35 @@ enum VehicleContractMapping {
 
     // MARK: - Helpers
 
-    /// `"2026 Model Y Performance"`-style label from the year + model + trim wire
-    /// fields (MYR-279), matching the fixture `Vehicle.model` shape. Each part is
-    /// dropped gracefully when absent: a zero year is omitted, and a nil/blank trim
-    /// falls back to "{year} {model}" (e.g. "2026 Model Y").
-    static func modelLabel(year: Int, model: String, trim: String? = nil) -> String {
+    /// `"2026 Model Y Performance"`-style label from the year + model + TRIM LABEL
+    /// wire fields (MYR-279, MYR-320), matching the fixture `Vehicle.model` shape.
+    /// Each part is dropped gracefully when absent: a zero year is omitted, and a
+    /// nil/blank `trimLabel` falls back to "{year} {model}" (e.g. "2026 Model Y")
+    /// with NO dangling separator or trailing space.
+    ///
+    /// MYR-320 — the suffix is `VehicleState.trimLabel` (contracts 0.18.0), NOT the
+    /// sibling `trim`, and the parameter is named so that the wrong one cannot be
+    /// passed by accident. The two fields are not interchangeable:
+    ///
+    ///   • `trim` is the RAW BADGE CODE off `vehicle_config.trim_badging` — the
+    ///     client's own car reports `"p74d"`. It is a wire-level identifier for
+    ///     downstream classification and is NOT display-safe.
+    ///   • `trimLabel` is `vehicle_config.performance_package` — `"Performance"`,
+    ///     already display-ready, and per the contract "the ONLY one of the two a
+    ///     consumer may render".
+    ///
+    /// The schema's consumer rule is explicit that when `trimLabel` is absent a
+    /// client "MUST NOT substitute `trim` in its place" and must fall back to
+    /// "{year} {model}". Absence is COMMON AND NORMAL — a server predating MYR-320,
+    /// a vehicle-config read that hasn't completed, or a car whose configuration
+    /// simply carries no performance designation — so it is never an error state.
+    /// The value is rendered verbatim: it arrives display-ready and re-casing it
+    /// would silently rewrite Tesla's own label.
+    static func modelLabel(year: Int, model: String, trimLabel: String? = nil) -> String {
         var parts: [String] = []
         if year > 0 { parts.append("\(year)") }
         if let model = nonEmpty(model) { parts.append(model) }
-        if let trim = nonEmpty(trim) { parts.append(trim) }
+        if let trimLabel = nonEmpty(trimLabel) { parts.append(trimLabel) }
         return parts.joined(separator: " ")
     }
 

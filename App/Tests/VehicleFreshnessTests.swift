@@ -129,11 +129,13 @@ final class VehicleRefreshNoticeTests: XCTestCase {
         XCTAssertEqual(VehicleRefreshNotice.asleep.message, "Car is asleep \u{2014} try again shortly")
     }
 
-    // The cooldown is deliberately NOT the generic "Just a moment…": on this
-    // surface the owner has just pulled fresh data, and saying so is both truer
-    // and calmer than implying something is still pending.
+    // The cooldown names the act the owner just performed. MYR-320 moved the
+    // COMMAND cooldown onto the same grammar ("Just sent — one moment"), which is
+    // right — it is the same back-off — but the two must still name different
+    // acts, or a rate-limited refresh would claim a command was sent.
     func testCooldownCopyNamesTheRecentRefresh() {
         XCTAssertEqual(VehicleRefreshNotice.cooldown.message, "Just refreshed \u{2014} one moment")
+        XCTAssertEqual(VehicleCommandNotice.cooldown.message, "Just sent \u{2014} one moment")
         XCTAssertNotEqual(VehicleRefreshNotice.cooldown.message, VehicleCommandNotice.cooldown.message)
     }
 

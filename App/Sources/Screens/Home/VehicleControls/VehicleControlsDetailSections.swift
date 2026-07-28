@@ -90,29 +90,64 @@ struct ServiceWindowRowModel: Equatable {
     /// legitimate, common state — Tesla holds no appointment record for most
     /// visits — so the row invites an entry rather than reporting a problem.
     var value: Date?
-    /// The formatted display for `value` ("Sat ~2:00 PM"), pre-resolved by
+    /// The formatted display for `value` ("Sat, Aug 2 · 7:09 PM"), pre-resolved by
     /// `VehicleServiceWindow` so this view holds no date logic of its own.
     var label: String?
     /// The write's pending/notice state (`VehicleControlUIState`).
     var state: VehicleControlUIState = .idle
+    /// MYR-320 — what the app can honestly say about where `value` came from.
+    /// `.unknown` (the default and the cold-launch state) renders no note.
+    var source: ServiceWindowSource = .unknown
     /// Opens the entry sheet.
     var onEdit: () -> Void
 
+    /// MYR-320 — the muted line under the row, or `nil` for none.
+    ///
+    /// Client-directed copy, rendered ONLY where it is provably true (see
+    /// ``ServiceWindowSource``): the app never asserts a source it merely suspects.
+    ///
+    ///   • `.manual` — the server took the owner's instant verbatim, which is proof
+    ///     Tesla had none to outrank it. Say both halves: that this was set by hand,
+    ///     and WHY that was necessary, so the owner doesn't read a hand-set time as
+    ///     the app failing to fetch a real one.
+    ///   • `.tesla`  — Tesla's estimate outranked the entry. Name the source so the
+    ///     value reads as reported rather than authored. The row stays editable
+    ///     regardless: the owner can still record what they expect, and the server
+    ///     keeps applying precedence to it.
+    ///   • `.unknown` — nothing provable, so nothing claimed.
+    var sourceCaption: String? {
+        switch source {
+        case .manual: "Set manually \u{2014} Tesla hasn\u{2019}t provided an estimate for this visit"
+        case .tesla: "From Tesla"
+        case .unknown: nil
+        }
+    }
+
     static func == (lhs: ServiceWindowRowModel, rhs: ServiceWindowRowModel) -> Bool {
-        lhs.value == rhs.value && lhs.label == rhs.label && lhs.state == rhs.state
+        lhs.value == rhs.value && lhs.label == rhs.label
+            && lhs.state == rhs.state && lhs.source == rhs.source
     }
 }
 
-/// The editable expected-back row — deliberately the same shape as `PlateRow`
-/// (label, value-or-affordance, gold pencil in a disc, 44pt tap target), because
-/// it is the same KIND of thing: an owner-entered fact the car cannot report.
+/// The editable service-completion-date row — deliberately the same shape as
+/// `PlateRow` (label, value-or-affordance, gold pencil in a disc, 44pt tap
+/// target), because it is the same KIND of thing: an owner-entered fact the car
+/// cannot report.
 ///
-/// Tesla's own `service_etc` OUTRANKS the owner's entry server-side, and the wire
-/// carries NO way to tell which source produced the value shown — so the row does
-/// not try. It always offers the edit: an owner whose entry is currently being
+/// MYR-320 — the label was "Expected back". The client's objection was that it
+/// read like a question about the OWNER's plans ("when are you expecting it
+/// back?") rather than the name of a field that moves what riders can book;
+/// "Service completion date" names the fact instead of the feeling, and matches
+/// the "Service Estimated Completion" line in the hero above so the two are
+/// visibly the same quantity.
+///
+/// Tesla's own `service_etc` OUTRANKS the owner's entry server-side. The row
+/// always offers the edit anyway — an owner whose entry is currently being
 /// outranked can still record what they expect, and the server keeps applying
-/// precedence. Claiming "Tesla set this, you can't change it" would be a guess
-/// dressed as a fact, and locking the row on that guess would be worse.
+/// precedence; locking the row would be worse than saying nothing. What it does
+/// NOT do is guess: the source caption renders only where the app has PROOF (a
+/// write echo it observed — see `ServiceWindowSource`), so a cold-launched sheet
+/// shows the value with no claim about where it came from.
 private struct ExpectedBackRow: View {
     let model: ServiceWindowRowModel
 
@@ -120,17 +155,22 @@ private struct ExpectedBackRow: View {
 
     var body: some View {
         Button(action: model.onEdit) {
-            HStack {
-                Text("Expected back")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.mrtTextSec)
-                Spacer(minLength: 12)
-                HStack(spacing: 8) {
-                    Text(model.label ?? "Set a time")
-                        .font(.system(size: 13, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(model.label == nil ? Color.mrtTextMuted : .mrtText)
-                        .lineLimit(1)
+            // STACKED, not the inline label/value of `PlateRow` and `KV`. Both
+            // halves of this row grew in MYR-320 — the label to "Service completion
+            // date" (146pt at 13pt) and the value to a full date + time ("Wed,
+            // Sep 30 · 12:30 PM", 150pt semibold) — and inline they need ~341pt
+            // against 313pt of card width, so the value truncated to
+            // "Sat, Aug 1 · 2:00…". Losing the AM/PM off a completion time is not
+            // a cosmetic truncation: it is the difference between a morning and an
+            // evening pickup. `VehicleServiceWindowTests
+            // .testServiceCompletionRowFitsTheCardWithoutTruncating` measures both
+            // layouts so this stays a measured decision rather than a guess.
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text("Service completion date")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.mrtTextSec)
+                    Spacer(minLength: 12)
                     if model.state.isPending, !reduceMotion {
                         ProgressView()
                             .controlSize(.small)
@@ -145,6 +185,25 @@ private struct ExpectedBackRow: View {
                             .frame(width: 24, height: 24)
                             .background(Color.mrtStepButtonFill, in: Circle())
                     }
+                }
+                Text(model.label ?? "Set a time")
+                    .font(.system(size: 13, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(model.label == nil ? Color.mrtTextMuted : .mrtText)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                // The source note. Muted 11pt — the same weight the sheet gives
+                // every other qualifier-on-a-value — and allowed to WRAP: the
+                // manual caption is a sentence, and truncating it to one line
+                // would cut exactly the half that explains why the entry was
+                // needed. Nothing renders when the source is unprovable, which is
+                // both the cold-launch state and the entire simulated path.
+                if let caption = model.sourceCaption {
+                    Text(caption)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.mrtTextMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             .padding(.vertical, 8)
@@ -204,7 +263,10 @@ struct ServiceWindowEditSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Expected back")
+            // MYR-320 — the sheet's title tracks the row that opens it. Leaving
+            // "Expected back" here would have made the renamed row hand off to a
+            // sheet about something else.
+            Text("Service completion date")
                 .font(.system(size: 19, weight: .semibold))
                 .tracking(-0.3)
                 .foregroundStyle(Color.mrtText)
@@ -414,12 +476,20 @@ struct VehicleDetailsSection: View {
     var body: some View {
         SectionCard(title: "Vehicle details") {
             VStack(spacing: 0) {
-                // MYR-279 — "{year} {model} {trim}" composed from the snapshot
-                // (e.g. "2026 Model Y Performance"), not the partial list model.
+                // MYR-279/320 — "{year} {model} {trimLabel}" composed from the
+                // snapshot (e.g. "2026 Model Y Performance"), not the partial list
+                // model. The suffix is the DISPLAY-READY `trimLabel`, never the raw
+                // `trim` badge code ("p74d") — see `VehicleContractMapping
+                // .modelLabel`. Composed once there, so this row, the switcher and
+                // the Settings vehicle rows can never disagree.
                 KV(label: "Model", value: vehicle.model, absence: .unavailable)
-                // Color is contracted (`VehicleState.color`) but is blank for
-                // onboarded cars today (onboarding doesn't write it yet — MYR-283)
-                // → honest empty state rather than a fabricated color (MYR-279).
+                // Color is contracted (`VehicleState.color`). It was blank for every
+                // onboarded car until telemetry PR #340 began populating it, so the
+                // row has always rendered the honest empty state rather than a
+                // fabricated color (MYR-279/283); now that the wire carries one it
+                // renders VERBATIM — "Quicksilver", exactly as the server spells it,
+                // with no re-casing (MYR-320). No mapping change was needed for
+                // this: the existing `color` field simply started arriving full.
                 KV(label: "Color", value: vehicle.colorName, absence: .unavailable)
                 PlateRow(value: plate, isSaving: plateState.isPending, onEdit: onEditPlate)
                 // MYR-286 — the §7.14 write can fail (an invalid plate, or a save
@@ -435,6 +505,22 @@ struct VehicleDetailsSection: View {
                 // shown in the owner's own details screen and is never logged.
                 KV(label: "VIN", value: vehicle.vin, absence: .unavailable)
                 KV(label: "Software", value: vehicle.softwareVersion, absence: .unavailable)
+                // MYR-320 — the FSD designation, directly after the firmware build
+                // it is most often confused with. Two rows, not one: `softwareVersion`
+                // is the installed firmware ("2026.14.3") and `fsdVersion` is what
+                // Tesla calls the FSD stack ("FSD (Supervised) v14.3.5"); the two
+                // move independently and neither can be derived from the other.
+                //
+                // Rendered VERBATIM and OMITTED ENTIRELY when nil — an `if let`, not
+                // the `absence:` treatment the rows above use. That asymmetry is the
+                // contract's own consumer rule, and it is the right one: an absent
+                // value here does NOT mean "we failed to read it" and above all does
+                // not mean the car lacks FSD, so an "— Unavailable" placeholder would
+                // manufacture a problem out of the common case (a server predating
+                // MYR-320, or a release-notes read that hasn't completed yet).
+                if let fsdVersion = vehicle.fsdVersion {
+                    KV(label: "FSD", value: fsdVersion)
+                }
             }
         }
     }

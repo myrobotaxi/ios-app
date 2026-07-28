@@ -351,6 +351,16 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         // nil already expresses.
         let resolvedWindow = state.serviceEstimatedEndAt.flatMap(VehicleContractMapping.parseTimestamp)
         if uiState(for: .serviceWindow).isPending == false {
+            // MYR-320 — a read that MOVES the value invalidates whatever the last
+            // write echo proved about its source: the instant on screen is no
+            // longer the instant we classified, so the note that described it
+            // would now be describing something else. Fall back to `.unknown` (no
+            // note) rather than carrying a stale claim forward. A read that agrees
+            // with what we hold changes nothing, so a snapshot arriving right after
+            // a save doesn't wipe the note the save just earned.
+            if controls.serviceEstimatedEndAt != resolvedWindow {
+                controls.serviceWindowSource = .unknown
+            }
             controls.serviceEstimatedEndAt = resolvedWindow
             if resolvedWindow != nil { knownFields.insert(.serviceWindow) }
         }
@@ -838,6 +848,13 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             )
             let resolved = response.serviceEstimatedEndAt.flatMap(VehicleContractMapping.parseTimestamp)
             controls.serviceEstimatedEndAt = resolved
+            // MYR-320 — the echo is the ONE moment the app can learn where the
+            // resolved window came from (see `ServiceWindowSource`). The server
+            // applies Tesla-precedence and answers with what it RESOLVED, so:
+            // echo == submission → precedence had nothing to apply, Tesla holds no
+            // estimate and this value is the owner's own; echo != submission →
+            // Tesla's estimate outranked the entry and is what is on screen.
+            controls.serviceWindowSource = Self.provenance(submitted: expectedEndAt, resolved: resolved)
             knownFields.insert(.serviceWindow)
             uiStates[.serviceWindow] = .idle
             onServiceWindowSaved?(resolved)
@@ -850,6 +867,22 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         }
     }
 
+    #if DEBUG
+    /// MYR-320 — seed the service-window provenance a write echo WOULD have
+    /// proved, for the capture scenes. The source caption is only reachable after
+    /// a Save, and headless capture tooling cannot tap a row inside a half-detent
+    /// scroll — the same standing-in-for-a-tap precedent as `ownerFreshnessWaking`'s
+    /// seeded `.waking` phase.
+    ///
+    /// It takes the ECHO PAIR rather than a `ServiceWindowSource`, deliberately:
+    /// the classification still runs through the shipping ``provenance(submitted:
+    /// resolved:)``, so a capture proves the predicate rather than a hand-set
+    /// string. Release builds never compile it.
+    func debugSeedServiceWindowSource(submitted: Date?, resolved: Date?) {
+        controls.serviceWindowSource = Self.provenance(submitted: submitted, resolved: resolved)
+    }
+    #endif
+
     /// The service-window write's own notice vocabulary. NONE of the §7.9
     /// car-shaped notices apply: no Tesla call happens on this path, so the car is
     /// never asked, never asleep, and never the thing that refused. `400
@@ -859,6 +892,34 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// way (try again).
     private static func serviceWindowNotice(for kind: RestError.CommandFailureKind) -> VehicleCommandNotice {
         kind == .invalidRequest ? .serviceWindowPast : .serviceWindowNotSaved
+    }
+
+    /// MYR-320 — classify a service-window write's echo into a provenance the app
+    /// can honestly display. Pure and static so the whole matrix is unit-testable
+    /// without a network.
+    ///
+    /// A CLEAR (`submitted == nil`) always yields `.unknown`, whatever comes back:
+    /// clearing the owner's entry leaves either nothing (nil echo — no source to
+    /// name) or Tesla's estimate surfacing from underneath. The latter looks like
+    /// proof of Tesla, but it is proof only that SOMETHING remained after the
+    /// owner's entry was removed, and claiming a source off that would be exactly
+    /// the guess-dressed-as-fact this type exists to avoid.
+    ///
+    /// The comparison is to the SECOND, not by `==`: the submission is encoded to
+    /// RFC 3339 with fractional seconds and the server may normalize what it
+    /// stores, so byte-equal instants can differ by a rounding artifact that means
+    /// nothing. A sub-second difference is never a Tesla estimate winning.
+    /// `nonisolated` because it is pure — it touches no executor state, so it
+    /// belongs to the actor only by lexical accident, and hoisting it out is what
+    /// lets the matrix be asserted without a main-actor hop.
+    nonisolated static func provenance(submitted: Date?, resolved: Date?) -> ServiceWindowSource {
+        guard let submitted else { return .unknown }
+        guard let resolved else {
+            // Submitted a real instant and got nothing back: the server neither
+            // adopted it nor substituted Tesla's. Nothing is provable.
+            return .unknown
+        }
+        return abs(resolved.timeIntervalSince(submitted)) < 1 ? .manual : .tesla
     }
 
     /// RFC 3339 UTC with milliseconds — the exact shape the server emits and

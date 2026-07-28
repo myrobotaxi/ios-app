@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 import MyRobotaxiContracts
 @testable import MyRoboTaxi
 
@@ -45,15 +46,19 @@ final class VehicleServiceWindowTests: XCTestCase {
     func testCompletionLabelSameDayIsTimeOnly() {
         let end = date(DateComponents(year: 2026, month: 7, day: 29, hour: 14, minute: 0))
         XCTAssertEqual(
-            VehicleServiceWindow.completionLabel(for: end, now: now, calendar: calendar), "~2:00 PM"
+            VehicleServiceWindow.completionLabel(for: end, now: now, calendar: calendar), "2:00 PM"
         )
     }
 
-    func testCompletionLabelOtherDayCarriesTheWeekday() {
+    /// MYR-320 — an off-day estimate carries the weekday AND the date. The weekday
+    /// alone (MYR-316's shape) only disambiguates inside a seven-day horizon and
+    /// silently wraps outside one.
+    func testCompletionLabelOtherDayCarriesTheWeekdayAndDate() {
         // Saturday 2026-08-01.
         let end = date(DateComponents(year: 2026, month: 8, day: 1, hour: 14, minute: 0))
         XCTAssertEqual(
-            VehicleServiceWindow.completionLabel(for: end, now: now, calendar: calendar), "Sat ~2:00 PM"
+            VehicleServiceWindow.completionLabel(for: end, now: now, calendar: calendar),
+            "Sat, Aug 1 \u{00B7} 2:00 PM"
         )
     }
 
@@ -64,7 +69,7 @@ final class VehicleServiceWindowTests: XCTestCase {
     func testCompletionLabelForAPastSameDayInstantStillFormats() {
         let end = date(DateComponents(year: 2026, month: 7, day: 29, hour: 5, minute: 30))
         XCTAssertEqual(
-            VehicleServiceWindow.completionLabel(for: end, now: now, calendar: calendar), "~5:30 AM"
+            VehicleServiceWindow.completionLabel(for: end, now: now, calendar: calendar), "5:30 AM"
         )
     }
 
@@ -75,7 +80,7 @@ final class VehicleServiceWindowTests: XCTestCase {
 
         XCTAssertEqual(
             VehicleServiceWindow.completionLine(for: end, isInService: true, now: now, calendar: calendar),
-            "Estimated completion \u{00B7} Sat ~2:00 PM"
+            "Service Estimated Completion \u{00B7} Sat, Aug 1 \u{00B7} 2:00 PM"
         )
         XCTAssertNil(
             VehicleServiceWindow.completionLine(for: end, isInService: false, now: now, calendar: calendar),
@@ -142,20 +147,20 @@ final class VehicleServiceWindowTests: XCTestCase {
             VehicleServiceWindow.schedulingCaption(
                 vehicleName: "Lunar", serviceEstimatedEndAt: otherDay, now: now, calendar: calendar
             ),
-            "Lunar is in service until ~Sat 2 PM"
+            "Lunar is in service until Sat, Aug 1 \u{00B7} 2:00 PM"
         )
         XCTAssertEqual(
             VehicleServiceWindow.schedulingCaption(
                 vehicleName: "Lunar", serviceEstimatedEndAt: sameDay, now: now, calendar: calendar
             ),
-            "Lunar is in service until ~2 PM",
-            "a same-day estimate drops the weekday"
+            "Lunar is in service until 2:00 PM",
+            "a same-day estimate drops the date"
         )
         XCTAssertEqual(
             VehicleServiceWindow.schedulingCaption(
                 vehicleName: "Lunar", serviceEstimatedEndAt: halfPast, now: now, calendar: calendar
             ),
-            "Lunar is in service until ~Sat 2:30 PM",
+            "Lunar is in service until Sat, Aug 1 \u{00B7} 2:30 PM",
             "an off-the-hour estimate keeps its minutes"
         )
         XCTAssertNil(
@@ -331,6 +336,203 @@ final class VehicleServiceWindowTests: XCTestCase {
         for member in RideRequestFixtures.fleet {
             XCTAssertNil(member.serviceEstimatedEndAt, "\(member.owner) must not carry a simulated window")
         }
+    }
+
+    // MARK: - MYR-320: the client-directed copy + format round
+
+    /// THE tripwire for this round. The client asked for the tilde gone; a doc
+    /// comment cannot enforce that, so the WHOLE date matrix — both label shapes,
+    /// both line shapes, the caption, and the on/off-the-hour variants — is run
+    /// through one predicate. Any surface that reintroduces the glyph (in either
+    /// its ASCII or typographic form) fails here rather than in a screenshot.
+    func testNoServiceWindowCopyCarriesAnApproximationGlyph() {
+        let instants = [
+            date(DateComponents(year: 2026, month: 7, day: 29, hour: 14, minute: 0)),   // same day, on the hour
+            date(DateComponents(year: 2026, month: 7, day: 29, hour: 19, minute: 9)),   // same day, off the hour
+            date(DateComponents(year: 2026, month: 8, day: 1, hour: 14, minute: 0)),    // other day, on the hour
+            date(DateComponents(year: 2026, month: 8, day: 2, hour: 19, minute: 9)),    // the client's own example
+            date(DateComponents(year: 2026, month: 12, day: 31, hour: 0, minute: 30)),  // year boundary, after midnight
+        ]
+        var checked = 0
+        for end in instants {
+            let produced: [String?] = [
+                VehicleServiceWindow.completionLabel(for: end, now: now, calendar: calendar),
+                VehicleServiceWindow.completionLine(for: end, isInService: true, now: now, calendar: calendar),
+                VehicleServiceWindow.completionLine(
+                    for: end, isInService: true, now: now, calendar: calendar, compact: true
+                ),
+                VehicleServiceWindow.schedulingCaption(
+                    vehicleName: "Lunar", serviceEstimatedEndAt: end, now: now, calendar: calendar
+                ),
+            ]
+            for text in produced.compactMap({ $0 }) {
+                checked += 1
+                XCTAssertFalse(
+                    VehicleServiceWindow.containsApproximationGlyph(text),
+                    "\"\(text)\" still carries the approximation glyph the client asked us to drop"
+                )
+            }
+        }
+        XCTAssertEqual(checked, instants.count * 4, "every formatter output must actually have been examined")
+    }
+
+    /// The exact strings the client wrote, on both surfaces. Pinning the literal
+    /// copy is the point: this round IS the copy.
+    ///
+    /// The client's note read "Sat, Aug 2 \u{00B7} 7:09 PM". August 2 2026 is a
+    /// SUNDAY, so the weekday here is the one the calendar produces, not the one
+    /// in the note — the format is what was specified, and a formatter that
+    /// printed "Sat" for a Sunday to match an example would be the bug.
+    func testTheClientsExampleRendersVerbatim() {
+        let sameDay = date(DateComponents(year: 2026, month: 7, day: 29, hour: 19, minute: 9))
+        let otherDay = date(DateComponents(year: 2026, month: 8, day: 2, hour: 19, minute: 9))
+
+        XCTAssertEqual(
+            VehicleServiceWindow.completionLine(for: otherDay, isInService: true, now: now, calendar: calendar),
+            "Service Estimated Completion \u{00B7} Sun, Aug 2 \u{00B7} 7:09 PM"
+        )
+        XCTAssertEqual(
+            VehicleServiceWindow.completionLine(for: sameDay, isInService: true, now: now, calendar: calendar),
+            "Service Estimated Completion \u{00B7} 7:09 PM",
+            "a same-day estimate is label + time, with no date segment and no dangling separator"
+        )
+    }
+
+    /// The APPROVED compact variant, kept intact in case a narrower surface ever
+    /// needs it. It differs from the full line ONLY in the prefix — the value half
+    /// must be byte-identical, or the two variants would disagree about the time.
+    func testCompactVariantSwapsOnlyTheLabel() {
+        let end = date(DateComponents(year: 2026, month: 8, day: 2, hour: 19, minute: 9))
+        let full = VehicleServiceWindow.completionLine(for: end, isInService: true, now: now, calendar: calendar)
+        let compact = VehicleServiceWindow.completionLine(
+            for: end, isInService: true, now: now, calendar: calendar, compact: true
+        )
+        XCTAssertEqual(compact, "Est. Completion \u{00B7} Sun, Aug 2 \u{00B7} 7:09 PM")
+        XCTAssertEqual(
+            full?.replacingOccurrences(
+                of: VehicleServiceWindow.completionLabelPrefix,
+                with: VehicleServiceWindow.compactCompletionLabelPrefix
+            ),
+            compact
+        )
+    }
+
+    /// WHY THE FULL LABEL SHIPPED. The hero line renders at 12pt across the peek
+    /// sheet's content width (393pt canvas less the 24pt page gutter on each
+    /// side), and the compact variant was only approved as a fallback if it did
+    /// not fit. It does fit — with room to spare — so the full, unambiguous label
+    /// is what ships. Measured against the WORST CASE the formatter can produce
+    /// (the longest weekday + month abbreviations, a two-digit day, and a
+    /// two-digit hour with minutes), not a convenient example.
+    func testCompletionLineFitsThePeekWidthAtTheHeroTypeScale() throws {
+        let peekContentWidth: CGFloat = 393 - (24 * 2)   // MRTMetrics.pageGutter, both sides
+        // Wednesday, September 30, 12:30 PM — the widest date/time this formatter
+        // can emit at this scale.
+        let worstCase = date(DateComponents(year: 2026, month: 9, day: 30, hour: 12, minute: 30))
+        let line = VehicleServiceWindow.completionLine(
+            for: worstCase, isInService: true, now: now, calendar: calendar
+        )
+        let text = try XCTUnwrap(line)
+        XCTAssertEqual(text, "Service Estimated Completion \u{00B7} Wed, Sep 30 \u{00B7} 12:30 PM")
+
+        for size in [CGFloat(11), CGFloat(12)] {
+            let width = (text as NSString)
+                .size(withAttributes: [.font: UIFont.systemFont(ofSize: size)]).width
+            XCTAssertLessThanOrEqual(
+                width, peekContentWidth,
+                "the full label is \(width)pt at \(size)pt against \(peekContentWidth)pt of peek width"
+                + " \u{2014} if this ever fails, ship `compactCompletionLabelPrefix` and say so in the PR"
+            )
+        }
+    }
+
+    /// The row that carries the renamed label must not truncate its value. Both
+    /// halves grew this round, and inline they no longer fit the card — losing the
+    /// AM/PM off a completion time is the difference between a morning and an
+    /// evening pickup, so the row stacks instead. This measures BOTH layouts: that
+    /// the inline one genuinely overflows (the premise of the change) and that the
+    /// stacked one clears the worst case with room.
+    func testServiceCompletionRowFitsTheCardWithoutTruncating() throws {
+        // A details card: the 393pt canvas, less the 24pt page gutter on each
+        // side, less `SectionCard`'s own 16pt content padding on each side.
+        let cardInnerWidth: CGFloat = 393 - (24 * 2) - (16 * 2)
+        let pencilDisc: CGFloat = 24
+        let gap: CGFloat = 8
+
+        let label = ("Service completion date" as NSString)
+            .size(withAttributes: [.font: UIFont.systemFont(ofSize: 13)]).width
+
+        // Wednesday, September 30, 12:30 PM — the widest value the formatter emits.
+        let worstCase = date(DateComponents(year: 2026, month: 9, day: 30, hour: 12, minute: 30))
+        let value = try XCTUnwrap(
+            VehicleServiceWindow.completionLabel(for: worstCase, now: now, calendar: calendar)
+        )
+        let valueWidth = (value as NSString)
+            .size(withAttributes: [.font: UIFont.systemFont(ofSize: 13, weight: .semibold)]).width
+
+        XCTAssertGreaterThan(
+            label + 12 + valueWidth + gap + pencilDisc, cardInnerWidth,
+            "the premise of the stacked layout: inline, the renamed label + a full date/time overflow the card"
+        )
+        XCTAssertLessThanOrEqual(
+            valueWidth, cardInnerWidth - gap - pencilDisc,
+            "stacked, the value has the card's full width and cannot truncate"
+        )
+    }
+
+    // MARK: - MYR-320: service-window provenance
+
+    /// The classifier behind the row's source caption. It is deliberately narrow:
+    /// the wire carries NO source discriminator, so the ONLY thing the app may
+    /// claim is what a write echo it observed actually proved.
+    func testProvenanceIsOnlyClaimedWhenTheEchoProvesIt() {
+        let submitted = date(DateComponents(year: 2026, month: 8, day: 2, hour: 19, minute: 0))
+
+        // The echo matched → precedence had nothing to apply → Tesla holds no
+        // estimate and the value on screen is the owner's own.
+        XCTAssertEqual(
+            LiveVehicleCommandExecutor.provenance(submitted: submitted, resolved: submitted), .manual
+        )
+        // Sub-second normalization is not Tesla winning.
+        XCTAssertEqual(
+            LiveVehicleCommandExecutor.provenance(
+                submitted: submitted, resolved: submitted.addingTimeInterval(0.4)
+            ),
+            .manual
+        )
+        // The echo disagreed → Tesla's own estimate outranked the entry.
+        XCTAssertEqual(
+            LiveVehicleCommandExecutor.provenance(
+                submitted: submitted, resolved: submitted.addingTimeInterval(-2 * 3600)
+            ),
+            .tesla
+        )
+        // A CLEAR proves nothing: whatever remains may be Tesla's or may be
+        // nothing, and the app does not guess between them.
+        XCTAssertEqual(
+            LiveVehicleCommandExecutor.provenance(submitted: nil, resolved: submitted), .unknown
+        )
+        XCTAssertEqual(LiveVehicleCommandExecutor.provenance(submitted: nil, resolved: nil), .unknown)
+        // Submitted a real instant and got nothing back — also unprovable.
+        XCTAssertEqual(LiveVehicleCommandExecutor.provenance(submitted: submitted, resolved: nil), .unknown)
+    }
+
+    /// The row's caption copy, per source. `.unknown` — the state of every cold
+    /// launch and the entire simulated path — must render NOTHING, which is what
+    /// keeps the app from narrating a provenance it cannot see.
+    func testServiceWindowRowSourceCaptions() {
+        func row(_ source: ServiceWindowSource) -> ServiceWindowRowModel {
+            ServiceWindowRowModel(value: nil, label: nil, source: source, onEdit: {})
+        }
+        XCTAssertEqual(
+            row(.manual).sourceCaption,
+            "Set manually \u{2014} Tesla hasn\u{2019}t provided an estimate for this visit"
+        )
+        XCTAssertEqual(row(.tesla).sourceCaption, "From Tesla")
+        XCTAssertNil(
+            row(.unknown).sourceCaption,
+            "no proof, no claim \u{2014} a cold read says nothing about where its value came from"
+        )
     }
 
     // MARK: - Support
