@@ -38,9 +38,12 @@ import Observation
 //    car); the fixture fleet-picker → live-vehicle join is future work (needs the
 //    MYR-91 shared-viewer access set + a live Review picker). Display-only fleet
 //    fields fall back to fixtures — see `RideRequestContractMapping`.
-//  • Live scheduled-create time encoding is deferred; live `submit` sends an
-//    on-demand request (the demo is "now"). Server-supplied `scheduledFor` still
-//    decodes for display on the incoming/detail path.
+//
+// MYR-179 (was a gap): a scheduled create now carries a REAL RFC 3339
+// `scheduledFor`, resolved from the rider's picked day/time at the send moment
+// in the rider's own time zone (`RideRequestContractMapping.scheduledFor`). The
+// local optimistic draft + the scheduled sheets keep rendering their display
+// strings; the wire value is authoritative on refetch.
 @Observable
 @MainActor
 final class LiveRideRequestService: RideRequestService {
@@ -821,18 +824,33 @@ final class LiveRideRequestService: RideRequestService {
         Task { _ = try? await op(api, id) }
     }
 
-    private static func createBody(from input: RideRequestInput, vehicleId: String) -> RideRequestCreateRequest {
+    /// MYR-179 — the create body, now carrying a REAL `scheduledFor` for a
+    /// scheduled request. The rider's picked day/time is resolved to an absolute
+    /// instant at the SEND moment (`fireSend`, i.e. the end of the booking grace
+    /// window) against the rider's own clock + time zone, and encoded RFC 3339
+    /// UTC by `RideRequestContractMapping.scheduledFor(from:)`. `nil` for an
+    /// on-demand ("Now") request — the key is then omitted, unchanged.
+    /// `nonisolated` because it is pure — inputs in, wire body out, no actor state —
+    /// so the encoding matrix can drive it directly (same precedent as the static
+    /// failure classifiers above).
+    nonisolated static func createBody(
+        from input: RideRequestInput,
+        vehicleId: String,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> RideRequestCreateRequest {
         RideRequestCreateRequest(
             vehicleId: vehicleId,
             pickup: wirePlace(input.pickup),
             dropoff: wirePlace(input.destination),
             passengerName: input.passenger?.name,
             passengerPhone: input.passenger.flatMap { $0.phone.isEmpty ? nil : $0.phone },
-            scheduledFor: nil // live scheduled-create encoding deferred — see header
+            scheduledFor: RideRequestContractMapping.scheduledFor(
+                from: input.schedule, now: now, calendar: calendar)
         )
     }
 
-    private static func wirePlace(_ place: RidePlace) -> MyRobotaxiContracts.RidePlace {
+    nonisolated private static func wirePlace(_ place: RidePlace) -> MyRobotaxiContracts.RidePlace {
         MyRobotaxiContracts.RidePlace(
             lat: place.coordinate.latitude,
             lng: place.coordinate.longitude,
