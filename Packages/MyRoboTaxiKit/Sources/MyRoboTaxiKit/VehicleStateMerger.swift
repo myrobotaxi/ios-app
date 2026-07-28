@@ -254,6 +254,18 @@ public enum VehicleStateMerger {
             // invent a delivery path the server does not have. It reaches clients
             // on REST reads only, like the sibling `trim`, and is declared in the
             // MYR-298 tripwire's `snapshotOnlyFields` for exactly that reason.
+            //
+            // NOT FOLDED, deliberately: `serviceEstimatedEndAt` (contracts 0.17.0,
+            // MYR-316). Same class as `seatCoolingCapable` above and `licensePlate`
+            // — it is REST-DERIVED, not telemetry. The server computes it from
+            // Tesla's `service_data.service_etc` (a REST poll on connectivity
+            // edges) or the owner's entry, and the schema states plainly that "a
+            // `vehicle_update` frame NEVER contains serviceEstimatedEndAt". Folding
+            // it would invent a delivery path the server does not have. It reaches
+            // clients on the REST `/snapshot` and `GET /api/vehicles` only, and is
+            // declared in the MYR-298 tripwire's `snapshotOnlyFields` for exactly
+            // that reason. (It also needs no client-side ageing out: the server
+            // clears it automatically the moment the car leaves `in_service`.)
 
             default:
                 break // unknown / forward-compat field — ignore

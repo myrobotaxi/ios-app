@@ -1,0 +1,38 @@
+{
+  "_meta": {
+    "description": "GET /api/vehicles (rest-api.md §7.0) showing serviceEstimatedEndAt in BOTH of its states (MYR-316, contracts 0.17.0). Lunar is in_service and carries an estimate; Stumpy is parked and carries an explicit null — the server clears the field on any status other than in_service, so a non-service row NEVER holds a value and consumers never age it out themselves. A pre-0.17.0 server omits the key entirely, which means exactly the same thing: no window known.",
+    "anchoredFRs": ["FR-4.x", "FR-5.4"],
+    "scenario": "in-service",
+    "addedBy": "MYR-316"
+  },
+  "items": [
+    {
+      "vehicleId": "clxyz1234567890abcdef",
+      "name": "Lunar",
+      "model": "Model Y",
+      "year": 2026,
+      "color": "Quicksilver",
+      "vinLast4": "2046",
+      "status": "in_service",
+      "chargeLevel": 61,
+      "estimatedRange": 166,
+      "lastUpdated": "2026-07-28T16:00:00Z",
+      "role": "owner",
+      "serviceEstimatedEndAt": "2026-08-01T21:00:00.000Z"
+    },
+    {
+      "vehicleId": "clmno5678901234ghijkl",
+      "name": "Stumpy",
+      "model": "Model 3",
+      "year": 2024,
+      "color": "Midnight Silver Metallic",
+      "vinLast4": "0001",
+      "status": "parked",
+      "chargeLevel": 78,
+      "estimatedRange": 245,
+      "lastUpdated": "2026-07-28T15:58:00Z",
+      "role": "owner",
+      "serviceEstimatedEndAt": null
+    }
+  ]
+}

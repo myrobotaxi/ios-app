@@ -1,0 +1,10 @@
+{
+  "_meta": {
+    "description": "200 response for PUT /api/tesla/vehicles/{vehicleId}/service-window (MYR-316) — the owner's 'expected back' entry. Authored here from the locked endpoint contract because the telemetry repo ships no fixture for this endpoint (docs/contracts/fixtures/rest/ covers read paths only); replace with the upstream file the moment one exists. The echoed value is the server's RESOLVED serviceEstimatedEndAt, which is NOT necessarily what the owner submitted: Tesla's own service_data.service_etc outranks the owner's entry. Clients adopt THIS value, never the string they sent — there is no WebSocket delta for serviceEstimatedEndAt.",
+    "anchoredFRs": ["FR-4.x"],
+    "scenario": "happy-path",
+    "addedBy": "MYR-316"
+  },
+  "vehicleId": "clxyz1234567890abcdef",
+  "serviceEstimatedEndAt": "2026-08-01T21:00:00.000Z"
+}

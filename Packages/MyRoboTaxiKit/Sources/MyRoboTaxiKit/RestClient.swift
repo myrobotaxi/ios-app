@@ -17,7 +17,7 @@ public protocol SnapshotFetching: Sendable {
 ///
 /// Value type (`Sendable`): all dependencies are immutable, so it is free to
 /// share across tasks without a serialization bottleneck.
-public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleRefreshing, VehicleCommandSending {
+public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleServiceWindowEndpoint, VehicleRefreshing, VehicleCommandSending {
     private let environment: BackendEnvironment
     private let tokenProvider: any TokenProvider
     private let http: any HTTPPerforming
@@ -305,6 +305,35 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
         let body = try JSONEncoder().encode(VehiclePlateUpdateRequest(plate: plate))
         return try await perform(
             ["tesla", "vehicles", vehicleID, "plate"],
+            method: "PUT",
+            body: body,
+            allowTokenRefresh: true
+        )
+    }
+
+    // MARK: - Owner "expected back" service window (MYR-316)
+
+    /// `PUT /api/tesla/vehicles/{vehicleId}/service-window` (MYR-316) — store the
+    /// owner's expected-back time for one owned vehicle. Owner-authenticated via
+    /// the standard `perform` pipeline (Bearer + single 401 refresh-retry);
+    /// `{vehicleId}` is the Prisma cuid (NOT a VIN), same key as §7.12/§7.14.
+    ///
+    /// The body key is `expectedEndAt` (the owner's INPUT); the response echoes
+    /// the server's RESOLVED `serviceEstimatedEndAt`, which the caller adopts
+    /// instead of the string it submitted — Tesla's own `service_etc` outranks the
+    /// owner's entry, so the two can legitimately differ (see
+    /// ``VehicleServiceWindowUpdateRequest``). Idempotent, and `nil` clears (an
+    /// empty string is accepted by the server as the same clear; this client sends
+    /// an explicit `null`, the unambiguous form).
+    ///
+    /// `400 invalid_request` is the "not in the future" refusal, and it is the
+    /// caller's job to have prevented it client-side — this endpoint mirrors the
+    /// rule, it is not the owner's first line of feedback. No Tesla call is
+    /// involved at any point, so the route is always mounted.
+    public func setServiceWindow(expectedEndAt: String?, vehicleID: String) async throws -> VehicleServiceWindowResponse {
+        let body = try JSONEncoder().encode(VehicleServiceWindowUpdateRequest(expectedEndAt: expectedEndAt))
+        return try await perform(
+            ["tesla", "vehicles", vehicleID, "service-window"],
             method: "PUT",
             body: body,
             allowTokenRefresh: true

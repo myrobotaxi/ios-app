@@ -304,10 +304,19 @@ final class VehicleStateMergerTests: XCTestCase {
     /// with its RUNTIME sibling `seatVentEnabled` (proto 254), which IS streamed
     /// and therefore IS a `foldCases` row: capability vs. current state is exactly
     /// the distinction MYR-299/308 turn on.
+    /// MYR-316 — `serviceEstimatedEndAt` (contracts 0.17.0) joins the set on the
+    /// same contract grounds. It is SERVER-COMPUTED from two REST sources — Tesla's
+    /// `service_data.service_etc`, polled on connectivity edges, or the owner's
+    /// "expected back" entry — and the schema is explicit that "a `vehicle_update`
+    /// frame NEVER contains serviceEstimatedEndAt". There is no proto for it;
+    /// folding it would invent a delivery path the server does not have. It also
+    /// needs no client-side expiry: the server clears it when the car leaves
+    /// `in_service`, so a driving/parked row never carries a stale window.
     private static let snapshotOnlyFields: Set<String> = [
         "vehicleId", "name", "model", "year", "color", "vin", "softwareVersion", "trim",
         "licensePlate",
         "seatCoolingCapable",
+        "serviceEstimatedEndAt",
     ]
 
     /// The table must account for EVERY property on the generated `VehicleState`.
@@ -477,6 +486,29 @@ final class VehicleStateMergerTests: XCTestCase {
             "a vehicle_update must not change a REST-only spec field (schema: a delta NEVER contains it)"
         )
         XCTAssertTrue(Self.snapshotOnlyFields.contains("seatCoolingCapable"))
+    }
+
+    /// MYR-316 — `serviceEstimatedEndAt` is REST-derived, so a live delta claiming
+    /// to carry it must be IGNORED, not folded. The failure this guards against is
+    /// subtle and consequential: a folded delta could silently move the rider's
+    /// scheduling floor (or clear it) off a frame the server never sends.
+    func testMyr316ServiceEstimatedEndAtIsNotFoldedFromALiveDelta() throws {
+        var state = try baseState()
+        state.serviceEstimatedEndAt = "2026-07-28T21:00:00.000Z"
+        let result = VehicleStateMerger.apply(
+            fields: ["serviceEstimatedEndAt": .string("2026-07-29T09:00:00.000Z")], to: state
+        )
+        XCTAssertEqual(
+            result.state.serviceEstimatedEndAt, "2026-07-28T21:00:00.000Z",
+            "a vehicle_update must not change a REST-only field (schema: a delta NEVER contains it)"
+        )
+        XCTAssertTrue(Self.snapshotOnlyFields.contains("serviceEstimatedEndAt"))
+
+        // A delta carrying an explicit NULL must not clear it either — the server
+        // clears the field itself on the in_service→parked transition, and a
+        // client that honored a phantom null would drop a live floor early.
+        let cleared = VehicleStateMerger.apply(fields: ["serviceEstimatedEndAt": .null], to: state)
+        XCTAssertEqual(cleared.state.serviceEstimatedEndAt, "2026-07-28T21:00:00.000Z")
     }
 
     /// Unknown wire values on the two MYR-298 string enums survive as

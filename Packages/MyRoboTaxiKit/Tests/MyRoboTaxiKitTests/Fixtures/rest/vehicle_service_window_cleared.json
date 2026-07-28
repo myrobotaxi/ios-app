@@ -1,0 +1,10 @@
+{
+  "_meta": {
+    "description": "200 response for PUT /api/tesla/vehicles/{vehicleId}/service-window with a null body (MYR-316) — the owner CLEARED their expected-back entry and Tesla holds no estimate either, so the server's resolved value is null. Clearing is an ordinary write (200 + null echo), never a validation failure and never a separate DELETE verb. Note that a clear does NOT guarantee null: if Tesla's service_data.service_etc exists it keeps winning under precedence, and the echo would carry Tesla's instant instead.",
+    "anchoredFRs": ["FR-4.x"],
+    "scenario": "cleared",
+    "addedBy": "MYR-316"
+  },
+  "vehicleId": "clxyz1234567890abcdef",
+  "serviceEstimatedEndAt": null
+}
