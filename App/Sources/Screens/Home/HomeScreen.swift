@@ -418,7 +418,9 @@ struct HomeScreen: View {
     @ViewBuilder
     private func debugAnchoredScroll<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         #if DEBUG
-        switch DebugScene.current?.sheetScrollTarget {
+        // MYR-319 — the env override wins so a LIVE-shaped capture can frame any
+        // section; unset, this is exactly the per-scene anchor as before.
+        switch DebugScene.ownerScrollOverride ?? DebugScene.current?.sheetScrollTarget {
         case .bottom:
             ScrollView { content() }.defaultScrollAnchor(.bottom)
         case .fraction(let y):

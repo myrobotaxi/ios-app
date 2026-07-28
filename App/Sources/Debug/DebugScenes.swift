@@ -329,6 +329,25 @@ enum DebugScene: String, CaseIterable {
         return nil
     }
 
+    /// MYR-319 — capture-tooling override for the dense sheet's resting scroll
+    /// position: `MRT_OWNER_SCROLL=bottom` or `MRT_OWNER_SCROLL=0.55`. The
+    /// per-scene `sheetScrollTarget` below only fires for scenes that INJECT a
+    /// fleet; a LIVE-shaped capture (`MRT_SCENE=ownerHome MRT_TELEMETRY=live`) is
+    /// the only way to see the controls stack fed by a real REST snapshot, and
+    /// headless tooling cannot scroll it. Same shape as `MRT_OWNER_DETENT`.
+    /// `nil` (unset) leaves every existing scene's anchor exactly as it was.
+    static var ownerScrollOverride: DebugSheetScroll? {
+        func parse(_ raw: String?) -> DebugSheetScroll? {
+            guard let raw, !raw.isEmpty else { return nil }
+            if raw == "bottom" { return .bottom }
+            return Double(raw).map { .fraction(CGFloat($0)) }
+        }
+        if let value = parse(ProcessInfo.processInfo.environment["MRT_OWNER_SCROLL"]) { return value }
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-MRT_OWNER_SCROLL"), i + 1 < args.count { return parse(args[i + 1]) }
+        return nil
+    }
+
     private static var rawSceneName: String? {
         if let env = ProcessInfo.processInfo.environment["MRT_SCENE"], !env.isEmpty { return env }
         let args = ProcessInfo.processInfo.arguments

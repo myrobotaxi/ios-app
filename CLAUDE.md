@@ -81,6 +81,8 @@ A `-MRT_SCENE <name>` launch **argument** is accepted as a fallback for tooling 
 
 Booking/pending/tracking scenes are seeded WITHOUT arming any timers, so they hold still for a screenshot instead of auto-advancing.
 
+**Owner-sheet capture modifiers** (DEBUG-only, orthogonal to the scene): `MRT_OWNER_DETENT=half` boots at the controls detent — MYR-319 makes it apply on the LIVE fleet too, not just the simulated/injected ones; `MRT_OWNER_VEHICLE=<n>` selects a fleet row; `MRT_OWNER_SCROLL=bottom|<0…1>` (MYR-319) overrides where the dense sheet's scroll rests, so a section can be framed on a scene that carries no per-scene anchor. The last two exist because the ONLY way to see the controls stack fed by a REAL REST snapshot is `MRT_SCENE=ownerHome MRT_TELEMETRY=live MRT_BACKEND_URL=…`, and headless tooling can neither drag nor scroll the sheet. Unset, every existing scene's detent and anchor are exactly as before.
+
 ### Streaming-fix camera probe (MYR-222)
 
 Devices STREAM GPS fixes (~1Hz) — a static simulated fix can NEVER catch a

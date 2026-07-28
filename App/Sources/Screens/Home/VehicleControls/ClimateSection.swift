@@ -32,6 +32,18 @@ struct ClimateSection: View {
     /// until the owner commands it — then it shows on/off honestly (MYR-251).
     private var climateOnKnown: Bool { executor.isKnown(.climateOn) }
 
+    /// MYR-319 — whether the seat block belongs on screen for this climate state
+    /// (see `SeatClimatePresentation.showsSeatBlock`). Confirmed-ON keeps it,
+    /// exactly as before; climate UNKNOWN — a live car that isn't streaming, so
+    /// the cold snapshot's `seatCoolingCapable` is all we will ever have — now
+    /// keeps it too; confirmed-OFF still hides it (the off card is its own
+    /// designed layout). Never true on the simulated path's unknown branch,
+    /// because the simulated executor knows every field.
+    private var showsSeatBlock: Bool {
+        SeatClimatePresentation.showsSeatBlock(
+            climateOnKnown: climateOnKnown, climateOn: controls.climateOn)
+    }
+
     var body: some View {
         SectionCard(title: "Climate") {
             if !climateOnKnown {
@@ -106,70 +118,83 @@ struct ClimateSection: View {
                 .opacity(fanKnown ? 1 : 0.5)
             }
 
-            // MYR-280 — the section reads "SEAT CLIMATE" (heat AND cool) and offers
-            // a per-seat Heat/Cool toggle whenever cooling is available (vent car OR
-            // a seat already reading cool), so a snowflake never sits under a
-            // "heating" label with no way to switch it. A genuinely heat-only car
-            // keeps the honest "SEAT HEATING" label + no toggle.
-            //
-            // MYR-299 — `seatVent` is now the ventilated-seat CAPABILITY, derived
-            // upstream from the PRESENCE of the seat-cooler read-backs
-            // (`SeatClimatePresentation.hasVentilatedSeats`, applied in
-            // `VehicleContractMapping`). It used to be the `seatVentEnabled` runtime
-            // flag, so the toggle only appeared while the car was already cooling.
-            // Nothing in this view changes: a vented car now simply reads `true`
-            // with both seats off, which is what the client asked for.
-            let supportsCool = SeatClimatePresentation.supportsCool(
-                seatVent: seatVent,
-                driverMode: controls.driverSeatMode,
-                passengerMode: controls.passengerSeatMode
-            )
-            VStack(alignment: .leading, spacing: 0) {
-                Rectangle().fill(Color.mrtBorder).frame(height: MRTMetrics.hairline)
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(SeatClimatePresentation.sectionLabel(supportsCool: supportsCool))
-                            .font(.system(size: 11, weight: .bold))
-                            .tracking(0.8)
-                            .foregroundStyle(Color.mrtTextMuted)
-                        Spacer()
-                        if seatVent {
-                            Text("Heat & ventilation")
-                                .font(.system(size: 10.5, weight: .medium))
-                                .foregroundStyle(Color.mrtTextMuted)
-                        }
-                    }
-                    SeatRow(
-                        label: "Driver",
-                        supportsCool: supportsCool,
-                        mode: controls.driverSeatMode,
-                        level: controls.driverSeatHeatLevel,
-                        known: executor.isKnown(.driverSeat),
-                        hasSnapshot: hasSnapshot,
-                        isStreaming: isStreaming,
-                        uiState: executor.uiState(for: .driverSeat),
-                        onRelinkTesla: onRelinkTesla,
-                        setMode: { mode in Task { try? await executor.setSeatClimateMode(.driver, mode: mode) } },
-                        setLevel: { level in Task { try? await executor.setSeatHeatLevel(.driver, level: level) } }
-                    )
-                    SeatRow(
-                        label: "Passenger",
-                        supportsCool: supportsCool,
-                        mode: controls.passengerSeatMode,
-                        level: controls.passengerSeatHeatLevel,
-                        known: executor.isKnown(.passengerSeat),
-                        hasSnapshot: hasSnapshot,
-                        isStreaming: isStreaming,
-                        uiState: executor.uiState(for: .passengerSeat),
-                        onRelinkTesla: onRelinkTesla,
-                        setMode: { mode in Task { try? await executor.setSeatClimateMode(.passenger, mode: mode) } },
-                        setLevel: { level in Task { try? await executor.setSeatHeatLevel(.passenger, level: level) } }
-                    )
-                }
-                .padding(.top, 14)
-            }
-            .padding(.top, 16)
+            if showsSeatBlock { seatBlock }
         }
+    }
+
+    /// MYR-280/299/308 — the seat block: "SEAT CLIMATE" vs "SEAT HEATING", the
+    /// per-seat rows, and the Heat↔Cool toggle when the car has cooled seats.
+    ///
+    /// MYR-319 — extracted so it can render in the climate-UNKNOWN branch too.
+    /// It was reachable only from `onContent`, so a car that is not reporting
+    /// `isClimateOn` — an in-service or offline car, which is precisely the car
+    /// whose snapshot carries `seatCoolingCapable` and nothing else — showed no
+    /// seat section at all and no way to reach cooling. See
+    /// `SeatClimatePresentation.showsSeatBlock`.
+    private var seatBlock: some View {
+        // MYR-280 — the section reads "SEAT CLIMATE" (heat AND cool) and offers
+        // a per-seat Heat/Cool toggle whenever cooling is available (vent car OR
+        // a seat already reading cool), so a snowflake never sits under a
+        // "heating" label with no way to switch it. A genuinely heat-only car
+        // keeps the honest "SEAT HEATING" label + no toggle.
+        //
+        // MYR-299 — `seatVent` is now the ventilated-seat CAPABILITY, derived
+        // upstream from the PRESENCE of the seat-cooler read-backs
+        // (`SeatClimatePresentation.hasVentilatedSeats`, applied in
+        // `VehicleContractMapping`). It used to be the `seatVentEnabled` runtime
+        // flag, so the toggle only appeared while the car was already cooling.
+        // Nothing in this view changes: a vented car now simply reads `true`
+        // with both seats off, which is what the client asked for.
+        let supportsCool = SeatClimatePresentation.supportsCool(
+            seatVent: seatVent,
+            driverMode: controls.driverSeatMode,
+            passengerMode: controls.passengerSeatMode
+        )
+        return VStack(alignment: .leading, spacing: 0) {
+            Rectangle().fill(Color.mrtBorder).frame(height: MRTMetrics.hairline)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(SeatClimatePresentation.sectionLabel(supportsCool: supportsCool))
+                        .font(.system(size: 11, weight: .bold))
+                        .tracking(0.8)
+                        .foregroundStyle(Color.mrtTextMuted)
+                    Spacer()
+                    if seatVent {
+                        Text("Heat & ventilation")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(Color.mrtTextMuted)
+                    }
+                }
+                SeatRow(
+                    label: "Driver",
+                    supportsCool: supportsCool,
+                    mode: controls.driverSeatMode,
+                    level: controls.driverSeatHeatLevel,
+                    known: executor.isKnown(.driverSeat),
+                    hasSnapshot: hasSnapshot,
+                    isStreaming: isStreaming,
+                    uiState: executor.uiState(for: .driverSeat),
+                    onRelinkTesla: onRelinkTesla,
+                    setMode: { mode in Task { try? await executor.setSeatClimateMode(.driver, mode: mode) } },
+                    setLevel: { level in Task { try? await executor.setSeatHeatLevel(.driver, level: level) } }
+                )
+                SeatRow(
+                    label: "Passenger",
+                    supportsCool: supportsCool,
+                    mode: controls.passengerSeatMode,
+                    level: controls.passengerSeatHeatLevel,
+                    known: executor.isKnown(.passengerSeat),
+                    hasSnapshot: hasSnapshot,
+                    isStreaming: isStreaming,
+                    uiState: executor.uiState(for: .passengerSeat),
+                    onRelinkTesla: onRelinkTesla,
+                    setMode: { mode in Task { try? await executor.setSeatClimateMode(.passenger, mode: mode) } },
+                    setLevel: { level in Task { try? await executor.setSeatHeatLevel(.passenger, level: level) } }
+                )
+            }
+            .padding(.top, 14)
+        }
+        .padding(.top, 16)
     }
 
     private func stepButton(_ symbol: String, action: @escaping () -> Void) -> some View {
@@ -338,6 +363,17 @@ struct ClimateSection: View {
                     .padding(.leading, 18)
             }
             .padding(.top, 14)
+
+            // MYR-319 — the seat block, for the car this branch exists FOR. A car
+            // that is offline or in service never reports `isClimateOn`, so it
+            // always lands here — and it is also the car whose ONLY data is the
+            // cold REST snapshot, which is precisely where the authoritative
+            // `seatCoolingCapable` lives. Gating the block on the HVAC being on
+            // meant that car's owner could never see, let alone reach, the
+            // Heat↔Cool control for seats their car demonstrably has. The rows
+            // carry their own honest unknown states, so nothing here asserts a
+            // seat reading the car hasn't confirmed.
+            if showsSeatBlock { seatBlock }
         }
     }
 }
