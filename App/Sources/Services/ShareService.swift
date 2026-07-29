@@ -114,12 +114,20 @@ struct ShareHandout: Equatable, Sendable, Identifiable {
     /// Which vehicles it grants — for the confirmation copy, not for the message.
     let vehicleNames: [String]
 
-    /// The share-sheet body. Short on purpose: it is read in a Messages bubble,
-    /// and the code is the only part that matters, so it lands last and alone.
-    /// No link — there is no web surface to deep-link to, and inventing one
-    /// would send recipients somewhere that does not exist.
-    var message: String {
-        "Join my Tesla on MyRoboTaxi — code \(code)"
+    /// The share-sheet body — a MINI-ONBOARDING (MYR-340), composed by
+    /// `ShareInviteMessage` so the create and resend paths cannot drift.
+    ///
+    /// This used to be a one-liner carrying the code and nothing else, on the
+    /// then-true reasoning that there was no web surface to point anyone at. The
+    /// public TestFlight link changed that fact, and the client's "where do they
+    /// go" was the missing half showing.
+    ///
+    /// A METHOD, not a stored property: the owner's name belongs to the SESSION,
+    /// not to the invite, and `LiveShareService` (which mints the handout) has no
+    /// business reading the signed-in profile. The screen that presents the sheet
+    /// supplies it — see `InvitesScreen.liveProfile`.
+    func message(ownerFirstName: String?) -> String {
+        ShareInviteMessage.compose(code: code, ownerFirstName: ownerFirstName)
     }
 }
 

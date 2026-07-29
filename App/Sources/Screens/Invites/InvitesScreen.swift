@@ -17,6 +17,15 @@ struct InvitesScreen: View {
     /// mutations; it never binds a field to service state.
     let shareService: any ShareService
     @Binding var ownerTab: String
+    /// MYR-340 — the signed-in owner, for the share message's opening line
+    /// ("{First} shared their Tesla with you"). `nil` in SIM, which is also the
+    /// state a live account with no name on it is in, so the message falls back
+    /// to first-person phrasing rather than a sentence with a hole in it.
+    ///
+    /// Nothing on this screen RENDERS it: it reaches only the system share sheet,
+    /// which SIM never opens (`SimulatedShareService` mints no code), so every
+    /// simulated + DEBUG capture of this tab is byte-identical.
+    var liveProfile: UserProfile? = nil
 
     @State private var email = ""
     @State private var emailError = false
@@ -99,14 +108,35 @@ struct InvitesScreen: View {
         )
         // MYR-184 — the SYSTEM share sheet carrying the minted code. This is how
         // an invite actually reaches its recipient: there is no email
-        // infrastructure and no web surface to link to, so the code travels
-        // through Messages/AirDrop/whatever the owner already uses.
+        // infrastructure, so the code travels through Messages/Mail/AirDrop —
+        // whatever the owner already uses.
+        //
+        // MYR-340 — ONE presentation serves BOTH the create and the resend path
+        // (`doSend` and `resendDialogConfig` both just set `handout`), which is
+        // why the richer message reaches both for free. The message goes in as a
+        // plain `String` activity item, URL and all: Messages and Mail both
+        // auto-detect the bare https link and render it tappable, so no
+        // `NSItemProvider`/`LPLinkMetadata` preview infrastructure is involved.
         .sheet(item: $handout) { handout in
-            ActivityShareSheet(activityItems: [handout.message])
+            ActivityShareSheet(
+                activityItems: [handout.message(ownerFirstName: liveProfile?.firstName)]
+            )
         }
         // MYR-184 — read the owner's real grants on arrival. No-op in sim, so
         // every simulated + DEBUG capture is unchanged.
-        .task { await shareService.load() }
+        .task {
+            await shareService.load()
+            #if DEBUG
+            // MYR-340 — the capture scenes' stand-in for the Resend tap chain.
+            // Runs the PRODUCTION resend, so the sheet shows a genuinely minted
+            // code. Nothing else consults the flag, so every other scene (and
+            // every shipping build — this is `#if DEBUG`) is unchanged.
+            if DebugScene.current?.opensShareSheetForFirstPending == true,
+               let first = shareService.pending.first {
+                handout = try? await shareService.resend(first)
+            }
+            #endif
+        }
     }
 
     /// The send toast. SIM keeps the prototype's "Invite sent to {email}"; LIVE
