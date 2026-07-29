@@ -64,11 +64,16 @@ struct HomeScreen: View {
 
     /// MYR-171 — `IncomingRequestSheet` shows only while there's a request
     /// actually awaiting this owner's decision; once accepted/declined the
-    /// service's `activeRequest.status` moves off `.pending` and this goes
-    /// `nil`, which is also what drives the sheet's own dismiss animation.
-    private var incomingRequest: RideRequestRecord? {
-        rideRequestService.activeRequest?.status == .pending ? rideRequestService.activeRequest : nil
-    }
+    /// owner pipeline's status moves off `.pending` and this goes `nil`, which is
+    /// also what drives the sheet's own dismiss animation.
+    ///
+    /// MYR-325 — the gate now lives on the service, as the OWNER pipeline's own
+    /// `incomingRequest` projection, rather than being re-derived here from the
+    /// shared `activeRequest`. Same expression, correct pipeline: a request can
+    /// reach this owner while this device's RIDER half is mid-ride, sitting on a
+    /// declined notice, or reading a ride summary — the state that made the client's
+    /// owner side go permanently silent.
+    private var incomingRequest: RideRequestRecord? { rideRequestService.incomingRequest }
 
     /// MYR-264 — join a request's real `vehicleId` to the owner's loaded fleet for
     /// the true vehicle name/status. `nil` in SIM (a fixture `fleetMemberID` is not
@@ -117,8 +122,9 @@ struct HomeScreen: View {
     /// MYR-265 — the active DISPATCHED ride this owner is tracking (accepted →
     /// enroute → completed), or `nil` when there is none / it is still pending
     /// (the incoming sheet handles pending). The owner observes the live status
-    /// through the SAME shared `rideRequestService.activeRequest`, folded from each
-    /// `ride_status_changed` WS unicast by `LiveRideRequestService.integrate`.
+    /// through the OWNER pipeline's `ownerDispatch` (MYR-325 — it used to be the
+    /// shared `activeRequest`), folded from each `ride_status_changed` WS unicast by
+    /// `LiveRideRequestService.integrate`.
     ///
     /// MYR-292 — the visibility rule (including "Dropped off ✓ shows until
     /// acknowledged, then never again for that ride") is the PURE
@@ -127,7 +133,7 @@ struct HomeScreen: View {
     /// to be `HomeScreen` `@State`, which `RootView`'s `switch ownerTab` destroys —
     /// so the banner reappeared every time the owner came back to Home.
     private var dispatchedRide: RideRequestRecord? {
-        guard let request = rideRequestService.activeRequest,
+        guard let request = rideRequestService.ownerDispatch,
               OwnerRideStatusLine.dispatchCardVisible(
                   status: request.status,
                   rideID: request.id,
@@ -315,8 +321,9 @@ struct HomeScreen: View {
     }
 
     /// Auto-dismiss the owner's "Dropped off ✓" confirmation after a beat so Home
-    /// doesn't stay stuck on it. Owner-local — never touches the shared
-    /// `activeRequest`, so the rider's summary is unaffected (MYR-267).
+    /// doesn't stay stuck on it. Owner-local — it acknowledges on `OwnerHomeState`
+    /// and reads only the OWNER pipeline, so the rider's summary is unaffected
+    /// (MYR-267; MYR-325 makes that structural rather than careful).
     ///
     /// MYR-292: the acknowledgement is written to `OwnerHomeState`, NOT to view
     /// `@State`. This task outlives the view — the owner can switch to Drives inside
@@ -326,13 +333,13 @@ struct HomeScreen: View {
     /// the same id twice is a no-op, so a duplicate timer armed by a remount inside
     /// the window is harmless.
     private func scheduleDroppedOffDismiss(for status: RideRequestStatus?) {
-        guard status == .completed, let id = rideRequestService.activeRequest?.id,
+        guard status == .completed, let id = rideRequestService.ownerDispatch?.id,
               homeState.acknowledgedCompletedRideID != id else { return }
         let service = rideRequestService
         let state = homeState
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(5))
-            guard service.activeRequest?.id == id, service.activeRequest?.status == .completed else { return }
+            guard service.ownerDispatch?.id == id, service.ownerDispatch?.status == .completed else { return }
             state.acknowledgedCompletedRideID = id
         }
     }
@@ -440,7 +447,7 @@ struct HomeScreen: View {
     /// `OwnerDrivesState.addUpcoming`'s doc comment), and shows the
     /// `RouteSentToast` copy variant for this request's shape.
     private func handleAccept() {
-        guard let request = rideRequestService.activeRequest else { return }
+        guard let request = rideRequestService.incomingRequest else { return }
         rideRequestService.accept()
 
         // MYR-264 — the accept toast + reserved Upcoming ride resolve through the

@@ -23,10 +23,41 @@ import Observation
 // properties survive changing `screen`/`role`).
 @MainActor
 public protocol RideRequestService: AnyObject, Observable {
-    /// `nil` when no ride has been requested this session (or the last one
-    /// finished and was dismissed). One request in flight at a time — M1
+    /// The RIDER's ride: `nil` when no ride has been requested this session (or the
+    /// last one finished and was dismissed). One request in flight at a time — M1
     /// scope, matches the prototype's single `requestState`/`requestDest`.
+    ///
+    /// MYR-325 — RIDER-SCOPED. It used to be the single slot both roles read, which
+    /// is why the owner's incoming card could be starved by the rider's own held
+    /// record (see `LiveRideRequestService`'s pipeline note). Owner surfaces read
+    /// `incomingRequest` / `ownerDispatch` instead; nothing owner-side reads this.
     var activeRequest: RideRequestRecord? { get }
+
+    /// MYR-325 — the OWNER's currently-presented INCOMING request, i.e. one awaiting
+    /// this owner's Accept/Decline. Exactly the `IncomingRequestSheet` presentation
+    /// gate: PENDING only, so the sheet's dismiss animation is driven by this going
+    /// `nil` the instant the owner answers.
+    ///
+    /// On the LIVE service this is its own pipeline, independent of `activeRequest`,
+    /// so an owner who also rides keeps receiving requests while their own ride (or
+    /// their own declined notice, or their own summary) is on screen. On the
+    /// SIMULATED service it derives from `activeRequest` — see the default below.
+    var incomingRequest: RideRequestRecord? { get }
+
+    /// MYR-325 — the OWNER's ACCEPTED ride through to drop-off (`accepted` →
+    /// `arrived` → `enroute` → `completed`), i.e. what `OwnerDispatchCard` narrates
+    /// and what the owner's "Picked up"/"Dropped off" CTAs advance. `nil` for a
+    /// pending request (that is `incomingRequest`) and for a declined one (no owner
+    /// surface renders it). The "Dropped off ✓ until acknowledged" rule stays in the
+    /// pure `OwnerRideStatusLine.dispatchCardVisible` resolver.
+    var ownerDispatch: RideRequestRecord? { get }
+
+    /// MYR-325 — the SERVER id of the request on the owner's incoming card, for the
+    /// foreground push-banner suppression decision. Distinct from
+    /// `activeServerRideID` (the rider's): now that the two pipelines are separate
+    /// they routinely name different rides, and suppressing on the rider's id would
+    /// hide a banner for a request the owner cannot see.
+    var incomingServerRideID: String? { get }
 
     /// MYR-220: the most recent SESSION/CONNECTION failure of a mutation (a
     /// create POST whose auth died mid-session — 401 / auth-shaped 403 — not an
@@ -153,6 +184,35 @@ public protocol RideRequestService: AnyObject, Observable {
 }
 
 public extension RideRequestService {
+    /// MYR-325 default — the SIMULATED service (M1) deliberately keeps ONE record
+    /// for both roles: that shared snapshot IS the mechanism the M1 demo uses to
+    /// show the cross-role round trip in a single process (the rider submits, the
+    /// user switches role, the owner's sheet reads the very same request — see this
+    /// protocol's header). It has no incoming FEED and no second party, so there is
+    /// no second pipeline to have.
+    ///
+    /// These two derivations are, character for character, the expressions
+    /// `HomeScreen` used to compute locally off `activeRequest` before the split —
+    /// so every simulated run and every DEBUG capture scene (`ownerIncoming`,
+    /// `ownerIncomingQueued`, `ownerScheduled`, `ownerDispatchedCompleted`) renders
+    /// byte-identically. Only `LiveRideRequestService`, which really does serve two
+    /// parties, overrides them with independent storage.
+    var incomingRequest: RideRequestRecord? {
+        guard let request = activeRequest, request.status == .pending else { return nil }
+        return request
+    }
+
+    var ownerDispatch: RideRequestRecord? {
+        switch activeRequest?.status {
+        case .accepted, .arrived, .enroute, .completed: return activeRequest
+        case .pending, .declined, nil: return nil
+        }
+    }
+
+    /// Default: one record, one id (see above). Nothing ever pushes to a simulated
+    /// run, so this exists to keep the protocol total.
+    var incomingServerRideID: String? { incomingRequest?.id }
+
     /// Default: the simulated service (M1) has no network, so a mutation can
     /// never fail a live session — it never signals a session failure. Only
     /// `LiveRideRequestService` overrides this (MYR-220).

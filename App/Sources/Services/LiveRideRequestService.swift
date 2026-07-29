@@ -6,10 +6,11 @@ import Observation
 
 // MARK: - Live ride-request service (MYR-209)
 //
-// The M2 conformer of the `RideRequestService` seam: the SAME `activeRequest`
-// snapshot + method surface the rider's `SharedViewerScreen` and the owner's
-// `IncomingRequestSheet` already read/call — screens do not change. Where the
-// simulated service runs local timers, this talks to the production backend over
+// The M2 conformer of the `RideRequestService` seam: the same method surface the
+// rider's `SharedViewerScreen` and the owner's `IncomingRequestSheet` already
+// call. MYR-325 splits the STATE those two surfaces read into two role-scoped
+// pipelines — see the pipeline note at the top of the class. Where the simulated
+// service runs local timers, this talks to the production backend over
 // `MyRoboTaxiKit`:
 //
 //  • REST (rest-api.md §7.8) for the mutations — create / cancel / accept /
@@ -22,10 +23,13 @@ import Observation
 // Method calls apply an OPTIMISTIC local state change synchronously (so the
 // sheets react with the same timing as the simulated service — no visual change)
 // and fire the POST in the background; the WS frame then reconciles. In the M1/M2
-// single-session demo (rider + owner are the same JWT, ONE service instance
-// shared across the role switch — see `RideRequestService`'s header) the shared
-// snapshot alone bridges the round trip; the WS path is the real multi-device
-// route and the audit's live pass.
+// single-session demo (rider + owner are the same JWT, ONE service instance shared
+// across the role switch — see `RideRequestService`'s header) MYR-325 makes the
+// round trip explicit rather than implicit: the two roles no longer share a
+// snapshot, so an owner action reaches the rider through an authoritative server
+// record (the mutation's own 200, or the WS frame) — the same route a second
+// device takes, which is why the demo and the real multi-device case now exercise
+// identical code.
 //
 // Deliberate v1 gaps (MYR-176/177 own the rest of the lifecycle):
 //  • No per-second progress ticker (MYR-176/177). Each lifecycle leg mounts the
@@ -47,7 +51,78 @@ import Observation
 @Observable
 @MainActor
 final class LiveRideRequestService: RideRequestService {
+    // MARK: - MYR-325 — TWO pipelines, because one device serves TWO roles
+    //
+    // Until MYR-325 a single `activeRequest` slot served the rider's ride AND the
+    // owner's incoming card, with an `activeRequestOrigin` tag deciding who was
+    // allowed to displace whom. That tag answered the rider-safety question
+    // correctly (MYR-292/306/317: never clobber a Ride Summary or a
+    // `DeclinedNotice`) and, in doing so, starved the owner: the client is owner
+    // AND rider on one account, so his held rider-origin `.declined` record made
+    // `canAdoptIncoming` refuse every subsequent incoming request — two live
+    // `requested` rides, pushes delivered, `refreshIncoming()` fired, and no card
+    // ever appeared. There was no correct answer available: one slot cannot hold
+    // the rider's terminal record and the owner's next request at the same time.
+    //
+    // So the state is split by ROLE, not arbitrated by origin:
+    //
+    //   RIDER pipeline  — `activeRequest` (+ `riderServerRideID`). Rides this
+    //     device's rider created or adopted. Read by `SharedViewerScreen`,
+    //     `RideRequestBookingContent`, `RideRequestTrackingContent`,
+    //     `RideRequestSummaryContent`. Driven by `submit`/`confirmSend`/`cancel`/
+    //     `startRide`/`completeAndReset`/`refreshActiveRide`. Untouched by this
+    //     issue — every rider behaviour is exactly as it was.
+    //
+    //   OWNER pipeline  — `ownerRequest` (+ `ownerServerRideID`) backed by the
+    //     MYR-317 `incomingQueue`. Requests addressed to this owner's cars. Two
+    //     projections, one per surface: `incomingRequest` (PENDING only — the
+    //     `IncomingRequestSheet` gate) and `ownerDispatch` (accepted → arrived →
+    //     enroute → completed — the `OwnerDispatchCard`). Driven by
+    //     `refreshIncoming`/`accept`/`decline`/`pickedUp`/`droppedOff`.
+    //
+    // The rider-safety invariants are now true BY CONSTRUCTION rather than by
+    // guard: an incoming request cannot displace the rider's summary or notice
+    // because it never writes to that storage at all. `canAdoptIncoming` shrinks
+    // to a question about the owner's own slot, and `ActiveRequestOrigin` is gone
+    // — it existed only to arbitrate the shared slot.
+    //
+    // SAME-ACCOUNT DUALITY (the deliberate decision): both pipelines may be live
+    // at once, and for a ride this device's rider created they may hold the SAME
+    // ride id. See `integrate`'s doc comment for why that is right rather than
+    // suppressed, and for the one place the two pipelines are allowed to touch:
+    // an authoritative server record folded into whichever of them holds that id.
+
+    /// The RIDER's ride — see the pipeline note above. Never written by an owner
+    /// action; the owner's accept/decline reaches it only through `integrate`,
+    /// i.e. through a record the server confirmed.
     private(set) var activeRequest: RideRequestRecord?
+
+    /// The OWNER's current incoming/dispatched request — see the pipeline note
+    /// above. `internal` rather than private so the pipeline's own invariants have
+    /// direct unit coverage; the SCREENS read the two projections below, never this.
+    private(set) var ownerRequest: RideRequestRecord?
+
+    /// The request awaiting this owner's decision — the `IncomingRequestSheet`
+    /// presentation gate. PENDING only: the moment the owner answers, the sheet's
+    /// dismiss animation is driven by this going `nil` (unchanged behaviour; this
+    /// is the very expression `HomeScreen` used to compute locally off the shared
+    /// slot, now owned by the pipeline that actually holds it).
+    var incomingRequest: RideRequestRecord? {
+        guard let held = ownerRequest, held.status == .pending else { return nil }
+        return held
+    }
+
+    /// The owner's ACCEPTED ride, through to drop-off — what `OwnerDispatchCard`
+    /// narrates. Excludes `pending` (the incoming sheet owns that) and `declined`
+    /// (`OwnerRideStatusLine.text` renders no line for it, so it is on no surface);
+    /// the `completed`-until-acknowledged rule stays in the pure
+    /// `OwnerRideStatusLine.dispatchCardVisible` resolver, unchanged.
+    var ownerDispatch: RideRequestRecord? {
+        switch ownerRequest?.status {
+        case .accepted, .arrived, .enroute, .completed: return ownerRequest
+        case .pending, .declined, nil: return nil
+        }
+    }
 
     /// MYR-220: the latest session/connection failure of the create POST (auth
     /// died mid-session — 401 / auth-shaped 403). Observed by the rider's
@@ -61,25 +136,14 @@ final class LiveRideRequestService: RideRequestService {
     /// MYR-316 — see `RideRequestService.scheduleWindowFailure`.
     private(set) var scheduleWindowFailure: RideScheduleWindowFailure?
 
-    /// MYR-292 — which role's flow put the CURRENT `activeRequest` there.
-    ///
-    /// ONE service instance serves both roles (see the header), so "is the held ride
-    /// dead?" cannot be answered from its status alone: a `completed` ride is DEAD on
-    /// the owner's Home (the "Dropped off ✓" banner acknowledges and hides) but very
-    /// much LIVE on the rider's Ride Summary, which renders that exact record until
-    /// "See you soon" calls `completeAndReset()`. Recorded at the five sites that
-    /// ADOPT a record — never on an in-place status mutation, which leaves the origin
-    /// untouched — so the incoming-adoption guards can widen for the owner without
-    /// ever clobbering the rider's summary.
-    enum ActiveRequestOrigin {
-        /// This device's rider submitted it, or adopted its own open ride
-        /// (cold launch / `409 ride_active`).
-        case rider
-        /// Adopted from the OWNER incoming path — a `ride_request_created` frame for
-        /// a ride this device has no local draft for, or the incoming feed seed.
-        case ownerIncoming
-    }
-    private(set) var activeRequestOrigin: ActiveRequestOrigin?
+    // MYR-292's `ActiveRequestOrigin` is DELETED by MYR-325. It tagged the shared
+    // slot with "which role put this here" so the adoption guards could widen for
+    // the owner without clobbering the rider — the best answer available while one
+    // slot served both roles. With the pipelines split there is nothing left to
+    // arbitrate: the rider's storage is only ever written by rider actions, so the
+    // question the tag answered cannot arise. Keeping it would be dead state
+    // (CLAUDE.md "dead-code rule") whose only remaining effect would be to invite a
+    // future guard to consult the wrong pipeline again.
 
     /// MYR-317 — the OWNER's incoming QUEUE: every OTHER still-pending incoming
     /// request, in the server's feed order, waiting behind the one on the card.
@@ -112,10 +176,17 @@ final class LiveRideRequestService: RideRequestService {
     /// card; drives the muted "+N more waiting" chip on `IncomingRequestSheet`.
     var waitingIncomingCount: Int { incomingQueue.count }
 
-    /// The server-assigned ride id for the active request (distinct from the
+    /// The server-assigned ride id for the RIDER's request (distinct from the
     /// local `activeRequest.id`, which for a rider-submitted ride is a client
-    /// UUID until the create POST returns). Mutations target this id.
-    private var serverRideID: String?
+    /// UUID until the create POST returns). Rider mutations target this id.
+    private var riderServerRideID: String?
+
+    /// MYR-325 — the server-assigned ride id for the OWNER's held request. Always a
+    /// real server id: every owner record is built from a WIRE record, so unlike the
+    /// rider's there is no client-UUID window. Owner mutations (accept / decline /
+    /// picked-up / dropped-off) target this id, which is why an accept fired from
+    /// the owner card can never land on the rider's ride by accident.
+    private var ownerServerRideID: String?
     /// Cached create-target vehicle (the caller's first owned vehicle).
     private var cachedVehicleID: String?
 
@@ -192,8 +263,11 @@ final class LiveRideRequestService: RideRequestService {
             // adopt the rider's OWN open instant ride so a rider who force-quit
             // mid-ride (or a fresh session that created nothing this run) relaunches
             // back into the correct pending/tracking state — not the idle greeting.
-            // Rider-side takes priority; only if the rider holds no open ride does
-            // the owner incoming feed seed (its guard no-ops once this adopts one).
+            //
+            // MYR-325 — these two seeds no longer compete. They fill DIFFERENT
+            // pipelines, so an owner who also rides now cold-launches into their own
+            // ride AND their incoming card, instead of the feed seed being suppressed
+            // by whatever the rider happened to be holding.
             await self?.adoptOpenRiderRide()
             await self?.refreshIncoming()
             for await event in stream {
@@ -214,8 +288,7 @@ final class LiveRideRequestService: RideRequestService {
         // countdown + real itinerary labels the Booking card animates over all
         // read off this record.
         activeRequest = RideRequestRecord(input: input, status: .pending)
-        activeRequestOrigin = .rider
-        serverRideID = nil
+        riderServerRideID = nil
 
         // MYR-218 defect 1: DEFER the create POST. The client's dual-simulator
         // test caught the owner receiving the request while the rider's
@@ -259,7 +332,7 @@ final class LiveRideRequestService: RideRequestService {
             let vehicleID = await self.resolveVehicleID() ?? input.fleetMemberID
             do {
                 let ride = try await api.createRideRequest(Self.createBody(from: input, vehicleId: vehicleID))
-                self.serverRideID = ride.id
+                self.riderServerRideID = ride.id
                 if let mapped = RideRequestContractMapping.status(ride.status), mapped != .pending {
                     self.applyRemote(rideID: ride.id) // server already advanced it
                 }
@@ -414,8 +487,7 @@ final class LiveRideRequestService: RideRequestService {
     private func failCreateScheduleWindow() {
         guard let request = activeRequest, request.status == .pending else { return }
         activeRequest = nil
-        activeRequestOrigin = nil
-        serverRideID = nil
+        riderServerRideID = nil
         scheduleWindowFailure = RideScheduleWindowFailure()
     }
 
@@ -430,8 +502,7 @@ final class LiveRideRequestService: RideRequestService {
     private func failCreateVehicleUnavailable() {
         guard let request = activeRequest, request.status == .pending else { return }
         activeRequest = nil
-        activeRequestOrigin = nil
-        serverRideID = nil
+        riderServerRideID = nil
         vehicleUnavailableFailure = RideVehicleUnavailableFailure()
     }
 
@@ -445,7 +516,7 @@ final class LiveRideRequestService: RideRequestService {
         guard var request = activeRequest, request.status == .pending else { return }
         request.status = .declined
         activeRequest = request
-        serverRideID = nil
+        riderServerRideID = nil
     }
 
     /// MYR-220 SESSION/CONNECTION create failure: the token died mid-session, so
@@ -459,8 +530,7 @@ final class LiveRideRequestService: RideRequestService {
     private func failCreateSessionError() {
         guard let request = activeRequest, request.status == .pending else { return }
         activeRequest = nil
-        activeRequestOrigin = nil
-        serverRideID = nil
+        riderServerRideID = nil
         sessionFailure = RideSessionFailure()
     }
 
@@ -476,10 +546,10 @@ final class LiveRideRequestService: RideRequestService {
             if attempt > 0 { try? await Task.sleep(for: reconcilePolicy.delay) }
             // Stop if the rider cancelled, or a WS `ride_request_created` frame
             // already adopted the ride out from under us.
-            guard activeRequest?.status == .pending, serverRideID == nil else { return }
+            guard activeRequest?.status == .pending, riderServerRideID == nil else { return }
             guard let page = try? await api.rideRequests(cursor: nil, limit: 20) else { continue }
             if let match = page.items.first(where: { Self.matchesSubmission($0, input: input, since: since) }) {
-                serverRideID = match.id
+                riderServerRideID = match.id
                 integrate(match) // keeps the richer local draft input, folds status/id
                 return
             }
@@ -504,39 +574,52 @@ final class LiveRideRequestService: RideRequestService {
         abs(wire.lat - coord.latitude) < 1e-4 && abs(wire.lng - coord.longitude) < 1e-4
     }
 
+    /// OWNER "Accept & send" — the incoming card becomes this owner's DISPATCH.
+    /// MYR-325: reads and writes the OWNER pipeline only. The rider half of a
+    /// self-created ride (same account, both roles) learns through `integrate` when
+    /// the server's `ride_status_changed` frame lands — never by this method
+    /// reaching across into the rider's record, which is exactly the coupling that
+    /// made one slot serve two roles in the first place.
     func accept() {
-        guard var request = activeRequest, request.status == .pending else { return }
+        guard var request = ownerRequest, request.status == .pending else { return }
         request.status = .accepted
         request.acceptedAt = Date()
         if request.input.schedule == nil {
             request.trackProgress = RideRequestTiming.autoAcceptInitialProgress
         }
-        activeRequest = request
+        ownerRequest = request
         // MYR-277 C: the backend now 409s an accept for an in_service/offline
         // vehicle (parallel PR). A swallowed error would strand the owner on a
         // phantom "accepted" — so reconcile on failure instead of fire-and-forget.
         reconcileAcceptOnFailure()
-        // MYR-317: the accepted ride now owns the slot, so `canAdoptIncoming` makes
-        // the adoption half a no-op — but the queue must still be re-read, because
-        // the card the owner just cleared changed how many are waiting behind it.
+        // MYR-317: the accepted ride now owns the owner's slot, so `canAdoptIncoming`
+        // makes the adoption half a no-op — but the queue must still be re-read,
+        // because the card the owner just cleared changed how many wait behind it.
         markIncomingResolved()
         advanceIncoming()
     }
 
-    /// MYR-277 C: POST the accept; on SUCCESS keep the optimistic `.accepted` (the
-    /// owner tracking + WS frames drive the rest, unchanged from the prior
-    /// fire-and-forget behavior). On ANY error — notably a 409 when the target
+    /// MYR-277 C: POST the accept; on SUCCESS fold the returned record. On ANY
+    /// error — notably a 409 when the target
     /// vehicle went in_service/offline and the backend refuses the dispatch —
     /// REFETCH the authoritative record and fold it: a still-`requested` ride folds
     /// back to `.pending`, re-showing the incoming sheet (clean, tappable — the
     /// sheet resets its sending/sent choreography on the id round-trip) instead of
     /// leaving the owner stuck. If even the refetch fails, revert to pending.
     private func reconcileAcceptOnFailure() {
-        guard let id = serverRideID else { return } // create not yet acknowledged
+        guard let id = ownerServerRideID else { return } // nothing held to accept
         let api = self.api
         Task { @MainActor [weak self] in
             do {
-                _ = try await api.acceptRideRequest(id: id)
+                // MYR-325: fold the 200, exactly as `advanceMutation` folds every
+                // other lifecycle POST. It used to be discarded, which was harmless
+                // while one slot served both roles — the optimistic accept was
+                // already visible to the rider. With the pipelines split, this
+                // response is the authoritative record that carries the accept back
+                // to the RIDER half of a self-created ride without waiting on a WS
+                // frame; `integrate` routes it to whichever pipelines hold that id.
+                let ride = try await api.acceptRideRequest(id: id)
+                self?.integrate(ride)
             } catch {
                 // MYR-233: a typed `409 vehicle_unavailable` here is the SPECIFIC
                 // reason MYR-277 C added this reconcile — the car went busy /
@@ -556,7 +639,7 @@ final class LiveRideRequestService: RideRequestService {
                 // silent snap-back to the incoming card with no explanation. Same
                 // scoping rule: only for a request that actually carries a
                 // schedule. Still no retry — the same POST would 400 again.
-                if let input = self?.activeRequest?.input, Self.isScheduleWindowRefusal(error, input: input) {
+                if let input = self?.ownerRequest?.input, Self.isScheduleWindowRefusal(error, input: input) {
                     self?.scheduleWindowFailure = RideScheduleWindowFailure()
                 }
                 if let ride = try? await api.rideRequest(id: id) {
@@ -573,24 +656,28 @@ final class LiveRideRequestService: RideRequestService {
     /// optimistic `.accepted` so a WS frame that already moved the ride on is never
     /// clobbered.
     private func revertOptimisticAccept() {
-        guard var request = activeRequest, request.status == .accepted else { return }
+        guard var request = ownerRequest, request.status == .accepted else { return }
         request.status = .pending
         request.acceptedAt = nil
         request.trackProgress = nil
-        activeRequest = request
+        ownerRequest = request
     }
 
+    /// OWNER declines. MYR-325: the OWNER pipeline only — the rider's own
+    /// `DeclinedNotice` for a self-created ride arrives through `integrate` on the
+    /// server's frame, which is also what makes it correct on a second device.
     func decline() {
-        guard var request = activeRequest, request.status == .pending else { return }
+        guard var request = ownerRequest, request.status == .pending else { return }
         request.status = .declined
-        activeRequest = request
-        postMutation { try await $0.declineRideRequest(id: $1) }
-        // MYR-306 + MYR-317: a declined OWNER-originated request releases the slot,
-        // so the next waiting request surfaces on the very next frame — instead of
-        // the old behaviour, where the `.declined` record jammed adoption until the
-        // app was relaunched (MYR-306) and any queued rider stayed invisible. A
-        // RIDER-originated decline (the rider's own `DeclinedNotice`) is refused by
-        // `canAdoptIncoming` and nothing moves.
+        ownerRequest = request
+        postOwnerMutation { try await $0.declineRideRequest(id: $1) }
+        // MYR-306 + MYR-317: a declined request releases the owner's slot, so the
+        // next waiting request surfaces on the very next frame — instead of the old
+        // behaviour, where the `.declined` record jammed adoption until the app was
+        // relaunched (MYR-306) and any queued rider stayed invisible.
+        //
+        // MYR-325 removes the caveat that used to live here: a decline the RIDER is
+        // looking at can no longer block this, because it is not in this storage.
         markIncomingResolved()
         advanceIncoming()
     }
@@ -608,11 +695,12 @@ final class LiveRideRequestService: RideRequestService {
     // never confirmed it). Never an auto-retry of the same POST (§7.8).
 
     /// OWNER "Picked up" — `accepted → arrived`. No nav push here (that is `start`).
+    /// MYR-325: an OWNER CTA, so it advances the OWNER pipeline.
     func pickedUp() {
-        guard var request = activeRequest, request.status == .accepted else { return }
+        guard var request = ownerRequest, request.status == .accepted else { return }
         request.status = .arrived
-        activeRequest = request
-        advanceMutation(revertTo: .accepted) { try await $0.pickedUp(rideID: $1) }
+        ownerRequest = request
+        advanceMutation(.owner, revertTo: .accepted) { try await $0.pickedUp(rideID: $1) }
     }
 
     /// RIDER "Start ride" — `arrived → enroute`. The server pushes the dropoff nav.
@@ -625,16 +713,17 @@ final class LiveRideRequestService: RideRequestService {
             request.trackProgress = max(request.trackProgress ?? 0, request.enrouteSeedProgress)
         }
         activeRequest = request
-        advanceMutation(revertTo: .arrived) { try await $0.start(rideID: $1) }
+        advanceMutation(.rider, revertTo: .arrived) { try await $0.start(rideID: $1) }
     }
 
-    /// OWNER "Dropped off" — `enroute → completed`.
+    /// OWNER "Dropped off" — `enroute → completed`. MYR-325: an OWNER CTA, so it
+    /// advances the OWNER pipeline; the rider's summary follows on the frame.
     func droppedOff() {
-        guard var request = activeRequest, request.status == .enroute else { return }
+        guard var request = ownerRequest, request.status == .enroute else { return }
         request.status = .completed
         if request.input.schedule == nil { request.trackProgress = 1 }
-        activeRequest = request
-        advanceMutation(revertTo: .enroute) { try await $0.droppedOff(rideID: $1) }
+        ownerRequest = request
+        advanceMutation(.owner, revertTo: .enroute) { try await $0.droppedOff(rideID: $1) }
     }
 
     /// Shared optimistic-advance reconcile (MYR-270). POST the action; a 200 folds the
@@ -644,11 +733,18 @@ final class LiveRideRequestService: RideRequestService {
     /// flip to `previous` — the server never advanced, so no `ride_status_changed`
     /// frame will arrive to correct it; a re-tap is an idempotent 200 and the WS
     /// re-confirms the real state.
+    /// MYR-325 — `pipeline` names WHOSE record was optimistically advanced, so the
+    /// POST targets that pipeline's server id and a double failure reverts that
+    /// pipeline's record. It is not a routing hint for the RESULT: the returned /
+    /// refetched record goes through `integrate`, which folds it into every pipeline
+    /// holding that ride id — so a self-created ride's rider half is reconciled by
+    /// the owner's advance for free, through an authoritative record.
     private func advanceMutation(
+        _ pipeline: Pipeline,
         revertTo previous: RideRequestStatus,
         _ op: @escaping @Sendable (any RideRequestAPI, String) async throws -> RideRequest
     ) {
-        guard let id = serverRideID else { return } // create not yet acknowledged
+        guard let id = serverID(pipeline) else { return } // create not yet acknowledged
         let api = self.api
         Task { @MainActor [weak self] in
             do {
@@ -658,7 +754,7 @@ final class LiveRideRequestService: RideRequestService {
                 if let ride = try? await api.rideRequest(id: id) {
                     self?.integrate(ride)
                 } else {
-                    self?.revertOptimisticAdvance(to: previous)
+                    self?.revertOptimisticAdvance(pipeline, to: previous)
                 }
             }
         }
@@ -666,8 +762,8 @@ final class LiveRideRequestService: RideRequestService {
 
     /// Undo an optimistic advance the server never confirmed, restoring the prior
     /// status + its leg tracking anchor (MYR-270).
-    private func revertOptimisticAdvance(to previous: RideRequestStatus) {
-        guard var request = activeRequest else { return }
+    private func revertOptimisticAdvance(_ pipeline: Pipeline, to previous: RideRequestStatus) {
+        guard var request = record(pipeline) else { return }
         request.status = previous
         if request.input.schedule == nil {
             switch previous {
@@ -676,23 +772,50 @@ final class LiveRideRequestService: RideRequestService {
             default: break
             }
         }
-        activeRequest = request
+        setRecord(request, pipeline)
+    }
+
+    // MARK: MYR-325 — pipeline addressing
+    //
+    // The two pipelines are separate STORAGE, but their optimistic-advance and
+    // reconcile MECHANICS are identical, so the shared helpers take the pipeline as
+    // a parameter rather than being written twice (CLAUDE.md "reuse, don't fork").
+    // Deliberately private and tiny: nothing outside this file should be able to
+    // address a pipeline generically — the screens read the role-named projections.
+
+    private enum Pipeline { case rider, owner }
+
+    private func record(_ pipeline: Pipeline) -> RideRequestRecord? {
+        pipeline == .rider ? activeRequest : ownerRequest
+    }
+
+    private func setRecord(_ value: RideRequestRecord?, _ pipeline: Pipeline) {
+        if pipeline == .rider { activeRequest = value } else { ownerRequest = value }
+    }
+
+    private func serverID(_ pipeline: Pipeline) -> String? {
+        pipeline == .rider ? riderServerRideID : ownerServerRideID
     }
 
     func cancel() {
         // MYR-218 defect 1: a cancel DURING the grace window (before the
         // deferred POST fired) must make ZERO server calls — no ride exists yet.
         // Disarm the auto-send and drop the held draft, then discard locally.
-        // `serverRideID` is still nil at that point, so the guard below no-ops
+        // `riderServerRideID` is still nil at that point, so the guard below no-ops
         // the remote cancel; after the send it is set and cancel keeps its
         // existing remote behavior.
         sendTask?.cancel()
         sendTask = nil
         pendingSend = nil
-        let id = serverRideID
+        let id = riderServerRideID
         activeRequest = nil
-        activeRequestOrigin = nil
-        serverRideID = nil
+        riderServerRideID = nil
+        // MYR-325 same-account duality: this device's OWNER pipeline may be showing
+        // an incoming card for the very ride the rider just cancelled (that is the
+        // deliberate decision — see `integrate`). Retire it here rather than waiting
+        // for the cancellation frame, or the owner half of the client's own account
+        // is left holding a phantom request whose Accept would 409.
+        if let id { retireOwnerRide(id: id) }
         guard let id else { return }
         let api = self.api
         Task { _ = try? await api.cancelRideRequest(id: id) }
@@ -702,8 +825,7 @@ final class LiveRideRequestService: RideRequestService {
         // v1 has no completed lifecycle (MYR-176/177), so the Ride Summary is
         // unreachable in live mode. Reset defensively; nothing to persist.
         activeRequest = nil
-        activeRequestOrigin = nil
-        serverRideID = nil
+        riderServerRideID = nil
         return nil
     }
 
@@ -718,84 +840,93 @@ final class LiveRideRequestService: RideRequestService {
         }
     }
 
+    /// Fold an AUTHORITATIVE server record into whichever pipeline(s) hold that ride.
+    ///
+    /// MYR-325 — this is the ONE place the rider and owner pipelines meet, and it
+    /// meets them only through a record the server confirmed. The two arms run
+    /// INDEPENDENTLY, and both may run for the same frame.
+    ///
+    /// SAME-ACCOUNT DUALITY — the decision, made deliberately rather than inherited:
+    /// a ride this device's rider created ALSO surfaces on this device's owner side,
+    /// so the two pipelines legitimately hold the SAME ride id.
+    ///  • It is what the client actually does. He is owner and rider on one account
+    ///    and self-tests every build by requesting a ride and then answering it; a
+    ///    suppression rule ("skip rides the rider pipeline owns") would delete the
+    ///    incoming card from his primary workflow — and that card presenting is
+    ///    precisely what tonight's bug report is about.
+    ///  • It is also what the surfaces mean. The rider's booking/pending card and the
+    ///    owner's incoming card are DIFFERENT SURFACES answering different questions
+    ///    ("has my request gone out?" vs. "will I lend my car?"), on different tabs,
+    ///    behind different roles. Two surfaces reading one ride is not duplication.
+    ///  • It is safe because neither pipeline WRITES to the other. `accept()` /
+    ///    `decline()` mutate only the owner slot and POST on `ownerServerRideID`; the
+    ///    rider's half of the same ride is updated here, from the server's record.
+    ///    The one place that would otherwise desync is a rider CANCEL, which
+    ///    `cancel()` handles explicitly via `retireOwnerRide`.
+    ///
+    /// The MYR-292/306/317 rider-safety invariants no longer need a guard: an
+    /// incoming request cannot displace the rider's Ride Summary or `DeclinedNotice`
+    /// because the owner arm never writes `activeRequest`.
     private func integrate(_ ride: RideRequest) {
-        let mapped = RideRequestContractMapping.status(ride.status)
-        if mapped == nil {
-            // Cancelled / terminal — drop it if it's the ride we're tracking, and
-            // (MYR-317) drop it from the queue if it was waiting behind the card:
-            // a rider who cancels while queued must not be surfaced later as a
-            // request the owner can still accept.
-            if isCurrent(ride.id) {
-                activeRequest = nil; activeRequestOrigin = nil; serverRideID = nil
-            } else {
-                dequeueIncoming(id: ride.id)
-            }
+        guard let mapped = RideRequestContractMapping.status(ride.status) else {
+            // Cancelled / unknown-terminal — retire it from BOTH pipelines and from
+            // the queue (MYR-317: a rider who cancels while queued must not be
+            // surfaced later as a request the owner can still accept).
+            if riderHolds(ride.id) { activeRequest = nil; riderServerRideID = nil }
+            retireOwnerRide(id: ride.id)
             return
         }
-        if isCurrent(ride.id) {
-            // Update status in place, preserving the richer local draft input.
-            // `record(from:)` is non-nil here (it returns nil only for the
-            // already-handled cancelled/terminal case above).
+        if riderHolds(ride.id) { integrateRider(ride, mapped: mapped) }
+        integrateOwner(ride, mapped: mapped)
+    }
+
+    /// The RIDER arm: fold the server record onto the rider's tracked ride in place,
+    /// preserving the richer local draft and seeding the per-leg tracking anchor.
+    /// Behaviour is byte-for-byte what the single-slot `integrate` did for a rider
+    /// record; only the storage it writes is now role-scoped.
+    private func integrateRider(_ ride: RideRequest, mapped: RideRequestStatus) {
+        // `record(from:)` is non-nil here (it returns nil only for the
+        // already-handled cancelled/terminal case in `integrate`).
+        let refetched = RideRequestContractMapping.record(from: ride)!
+        let current = Self.fold(ride, refetched: refetched,
+                                onto: activeRequest ?? refetched,
+                                mapped: mapped, seedsTracking: true)
+        activeRequest = current
+        riderServerRideID = ride.id
+    }
+
+    /// The OWNER arm: fold onto the held request, or queue/adopt a new incoming one,
+    /// or drop a queued one that resolved elsewhere.
+    private func integrateOwner(_ ride: RideRequest, mapped: RideRequestStatus) {
+        if ownerHolds(ride.id) {
             let refetched = RideRequestContractMapping.record(from: ride)!
-            var current = activeRequest ?? refetched
-            current.status = mapped!
-            current.acceptedAt = ride.acceptedAt.flatMap(RideRequestContractMapping.parseISO)
-            // MYR-277 A1: in the single-account demo the rider's optimistic draft
-            // carries NO requesterName (the rider never stamps their own display
-            // name) and may carry placeholder place labels; the refetched server
-            // record is authoritative for identity. Refresh those fields from it
-            // WITHOUT downgrading a richer local value, so the owner card shows the
-            // real "<Name> wants a ride" instead of the neutral "Shared viewer".
-            // The two-device owner path builds its record in the `else if` branch
-            // below (via `record(from:)`) and is unaffected by this fold.
-            // Prefer a non-empty refetched name; never overwrite a known name with
-            // nil OR an empty string (MYR-277 review — symmetric with preferRicherPlace).
-            if let name = ride.requesterName, !name.trimmingCharacters(in: .whitespaces).isEmpty {
-                current.input.requesterName = name
-            }
-            current.input.pickup = Self.preferRicherPlace(local: current.input.pickup, refetched: refetched.input.pickup)
-            current.input.destination = Self.preferRicherPlace(local: current.input.destination, refetched: refetched.input.destination)
-            // MYR-265: seed the per-leg tracking anchor so a WS-driven status change
-            // moves the rider's sheet to the matching leg (v1 has no live ticker).
-            // The owner side ignores `trackProgress`; only the rider reads it.
-            if current.input.schedule == nil {
-                switch mapped! {
-                case .accepted, .arrived:
-                    // Live has no per-second ticker, so an accepted/arrived ride's
-                    // anchor is always the static leg-1 seed (car at/approaching the
-                    // pickup). Set it unconditionally so an advance that FAILED
-                    // (optimistic enroute reverting on the refetch) also rewinds the
-                    // anchor back to leg 1 — not just when it was nil. The rider's
-                    // arrived "Your car is here" stage reads off the STATUS itself.
-                    current.trackProgress = RideRequestTiming.autoAcceptInitialProgress
-                case .enroute:
-                    current.trackProgress = max(current.trackProgress ?? 0, current.enrouteSeedProgress)
-                case .completed:
-                    current.trackProgress = 1
-                default:
-                    break
-                }
-            }
-            activeRequest = current
-            serverRideID = ride.id
-            // MYR-317 — the tracked ride reached a status that RELEASES the owner's
-            // slot (its own `completed` — the drop-off — or `declined` once MYR-306
-            // widened the guard): surface the next queued request instead of sitting
-            // on a dead card until a fresh frame happens to arrive, which is exactly
-            // how a waiting rider stayed invisible after ONE ride. Narrowed to those
-            // two statuses so a live dispatch's frames don't each re-fetch the feed;
-            // `canAdoptIncoming` is still the thing that decides (a RIDER-originated
-            // completed/declined record is never touched).
+            // `seedsTracking: false` — the owner surfaces read the STATUS, never
+            // `trackProgress` (only the rider's tracking sheet does).
+            ownerRequest = Self.fold(ride, refetched: refetched,
+                                     onto: ownerRequest ?? refetched,
+                                     mapped: mapped, seedsTracking: false)
+            ownerServerRideID = ride.id
+            // MYR-317 — the held request reached a status that RELEASES the owner's
+            // slot (`completed` — the drop-off — or `declined`): surface the next
+            // queued request instead of sitting on a dead card until a fresh frame
+            // happens to arrive, which is exactly how a waiting rider stayed
+            // invisible after ONE ride. Narrowed to those two statuses so a live
+            // dispatch's frames don't each re-fetch the feed.
             if mapped == .completed || mapped == .declined { advanceIncoming() }
         } else if mapped == .pending {
-            // OWNER side: a pending request for some OTHER ride.
+            // A pending request this owner has not answered.
             //
             // MYR-317 — it is QUEUED first (deduped by id), so it is counted on the
             // card's "+N more waiting" chip even while another request owns the
             // slot; before, a frame that arrived with the slot occupied was simply
-            // dropped and that rider became invisible. Adoption then runs under the
-            // unchanged `canAdoptIncoming` guard and takes the queue HEAD (server
-            // feed order), which for a free slot is this very ride.
+            // dropped and that rider became invisible. Adoption then runs under
+            // `canAdoptIncoming` and takes the queue HEAD (server feed order), which
+            // for a free slot is this very ride.
+            //
+            // MYR-325 — this arm no longer asks whether the RIDER pipeline holds the
+            // ride. It used to (as `else if` on a shared `isCurrent`), which is why a
+            // self-created ride could never reach the owner card independently, and
+            // why a held rider record starved every other owner's request.
             enqueueIncoming(ride)
             adoptNextIncoming()
         } else {
@@ -806,6 +937,66 @@ final class LiveRideRequestService: RideRequestService {
         }
     }
 
+    /// Fold an authoritative wire record onto a held app record. Shared by both
+    /// pipelines so the identity/place/status reconciliation cannot drift between
+    /// them; `seedsTracking` is the only difference (the rider's per-leg anchor).
+    private static func fold(
+        _ ride: RideRequest,
+        refetched: RideRequestRecord,
+        onto held: RideRequestRecord,
+        mapped: RideRequestStatus,
+        seedsTracking: Bool
+    ) -> RideRequestRecord {
+        var current = held
+        current.status = mapped
+        current.acceptedAt = ride.acceptedAt.flatMap(RideRequestContractMapping.parseISO)
+        // MYR-277 A1: in the single-account demo the rider's optimistic draft
+        // carries NO requesterName (the rider never stamps their own display
+        // name) and may carry placeholder place labels; the refetched server
+        // record is authoritative for identity. Refresh those fields from it
+        // WITHOUT downgrading a richer local value, so the owner card shows the
+        // real "<Name> wants a ride" instead of the neutral "Shared viewer".
+        // Prefer a non-empty refetched name; never overwrite a known name with
+        // nil OR an empty string (MYR-277 review — symmetric with preferRicherPlace).
+        if let name = ride.requesterName, !name.trimmingCharacters(in: .whitespaces).isEmpty {
+            current.input.requesterName = name
+        }
+        current.input.pickup = preferRicherPlace(local: current.input.pickup, refetched: refetched.input.pickup)
+        current.input.destination = preferRicherPlace(local: current.input.destination, refetched: refetched.input.destination)
+        // MYR-265: seed the per-leg tracking anchor so a WS-driven status change
+        // moves the rider's sheet to the matching leg (v1 has no live ticker).
+        guard seedsTracking, current.input.schedule == nil else { return current }
+        switch mapped {
+        case .accepted, .arrived:
+            // Live has no per-second ticker, so an accepted/arrived ride's
+            // anchor is always the static leg-1 seed (car at/approaching the
+            // pickup). Set it unconditionally so an advance that FAILED
+            // (optimistic enroute reverting on the refetch) also rewinds the
+            // anchor back to leg 1 — not just when it was nil. The rider's
+            // arrived "Your car is here" stage reads off the STATUS itself.
+            current.trackProgress = RideRequestTiming.autoAcceptInitialProgress
+        case .enroute:
+            current.trackProgress = max(current.trackProgress ?? 0, current.enrouteSeedProgress)
+        case .completed:
+            current.trackProgress = 1
+        default:
+            break
+        }
+        return current
+    }
+
+    /// MYR-325 — retire a ride from the OWNER pipeline entirely: out of the queue
+    /// (and remembered as resolved, so a stale feed page cannot re-queue it) and, if
+    /// it is the held card, off the card, advancing to whatever waits behind it.
+    /// Used by a cancellation frame and by the rider's own `cancel()`.
+    private func retireOwnerRide(id: String) {
+        dequeueIncoming(id: id)
+        guard ownerHolds(id) else { return }
+        ownerRequest = nil
+        ownerServerRideID = nil
+        advanceIncoming()
+    }
+
     // MARK: MYR-317 — incoming queue mechanics
 
     /// Add a pending incoming request to the tail of the queue, deduped by id (a
@@ -813,7 +1004,7 @@ final class LiveRideRequestService: RideRequestService {
     /// the same rider twice). Never queues the request already on the card.
     private func enqueueIncoming(_ ride: RideRequest) {
         guard RideRequestContractMapping.status(ride.status) == .pending,
-              !isCurrent(ride.id), !resolvedIncomingIDs.contains(ride.id)
+              !ownerHolds(ride.id), !resolvedIncomingIDs.contains(ride.id)
         else { return }
         if let existing = incomingQueue.firstIndex(where: { $0.id == ride.id }) {
             incomingQueue[existing] = ride
@@ -845,30 +1036,32 @@ final class LiveRideRequestService: RideRequestService {
     private func replaceQueue(with items: [RideRequest]) {
         incomingQueue = items.filter {
             RideRequestContractMapping.status($0.status) == .pending
-                && !isCurrent($0.id)
+                && !ownerHolds($0.id)
                 && !resolvedIncomingIDs.contains($0.id)
         }
     }
 
-    /// Take the queue HEAD into the `activeRequest` slot, if the slot may be taken.
+    /// Take the queue HEAD into the OWNER's slot, if that slot may be taken.
     ///
     /// The guard is the SAME `canAdoptIncoming` every other adoption site uses —
-    /// deliberately, so the queue can never become a back door around the
-    /// rider-safety invariants (MYR-292): a live dispatch is never displaced, and a
-    /// RIDER-originated record (their Ride Summary, their `DeclinedNotice`) is never
-    /// clobbered no matter how many owners' requests are waiting.
+    /// deliberately, so the queue can never become a back door around the owner
+    /// pipeline's own rule: a live dispatch is never displaced.
+    ///
+    /// MYR-325 — it writes `ownerRequest`, never `activeRequest`. That single change
+    /// is what makes the MYR-292 rider-safety invariants structural: however many
+    /// requests are queued, none of them can reach the rider's Ride Summary or
+    /// `DeclinedNotice`, because this does not know how to write there.
     @discardableResult
     private func adoptNextIncoming() -> Bool {
         guard canAdoptIncoming else { return false }
         while !incomingQueue.isEmpty {
             let next = incomingQueue.removeFirst()
-            guard !isCurrent(next.id),
+            guard !ownerHolds(next.id),
                   let record = RideRequestContractMapping.record(from: next),
                   record.status == .pending
             else { continue }
-            activeRequest = record
-            activeRequestOrigin = .ownerIncoming
-            serverRideID = next.id
+            ownerRequest = record
+            ownerServerRideID = next.id
             return true
         }
         return false
@@ -877,7 +1070,7 @@ final class LiveRideRequestService: RideRequestService {
     /// Remember the ride the owner just answered (accept/decline) as resolved, so a
     /// feed page that was already in flight can't hand it back as still-waiting.
     private func markIncomingResolved() {
-        if let id = serverRideID { resolvedIncomingIDs.insert(id) }
+        if let id = ownerServerRideID { resolvedIncomingIDs.insert(id) }
     }
 
     /// The current card resolved (accepted / declined / completed / cancelled):
@@ -893,8 +1086,17 @@ final class LiveRideRequestService: RideRequestService {
         Task { @MainActor [weak self] in await self?.refreshIncoming() }
     }
 
-    private func isCurrent(_ rideID: String) -> Bool {
-        rideID == serverRideID || rideID == activeRequest?.id
+    /// Does the RIDER pipeline track this ride? The local-id fallback covers the
+    /// window between `submit` and the create POST's acknowledgement, where the
+    /// record still carries a client UUID.
+    private func riderHolds(_ rideID: String) -> Bool {
+        rideID == riderServerRideID || rideID == activeRequest?.id
+    }
+
+    /// Does the OWNER pipeline hold this ride on its card? Owner records are always
+    /// built from the wire, so both ids are server ids and this is a plain match.
+    private func ownerHolds(_ rideID: String) -> Bool {
+        rideID == ownerServerRideID || rideID == ownerRequest?.id
     }
 
     /// MYR-186 — see `RideRequestService.activeServerRideID`. Prefer the server's
@@ -902,7 +1104,12 @@ final class LiveRideRequestService: RideRequestService {
     /// create POST's acknowledgement, where no server id exists yet (a push for a
     /// ride the server has not created cannot arrive, so the fallback is only
     /// ever a safe non-match).
-    var activeServerRideID: String? { serverRideID ?? activeRequest?.id }
+    var activeServerRideID: String? { riderServerRideID ?? activeRequest?.id }
+
+    /// MYR-325 — see `RideRequestService.incomingServerRideID`. The OWNER pipeline's
+    /// id, which is what a push about an incoming request carries; `activeServerRideID`
+    /// is the rider's and would suppress the wrong banner now that they can differ.
+    var incomingServerRideID: String? { ownerServerRideID ?? ownerRequest?.id }
 
     /// MYR-186 — the rider half of push-tap re-sync. Runs the SAME cold-launch
     /// adoption `start()` performs, so a rider who launched from a notification
@@ -912,41 +1119,34 @@ final class LiveRideRequestService: RideRequestService {
         await adoptOpenRiderRide()
     }
 
-    /// MYR-292 — may a brand-new incoming `pending` request take the single
-    /// `activeRequest` slot? Yes when nothing is held, and yes when what is held is
-    /// the OWNER's own adopted ride in the one status that is TERMINAL for the owner:
-    /// `completed`.
+    /// May a brand-new incoming `pending` request take the OWNER's slot?
     ///
-    /// The defect this widening fixes: nothing on the owner path ever clears a
-    /// completed ride. `completeAndReset()` is the RIDER summary's "See you soon", and
-    /// the owner's "Dropped off ✓" acknowledgement is deliberately view-side only
-    /// (MYR-267/292 — it must not disturb the rider's card). So the owner sat on a
-    /// dead `.completed` `activeRequest` forever, and because adoption was gated on
-    /// `activeRequest == nil`, every subsequent `ride_created` / `ride_status_changed`
-    /// frame was silently dropped: after ONE completed ride the owner could not
-    /// receive another dispatch until the app was relaunched.
+    /// MYR-325 makes this a question about the OWNER pipeline and nothing else —
+    /// which is the whole fix. It used to also consult the rider's record (via
+    /// `activeRequestOrigin`), because both roles shared one slot; that made the
+    /// answer "no" for as long as this device's rider held ANY terminal record, and
+    /// an owner who also rides — i.e. the client, i.e. every real owner — went deaf
+    /// to incoming requests indefinitely. The rider's Ride Summary and
+    /// `DeclinedNotice` are still untouchable, now because adoption cannot write to
+    /// their storage rather than because a guard says so.
     ///
-    /// MYR-306 extends the same reasoning to `declined`: `decline()` leaves
-    /// `activeRequest` on `.declined` with nothing on the owner path to clear it, so
-    /// an owner who DECLINED a request landed in the identical blocked-adoption state
-    /// MYR-292 fixed for `completed` — every later incoming frame dropped until
-    /// relaunch. MYR-292 deliberately left `.declined` alone because the rider's
-    /// `DeclinedNotice` renders a declined record; now that adoption is ORIGIN-scoped
-    /// that objection is answered by the origin test, not by the status: a rider's
-    /// notice holds a `.rider`-origin record and is still untouchable. This is also
-    /// what makes MYR-317's decline→advance work at all.
+    /// Free slot → yes. Otherwise yes only for the two statuses that are TERMINAL
+    /// FOR THE OWNER:
+    ///  • `completed` (MYR-292) — nothing on the owner path ever clears a completed
+    ///    ride. `completeAndReset()` is the RIDER summary's "See you soon", and the
+    ///    owner's "Dropped off ✓" acknowledgement is deliberately view-side only
+    ///    (MYR-267/292). So the owner would sit on a dead record forever and every
+    ///    later frame would be dropped: after ONE completed ride, no more dispatches
+    ///    until relaunch.
+    ///  • `declined` (MYR-306) — identically, `decline()` leaves the record on
+    ///    `.declined` with nothing to clear it. This is also what makes MYR-317's
+    ///    decline→advance work at all.
     ///
-    /// Deliberately NOT widened for:
-    ///  • a RIDER-originated `completed` or `declined` ride — the rider's Ride Summary
-    ///    / `DeclinedNotice` is rendering that exact record right now; displacing it
-    ///    would swap the itinerary out from under them and point "See you soon" at a
-    ///    stranger's ride. This is why the guard tests `activeRequestOrigin`, not just
-    ///    the status.
-    ///  • every non-terminal status (`pending`/`accepted`/`arrived`/`enroute`) — a
-    ///    live dispatch still owns the slot and must never be displaced.
+    /// Deliberately NOT widened for any non-terminal status
+    /// (`pending`/`accepted`/`arrived`/`enroute`) — a live dispatch owns the slot and
+    /// must never be displaced out from under the owner who is driving it.
     private var canAdoptIncoming: Bool {
-        guard let held = activeRequest else { return true }
-        guard activeRequestOrigin == .ownerIncoming else { return false }
+        guard let held = ownerRequest else { return true }
         return held.status == .completed || held.status == .declined
     }
 
@@ -967,12 +1167,11 @@ final class LiveRideRequestService: RideRequestService {
     /// state instead of the idle greeting. No-op if a request is already tracked
     /// (a create this session, or a WS frame already adopted one).
     private func adoptOpenRiderRide() async {
-        guard activeRequest == nil, serverRideID == nil else { return }
+        guard activeRequest == nil, riderServerRideID == nil else { return }
         guard let open = await fetchOpenRiderRide(),
               let record = RideRequestContractMapping.record(from: open) else { return }
         activeRequest = record
-        activeRequestOrigin = .rider
-        serverRideID = open.id
+        riderServerRideID = open.id
     }
 
     /// 409 `ride_active` adoption (deliverable 3): the create was refused because
@@ -986,21 +1185,18 @@ final class LiveRideRequestService: RideRequestService {
     /// rider is not stranded on a "Waiting…" card for a ride that no longer exists.
     private func adoptRideActive(_ active: RideRequest?) async {
         if let active, let record = RideRequestContractMapping.record(from: active) {
-            serverRideID = active.id
+            riderServerRideID = active.id
             activeRequest = record
-            activeRequestOrigin = .rider
             return
         }
         guard let open = await fetchOpenRiderRide(),
               let record = RideRequestContractMapping.record(from: open) else {
             activeRequest = nil
-            activeRequestOrigin = nil
-            serverRideID = nil
+            riderServerRideID = nil
             return
         }
-        serverRideID = open.id
+        riderServerRideID = open.id
         activeRequest = record
-        activeRequestOrigin = .rider
     }
 
     /// GET the rider's own list (newest first) and return the newest OPEN INSTANT
@@ -1030,10 +1226,15 @@ final class LiveRideRequestService: RideRequestService {
     ///
     /// MYR-292 — gated on the SAME `canAdoptIncoming` predicate as the `integrate`
     /// adoption arm, deliberately and symmetrically: both are the owner adopting an
-    /// incoming request into the single `activeRequest` slot, so a held ride that is
-    /// dead for the owner (its OWN acknowledged `completed` ride) must not block
-    /// either one, and the rider's live Ride Summary must not be clobbered by either
-    /// one. Two guards for one decision is exactly how the two paths would drift.
+    /// incoming request into the owner's slot, so a held ride that is dead for the
+    /// owner (its OWN acknowledged `completed`/`declined` ride) must not block
+    /// either one. Two guards for one decision is exactly how the two paths would
+    /// drift.
+    ///
+    /// MYR-325 — this is the call the client's deep link fires, and the one that
+    /// silently did nothing on his device: the guard it shares used to consult the
+    /// RIDER's held record. It is now owner-pipeline-internal, so a feed refresh
+    /// surfaces a card whatever the rider half of the same account is doing.
     ///
     /// Internal rather than `private` so the widened guard has direct unit coverage —
     /// `start()` runs this once per session, which cannot reproduce a held completed
@@ -1059,8 +1260,14 @@ final class LiveRideRequestService: RideRequestService {
         return first.vehicleId
     }
 
-    private func postMutation(_ op: @escaping @Sendable (any RideRequestAPI, String) async throws -> RideRequest) {
-        guard let id = serverRideID else { return } // create not yet acknowledged
+    /// Fire-and-forget POST on the OWNER pipeline's ride. Its only caller is
+    /// `decline()`, which needs no reconcile: a declined request is terminal for the
+    /// owner either way, and MYR-317's advance has already moved the card on.
+    /// MYR-325 — targets `ownerServerRideID`; it read the rider's id back when one
+    /// slot held both, which after the split would have declined the wrong ride (or,
+    /// with no rider ride in flight, silently declined nothing at all).
+    private func postOwnerMutation(_ op: @escaping @Sendable (any RideRequestAPI, String) async throws -> RideRequest) {
+        guard let id = ownerServerRideID else { return } // nothing held to answer
         let api = self.api
         Task { _ = try? await op(api, id) }
     }

@@ -18,37 +18,51 @@ final class LiveRideRequestServiceTests: XCTestCase {
 
     // MARK: pending → accepted
 
-    func testSubmitThenAcceptTransitionsPendingToAcceptedAndPosts() async {
-        let api = StubRideAPI(created: Self.wireRide(id: "srv-1", status: .requested))
-        let socket = StubRideSocket()
-        let service = LiveRideRequestService(api: api, socket: socket, autoStart: false)
+    /// MYR-325 — `accept()` is an OWNER action, so it is driven from the OWNER
+    /// pipeline (the incoming feed), not from a rider `submit()`. Before the split
+    /// this test reached the same state through the shared slot; the assertions
+    /// (optimistic accepted, POST on the SERVER id) are unchanged.
+    func testAcceptTransitionsPendingToAcceptedAndPosts() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        await api.setIncoming([Self.wireRide(id: "srv-1", status: .requested)])
+        await api.setDetail(Self.wireRide(id: "srv-1", status: .accepted, accepted: true))
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+        await service.refreshIncoming()
+        XCTAssertEqual(service.incomingRequest?.status, .pending)
+
+        service.accept()
+        XCTAssertEqual(service.ownerDispatch?.status, .accepted)
+        XCTAssertNil(service.incomingRequest, "the answered card clears synchronously")
+        await eventually { await api.acceptCount == 1 }
+        let acceptID = await api.lastAcceptID
+        XCTAssertEqual(acceptID, "srv-1", "accept targets the server-assigned id")
+    }
+
+    /// The rider's create still resolves its target vehicle from `vehicles()` — the
+    /// half of the old accept test that was really about `submit`.
+    func testSubmitResolvesTheCreateTargetVehicle() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-1v", status: .requested))
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
 
         service.submit(Self.sampleInput())
         XCTAssertEqual(service.activeRequest?.status, .pending, "optimistic pending is visible synchronously")
         service.confirmSend() // MYR-218: the deferred create POST fires on send
         await eventually { await api.createCount == 1 }
         await eventually { await api.lastCreateVehicleID == "veh-live" } // resolved from vehicles()
-
-        service.accept()
-        XCTAssertEqual(service.activeRequest?.status, .accepted)
-        XCTAssertNotNil(service.activeRequest?.trackProgress, "an accepted now-ride seeds the static tracking progress")
-        await eventually { await api.acceptCount == 1 }
-        let acceptID = await api.lastAcceptID
-        XCTAssertEqual(acceptID, "srv-1", "accept targets the server-assigned id, not the local UUID")
     }
 
     // MARK: pending → declined
 
-    func testSubmitThenDeclineTransitionsPendingToDeclinedAndPosts() async {
-        let api = StubRideAPI(created: Self.wireRide(id: "srv-2", status: .requested))
+    /// MYR-325 — `decline()` is likewise an OWNER action on the OWNER pipeline.
+    func testDeclineTransitionsPendingToDeclinedAndPosts() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        await api.setIncoming([Self.wireRide(id: "srv-2", status: .requested)])
         let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
-
-        service.submit(Self.sampleInput())
-        service.confirmSend()
-        await eventually { await api.createCount == 1 }
+        await service.refreshIncoming()
 
         service.decline()
-        XCTAssertEqual(service.activeRequest?.status, .declined)
+        XCTAssertEqual(service.ownerRequest?.status, .declined)
+        XCTAssertNil(service.incomingRequest, "a declined request is on no owner surface")
         await eventually { await api.declineCount == 1 }
         let declineID = await api.lastDeclineID
         XCTAssertEqual(declineID, "srv-2")
@@ -199,11 +213,13 @@ final class LiveRideRequestServiceTests: XCTestCase {
         XCTAssertEqual(service.activeRequest?.input.destination.label, "Bell Southstone Yards")
         XCTAssertEqual(service.activeRequest?.input.pickup.label, "1200 Grandscape Blvd")
 
-        // Adoption: mutations now target the DISCOVERED server id, not the local UUID.
-        service.accept()
-        await eventually { await api.acceptCount == 1 }
-        let acceptID = await api.lastAcceptID
-        XCTAssertEqual(acceptID, "srv-found", "reconcile adopted the found ride's server id")
+        // Adoption: RIDER mutations now target the DISCOVERED server id, not the
+        // local UUID. (MYR-325: `cancel()` rather than `accept()` — accept belongs
+        // to the owner pipeline, which this rider-side reconcile never touches.)
+        service.cancel()
+        await eventually { await api.cancelCount == 1 }
+        let cancelID = await api.lastCancelID
+        XCTAssertEqual(cancelID, "srv-found", "reconcile adopted the found ride's server id")
     }
 
     /// INDETERMINATE but the reconcile GET finds NOTHING within the window: the
@@ -368,45 +384,60 @@ final class LiveRideRequestServiceTests: XCTestCase {
     /// the single-account demo's rider-who-also-accepts gets the honest copy
     /// rather than a silent snap-back. The existing reconcile still runs.
     func testVehicleUnavailable409OnAcceptFlagsFailureAndStillReconciles() async {
-        let api = StubRideAPI(created: Self.wireRide(id: "srv-acc", status: .requested))
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        await api.setIncoming([Self.wireRide(id: "srv-acc", status: .requested)])
         await api.setDetail(Self.wireRide(id: "srv-acc", status: .requested))
         await api.setAcceptError(RestError.http(
             status: 409, code: .unrecognized("vehicle_unavailable"), message: "busy", subCode: nil
         ))
         let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
-        service.submit(Self.liveInput())
-        service.confirmSend()
-        await eventually { await api.createCount == 1 }
+        await service.refreshIncoming()
 
         service.accept()
         await eventually { service.vehicleUnavailableFailure != nil }
-        await eventually { service.activeRequest?.status == .pending }
-        XCTAssertEqual(service.activeRequest?.status, .pending, "the refused accept folds back to the incoming card")
+        await eventually { service.incomingRequest?.status == .pending }
+        XCTAssertEqual(service.incomingRequest?.status, .pending, "the refused accept folds back to the incoming card")
     }
 
     // MARK: MYR-270 — owner-driven dispatch v2 (picked-up / start / dropped-off)
 
-    /// Drive a fresh service to the `.accepted` state (create → confirm → accept),
-    /// with `serverRideID == id`. The shared setup for the advance tests below.
+    /// Drive a fresh service into the state the CLIENT's own device is in mid-ride:
+    /// the RIDER holds their own accepted ride AND the OWNER holds it as a dispatch.
+    ///
+    /// MYR-325 — the advance tests below legitimately span BOTH pipelines, because
+    /// the CTAs do: `pickedUp()`/`droppedOff()` are the OWNER's, `startRide()` is the
+    /// RIDER's. Before the split one `submit()` produced a record both roles shared;
+    /// now the setup states the duality outright — a self-created ride that surfaces
+    /// on the owner's incoming feed too (the documented decision on `integrate`).
+    /// This is a strictly more faithful fixture than the shared slot it replaces.
     private func acceptedService(id: String) async -> (LiveRideRequestService, StubRideAPI) {
         let api = StubRideAPI(created: Self.wireRide(id: id, status: .requested))
+        await api.setIncoming([Self.wireRide(id: id, status: .requested)])
         await api.setDetail(Self.wireRide(id: id, status: .accepted, accepted: true))
         let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
-        service.submit(Self.sampleInput())
+        service.submit(Self.sampleInput())            // RIDER half
         service.confirmSend()
         await eventually { await api.createCount == 1 }
-        service.accept()
+        await service.refreshIncoming()               // OWNER half — same ride
+        XCTAssertEqual(service.incomingRequest?.id, id, "the self-created ride reaches the owner card")
+
+        service.accept()                              // OWNER answers
         await eventually { await api.acceptCount == 1 }
-        XCTAssertEqual(service.activeRequest?.status, .accepted)
+        XCTAssertEqual(service.ownerDispatch?.status, .accepted)
+        // The accept's own 200 is an authoritative record, so `integrate` folds it
+        // onto the rider half too — no WS frame needed for the same-device case.
+        await eventually { service.activeRequest?.status == .accepted }
         return (service, api)
     }
 
-    /// Advance the service to `.arrived` via `pickedUp()` (the owner path), waiting
-    /// for the reconcile so a following `start()` sees the settled `.arrived`.
+    /// Advance to `.arrived` via `pickedUp()` (the OWNER path), waiting for the
+    /// reconcile so a following `startRide()` sees the settled `.arrived` on the
+    /// RIDER half — which it reaches through the advance's own `integrate`.
     private func advanceToArrived(_ service: LiveRideRequestService, _ api: StubRideAPI, id: String) async {
         await api.setAdvance(Self.wireRide(id: id, status: .arrived, accepted: true))
         await api.setDetail(Self.wireRide(id: id, status: .arrived, accepted: true))
         service.pickedUp()
+        await eventually { service.ownerDispatch?.status == .arrived }
         await eventually { service.activeRequest?.status == .arrived }
     }
 
@@ -417,12 +448,12 @@ final class LiveRideRequestServiceTests: XCTestCase {
         await api.setAdvance(Self.wireRide(id: "srv-pu", status: .arrived, accepted: true))
 
         service.pickedUp()
-        XCTAssertEqual(service.activeRequest?.status, .arrived, "picked-up flips to arrived synchronously")
+        XCTAssertEqual(service.ownerDispatch?.status, .arrived, "picked-up flips to arrived synchronously")
 
         await eventually { await api.pickedUpCount == 1 }
         let puID = await api.lastAdvanceID
         XCTAssertEqual(puID, "srv-pu", "picked-up targets the server-assigned id")
-        await eventually { service.activeRequest?.status == .arrived }
+        await eventually { service.ownerDispatch?.status == .arrived }
     }
 
     /// RIDER `start()` optimistically flips arrived → enroute, seeds the leg-2
@@ -495,15 +526,19 @@ final class LiveRideRequestServiceTests: XCTestCase {
         await advanceToArrived(service, api, id: "srv-do")
         await api.setAdvance(Self.wireRide(id: "srv-do", status: .enroute, accepted: true))
         service.startRide()
+        // The RIDER's optimistic flip is synchronous; the OWNER half arrives when the
+        // /start 200 is integrated, and "Dropped off" is gated on THAT (MYR-325).
+        await eventually { service.ownerDispatch?.status == .enroute }
         await eventually { service.activeRequest?.status == .enroute }
 
         await api.setAdvance(Self.wireRide(id: "srv-do", status: .completed, accepted: true))
         service.droppedOff()
-        XCTAssertEqual(service.activeRequest?.status, .completed, "dropped-off completes synchronously")
+        XCTAssertEqual(service.ownerDispatch?.status, .completed, "dropped-off completes synchronously")
 
         await eventually { await api.droppedOffCount == 1 }
         let doID = await api.lastAdvanceID
         XCTAssertEqual(doID, "srv-do", "dropped-off targets the server-assigned id")
+        await eventually { service.ownerDispatch?.status == .completed }
         await eventually { service.activeRequest?.status == .completed }
     }
 
@@ -610,38 +645,34 @@ final class LiveRideRequestServiceTests: XCTestCase {
     /// `.accepted` must NOT be swallowed: a refetch reads the ride still `requested`,
     /// so the service folds it back to `.pending` and the incoming sheet re-appears.
     func testAccept409ReconcilesBackToPending() async {
-        let api = StubRideAPI(created: Self.wireRide(id: "srv-409a", status: .requested))
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        await api.setIncoming([Self.wireRide(id: "srv-409a", status: .requested)])
         // The accept POST is refused; the authoritative refetch still reads requested.
         await api.setAcceptError(RestError.http(status: 409, code: .conflict, message: "vehicle unavailable", subCode: nil))
         await api.setDetail(Self.wireRide(id: "srv-409a", status: .requested))
         let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
-
-        service.submit(Self.sampleInput())
-        service.confirmSend()
-        await eventually { await api.createCount == 1 }
+        await service.refreshIncoming()
 
         service.accept()
-        XCTAssertEqual(service.activeRequest?.status, .accepted, "optimistic accepted first")
+        XCTAssertEqual(service.ownerDispatch?.status, .accepted, "optimistic accepted first")
         await eventually { await api.acceptCount == 1 }
         // 409 → refetch reads requested → folded back to pending (sheet re-shows).
-        await eventually { service.activeRequest?.status == .pending }
-        XCTAssertNil(service.activeRequest?.acceptedAt, "the reverted request carries no acceptedAt")
+        await eventually { service.incomingRequest?.status == .pending }
+        XCTAssertNil(service.incomingRequest?.acceptedAt, "the reverted request carries no acceptedAt")
     }
 
     /// A 409 whose reconciling refetch ALSO fails: the optimistic accept still can't
     /// stand (the server never accepted), so it reverts to pending locally.
     func testAccept409WithFailedRefetchRevertsToPending() async {
-        let api = StubRideAPI(created: Self.wireRide(id: "srv-409b", status: .requested))
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        await api.setIncoming([Self.wireRide(id: "srv-409b", status: .requested)])
         await api.setAcceptError(RestError.http(status: 409, code: .conflict, message: "vehicle unavailable", subCode: nil))
-        await api.setDetailError(URLError(.notConnectedToInternet))
         let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
-
-        service.submit(Self.sampleInput())
-        service.confirmSend()
-        await eventually { await api.createCount == 1 }
+        await service.refreshIncoming()
+        await api.setDetailError(URLError(.notConnectedToInternet))
 
         service.accept()
-        await eventually { service.activeRequest?.status == .pending }
+        await eventually { service.incomingRequest?.status == .pending }
     }
 
     // MARK: MYR-230 deliverable 2 — cold-launch adoption of the rider's open ride
@@ -760,8 +791,11 @@ final class LiveRideRequestServiceTests: XCTestCase {
     private func ownerHoldingCompletedRide(id: String, socket: StubRideSocket, api: StubRideAPI) async -> LiveRideRequestService {
         await api.setIncoming([Self.wireRide(id: id, status: .requested)])
         let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
-        await eventually { service.activeRequest?.id == id } // owner incoming seed
-        XCTAssertEqual(service.activeRequestOrigin, .ownerIncoming)
+        await eventually { service.incomingRequest?.id == id } // owner incoming seed
+        // MYR-325: the seed lands in the OWNER pipeline and nowhere else — a
+        // stronger statement than the `activeRequestOrigin == .ownerIncoming` tag
+        // this replaces, which could only say who had written the shared slot.
+        XCTAssertNil(service.activeRequest, "the rider pipeline is untouched by the owner feed")
         await eventually { await socket.isListening }
 
         // …owner accepts, ride runs, owner taps "Dropped off" → completed.
@@ -769,7 +803,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
         await socket.push(.statusChanged(RideStatusChangedPayload(
             rideRequestId: id, vehicleId: "veh-live", status: .completed, timestamp: "2026-07-26T18:30:00.000Z"
         )))
-        await eventually { service.activeRequest?.status == .completed }
+        await eventually { service.ownerDispatch?.status == .completed }
         return service
     }
 
@@ -790,9 +824,9 @@ final class LiveRideRequestServiceTests: XCTestCase {
             status: .requested, requesterName: "Maya", timestamp: "2026-07-26T18:40:00.000Z"
         )))
 
-        await eventually { service.activeRequest?.id == "srv-next" }
-        XCTAssertEqual(service.activeRequest?.status, .pending, "the owner's incoming sheet can show again")
-        XCTAssertEqual(service.activeRequestOrigin, .ownerIncoming)
+        await eventually { service.incomingRequest?.id == "srv-next" }
+        XCTAssertEqual(service.incomingRequest?.status, .pending, "the owner's incoming sheet can show again")
+        XCTAssertNil(service.activeRequest, "still nothing in the rider pipeline")
 
         // The completed ride is released — mutations now target the NEW server id.
         service.decline()
@@ -819,8 +853,8 @@ final class LiveRideRequestServiceTests: XCTestCase {
             )))
         }
         try? await Task.sleep(nanoseconds: 80_000_000)
-        XCTAssertEqual(service.activeRequest?.id, "srv-done2", "only a pending incoming request may take the slot")
-        XCTAssertEqual(service.activeRequest?.status, .completed)
+        XCTAssertEqual(service.ownerDispatch?.id, "srv-done2", "only a pending incoming request may take the slot")
+        XCTAssertEqual(service.ownerDispatch?.status, .completed)
     }
 
     /// (c) The safety guard. The RIDER legitimately holds a `.completed` ride for as
@@ -839,7 +873,6 @@ final class LiveRideRequestServiceTests: XCTestCase {
         service.submit(Self.sampleInput())
         service.confirmSend()
         await eventually { await api.createCount == 1 }
-        XCTAssertEqual(service.activeRequestOrigin, .rider)
         await eventually { await socket.isListening }
         await api.setDetail(Self.wireRide(id: "srv-ride", status: .completed, accepted: true))
         await socket.push(.statusChanged(RideStatusChangedPayload(
@@ -858,12 +891,16 @@ final class LiveRideRequestServiceTests: XCTestCase {
 
         XCTAssertEqual(service.activeRequest?.id, summaryRideID, "the rider's summary record survives untouched")
         XCTAssertEqual(service.activeRequest?.status, .completed)
-        XCTAssertEqual(service.activeRequestOrigin, .rider)
+        // MYR-325 — and the intruder is no longer PUNISHED for the rider's summary.
+        // This assertion is new: before the split, protecting the summary meant the
+        // owner got nothing at all, which is the starvation this issue fixes.
+        XCTAssertEqual(service.incomingRequest?.id, "srv-intruder", "the owner's card presents alongside it")
 
-        // …and once the rider taps "See you soon" the slot frees up normally.
+        // …and once the rider taps "See you soon" the rider slot frees up normally,
+        // with the owner card entirely unaffected.
         _ = service.completeAndReset()
         XCTAssertNil(service.activeRequest)
-        XCTAssertNil(service.activeRequestOrigin)
+        XCTAssertEqual(service.incomingRequest?.id, "srv-intruder")
     }
 
     /// (d) `refreshIncoming()` carries the SAME widened guard, symmetrically: it is
@@ -877,12 +914,14 @@ final class LiveRideRequestServiceTests: XCTestCase {
 
         await api.setIncoming([Self.wireRide(id: "srv-waiting", status: .requested)])
         await service.refreshIncoming()
-        XCTAssertEqual(service.activeRequest?.id, "srv-waiting", "a waiting request is adopted over the dead completed ride")
-        XCTAssertEqual(service.activeRequest?.status, .pending)
+        XCTAssertEqual(service.incomingRequest?.id, "srv-waiting", "a waiting request is adopted over the dead completed ride")
+        XCTAssertEqual(service.incomingRequest?.status, .pending)
     }
 
-    /// …and the rider-safety half of the same guard on the `refreshIncoming()` path.
-    func testRefreshIncomingDoesNotAdoptOverRiderCompletedRide() async {
+    /// …and the rider-safety half on the `refreshIncoming()` path. MYR-325 changes
+    /// what "safety" costs: the rider's summary is still never displaced, but the
+    /// owner's card now presents anyway, because it is not the same piece of state.
+    func testRefreshIncomingLeavesRiderCompletedRideAndStillPresentsTheCard() async {
         let api = StubRideAPI(created: Self.wireRide(id: "srv-rider-sum", status: .requested))
         let socket = StubRideSocket()
         let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
@@ -904,7 +943,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
         await service.refreshIncoming()
         XCTAssertEqual(service.activeRequest?.id, summaryRideID, "the rider's summary is never displaced by the incoming seed")
         XCTAssertEqual(service.activeRequest?.status, .completed)
-        XCTAssertEqual(service.activeRequestOrigin, .rider)
+        XCTAssertEqual(service.incomingRequest?.id, "srv-waiting2", "…and the owner is no longer starved by it")
     }
 
     // MARK: - MYR-317 — the owner's incoming QUEUE (badge + auto-advance)
@@ -930,9 +969,9 @@ final class LiveRideRequestServiceTests: XCTestCase {
         let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
 
         await service.refreshIncoming()
-        XCTAssertEqual(service.activeRequest?.id, "q-1", "the feed head still takes the card (order unchanged)")
+        XCTAssertEqual(service.incomingRequest?.id, "q-1", "the feed head still takes the card (order unchanged)")
         XCTAssertEqual(service.waitingIncomingCount, 2, "the rest of the page is held, not discarded")
-        XCTAssertEqual(service.activeRequestOrigin, .ownerIncoming)
+        XCTAssertNil(service.activeRequest, "the rider pipeline is not involved")
     }
 
     /// DECLINE → the next queued request surfaces on the same card path, with the
@@ -947,19 +986,18 @@ final class LiveRideRequestServiceTests: XCTestCase {
         ])
         let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
         await service.refreshIncoming()
-        XCTAssertEqual(service.activeRequest?.id, "adv-1")
+        XCTAssertEqual(service.incomingRequest?.id, "adv-1")
 
         service.decline()
-        XCTAssertEqual(service.activeRequest?.id, "adv-2", "the next request surfaces immediately, no relaunch")
-        XCTAssertEqual(service.activeRequest?.status, .pending, "…as a fresh, answerable card")
-        XCTAssertEqual(service.activeRequestOrigin, .ownerIncoming)
+        XCTAssertEqual(service.incomingRequest?.id, "adv-2", "the next request surfaces immediately, no relaunch")
+        XCTAssertEqual(service.incomingRequest?.status, .pending, "…as a fresh, answerable card")
         await eventually { await api.declineCount == 1 }
         let declineID = await api.lastDeclineID
         XCTAssertEqual(declineID, "adv-1", "the decline still targeted the resolved ride")
         // The re-fetch that follows adoption must not resurrect the declined ride
         // from a page that predates the POST.
         await eventually { service.waitingIncomingCount == 1 }
-        XCTAssertEqual(service.activeRequest?.id, "adv-2")
+        XCTAssertEqual(service.incomingRequest?.id, "adv-2")
     }
 
     /// ACCEPT must NOT advance: the accepted ride is a live dispatch that owns the
@@ -978,8 +1016,8 @@ final class LiveRideRequestServiceTests: XCTestCase {
         service.accept()
         await eventually { await api.acceptCount == 1 }
         try? await Task.sleep(nanoseconds: 80_000_000) // let the queue re-fetch settle
-        XCTAssertEqual(service.activeRequest?.id, "acc-1", "the dispatched ride keeps the slot")
-        XCTAssertEqual(service.activeRequest?.status, .accepted)
+        XCTAssertEqual(service.ownerDispatch?.id, "acc-1", "the dispatched ride keeps the slot")
+        XCTAssertEqual(service.ownerDispatch?.status, .accepted)
         XCTAssertEqual(service.waitingIncomingCount, 1, "the other request is still waiting behind it")
     }
 
@@ -995,7 +1033,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
             Self.wireRide(id: "next-2", status: .requested),
         ])
         let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
-        await eventually { service.activeRequest?.id == "done-1" }
+        await eventually { service.incomingRequest?.id == "done-1" }
         await eventually { service.waitingIncomingCount == 1 }
         await eventually { await socket.isListening }
 
@@ -1006,8 +1044,8 @@ final class LiveRideRequestServiceTests: XCTestCase {
             rideRequestId: "done-1", vehicleId: "veh-live", status: .completed, timestamp: "2026-07-27T20:00:00.000Z"
         )))
 
-        await eventually { service.activeRequest?.id == "next-2" }
-        XCTAssertEqual(service.activeRequest?.status, .pending)
+        await eventually { service.incomingRequest?.id == "next-2" }
+        XCTAssertEqual(service.incomingRequest?.status, .pending)
         XCTAssertEqual(service.waitingIncomingCount, 0)
     }
 
@@ -1019,7 +1057,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
         let socket = StubRideSocket()
         await api.setIncoming([Self.wireRide(id: "held-1", status: .requested)])
         let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
-        await eventually { service.activeRequest?.id == "held-1" }
+        await eventually { service.incomingRequest?.id == "held-1" }
         await eventually { await socket.isListening }
 
         await api.setDetail(Self.wireRide(id: "arrival-2", status: .requested, requesterName: "Maya"))
@@ -1033,7 +1071,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
         await eventually { service.waitingIncomingCount == 1 }
         try? await Task.sleep(nanoseconds: 80_000_000) // let the second frame land
         XCTAssertEqual(service.waitingIncomingCount, 1, "the same ride is queued once, not twice")
-        XCTAssertEqual(service.activeRequest?.id, "held-1", "the card in front of the owner never moved")
+        XCTAssertEqual(service.incomingRequest?.id, "held-1", "the card in front of the owner never moved")
     }
 
     /// A QUEUED request that resolves somewhere else (another device accepted it,
@@ -1047,7 +1085,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
             Self.wireRide(id: "gone-2", status: .requested),
         ])
         let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
-        await eventually { service.activeRequest?.id == "cur-1" }
+        await eventually { service.incomingRequest?.id == "cur-1" }
         await eventually { service.waitingIncomingCount == 1 }
         await eventually { await socket.isListening }
 
@@ -1062,8 +1100,9 @@ final class LiveRideRequestServiceTests: XCTestCase {
         // …and resolving the current card now surfaces NOTHING, rather than
         // advancing the owner onto a ride that is already somebody else's.
         service.decline()
-        XCTAssertEqual(service.activeRequest?.id, "cur-1", "no dead ride was adopted")
-        XCTAssertEqual(service.activeRequest?.status, .declined, "the declined card stands until a real request arrives")
+        XCTAssertEqual(service.ownerRequest?.id, "cur-1", "no dead ride was adopted")
+        XCTAssertEqual(service.ownerRequest?.status, .declined, "the declined record stands until a real request arrives")
+        XCTAssertNil(service.incomingRequest, "…and it shows on no owner surface")
         XCTAssertEqual(service.waitingIncomingCount, 0)
     }
 
@@ -1079,12 +1118,12 @@ final class LiveRideRequestServiceTests: XCTestCase {
         await api.setIncoming(stale)
         let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
         await service.refreshIncoming()
-        XCTAssertEqual(service.activeRequest?.id, "stale-1")
+        XCTAssertEqual(service.incomingRequest?.id, "stale-1")
 
         service.decline() // the feed stub keeps returning BOTH rows as `requested`
         await eventually { await api.declineCount == 1 }
         await service.refreshIncoming()
-        XCTAssertEqual(service.activeRequest?.id, "stale-2", "the queue advanced once")
+        XCTAssertEqual(service.incomingRequest?.id, "stale-2", "the queue advanced once")
         XCTAssertEqual(service.waitingIncomingCount, 0, "the answered request is not waiting again")
     }
 
@@ -1099,12 +1138,12 @@ final class LiveRideRequestServiceTests: XCTestCase {
         let socket = StubRideSocket()
         await api.setIncoming([Self.wireRide(id: "dec-1", status: .requested)])
         let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
-        await eventually { service.activeRequest?.id == "dec-1" }
+        await eventually { service.incomingRequest?.id == "dec-1" }
         await eventually { await socket.isListening }
 
         await api.setIncoming([]) // nothing queued locally — the frame is the only route in
         service.decline()
-        await eventually { service.activeRequest?.status == .declined }
+        await eventually { service.ownerRequest?.status == .declined }
 
         // A SECOND rider requests the same car after the decline.
         await api.setDetail(Self.wireRide(id: "dec-next", status: .requested, requesterName: "Maya"))
@@ -1113,15 +1152,20 @@ final class LiveRideRequestServiceTests: XCTestCase {
             status: .requested, requesterName: "Maya", timestamp: "2026-07-27T21:00:00.000Z"
         )))
 
-        await eventually { service.activeRequest?.id == "dec-next" }
-        XCTAssertEqual(service.activeRequest?.status, .pending, "the owner can answer again without relaunching")
-        XCTAssertEqual(service.activeRequestOrigin, .ownerIncoming)
+        await eventually { service.incomingRequest?.id == "dec-next" }
+        XCTAssertEqual(service.incomingRequest?.status, .pending, "the owner can answer again without relaunching")
     }
 
     /// The MYR-306 safety half — the reason MYR-292 deliberately left `.declined`
-    /// alone. The RIDER's `DeclinedNotice` renders their own declined record; it is
-    /// `.rider`-origin, so no incoming request may clobber it.
-    func testRiderDeclinedNoticeIsNeverClobberedByIncomingRequest() async {
+    /// alone: the RIDER's `DeclinedNotice` renders their own declined record.
+    ///
+    /// MYR-325 — this is TONIGHT'S EXACT STATE, and the assertion at the end is the
+    /// one that inverts. The rider's notice is still untouchable (now because the
+    /// owner arm cannot write that storage at all), but the incoming requests no
+    /// longer WAIT behind it: they present. Waiting was the defect — on the client's
+    /// device that queue never drained, because nothing clears a rider's declined
+    /// notice except the rider dismissing it, and he had two requests to answer.
+    func testRiderDeclinedNoticeIsNotClobberedButNoLongerStarvesTheOwner() async {
         let api = StubRideAPI(created: Self.wireRide(id: "srv-rdec", status: .requested))
         let socket = StubRideSocket()
         let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
@@ -1130,7 +1174,6 @@ final class LiveRideRequestServiceTests: XCTestCase {
         service.submit(Self.sampleInput())
         service.confirmSend()
         await eventually { await api.createCount == 1 }
-        XCTAssertEqual(service.activeRequestOrigin, .rider)
         await eventually { await socket.isListening }
         await api.setDetail(Self.wireRide(id: "srv-rdec", status: .declined))
         await socket.push(.statusChanged(RideStatusChangedPayload(
@@ -1151,8 +1194,8 @@ final class LiveRideRequestServiceTests: XCTestCase {
 
         XCTAssertEqual(service.activeRequest?.id, noticeRideID, "the rider's declined record survives untouched")
         XCTAssertEqual(service.activeRequest?.status, .declined)
-        XCTAssertEqual(service.activeRequestOrigin, .rider)
-        XCTAssertGreaterThanOrEqual(service.waitingIncomingCount, 1, "the owner's request waits instead of clobbering")
+        XCTAssertEqual(service.incomingRequest?.id, "rdec-intruder", "the owner's request PRESENTS — it no longer waits")
+        XCTAssertEqual(service.waitingIncomingCount, 0, "nothing is left stranded in the queue")
     }
 
     /// The queue must not become a back door around the MYR-292 rider-summary
@@ -1181,14 +1224,265 @@ final class LiveRideRequestServiceTests: XCTestCase {
         await service.refreshIncoming()
 
         XCTAssertEqual(service.activeRequest?.id, summaryRideID, "the rider's summary is never displaced")
-        XCTAssertEqual(service.activeRequestOrigin, .rider)
-        XCTAssertEqual(service.waitingIncomingCount, 2, "both requests wait for the slot to free honestly")
+        XCTAssertEqual(service.activeRequest?.status, .completed)
+        // MYR-325 — the page is no longer held hostage by the rider's summary: the
+        // head presents and only the genuine remainder waits.
+        XCTAssertEqual(service.incomingRequest?.id, "qsum-1")
+        XCTAssertEqual(service.waitingIncomingCount, 1, "one request waits behind the card, honestly")
 
-        // …and once the rider taps "See you soon", the owner's queue is free to fill.
+        // …and "See you soon" clears the RIDER's slot without disturbing the owner.
         _ = service.completeAndReset()
-        await service.refreshIncoming()
-        XCTAssertEqual(service.activeRequest?.id, "qsum-1")
+        XCTAssertNil(service.activeRequest)
+        XCTAssertEqual(service.incomingRequest?.id, "qsum-1")
         XCTAssertEqual(service.waitingIncomingCount, 1)
+    }
+
+    // MARK: - MYR-325 — the owner's incoming pipeline is not the rider's ride slot
+    //
+    // Live client repro (his device, 2026-07-27). He is OWNER and RIDER on one
+    // account. His RIDER-side scheduled request was owner-declined; the
+    // rider-origin `.declined` record stays held (the `DeclinedNotice` renders it,
+    // and MYR-292/306 deliberately protect it). Two FRESH incoming requests then
+    // arrived — server `requested`, pushes delivered, the deep link fired
+    // `refreshIncoming()` — and no incoming card ever surfaced, because the single
+    // `activeRequest` slot served both roles and `canAdoptIncoming` (correctly)
+    // refuses to displace a rider-origin terminal record. Correct rider guard,
+    // starved owner: the slot itself was the defect.
+
+    /// THE REPRO. A rider-origin `.declined` record is held; two `requested`
+    /// incoming requests are waiting; `refreshIncoming()` runs. The owner's
+    /// incoming card MUST present — and the rider's declined notice must survive
+    /// untouched, because they are no longer the same piece of state.
+    func testIncomingCardPresentsWhileRiderHoldsTheirOwnDeclinedNotice() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-tonight", status: .requested))
+        let socket = StubRideSocket()
+        let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
+
+        // The rider's own request, declined by the owner → `DeclinedNotice` is up.
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        await eventually { await socket.isListening }
+        await api.setDetail(Self.wireRide(id: "srv-tonight", status: .declined))
+        await socket.push(.statusChanged(RideStatusChangedPayload(
+            rideRequestId: "srv-tonight", vehicleId: "veh-live", status: .declined,
+            timestamp: "2026-07-27T22:00:00.000Z"
+        )))
+        await eventually { service.activeRequest?.status == .declined }
+        let noticeRideID = service.activeRequest?.id
+
+        // TWO fresh incoming requests land while that notice is still on screen;
+        // the push deep-link fires the owner's feed refresh.
+        await api.setIncoming([
+            Self.wireRide(id: "tonight-1", status: .requested, requesterName: "Maya"),
+            Self.wireRide(id: "tonight-2", status: .requested, requesterName: "Ravi"),
+        ])
+        await service.refreshIncoming()
+
+        XCTAssertEqual(service.incomingRequest?.id, "tonight-1", "the owner's incoming card presents")
+        XCTAssertEqual(service.incomingRequest?.status, .pending, "…as a fresh, answerable card")
+        XCTAssertEqual(service.waitingIncomingCount, 1, "the second request is counted behind it")
+
+        // …and the rider half is completely untouched — different slot.
+        XCTAssertEqual(service.activeRequest?.id, noticeRideID, "the rider's declined notice survives")
+        XCTAssertEqual(service.activeRequest?.status, .declined)
+    }
+
+    /// The same starvation reached by the OTHER route: a live `ride_request_created`
+    /// frame (no feed fetch at all) while the rider's declined notice is held.
+    func testCreatedFrameSurfacesIncomingCardWhileRiderHoldsDeclinedNotice() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-tn2", status: .requested))
+        let socket = StubRideSocket()
+        let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
+
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        await eventually { await socket.isListening }
+        await api.setDetail(Self.wireRide(id: "srv-tn2", status: .declined))
+        await socket.push(.statusChanged(RideStatusChangedPayload(
+            rideRequestId: "srv-tn2", vehicleId: "veh-live", status: .declined,
+            timestamp: "2026-07-27T22:05:00.000Z"
+        )))
+        await eventually { service.activeRequest?.status == .declined }
+
+        await api.setDetail(Self.wireRide(id: "tn2-incoming", status: .requested, requesterName: "Maya"))
+        await socket.push(.created(RideRequestCreatedPayload(
+            rideRequestId: "tn2-incoming", vehicleId: "veh-live", riderId: "u-rider2",
+            status: .requested, requesterName: "Maya", timestamp: "2026-07-27T22:06:00.000Z"
+        )))
+
+        await eventually { service.incomingRequest?.id == "tn2-incoming" }
+        XCTAssertEqual(service.activeRequest?.status, .declined, "the rider's notice is not displaced")
+    }
+
+    /// The rider is MID-RIDE (a live `enroute` dispatch of their own) and a new
+    /// request arrives for their car. On main the non-terminal rider record blocked
+    /// adoption outright; the owner card must now present alongside the tracking
+    /// sheet, and the rider's ride must not so much as flicker.
+    func testIncomingCardPresentsWhileRiderIsMidRide() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-mid", status: .requested))
+        let socket = StubRideSocket()
+        let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
+
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        await eventually { await socket.isListening }
+        await api.setDetail(Self.wireRide(id: "srv-mid", status: .enroute, accepted: true))
+        await socket.push(.statusChanged(RideStatusChangedPayload(
+            rideRequestId: "srv-mid", vehicleId: "veh-live", status: .enroute,
+            timestamp: "2026-07-27T22:10:00.000Z"
+        )))
+        await eventually { service.activeRequest?.status == .enroute }
+        let riderProgress = service.activeRequest?.trackProgress
+
+        await api.setIncoming([Self.wireRide(id: "mid-incoming", status: .requested)])
+        await service.refreshIncoming()
+
+        XCTAssertEqual(service.incomingRequest?.id, "mid-incoming", "the owner card presents during the rider's ride")
+        XCTAssertEqual(service.activeRequest?.status, .enroute, "the rider's live ride is untouched")
+        XCTAssertEqual(service.activeRequest?.trackProgress, riderProgress, "…including its tracking anchor")
+    }
+
+    // MARK: MYR-325 — same-account duality: a self-created ride surfaces on BOTH
+
+    /// The DECISION (documented on `integrate`): a ride this device's rider created
+    /// ALSO surfaces on this device's owner pipeline. The client self-tests exactly
+    /// this way — request as rider, answer as owner — and the rider's booking card
+    /// and the owner's incoming card are different SURFACES, not one shared record.
+    /// Both pipelines legitimately hold the same ride id.
+    func testSelfCreatedRideSurfacesOnBothPipelines() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-self", status: .requested))
+        let socket = StubRideSocket()
+        await api.setDetail(Self.wireRide(id: "srv-self", status: .requested, requesterName: "Thomas Nandola"))
+        let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
+
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        await eventually { await socket.isListening }
+
+        // The account-wide created frame — the owner half of the same account.
+        await socket.push(.created(RideRequestCreatedPayload(
+            rideRequestId: "srv-self", vehicleId: "veh-live", riderId: "u-rider",
+            status: .requested, requesterName: "Thomas Nandola", timestamp: "2026-07-27T22:20:00.000Z"
+        )))
+
+        await eventually { service.incomingRequest?.id == "srv-self" }
+        XCTAssertEqual(service.activeRequest?.status, .pending, "the rider still sees their own booking card")
+        XCTAssertEqual(service.incomingRequest?.input.requesterName, "Thomas Nandola")
+    }
+
+    /// ACCEPT from the owner card: the owner's slot becomes a DISPATCH, and the
+    /// rider side learns through the existing WS `integrate` — the accept is not
+    /// written into the rider's record directly (the two pipelines only ever meet
+    /// through an authoritative server record).
+    func testAcceptFromOwnerCardDispatchesAndRiderSeesAcceptedViaIntegrate() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-dual", status: .requested))
+        let socket = StubRideSocket()
+        await api.setDetail(Self.wireRide(id: "srv-dual", status: .requested))
+        let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
+
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        await eventually { await socket.isListening }
+        await socket.push(.created(RideRequestCreatedPayload(
+            rideRequestId: "srv-dual", vehicleId: "veh-live", riderId: "u-rider",
+            status: .requested, requesterName: nil, timestamp: "2026-07-27T22:30:00.000Z"
+        )))
+        await eventually { service.incomingRequest?.id == "srv-dual" }
+
+        service.accept()
+        XCTAssertNil(service.incomingRequest, "the card clears the instant the owner answers")
+        XCTAssertEqual(service.ownerDispatch?.status, .accepted, "…and becomes the owner's dispatch")
+        await eventually { await api.acceptCount == 1 }
+        let acceptID = await api.lastAcceptID
+        XCTAssertEqual(acceptID, "srv-dual", "the accept targets the OWNER pipeline's server id")
+
+        // The rider learns via the server's frame, not via a shared slot.
+        await api.setDetail(Self.wireRide(id: "srv-dual", status: .accepted, accepted: true))
+        await socket.push(.statusChanged(RideStatusChangedPayload(
+            rideRequestId: "srv-dual", vehicleId: "veh-live", status: .accepted,
+            timestamp: "2026-07-27T22:31:00.000Z"
+        )))
+        await eventually { service.activeRequest?.status == .accepted }
+        XCTAssertNotNil(service.activeRequest?.trackProgress, "the rider's tracking anchor is seeded")
+        XCTAssertEqual(service.ownerDispatch?.status, .accepted, "the dispatch card holds the same ride")
+    }
+
+    /// DECLINE from the owner card on a SELF-created ride: the owner pipeline
+    /// advances to the next waiting request immediately, and the rider's own
+    /// `DeclinedNotice` arrives through the frame. This is tonight's whole loop,
+    /// end to end — and the state it used to deadlock in.
+    func testDeclineFromOwnerCardAdvancesQueueAndRiderGetsDeclinedNotice() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-dd", status: .requested))
+        let socket = StubRideSocket()
+        await api.setDetail(Self.wireRide(id: "srv-dd", status: .requested))
+        await api.setIncoming([
+            Self.wireRide(id: "srv-dd", status: .requested),
+            Self.wireRide(id: "dd-next", status: .requested),
+        ])
+        let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
+
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        await eventually { service.incomingRequest?.id == "srv-dd" }
+        await eventually { await socket.isListening }
+
+        await api.setIncoming([Self.wireRide(id: "dd-next", status: .requested)])
+        service.decline()
+        XCTAssertEqual(service.incomingRequest?.id, "dd-next", "the next request surfaces immediately")
+
+        // The rider half arrives on the server's frame.
+        await api.setDetail(Self.wireRide(id: "srv-dd", status: .declined))
+        await socket.push(.statusChanged(RideStatusChangedPayload(
+            rideRequestId: "srv-dd", vehicleId: "veh-live", status: .declined,
+            timestamp: "2026-07-27T22:40:00.000Z"
+        )))
+        await eventually { service.activeRequest?.status == .declined }
+        XCTAssertEqual(service.incomingRequest?.id, "dd-next", "the rider's notice does not disturb the owner card")
+    }
+
+    /// The rider CANCELLING their own request must retire the owner-side card for
+    /// it too — otherwise the split would leave a phantom incoming request on this
+    /// device's own owner Home, whose Accept would 409.
+    func testRiderCancelRetiresTheSelfRequestFromTheOwnerPipeline() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-cx", status: .requested))
+        let socket = StubRideSocket()
+        await api.setIncoming([Self.wireRide(id: "srv-cx", status: .requested)])
+        let service = LiveRideRequestService(api: api, socket: socket, autoStart: true)
+
+        service.submit(Self.sampleInput())
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        await eventually { service.incomingRequest?.id == "srv-cx" }
+
+        await api.setIncoming([]) // the server drops the cancelled row
+        service.cancel()
+        XCTAssertNil(service.activeRequest, "the rider's card is gone")
+        XCTAssertNil(service.incomingRequest, "…and so is the owner's card for the same ride")
+        await eventually { await api.cancelCount == 1 }
+    }
+
+    /// The owner's DISPATCH projection is the accepted→completed lifecycle only:
+    /// a pending request belongs to the incoming card, and a declined one to
+    /// neither surface (`OwnerRideStatusLine` renders no line for it).
+    func testOwnerDispatchProjectionExcludesPendingAndDeclined() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        await api.setIncoming([Self.wireRide(id: "proj-1", status: .requested)])
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        await service.refreshIncoming()
+        XCTAssertNotNil(service.incomingRequest, "pending → the incoming card")
+        XCTAssertNil(service.ownerDispatch, "pending is never a dispatch")
+
+        await api.setIncoming([])
+        service.decline()
+        XCTAssertNil(service.incomingRequest, "declined → the card animates out")
+        XCTAssertNil(service.ownerDispatch, "…and it is not a dispatch either")
     }
 
     // MARK: - Builders

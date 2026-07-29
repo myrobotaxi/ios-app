@@ -392,10 +392,14 @@ struct RootView: View {
         var riderTracking: String?
         if role == .owner,
            screen == .ownerHome, ownerTab == "home",
-           rideRequestService.activeRequest?.status == .pending {
+           rideRequestService.incomingRequest != nil {
             // The incoming card renders on exactly this condition — see
-            // `HomeScreen.incomingRequest`.
-            ownerIncoming = rideRequestService.activeServerRideID
+            // `HomeScreen.incomingRequest`. MYR-325: both the condition and the id
+            // come from the OWNER pipeline. They used to come from the shared slot,
+            // which now names the RIDER's ride — suppressing on that id would hide
+            // the banner for a request the owner cannot see, the very failure mode
+            // `foregroundPresentation`'s ride-specific rule exists to prevent.
+            ownerIncoming = rideRequestService.incomingServerRideID
         }
         if role == .shared,
            screen == .sharedHome, sharedTab == "shared",
