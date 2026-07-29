@@ -16,6 +16,57 @@ final class PrimitiveTests: XCTestCase {
         XCTAssertEqual(Color.mrtBatteryColor(5, charging: true), .mrtCharging)
     }
 
+    // MARK: Charge treatment (MYR-333)
+
+    /// `MRTBatteryCharge.none` — every pre-MYR-333 call site — must resolve the
+    /// EXACT colour the bar drew before, at every threshold. This is the
+    /// pixel-identity guarantee the whole drift gate rests on.
+    func testBatteryBarChargeNoneIsUnchanged() {
+        for pct in [0.0, 12, 19.9, 20, 49.9, 50, 76, 100] {
+            XCTAssertEqual(
+                BatteryBar(pct: pct).fillColor, Color.mrtBatteryColor(pct),
+                "charge: .none must be indistinguishable from the pre-MYR-333 bar at \(pct)%")
+        }
+        XCTAssertFalse(BatteryBar(pct: 76).isPulsing, "no session → no motion")
+    }
+
+    /// A live session commits to GREEN at EVERY state of charge — the client
+    /// asked for "a clean pulsing green animation", and a single colour keeps the
+    /// meaning single: green means charging, at 12% exactly as at 76%.
+    ///
+    /// Note this deliberately differs from `mrtBatteryColor(_:charging:)`, which
+    /// is the prototype's amber "charging always wins" rule and stays untouched
+    /// for `MiniBattery` and the showcase.
+    func testChargingBarIsGreenAtEveryStateOfCharge() {
+        for pct in [0.0, 12, 45, 76, 100] {
+            XCTAssertEqual(
+                BatteryBar(pct: pct, charge: .charging).fillColor, .mrtBatHigh,
+                "a live session is green at \(pct)%, not the threshold colour")
+        }
+        XCTAssertNotEqual(
+            BatteryBar(pct: 76, charge: .charging).fillColor, .mrtCharging,
+            "the hero treatment is green, not the prototype's amber charging token")
+    }
+
+    /// `complete` keeps the green and DROPS the motion. The session is over, so a
+    /// pulse would be a lie — the colour still says it ended well.
+    func testCompleteIsGreenButStatic() {
+        XCTAssertEqual(BatteryBar(pct: 100, charge: .complete).fillColor, .mrtBatHigh)
+        XCTAssertFalse(
+            BatteryBar(pct: 100, charge: .complete).isPulsing,
+            "a finished session must not keep breathing")
+    }
+
+    /// Only an ACTIVE session pulses. (The Reduce Motion half of this rule is
+    /// environment-driven — `isPulsing` reads `\.accessibilityReduceMotion` — so
+    /// it is proven in the simulator captures, per CLAUDE.md's Reduce Motion
+    /// drift-gate step, rather than asserted here.)
+    func testOnlyAnActiveSessionPulses() {
+        XCTAssertTrue(BatteryBar(pct: 76, charge: .charging).isPulsing)
+        XCTAssertFalse(BatteryBar(pct: 76, charge: .none).isPulsing)
+        XCTAssertFalse(BatteryBar(pct: 76, charge: .complete).isPulsing)
+    }
+
     /// MiniBattery keeps its own jsx thresholds: ≤10 low, ≤20 mid.
     func testMiniBatteryThresholds() {
         XCTAssertEqual(MiniBattery(pct: 10).fillColor, .mrtBatLow)
