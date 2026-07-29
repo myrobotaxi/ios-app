@@ -149,7 +149,9 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
         color: String = "",
         fsdVersion: String? = nil,
         serviceWindowSource: ServiceWindowSource = .unknown,
-        savesServiceWindowOnBoot: Date? = nil
+        savesServiceWindowOnBoot: Date? = nil,
+        chargeState: VehicleState.ChargeState? = nil,
+        chargeLevel: Int = 71
     ) {
         // A live-like snapshot: full model/year/trim, full VIN + software version,
         // and a BLANK color (onboarding gap, MYR-283). Streaming/online so the
@@ -162,7 +164,9 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             status: status,
             serviceEstimatedEndAt: serviceEstimatedEndAt,
             color: color,
-            fsdVersion: fsdVersion
+            fsdVersion: fsdVersion,
+            chargeState: chargeState,
+            chargeLevel: chargeLevel
         )
         let summary = VehicleSummary(
             vehicleId: "debug-mdy",
@@ -176,7 +180,7 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             color: color,
             vinLast4: "3456",
             status: status,
-            chargeLevel: 71,
+            chargeLevel: chargeLevel,
             estimatedRange: 193,
             lastUpdated: state.lastUpdated,
             role: .owner,
@@ -259,7 +263,9 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
         status: VehicleSummary.Status = .parked,
         serviceEstimatedEndAt: Date? = nil,
         color: String = "",
-        fsdVersion: String? = nil
+        fsdVersion: String? = nil,
+        chargeState: VehicleState.ChargeState? = nil,
+        chargeLevel: Int = 71
     ) -> VehicleState {
         let iso = ISO8601DateFormatter().string(from: Date())
         var state = VehicleState(
@@ -288,7 +294,7 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             locationName: "Embarcadero Center · Lot B",
             locationAddress: "1 Embarcadero Ctr, San Francisco",
             gearPosition: .p,
-            chargeLevel: 71,
+            chargeLevel: chargeLevel,
             estimatedRange: 193,
             interiorTemp: 68,
             exteriorTemp: 61,
@@ -326,6 +332,13 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
         // always set: composing "2026 Model Y Performance" is its whole job.
         state.trimLabel = "Performance"
         state.fsdVersion = fsdVersion
+        // MYR-333 — the `charge` atomic-group member the hero's pulsing bar and
+        // caption read. Unlike its snapshot-only neighbours above this one is a
+        // FOLDED STREAMING field, so seeding it on the snapshot is exactly what a
+        // cold read (and every subsequent `vehicle_update` delta) delivers. `nil`
+        // — the default — is the pre-MYR-333 shape and leaves every existing
+        // scene byte-identical.
+        state.chargeState = chargeState
         media.apply(to: &state)
         return state
     }
