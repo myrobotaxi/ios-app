@@ -33,3 +33,7 @@ Package.resolved
 .worktrees/
 build/
 .shots-myr316/
+.shots-myr184/
+.dd/
+.dd-kit/
+.dd-ds/

@@ -117,10 +117,21 @@ struct RootView: View {
     /// (no reservation backend); see `OwnerDrivesState`'s header comment.
     @State private var ownerDrivesState: OwnerDrivesState
     /// MYR-170 — shared between `InvitesScreen` and `SettingsScreen`; see
-    /// `OwnerShareState`'s header comment for why this is lifted+shared
-    /// rather than forking the prototype's two independent copies. MYR-228 —
-    /// seeded empty in live mode (no sharing backend).
-    @State private var ownerShareState: OwnerShareState
+    /// `ShareService`'s header comment for why this is lifted+shared rather than
+    /// forking the prototype's two independent copies. MYR-184 — it is now the
+    /// `any ShareService` seam: `SimulatedShareService` (fixtures, offline demo,
+    /// every DEBUG scene) or `LiveShareService` against rest-api.md §7.5, chosen
+    /// at the ONE composition point off the ONE resolved `AppMode`. This
+    /// supersedes MYR-228's "seed it empty on live" stopgap — the sharing backend
+    /// exists now, so the live screen shows the owner's REAL grants.
+    @State private var shareService: any ShareService
+    /// MYR-184 — the RIDER's half of sharing: which vehicles are shared with this
+    /// account, on what tier, plus the §7.5.5 redeem call `InviteCodeFlow` runs.
+    /// Deliberately a separate seam from `shareService` (see
+    /// `SharedVehicleCatalog`'s header). Lifted here for the same reason every
+    /// other role-scoped state is: the catalog a rider seeds by redeeming a code
+    /// must still be there when they land on the Live Map a moment later.
+    @State private var sharedVehicleCatalog: any SharedVehicleCatalog
     /// MYR-170 — Settings' linked-vehicle list + primary designation; see
     /// `OwnerVehiclesState`'s header comment for its scope boundary vs.
     /// `OwnerHomeState`. MYR-228 — seeded empty in live mode (not wired to the
@@ -175,7 +186,6 @@ struct RootView: View {
         let isLive = mode.live != nil
         isLiveMode = isLive
         _ownerDrivesState = State(initialValue: OwnerDrivesState(live: isLive))
-        _ownerShareState = State(initialValue: OwnerShareState(live: isLive))
         _ownerVehiclesState = State(initialValue: OwnerVehiclesState(live: isLive))
         _rideHistoryStore = State(initialValue: RideHistoryStore(
             seed: isLive ? [] : RideHistoryFixtures.requestedRides
@@ -192,10 +202,36 @@ struct RootView: View {
         let auth = AuthComposition.make(mode: mode)
         if auth.hasStoredSession { startScreen = .resolvingSession }
         _session = State(initialValue: auth.session)
-        _ownerHomeState = State(initialValue: TelemetryComposition.makeOwnerHomeState(
+        let homeState = TelemetryComposition.makeOwnerHomeState(
             mode: mode,
             sessionTokenProvider: auth.sessionTokenProvider
-        ))
+        )
+        _ownerHomeState = State(initialValue: homeState)
+        // MYR-184 — both halves of sharing, composed off the same resolved mode +
+        // session as everything else. The owner service reads its shareable-vehicle
+        // list from the SAME started fleet the Home map uses (a closure, so it
+        // follows the fleet as it loads / a car is torn down) — that is MYR-228 fix
+        // (a): the send-invite sheet's picker no longer offers fixture cars.
+        var share: any ShareService = ShareComposition.makeShareService(
+            mode: mode,
+            sessionTokenProvider: auth.sessionTokenProvider,
+            ownedVehicles: { [weak homeState] in homeState?.vehicles ?? [] }
+        )
+        var catalog: any SharedVehicleCatalog = ShareComposition.makeSharedVehicleCatalog(
+            mode: mode,
+            sessionTokenProvider: auth.sessionTokenProvider
+        )
+        #if DEBUG
+        // MYR-184 — the five sharing capture scenes swap in the PRODUCTION live
+        // services driven by `DebugShareEndpoint`. Every other scene leaves both
+        // seams exactly as composed, so the whole drift gate is untouched.
+        if let scene = DebugScene.current {
+            if let override = scene.shareServiceOverride { share = override }
+            if let override = scene.sharedCatalogOverride { catalog = override }
+        }
+        #endif
+        _shareService = State(initialValue: share)
+        _sharedVehicleCatalog = State(initialValue: catalog)
         // MYR-246 — live Tesla-link authenticator (nil in sim / static-token dev).
         teslaAuthenticator = TeslaLinkComposition.makeAuthenticator(
             mode: mode,
@@ -214,7 +250,15 @@ struct RootView: View {
         // MYR-211 — compose the rider's place-search + location seams (sim
         // fixtures by default; live MapKit/CoreLocation on device / when live).
         let seams = PlaceSearchComposition.make(mode: mode, sessionTokenProvider: auth.sessionTokenProvider)
-        let viewer = SharedViewerState(seams: seams)
+        // MYR-184/228 fix (c) — the rider's watched vehicle is seeded from the
+        // FIXTURES in sim and from NOTHING on live: the real one is adopted from
+        // the shared-vehicle catalog (`.onChange`/`.task` in `body`). Passing the
+        // fixture here regardless is what made a live rider with zero shares
+        // watch "Cybercab".
+        let viewer = SharedViewerState(
+            vehicle: seams.isLive ? nil : VehicleFixtures.vehicles[0],
+            seams: seams
+        )
         // MYR-214 — the Drive Summary place labeler drops the fixture saved
         // places in live mode (see the `placeLabeler` property comment): a live
         // endpoint near the SF fixture coords must not be labeled "Home".
@@ -322,6 +366,17 @@ struct RootView: View {
         return DebugScene.sampleProfile
         #else
         return UserProfile(id: "unknown", name: nil, email: nil)
+        #endif
+    }
+
+    /// MYR-184 — whether `InviteCodeFlow` should self-submit the sample code, so
+    /// the two redeem capture scenes can reach their states headlessly. `false`
+    /// in every normal launch and every other scene.
+    private var autoSubmitsInviteCode: Bool {
+        #if DEBUG
+        return DebugScene.current?.autoSubmitsInviteCode == true
+        #else
+        return false
         #endif
     }
 
@@ -541,7 +596,16 @@ struct RootView: View {
                             sharedTab = "sharedSettings"
                         }
                     },
-                    returning: inviteOrigin == .sharedSettings
+                    returning: inviteOrigin == .sharedSettings,
+                    // MYR-184 — the REAL §7.5.5 redeem call. Before this the
+                    // `validate` seam was never passed at all, so its `{ _ in true }`
+                    // default meant every six characters "joined" on the live path
+                    // too, and the success screen then celebrated a fixture host.
+                    redeem: { code in try await sharedVehicleCatalog.redeem(code: code) },
+                    // MYR-184 — the two invite-code capture scenes submit the
+                    // sample code on appear; headless tooling cannot type into
+                    // the hidden six-cell field. Unset everywhere else.
+                    autoSubmitsSampleCode: autoSubmitsInviteCode
                 )
             case .ownerTutorial:
                 // tutorials.jsx:363 — onDone (Continue on the last card, or
@@ -592,10 +656,10 @@ struct RootView: View {
                         )
                     }
                 case "invites":
-                    InvitesScreen(shareState: ownerShareState, ownerTab: $ownerTab)
+                    InvitesScreen(shareService: shareService, ownerTab: $ownerTab)
                 case "settings":
                     SettingsScreen(
-                        shareState: ownerShareState,
+                        shareService: shareService,
                         vehiclesState: ownerVehiclesState,
                         ownerTab: $ownerTab,
                         // MYR-224 — real profile (nil in SIM → fixture persona);
@@ -676,9 +740,12 @@ struct RootView: View {
                         // MYR-224 — real profile (nil in SIM → fixture persona);
                         // the "Switch to Owner" row renders only when non-nil.
                         liveProfile: settingsLiveProfile,
-                        // MYR-255 — gate the "Shared with me" personas: fixtures in
-                        // SIM, honest empty state on live (no shared-vehicle endpoint).
-                        isLive: isLiveMode,
+                        // MYR-184 — "Shared with me" now reads the REAL catalog
+                        // (`role: viewer` rows off §7.0). This supersedes MYR-255's
+                        // "live shows an honest empty state because there is no
+                        // endpoint": there is one now. Sim keeps the three fixture
+                        // personas, pixel-identical.
+                        catalog: sharedVehicleCatalog,
                         // MYR-186 — see the owner Settings call above.
                         pushAuthorization: pushCoordinator.authorizationState,
                         onSwitchMode: switchViewMode,
@@ -716,6 +783,19 @@ struct RootView: View {
                         RideHistoryScreen(sharedTab: $sharedTab, historyStore: rideHistoryStore, isLive: isLiveMode)
                     }
                 default:
+                    // MYR-184 — a rider with NOTHING shared with them has no map
+                    // to show. Before this issue the screen rendered anyway, on
+                    // `VehicleFixtures.vehicles[0]` (MYR-228 fix (c)). Gated on
+                    // `hasLoaded` so the empty state never flashes over a catalog
+                    // that is one round trip away; the simulated catalog reports
+                    // loaded-with-grants from the first frame, so every DEBUG
+                    // rider scene is unchanged.
+                    if sharedVehicleCatalog.hasLoaded && sharedVehicleCatalog.grants.isEmpty {
+                        SharedNoVehiclesScreen(sharedTab: $sharedTab) {
+                            inviteOrigin = .sharedSettings
+                            screen = .inviteCode
+                        }
+                    } else {
                     SharedViewerScreen(
                         viewerState: sharedViewerState,
                         sharedTab: $sharedTab,
@@ -736,12 +816,28 @@ struct RootView: View {
                             }
                         }
                     )
+                    }
                 }
             }
         }
         .background(Color.mrtBg.ignoresSafeArea())
         // MYR-186 — hand this view's state to the UIKit push delegate.
         .onAppear { configurePushBridge() }
+        // MYR-184 — keep the rider's watched vehicle in step with the catalog.
+        // The FIRST grant is the one the Live Map watches (the shell's "first
+        // `role: viewer` row" rule), and its TIER is what gates the ride-request
+        // affordance. Runs on every catalog change, so redeeming a code lands a
+        // real car on the map without a relaunch.
+        .onChange(of: sharedVehicleCatalog.grants) { _, grants in
+            sharedViewerState.adoptSharedVehicle(grants.first)
+        }
+        // MYR-184 — load the rider's shared vehicles when the rider shell is on
+        // screen. No-op in sim; idempotent, so the tab churn costs nothing.
+        .task(id: screen == .sharedHome) {
+            guard screen == .sharedHome else { return }
+            await sharedVehicleCatalog.load()
+            sharedViewerState.adoptSharedVehicle(sharedVehicleCatalog.grants.first)
+        }
         // MYR-221 — returning-user silent resume. Runs once at launch when the
         // start screen is the resolving splash (a stored refresh token exists):
         // refresh silently and route straight into the app on success, or fall

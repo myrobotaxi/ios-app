@@ -1,5 +1,6 @@
 import SwiftUI
 import DesignSystem
+import MyRoboTaxiKit
 
 // MARK: - Enter Invite Code — rider join (MYR-165 — Handoff §5.3,
 // design/app/onboarding.jsx:407-538)
@@ -9,9 +10,18 @@ import DesignSystem
 // shakes (`mrtShake`). "Use sample code →" fills RBO246. On the 6th
 // character a ~1.3s validating spinner runs, then JoinedSuccess blooms in.
 //
-// M1 validation mirrors the prototype ("forgiving: any 6 chars joins",
-// jsx:421) via the injectable `validate` closure — the backend invite check
-// slots in there later; a `false` result plays the shake.
+// MYR-184 — the code check is now REAL (`POST /api/invites/redeem`, §7.5.5).
+// Two defects this closes, both of which shipped because `RootView` never passed
+// the `validate` seam at all, leaving its `{ _ in true }` default in place:
+//
+//   (1) EVERY six characters "joined" on the live path — the shake affordance
+//       built for a rejected code was unreachable by construction.
+//   (2) The success screen then celebrated `InviteHostFixture` — "Alex's Model Y
+//       · Roommate" — a person and a car that exist nowhere (MYR-228 fix (b)).
+//
+// The success screen is now built from `RedeemShareInviteResponse`: the server's
+// `ownerFirstName` and the real granted vehicles. The simulated catalog keeps the
+// prototype's forgiving check and the fixture host, so SIM is pixel-identical.
 //
 // `returning` (launched from rider Settings): CTA reads "Done" and the
 // caller routes back to Settings instead of the tutorial (jsx app.jsx:98-101).
@@ -19,8 +29,17 @@ struct InviteCodeFlow: View {
     let onComplete: () -> Void
     let onCancel: () -> Void
     var returning = false
-    /// Invite-code validator seam. M1: always true, like the prototype.
-    var validate: (String) async -> Bool = { _ in true }
+    /// The §7.5.5 redeem seam. Defaults to the SIMULATED catalog — the
+    /// prototype's forgiving "any 6 chars joins" (jsx:421) plus the fixture host
+    /// — so previews and every DEBUG scene behave exactly as before.
+    var redeem: (String) async throws -> RedeemedShare = { code in
+        try await SimulatedSharedVehicleCatalog().redeem(code: code)
+    }
+    /// MYR-184 DEBUG capture hook — fill and submit the sample code on appear.
+    /// Headless tooling cannot type six characters into the hidden field, and
+    /// the redeem refusals + the real success screen have no other capture
+    /// route. Always `false` outside the two sharing scenes.
+    var autoSubmitsSampleCode = false
 
     private enum Phase {
         case entry, validating, joined
@@ -32,17 +51,24 @@ struct InviteCodeFlow: View {
     @State private var code = ""
     @State private var phase: Phase = .entry
     @State private var shakes = 0
+    /// The joined host, built from the redeem response. `nil` until the code is
+    /// accepted — there is no host to name before then.
+    @State private var joined: RedeemedShare?
+    /// A refusal that is NOT "wrong code": the rate limit, "you already have
+    /// access", or an unreachable server. Rendered as a quiet line under the
+    /// cells, because the shake alone would say "wrong code" — which would be
+    /// false, and would send the rider off to ask for a new one.
+    @State private var refusal: ShareRedemptionFailure?
     @FocusState private var fieldFocused: Bool
-    private let host = InviteHostFixture()
 
     var body: some View {
         ZStack {
             Color.mrtBg
             OnboardingGoldWash()
 
-            if phase == .joined {
+            if phase == .joined, let joined {
                 JoinedSuccessView(
-                    host: host,
+                    joined: joined,
                     cta: returning ? "Done" : "Continue", // jsx:493
                     onContinue: onComplete
                 )
@@ -100,6 +126,22 @@ struct InviteCodeFlow: View {
                 .padding(.top, 26)
             }
 
+            // MYR-184 — the refusals that are NOT "wrong code". The shake +
+            // clear is the right affordance for a code that does not grant
+            // anything; it is the WRONG one for a rate limit (nothing is wrong
+            // with the code, and retyping it burns another of the 10/minute) and
+            // for "you already have access" (they are already in). Those keep the
+            // entry intact and say what happened, once, quietly.
+            if let refusal, phase == .entry {
+                Text(refusal.riderMessage)
+                    .font(.system(size: 13.5, weight: .medium))
+                    .foregroundStyle(Color.mrtTextSec)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 280)
+                    .padding(.top, 26)
+                    .transition(.opacity)
+            }
+
             Spacer(minLength: 0)
 
             Button {
@@ -124,6 +166,9 @@ struct InviteCodeFlow: View {
             // jsx:416 — focus after the entrance settles (350ms).
             try? await Task.sleep(for: .milliseconds(350))
             fieldFocused = true
+            if autoSubmitsSampleCode, phase == .entry, code.isEmpty {
+                useSampleCode() // submit fires from `onChange`, exactly as a tap would
+            }
         }
     }
 
@@ -174,17 +219,37 @@ struct InviteCodeFlow: View {
     private func submit(_ value: String) {
         guard phase == .entry else { return }
         phase = .validating
+        refusal = nil
         fieldFocused = false
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(1300)) // jsx:420-423
-            if await validate(value) {
+            // jsx:420-423 — the deliberate ~1.3s "Verifying code…" beat. Run it
+            // CONCURRENTLY with the real call rather than before it, so a slow
+            // server does not add 1.3s on top of its own latency and a fast one
+            // still gets the full beat.
+            async let beat: Void = Task.sleep(for: .milliseconds(1300))
+            let result: Result<RedeemedShare, Error>
+            do { result = .success(try await redeem(value)) }
+            catch { result = .failure(error) }
+            _ = try? await beat
+
+            switch result {
+            case .success(let share):
+                joined = share
                 phase = .joined
-            } else {
-                // mrtShake — unreachable with the M1 always-accept validator,
-                // matching the prototype; wired for the real backend check.
+            case .failure(let error):
+                // Everything non-`RestError` (including a stubbed thrower) folds
+                // onto the same catalog; `.unavailable` is the honest default for
+                // "we could not ask", never a verdict on the code.
+                let failure = (error as? ShareRedemptionFailure) ?? .unavailable
                 phase = .entry
-                shakes += 1
-                code = ""
+                if failure.clearsEntry {
+                    // The prototype's `mrtShake` — finally reachable.
+                    shakes += 1
+                    code = ""
+                    refusal = nil
+                } else {
+                    refusal = failure
+                }
                 fieldFocused = true
             }
         }
@@ -294,9 +359,62 @@ private struct Shake: ViewModifier {
 
 /// Gold bloom + check pop + "You're in", then the host card rises in.
 private struct JoinedSuccessView: View {
-    let host: InviteHostFixture
+    /// MYR-184 — built from the §7.5.5 response, not `InviteHostFixture`. The
+    /// simulated catalog still returns the fixture's values, so SIM renders the
+    /// same pixels; on live these are the server's `ownerFirstName` and the real
+    /// granted vehicles.
+    let joined: RedeemedShare
     let cta: String
     let onContinue: () -> Void
+
+    private var owner: String { joined.ownerFirstName }
+    private var first: SharedVehicleGrant? { joined.grants.first }
+
+    /// "{Owner}'s {Vehicle}" — the ONE place the app has both halves of that
+    /// phrase on the live path (§7.5.5 is the only endpoint carrying an owner
+    /// name; the §7.0 catalog rows do not). Composed through
+    /// `SharedVehicleTitle`, which will NOT double the owner when the nickname
+    /// already names them ("Alex's Model 3" must not become "Alex's Alex's…").
+    private var hostTitle: String {
+        SharedVehicleTitle.compose(owner: owner, vehicle: first?.vehicleName ?? "")
+    }
+
+    /// The line under "You're in". The prototype's is "You can now ride in
+    /// {owner}'s Tesla." — which is FALSE below the `rides` tier, and false in
+    /// exactly the way §7.8 would then 403. It says what this grant is instead.
+    private var joinedSubtitle: String {
+        guard let first, first.tier != nil, !first.grantsRides else {
+            return "You can now ride in \(owner)'s Tesla."
+        }
+        return "You can now watch \(owner)'s Tesla."
+    }
+
+    /// The card's sub-line. SIM keeps the prototype's "{relationship} · {model}".
+    /// LIVE has no relationship on the wire, so it names what the grant actually
+    /// is — the access tier — plus the remaining cars on a multi-vehicle invite,
+    /// which is real information the rider needs and the fixture never had.
+    private var hostSubtitle: String {
+        guard let first else { return "Shared with you" }
+        if let relationship = first.relationship {
+            return "\(relationship) \u{00B7} \(first.accessLabel)"
+        }
+        let extra = joined.grants.count - 1
+        guard extra > 0 else { return first.accessLabel }
+        return "\(first.accessLabel) \u{00B7} +\(extra) more \(extra == 1 ? "vehicle" : "vehicles")"
+    }
+
+    /// The check line under the divider. It used to promise rides unconditionally
+    /// ("You can request rides and watch the live map."), which is FALSE below the
+    /// `rides` tier — the very promise §7.8 would then 403. It now says what this
+    /// grant carries.
+    private var capabilityLine: String {
+        guard let first, first.tier != nil else {
+            return "You can request rides and watch the live map."
+        }
+        if first.grantsRides { return "You can request rides and watch the live map." }
+        if first.grantsHistory { return "You can watch the live map and see past trips." }
+        return "You can watch the live map."
+    }
 
     var body: some View {
         ZStack {
@@ -315,7 +433,7 @@ private struct JoinedSuccessView: View {
                     .foregroundStyle(Color.mrtText)
                     .padding(.bottom, 8)
                     .mrtFadeUp(delay: 0.15)
-                Text("You can now ride in \(host.owner)'s Tesla.")
+                Text(joinedSubtitle)
                     .font(.system(size: 14))
                     .foregroundStyle(Color.mrtTextSec)
                     .multilineTextAlignment(.center)
@@ -338,13 +456,13 @@ private struct JoinedSuccessView: View {
     private var hostCard: some View {
         VStack(spacing: 0) {
             HStack(spacing: 13) {
-                Avatar(name: host.owner, size: 48)
+                Avatar(name: owner, size: 48)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(host.owner)'s \(host.name)")
+                    Text(hostTitle)
                         .font(.system(size: 17, weight: .semibold))
                         .tracking(-0.2)
                         .foregroundStyle(Color.mrtText)
-                    Text("\(host.relationship) · \(host.model)")
+                    Text(hostSubtitle)
                         .font(.system(size: 12.5))
                         .foregroundStyle(Color.mrtTextSec)
                 }
@@ -357,7 +475,7 @@ private struct JoinedSuccessView: View {
                 Image(systemName: "checkmark")
                     .font(.system(size: 11, weight: .bold)) // SFIcon 13 / weight 2.4
                     .foregroundStyle(Color.mrtDriving)
-                Text("You can request rides and watch the live map.")
+                Text(capabilityLine)
                     .font(.system(size: 12.5))
                     .foregroundStyle(Color.mrtTextSec)
                 Spacer(minLength: 0)

@@ -16,8 +16,10 @@ import XCTest
 @MainActor
 final class ExpandedRouteCameraTests: XCTestCase {
 
-    /// A representative full-bleed phone height — the fit reserves the floating
-    /// chrome bands against it (`expandedRouteFitTopInset`/`…BottomInset`).
+    /// A representative full-bleed phone height. Since MYR-334 the fit itself no
+    /// longer depends on it (the chrome bands are the map's own
+    /// `.safeAreaPadding`) — it survives as the "has this been laid out yet?"
+    /// guard, which is exactly what the routeless/zero-height cases below pin.
     private let viewHeight: CGFloat = 852
 
     private let route = [
@@ -42,6 +44,77 @@ final class ExpandedRouteCameraTests: XCTestCase {
         XCTAssertEqual(region.center.latitude, 37.7849, accuracy: 1e-6)
         XCTAssertEqual(region.center.longitude, -122.4094, accuracy: 1e-6)
         XCTAssertGreaterThan(region.span.latitudeDelta, 0.02 - 1e-9)
+    }
+
+    // MARK: MYR-334 — ONE compensation, and it lives on the map
+
+    /// The written region is the route's PLAIN padded box: no `insetRegion`
+    /// grow/shift for the floating chrome. That band is now declared to MapKit
+    /// as `.safeAreaPadding`, and MapKit fits a `.region` into the unobstructed
+    /// band itself (the MYR-237 rule). Compensating in both places is what
+    /// rendered `RideRequestRouteMap`'s route half-size and high, and this is
+    /// the assertion that stops it recurring here.
+    func testTheFitIsThePlainRouteBoxSoTheMapCompensatesExactlyOnce() {
+        let camera = ExpandedRouteCamera()
+        let region = try! XCTUnwrap(camera.seat(fitCoords: route, viewHeight: viewHeight)?.region)
+
+        // The route's own latitude extent is 0.02°; the only growth applied is
+        // `expandedRouteFitPadding`.
+        XCTAssertEqual(
+            region.span.latitudeDelta,
+            0.02 * MRTMetrics.expandedRouteFitPadding,
+            accuracy: 1e-9,
+            "the chrome band must NOT be pre-compensated into the written region"
+        )
+    }
+
+    /// The pure fit the VIEW seeds `cameraPosition` with in `init` (so MapKit's
+    /// first frame is already the final framing) must be the SAME region `seat`
+    /// writes a moment later from `onAppear`. If they can drift, the map opens
+    /// on one framing and jumps to another — the jank this issue was filed for.
+    func testTheInitialFitMatchesTheSeatedWriteExactly() {
+        let seeded = try! XCTUnwrap(ExpandedRouteCamera.fitRegion(for: route))
+        let camera = ExpandedRouteCamera()
+        let written = try! XCTUnwrap(camera.seat(fitCoords: route, viewHeight: viewHeight)?.region)
+
+        XCTAssertEqual(seeded.center.latitude, written.center.latitude, accuracy: 1e-12)
+        XCTAssertEqual(seeded.center.longitude, written.center.longitude, accuracy: 1e-12)
+        XCTAssertEqual(seeded.span.latitudeDelta, written.span.latitudeDelta, accuracy: 1e-12)
+        XCTAssertEqual(seeded.span.longitudeDelta, written.span.longitudeDelta, accuracy: 1e-12)
+    }
+
+    func testFitRegionRefusesARoutelessInput() {
+        XCTAssertNil(ExpandedRouteCamera.fitRegion(for: []), "nothing honest to frame")
+    }
+
+    /// The settle MapKit reports back is GROWN relative to what we wrote — it
+    /// fitted our region into the band above/below the `.safeAreaPadding`, so
+    /// the visible region covers more ground. It must still read as OUR write,
+    /// or the viewer offers a recenter button for a camera nobody touched.
+    /// Symmetric bands are what make this safe: the centre is untouched.
+    func testTheSafeAreaGrownSettleIsStillClassifiedProgrammatic() {
+        let camera = ExpandedRouteCamera()
+        let write = try! XCTUnwrap(camera.seat(fitCoords: route, viewHeight: viewHeight))
+
+        let reserved = MRTMetrics.expandedRouteFitTopInset + MRTMetrics.expandedRouteFitBottomInset
+        let visibleFraction = (viewHeight - reserved) / viewHeight
+        let grownSpan = write.region.span.latitudeDelta / Double(visibleFraction)
+        XCTAssertGreaterThan(grownSpan, write.region.span.latitudeDelta, "sanity: the settle is wider than the write")
+
+        XCTAssertTrue(
+            camera.cameraSettled(center: write.region.center, latitudeDelta: grownSpan),
+            "MapKit's safe-area fit of our own region must not read as a gesture"
+        )
+        XCTAssertEqual(camera.phase, .fitted)
+        XCTAssertFalse(camera.showsRecenter)
+
+        // It matched the EXPECTATION, not the one-shot free pass — which is
+        // still in hand, as this otherwise-unexplained settle proves. (Had the
+        // grown settle burned the pass, this one would classify as a gesture.)
+        XCTAssertTrue(
+            camera.cameraSettled(center: CLLocationCoordinate2D(latitude: 40, longitude: -74), latitudeDelta: 0.9),
+            "the free pass must still be unspent"
+        )
     }
 
     func testSeatIsIdempotentSoStreamingFixesCanNeverRefit() {
