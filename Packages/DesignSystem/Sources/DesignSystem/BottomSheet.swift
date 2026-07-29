@@ -21,8 +21,16 @@ import SwiftUI
 // MARK: - Grab handle (shared)
 
 /// 36×4 rounded handle on elevated gray (components.jsx BottomSheet).
-struct MRTGrabHandle: View {
-    var body: some View {
+///
+/// MYR-326 made this public so the owner-Home LOADING placeholder can wear the
+/// real sheet's chrome (`.mrtSurface(.sheet)` + this handle) instead of
+/// re-drawing a look-alike capsule — CLAUDE.md "Reuse, don't fork". The
+/// placeholder sheet is static (nothing to drag to), so it hosts the handle
+/// directly rather than going through `MRTDetentSheet`.
+public struct MRTGrabHandle: View {
+    public init() {}
+
+    public var body: some View {
         RoundedRectangle(cornerRadius: 2)
             .fill(Color.mrtElevated)
             .frame(width: 36, height: 4)

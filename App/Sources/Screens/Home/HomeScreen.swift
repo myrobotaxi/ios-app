@@ -207,13 +207,24 @@ struct HomeScreen: View {
                let telemetry = homeState.selectedTelemetry,
                !homeState.isConnecting {
                 vehicleContent(vehicle: vehicle, telemetry: telemetry)
-            } else {
-                // Live fleet mid-connect or unavailable (deliverable 3) — subtle,
-                // never dramatic (design minimalism).
-                FleetConnectingView(
-                    isConnecting: homeState.isConnecting,
-                    message: homeState.statusMessage
+            } else if homeState.isConnecting {
+                // MYR-326 — GENUINELY LOADING: the fleet list or the selected
+                // car's cold snapshot is in flight. A skeleton of the screen it
+                // is about to become, not a spinner in a void (the client's
+                // "This looks bad"). The switcher is REAL as soon as the list
+                // lands, so only what is actually unknown is a placeholder.
+                OwnerHomeLoadingSkeleton(
+                    vehicles: homeState.vehicles,
+                    selectedIndex: $homeState.selectedVehicleIndex
                 )
+            } else {
+                // Live fleet unavailable (deliverable 3) — subtle, never
+                // dramatic (design minimalism). NOT a skeleton: this branch is
+                // an honest end state (auth required, empty account,
+                // unreachable, or the MYR-326 cold-read timeout), and a
+                // shimmering placeholder over it would promise data that isn't
+                // coming.
+                FleetConnectingView(message: homeState.statusMessage)
             }
         }
         .background(Color.mrtBg)
@@ -688,27 +699,25 @@ struct HomeScreen: View {
     }
 }
 
-// MARK: - Fleet connecting / unavailable placeholder (MYR-201 deliverable 3)
+// MARK: - Fleet unavailable notice (MYR-201 deliverable 3)
 
-/// Subtle stand-in shown while the live fleet is connecting or can't be
-/// reached — no dramatic error UI (design minimalism). The Kit's auto-reconnect
-/// handles transient drops; this only surfaces the cold connect + a quiet
-/// status line (e.g. the auth-required case when no token is supplied).
+/// Subtle stand-in shown when the live fleet can't be shown — no dramatic error
+/// UI (design minimalism). The Kit's auto-reconnect handles transient drops;
+/// this only surfaces the quiet honest line (auth required, no vehicles on the
+/// account, unreachable, or the MYR-326 cold-read timeout).
+///
+/// MYR-326 removed this view's CONNECTING branch — the spinner + "Connecting to
+/// your vehicles…" the client screenshotted. That state is not an end state, so
+/// it now renders `OwnerHomeLoadingSkeleton`; what is left here is only the
+/// honest "and it isn't coming" case, which keeps its calm one-liner.
 private struct FleetConnectingView: View {
-    let isConnecting: Bool
     let message: String?
 
     var body: some View {
         ZStack {
             Color.mrtBg.ignoresSafeArea()
             VStack(spacing: 12) {
-                if isConnecting {
-                    ProgressView()
-                        .tint(Color.mrtTextMuted)
-                    Text("Connecting to your vehicles…")
-                        .font(.system(size: 14))
-                        .foregroundStyle(Color.mrtTextSec)
-                } else if let message {
+                if let message {
                     Image(systemName: "car.fill")
                         .font(.system(size: 22))
                         .foregroundStyle(Color.mrtTextMuted)

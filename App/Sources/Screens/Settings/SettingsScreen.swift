@@ -430,7 +430,14 @@ struct SettingsScreen: View {
         VStack(spacing: 0) {
             switch state {
             case .connecting:
-                liveNoticeRow("Connecting\u{2026}")
+                // MYR-326 — the fleet list is genuinely in flight: two
+                // row-shaped placeholders instead of the "Connecting…" line, so
+                // the section holds the shape it is about to have. The
+                // `.notice` branch below stays as it is — it is the honest end
+                // state (empty account / auth / unreachable), never a skeleton.
+                ForEach(0..<Self.connectingRowCount, id: \.self) { index in
+                    TeslaAccountRowSkeleton(isFirst: index == 0)
+                }
             case .notice(let message):
                 liveNoticeRow(message)
             case .linked(let vehicles):
@@ -442,6 +449,13 @@ struct SettingsScreen: View {
         .padding(.horizontal, MRTMetrics.pageGutter)
         .padding(.bottom, 8)
     }
+
+    /// MYR-326 — how many placeholder rows the loading Tesla Account section
+    /// shows. Two: enough to read as a list, few enough that it makes no claim
+    /// about a fleet size the server hasn't stated yet (most accounts have one
+    /// or two cars, and an over-long skeleton that collapses to one row is its
+    /// own small lie).
+    private static let connectingRowCount = 2
 
     private func liveNoticeRow(_ text: String) -> some View {
         Text(text)

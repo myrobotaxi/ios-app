@@ -343,6 +343,19 @@ struct RootView: View {
         return isLiveMode
     }
 
+    /// MYR-326 — whether Settings' Tesla Account section reads the LIVE fleet
+    /// (and so its loading branch) rather than the fixture `OwnerVehiclesState`
+    /// list. The live path, plus the one `ownerSettingsLoading` capture scene:
+    /// the `.connecting` state is live-only by construction, so it has no other
+    /// route into a headless capture. `ownerSettings` stays on the fixture list
+    /// and stays byte-identical (MYR-228 / CLAUDE.md drift gate).
+    private var showsLinkedVehicles: Bool {
+        #if DEBUG
+        if DebugScene.current?.rendersLiveLinkedVehicles == true { return true }
+        #endif
+        return isLiveMode
+    }
+
     /// The profile the Settings surfaces render as real identity. The live user,
     /// or — only for the DEBUG `ownerSettings`/`riderSettings` capture scenes —
     /// the sample profile, so the real-identity Profile section + "Switch mode"
@@ -593,7 +606,7 @@ struct RootView: View {
                         // section from the same started fleet Home uses (read-only
                         // real vehicles). `nil` in SIM / DEBUG keeps the fixture
                         // `OwnerVehiclesState` list pixel-identical (MYR-228).
-                        linkedVehicles: isLiveMode ? ownerHomeState : nil,
+                        linkedVehicles: showsLinkedVehicles ? ownerHomeState : nil,
                         onSignOut: {
                             // MYR-201 — release the live socket + streams before
                             // dropping the session (no-op for the simulated fleet).
