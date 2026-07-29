@@ -154,13 +154,22 @@ struct DriveSummaryScreen: View {
         // rather than a `fullScreenCover` so the open/close carries the app's own
         // motion grammar (Handoff §8 sheet snap; plain cross-fade under Reduce
         // Motion) instead of the system's modal slide.
+        //
+        // MYR-334: the animation is scoped to the OVERLAY, not hung off the
+        // whole screen. Attached outside, a `.animation(_:value:)` re-times
+        // every animatable difference the same transaction produces anywhere in
+        // this subtree — including the 1.4s gold-wash fade, which lands in the
+        // same window if the map is tapped between t=2.7s and t=4.1s. Inside,
+        // the cross-fade owns exactly the layer it belongs to.
         .overlay {
-            if showsExpandedRoute {
-                expandedRouteViewer
-                    .transition(.mrtRouteExpand(reduceMotion: reduceMotion))
+            ZStack {
+                if showsExpandedRoute {
+                    expandedRouteViewer
+                        .transition(.mrtRouteExpand(reduceMotion: reduceMotion))
+                }
             }
+            .animation(.mrtRouteExpand(reduceMotion: reduceMotion), value: showsExpandedRoute)
         }
-        .animation(.mrtRouteExpand(reduceMotion: reduceMotion), value: showsExpandedRoute)
         .onAppear {
             scheduleGoldMode()
             #if DEBUG

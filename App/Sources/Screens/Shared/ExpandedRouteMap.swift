@@ -1,6 +1,7 @@
 import SwiftUI
 import MapKit
 import CoreLocation
+import UIKit
 import DesignSystem
 
 // MARK: - ExpandedRouteMap (MYR-327 — tap the map, look at the route)
@@ -67,29 +68,56 @@ final class ExpandedRouteCamera {
         self.paddingFactor = paddingFactor
     }
 
+    /// The fit, as a PURE function of the route (MYR-334).
+    ///
+    /// It takes no view height and touches no instance state, which is the whole
+    /// point: the view can compute it in `init` and hand the `Map` its FINAL
+    /// camera before MapKit's first frame, instead of letting MapKit frame the
+    /// content itself (`.automatic`) and then re-framing it from `onAppear` —
+    /// mid-open-transition, with a tile round-trip thrown away. See the view's
+    /// `init` and `AnyTransition.mrtRouteExpand`.
+    ///
+    /// The chrome bands are NOT compensated here: they are the map's own
+    /// `.safeAreaPadding`, and MapKit fits a `.region` into the unobstructed
+    /// band itself (MYR-237). Compensating twice is what rendered the route
+    /// half-size and high on the route-preview map.
+    nonisolated static func fitRegion(
+        for coordinates: [CLLocationCoordinate2D],
+        paddingFactor: Double = MRTMetrics.expandedRouteFitPadding
+    ) -> MKCoordinateRegion? {
+        guard !coordinates.isEmpty else { return nil }
+        return VehicleRoute.fittedRegion(
+            for: coordinates,
+            paddingFactor: paddingFactor,
+            minimumSpanDelta: MRTMetrics.expandedRouteMinSpanDelta
+        )
+    }
+
     /// The ONE automatic write: fit the route on first appearance. Returns
     /// `nil` on every subsequent call — a new car fix, a leg flip, or the real
     /// polyline replacing a fallback can never yank the camera back, at any fix
     /// rate. Also `nil` for a routeless / not-yet-laid-out input (nothing honest
     /// to frame yet — the fit stays OWED, see `cameraSettled`).
     func seat(fitCoords: [CLLocationCoordinate2D], viewHeight: CGFloat) -> Write? {
-        guard phase == .unseated, !fitCoords.isEmpty, viewHeight > 0 else { return nil }
+        guard phase == .unseated, viewHeight > 0,
+              let region = Self.fitRegion(for: fitCoords, paddingFactor: paddingFactor) else { return nil }
         phase = .fitted
         ledger.clear()
         // The settle that lands our own write is stretched by MapKit's aspect
         // fitting in ways we cannot predict exactly; excuse one.
         ledger.grantFreePass()
-        return write(fitCoords: fitCoords, viewHeight: viewHeight, animated: false)
+        return record(region, animated: false)
     }
 
     /// The explicit recenter tap — the only other programmatic write, and only
     /// ever in response to a touch.
     func recenter(fitCoords: [CLLocationCoordinate2D], viewHeight: CGFloat) -> Write? {
-        guard !fitCoords.isEmpty, viewHeight > 0 else { return nil }
+        guard viewHeight > 0,
+              let region = Self.fitRegion(for: fitCoords, paddingFactor: paddingFactor) else { return nil }
         phase = .fitted
         ledger.clear()
         ledger.grantFreePass()
-        return write(fitCoords: fitCoords, viewHeight: viewHeight, animated: true)
+        return record(region, animated: true)
     }
 
     /// The user's finger moved the map (gesture recognizer — not settle
@@ -146,19 +174,17 @@ final class ExpandedRouteCamera {
     /// taken the camera somewhere other than the route fit.
     var showsRecenter: Bool { phase == .userControlled }
 
-    /// The fit itself — the route's box, padded, then grown so it lands in the
-    /// band BETWEEN the header chip and the recenter button rather than running
-    /// under both (the same `insetRegion` compensation the tracking leg fit uses,
-    /// applied to a takeover whose chrome floats over the map).
-    private func write(fitCoords: [CLLocationCoordinate2D], viewHeight: CGFloat, animated: Bool) -> Write {
-        let region = VehicleRoute.fittedRegion(
-            for: fitCoords,
-            paddingFactor: paddingFactor,
-            bottomInset: MRTMetrics.expandedRouteFitBottomInset,
-            viewHeight: viewHeight,
-            topInset: MRTMetrics.expandedRouteFitTopInset,
-            minimumSpanDelta: MRTMetrics.expandedRouteMinSpanDelta
-        )
+    /// Book a write of `fitRegion`'s output: remember its centre and register the
+    /// settle it will produce.
+    ///
+    /// That settle is GROWN relative to what we wrote (by `1/visibleFraction`,
+    /// ~1.36× on a phone), because the chrome bands are the map's own
+    /// `.safeAreaPadding` and MapKit fits our region into the band between them.
+    /// It shares its CENTRE exactly, though, because that band is symmetric —
+    /// and a same-centre, ≤4× settle is inside `CameraSettleLedger`'s window, so
+    /// the fit's own settle still classifies as programmatic and no recenter is
+    /// offered on a camera nobody touched.
+    private func record(_ region: MKCoordinateRegion, animated: Bool) -> Write {
         lastWrittenCenter = region.center
         ledger.expect(center: region.center, spanDelta: region.span.latitudeDelta)
         return Write(region: region, animated: animated)
@@ -188,13 +214,51 @@ struct ExpandedRouteMap<Content: MapContent>: View {
     @MapContentBuilder var content: () -> Content
 
     @State private var camera = ExpandedRouteCamera()
-    @State private var cameraPosition: MapCameraPosition = .automatic
+    @State private var cameraPosition: MapCameraPosition
     @State private var liveCameraRegion = LiveCameraRegionBox()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// MYR-334 — the map is born already framed.
+    ///
+    /// The shipped MYR-327 cut started at `.automatic` and wrote the fit from
+    /// `onAppear`, i.e. one layout pass INTO the open transition. MapKit
+    /// therefore framed the content itself, requested tiles for that framing,
+    /// then threw them away when our fit landed — and the frame capture shows
+    /// exactly that: ~6 frames of an untiled slate holding nothing but the
+    /// polyline, followed by a hard tile pop, all inside the animation. Seeding
+    /// `cameraPosition` here means MapKit's very FIRST layout is the final one:
+    /// one framing, one tile request, no re-frame mid-flight.
+    ///
+    /// `onAppear` still calls `seat` (below) — it writes this same region, which
+    /// is a no-op for MapKit, and it is what registers the ledger expectation.
+    /// A routeless / not-yet-resolved input falls back to `.automatic` exactly
+    /// as before, and the existing `onChange(of:)` net seats it when geometry
+    /// arrives.
+    init(
+        title: String,
+        subtitle: String? = nil,
+        fitCoordinates: [CLLocationCoordinate2D],
+        routeIsResolving: Bool = false,
+        onClose: @escaping () -> Void,
+        @MapContentBuilder content: @escaping () -> Content
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.fitCoordinates = fitCoordinates
+        self.routeIsResolving = routeIsResolving
+        self.onClose = onClose
+        self.content = content
+        _cameraPosition = State(
+            initialValue: ExpandedRouteCamera.fitRegion(for: fitCoordinates)
+                .map { MapCameraPosition.region($0) } ?? .automatic
+        )
+    }
+
     var body: some View {
-        // The fit needs the map's FULL-BLEED height: the chrome floats over the
-        // map, so its insets are distances from the PHYSICAL edges (MYR-196).
+        // The chrome floats over the map, so its offsets are distances from the
+        // PHYSICAL edges (MYR-196) — with the MYR-334 caveat that a physical
+        // offset must still clear the system's own top band, which is what
+        // `safeAreaTop` is read for.
         //
         // This `ignoresSafeArea` is the surface's ONE full-bleed declaration.
         // Nesting a second one on a child (the recenter button had one) expands
@@ -203,12 +267,38 @@ struct ExpandedRouteMap<Content: MapContent>: View {
         // and SwiftUI drops its taps. That is why the recenter chip rendered,
         // reported itself hittable, and did nothing.
         GeometryReader { geo in
-            mapSurface(viewHeight: geo.size.height)
+            mapSurface(
+                viewHeight: geo.size.height,
+                // Whichever is larger: SwiftUI's reported inset, or the window's
+                // own. A `GeometryReader` under `ignoresSafeArea` can report
+                // `.zero` here depending on how the host stacked its overlays,
+                // and "the header must clear the Dynamic Island" is not a rule
+                // that may quietly degrade to 0 on one host.
+                safeAreaTop: max(geo.safeAreaInsets.top, Self.windowSafeAreaInsets.top)
+            )
         }
         .ignoresSafeArea()
     }
 
-    private func mapSurface(viewHeight: CGFloat) -> some View {
+    /// The key window's safe-area insets — the system band the header has to
+    /// clear, read from UIKit because it is a property of the DEVICE, not of
+    /// whatever SwiftUI container this overlay happens to be nested in.
+    private static var windowSafeAreaInsets: UIEdgeInsets {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }?
+            .keyWindow?
+            .safeAreaInsets ?? .zero
+    }
+
+    /// Where the header row actually sits: the prototype-language physical
+    /// offset, floored so it never collides with the status bar / Dynamic
+    /// Island (MYR-334 — the client's clipped "Frisco → Plano").
+    private func headerTop(safeAreaTop: CGFloat) -> CGFloat {
+        max(MRTMetrics.expandedRouteChromeTop, safeAreaTop + MRTMetrics.expandedRouteChromeSafeGap)
+    }
+
+    private func mapSurface(viewHeight: CGFloat, safeAreaTop: CGFloat) -> some View {
         ZStack {
             Color.mrtBg
 
@@ -220,6 +310,20 @@ struct ExpandedRouteMap<Content: MapContent>: View {
                 content()
             }
             .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll, showsTraffic: false))
+            // MYR-334 — the chrome bands, declared to MapKit rather than
+            // pre-compensated into the written region (MYR-237's rule, and the
+            // same mechanism `VehicleMapView`/`TrackingMapView` already use).
+            // Two things follow, both of them the point:
+            //   1. the legally-required Apple Maps + "Legal" attribution renders
+            //      ABOVE the reserved band instead of into the home-indicator
+            //      strip, where the physical bottom edge was clipping it;
+            //   2. MapKit fits our plain `.region` into the unobstructed band
+            //      itself, so there is exactly ONE compensation, not two.
+            // The map itself is untouched — `safeAreaPadding` grows the inset,
+            // it does not shrink the edge-to-edge render, so this stays
+            // full-bleed.
+            .safeAreaPadding(.top, MRTMetrics.expandedRouteFitTopInset)
+            .safeAreaPadding(.bottom, MRTMetrics.expandedRouteFitBottomInset)
             .preferredColorScheme(.dark)
             .onMapCameraChange(frequency: .continuous) { context in
                 liveCameraRegion.region = context.region
@@ -238,8 +342,8 @@ struct ExpandedRouteMap<Content: MapContent>: View {
             .simultaneousGesture(DragGesture(minimumDistance: 8).onChanged { _ in handleUserGesture() })
             .simultaneousGesture(MagnifyGesture(minimumScaleDelta: 0.02).onChanged { _ in handleUserGesture() })
 
-            topScrim
-            header
+            topScrim(headerTop: headerTop(safeAreaTop: safeAreaTop))
+            header(headerTop: headerTop(safeAreaTop: safeAreaTop))
             recenterButton(viewHeight: viewHeight)
         }
         .onAppear { seatIfNeeded(viewHeight: viewHeight) }
@@ -258,17 +362,18 @@ struct ExpandedRouteMap<Content: MapContent>: View {
     // MARK: Chrome
 
     /// Legibility wash under the header — the same top scrim the Drive Summary
-    /// hero already lays over its map.
-    private var topScrim: some View {
+    /// hero already lays over its map. Grows with the header's own offset so the
+    /// wash still runs out below the last line of the title (MYR-334).
+    private func topScrim(headerTop: CGFloat) -> some View {
         VStack(spacing: 0) {
             LinearGradient(colors: [.mrtDsScrimTop, .clear], startPoint: .top, endPoint: .bottom)
-                .frame(height: MRTMetrics.expandedRouteScrimHeight)
+                .frame(height: MRTMetrics.expandedRouteScrimHeight + headerTop - MRTMetrics.expandedRouteChromeTop)
             Spacer()
         }
         .allowsHitTesting(false)
     }
 
-    private var header: some View {
+    private func header(headerTop: CGFloat) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Button(action: onClose) {
                 Image(systemName: "xmark")
@@ -316,7 +421,7 @@ struct ExpandedRouteMap<Content: MapContent>: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
-        .padding(.top, MRTMetrics.expandedRouteChromeTop)
+        .padding(.top, headerTop)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
@@ -392,23 +497,40 @@ struct ExpandRouteButton: View {
 }
 
 extension AnyTransition {
-    /// Expand/collapse grammar for the route viewer — Handoff §8's sheet snap
-    /// (`.42s cubic-bezier(.32,.72,0,1)`) expressed as a grow-from-the-inline-map
-    /// scale + fade, so opening reads as the small map becoming the big one.
-    /// Reduce Motion collapses it to a plain cross-fade at the app's standard
-    /// 0.2s ease-out (the same fallback every animated rider surface uses).
-    static func mrtRouteExpand(reduceMotion: Bool) -> AnyTransition {
-        reduceMotion
-            ? .opacity
-            : .scale(scale: MRTMetrics.expandedRouteEnterScale).combined(with: .opacity)
-    }
+    /// Expand/collapse grammar for the route viewer — a pure OPACITY cross-fade,
+    /// in both the normal and the Reduce Motion branch.
+    ///
+    /// MYR-334, client: "the drive map opening up is a bit glitchy, needs to be
+    /// smooth" — device-only, which is the tell. The shipped MYR-327 cut opened
+    /// with `.scale(0.94).combined(with: .opacity)`, and a *changing* scale over
+    /// a live `MKMapView` is the expensive kind of animation: MapKit re-renders
+    /// its vector tiles at the new scale every frame, and the combined opacity
+    /// forces the whole full-screen map to composite off-screen as a group while
+    /// it does. The simulator absorbs that on a Mac GPU; a 3× 6.9" panel does
+    /// not. Opacity alone is one blend of an already-rendered layer — the map's
+    /// geometry never changes, so nothing re-rasterises.
+    ///
+    /// This is the standing lesson applied to a takeover rather than to a drag:
+    /// lay the surface out ONCE at its final size and animate a compositing
+    /// property, never per-frame geometry. (The scale had a second cost too: at
+    /// 0.94 a full-bleed takeover leaves a 3% border of the screen it came from
+    /// visible for the whole transition — the drive-summary chrome peeking round
+    /// the corners of the client's mid-transition screenshot.)
+    ///
+    /// The other half of "smooth" is not in the transition at all: see
+    /// `ExpandedRouteMap.init`, which hands the `Map` its final camera before
+    /// MapKit's first frame so no re-framing happens inside the animation.
+    static func mrtRouteExpand(reduceMotion _: Bool) -> AnyTransition { .opacity }
 }
 
 extension Animation {
-    /// The curve paired with `mrtRouteExpand`.
+    /// The curve paired with `mrtRouteExpand` — Handoff §8's sheet-snap curve at
+    /// the app's existing overlay duration (`mrt-sched-up`, 0.3s). Reduce Motion
+    /// keeps the standard 0.2s ease-out every animated rider surface falls back
+    /// to.
     static func mrtRouteExpand(reduceMotion: Bool) -> Animation {
         reduceMotion
             ? .easeOut(duration: 0.2)
-            : .timingCurve(0.32, 0.72, 0, 1, duration: 0.42) // Handoff §8 sheet snap
+            : .timingCurve(0.32, 0.72, 0, 1, duration: MRTMetrics.expandedRouteFadeDuration)
     }
 }
