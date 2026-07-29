@@ -124,6 +124,49 @@ public enum VehicleServiceWindow {
         text.contains("~") || text.contains("\u{2248}")
     }
 
+    // MARK: - 1b. THE resolver — one value, every owner read surface
+
+    /// The service window the owner sheet displays, from the ONE source both of
+    /// its read surfaces must share.
+    ///
+    /// WHY THIS EXISTS (the client's server-verified defect): the owner saved a
+    /// manual completion date, the server persisted it — and the sheet went on
+    /// showing the old state. The two surfaces were reading a DIFFERENT object
+    /// from the one the save wrote:
+    ///
+    ///   • the hero completion line (`HomeScreen.serviceCompletionLine`) and the
+    ///     "Service completion date" row (`VehicleControls.serviceWindowRow`) both
+    ///     read `VehicleTelemetrySnapshot.serviceEstimatedEndAt`, which is derived
+    ///     ONLY from the accumulated `VehicleState`
+    ///     (`VehicleContractMapping.snapshot`);
+    ///   • the save wrote the server's resolved echo to the EXECUTOR
+    ///     (`LiveVehicleCommandExecutor.setServiceWindow`) and to the fleet's
+    ///     summary row.
+    ///
+    /// And because this field is SNAPSHOT-ONLY by contract — no `vehicle_update`
+    /// frame ever carries it — the snapshot cannot catch up until the next cold
+    /// `/snapshot` read. So the display was correct-but-stale for an unbounded
+    /// time, which reads exactly like a save that did not work.
+    ///
+    /// THE COMMITTED SIDE IS THE SOURCE, and it is a strict superset rather than a
+    /// competing opinion: `LiveVehicleCommandExecutor.reconcile(from:)` adopts the
+    /// window off EVERY snapshot (including a nil, which is how a car leaving
+    /// service clears it), and `setServiceWindow` adopts the write echo. So once
+    /// anything has been committed, the executor holds either the same instant the
+    /// snapshot does or a newer one — never an older one.
+    ///
+    /// `isCommitted` is what makes a CLEAR work. "Prefer the non-nil value" would
+    /// be the obvious rule and would be wrong: an owner who removes the window
+    /// would keep seeing the stale snapshot's instant until a refetch. A committed
+    /// nil is a real answer and outranks the snapshot.
+    ///
+    /// Nothing committed → the snapshot is all we know and is authoritative. That
+    /// is the cold-launch path and the whole simulated path (where both sides are
+    /// nil anyway, so every drift-gate scene is byte-identical).
+    public static func resolvedEndAt(committed: Date?, isCommitted: Bool, snapshot: Date?) -> Date? {
+        isCommitted ? committed : snapshot
+    }
+
     // MARK: - 2. Owner entry validation
 
     /// Whether an owner-picked instant is one the server will accept. Mirrors the
@@ -225,5 +268,31 @@ public enum VehicleServiceWindow {
         f.timeZone = calendar.timeZone
         f.dateFormat = dateFormat
         return f
+    }
+}
+
+// MARK: - The resolver, bound to the two objects the owner sheet actually holds
+
+@MainActor
+public extension VehicleServiceWindow {
+    /// ``resolvedEndAt(committed:isCommitted:snapshot:)`` applied to the executor +
+    /// snapshot pair every owner surface already has in hand. Keeping the pure rule
+    /// and this binding in one file is what stops a call site from re-deriving
+    /// "which one wins" for itself — the split that caused the defect.
+    ///
+    /// `isKnown(.serviceWindow)` is the executor's own MYR-251 ledger of confirmed
+    /// fields; `setServiceWindow` raises it on every successful write (a CLEAR
+    /// included) and `reconcile` raises it whenever a snapshot carried a real
+    /// window. The simulated executor answers `true` with a nil value, which agrees
+    /// with its always-nil snapshot, so M1 renders exactly as before.
+    static func resolvedEndAt(
+        executor: any VehicleCommandExecutor,
+        snapshot: VehicleTelemetrySnapshot
+    ) -> Date? {
+        resolvedEndAt(
+            committed: executor.controls.serviceEstimatedEndAt,
+            isCommitted: executor.isKnown(.serviceWindow),
+            snapshot: snapshot.serviceEstimatedEndAt
+        )
     }
 }

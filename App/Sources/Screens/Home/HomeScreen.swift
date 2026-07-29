@@ -250,7 +250,16 @@ struct HomeScreen: View {
                     // so the picker opens on whatever is actually in force —
                     // Tesla's estimate or the owner's own — rather than on a
                     // remembered local draft that may have been outranked.
-                    initialValue: executor.controls.serviceEstimatedEndAt,
+                    //
+                    // Resolved through the SAME rule the two read surfaces use, so
+                    // re-opening the editor prefills exactly what the sheet is
+                    // showing — including a value that has only ever arrived on a
+                    // snapshot and was never committed here.
+                    initialValue: VehicleServiceWindow.resolvedEndAt(
+                        executor: executor,
+                        snapshot: homeState.selectedTelemetry?.snapshot
+                            ?? LiveVehicleTelemetrySource.placeholder
+                    ),
                     vehicleName: vehicle.name,
                     onCancel: { isEditingServiceWindow = false },
                     onSave: { expectedEndAt in
@@ -542,9 +551,31 @@ struct HomeScreen: View {
     /// drift-gate scene stays byte-identical.
     private func serviceCompletionLine(snapshot: VehicleTelemetrySnapshot) -> String? {
         VehicleServiceWindow.completionLine(
-            for: snapshot.serviceEstimatedEndAt,
+            for: resolvedServiceWindow(snapshot: snapshot),
             isInService: homeState.selectedBadgeStatus == .inService
         )
+    }
+
+    /// The ONE resolution of the service window for this sheet — the hero line
+    /// above and the "Service completion date" row inside `VehicleControls` are
+    /// both built from this single call.
+    ///
+    /// It used to be resolved twice, independently, and BOTH times from
+    /// `snapshot.serviceEstimatedEndAt` — a value that cannot move until the next
+    /// cold `/snapshot` read, because the field carries no WS delta. A save wrote
+    /// its echo to the executor, which neither surface read, so a save the server
+    /// accepted changed nothing on screen (the client's report). See
+    /// `VehicleServiceWindow.resolvedEndAt(committed:isCommitted:snapshot:)` for
+    /// why the executor is the source and why `nil` had to be committable.
+    ///
+    /// Falls back to the snapshot when there is no executor at all — a state the
+    /// selection invariant does not actually produce, but resolving to the older
+    /// of the two values is the safe direction if it ever did.
+    private func resolvedServiceWindow(snapshot: VehicleTelemetrySnapshot) -> Date? {
+        guard let executor = homeState.selectedCommandExecutor else {
+            return snapshot.serviceEstimatedEndAt
+        }
+        return VehicleServiceWindow.resolvedEndAt(executor: executor, snapshot: snapshot)
     }
 
     /// The LOW crossfade layer — the summary hero only (peek). Identical pixels
@@ -610,7 +641,10 @@ struct HomeScreen: View {
                 // The SAME line the peek layer gets — the crossfade dissolves the
                 // two summaries into each other, so they must match line for line.
                 serviceCompletion: serviceCompletionLine(snapshot: snapshot),
-                onEditServiceWindow: { isEditingServiceWindow = true }
+                onEditServiceWindow: { isEditingServiceWindow = true },
+                // The SAME resolution the line above was built from, so the hero
+                // and the details row can never disagree about what is saved.
+                serviceEstimatedEndAt: resolvedServiceWindow(snapshot: snapshot)
             )
         }
     }
