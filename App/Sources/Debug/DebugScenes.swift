@@ -339,6 +339,35 @@ enum DebugScene: String, CaseIterable {
     /// therefore proves `RideScheduleFloor` produced it — the same instant travels
     /// the shipping mapping, not a hand-set view flag.
     case riderScheduleFloored
+    /// MYR-326 (client polish) — the LIVE PATH'S LOADING STATES, which have no
+    /// other capture route: each is a state the app leaves as fast as it can,
+    /// and the one the client screenshotted needs a real asleep car behind a real
+    /// auth session. `DebugLoadingFleet` parks the app in one branch each and
+    /// never resolves it (see that file). Every simulated scene is untouched —
+    /// `SimulatedVehicleFleet.isConnecting` is `false` by construction, so no
+    /// drift-gate capture can reach a skeleton at all.
+    ///   • `ownerConnectingCold` — the first moments: the fleet LIST is in
+    ///     flight, so nothing is known and even the switcher chip is a
+    ///     placeholder.
+    ///   • `ownerConnecting` — THE CLIENT'S STATE: the list landed (his car's
+    ///     name is known and the real `MapHeader` renders it) and the cold
+    ///     `/snapshot` has not. Before this issue both of these were one black
+    ///     screen with a system spinner and "Connecting to your vehicles…".
+    ///   • `ownerDrivesLoading` — the Drives tab with its first page in flight
+    ///     (`initialOwnerTab` "drives"): a day heading + three `DriveRow`-shaped
+    ///     placeholders where a spinner and "Loading drives…" used to be.
+    ///   • `ownerSettingsLoading` — Settings ⇢ Tesla Account with the fleet list
+    ///     in flight: two row-shaped placeholders instead of "Connecting…". The
+    ///     scene forces the LIVE linked-vehicle branch
+    ///     (`rendersLiveLinkedVehicles`), the same stand-in-for-a-live-session
+    ///     precedent as `showsLiveSettings`; `ownerSettings` itself is unchanged.
+    /// Capture each one twice — once normally, once with Reduce Motion on
+    /// (`xcrun simctl ui <udid> reduce_motion enabled`) — to prove the static
+    /// fallback: the blocks must stay, the sweep must go.
+    case ownerConnectingCold
+    case ownerConnecting
+    case ownerDrivesLoading
+    case ownerSettingsLoading
 
     /// The active scene for this launch, or `nil` for a normal boot. Read
     /// from `MRT_SCENE` (env, the documented `SIMCTL_CHILD_MRT_SCENE=` path);
@@ -431,8 +460,8 @@ enum DebugScene: String, CaseIterable {
 
     static var initialOwnerTab: String {
         switch current {
-        case .ownerDrives: return "drives"
-        case .ownerSettings: return "settings"
+        case .ownerDrives, .ownerDrivesLoading: return "drives"
+        case .ownerSettings, .ownerSettingsLoading: return "settings"
         default: return "home"
         }
     }
@@ -445,7 +474,18 @@ enum DebugScene: String, CaseIterable {
     }
 
     /// Whether Settings should render with the DEBUG live identity + switch row.
-    var showsLiveSettings: Bool { self == .ownerSettings || self == .riderSettings }
+    var showsLiveSettings: Bool {
+        self == .ownerSettings || self == .riderSettings || self == .ownerSettingsLoading
+    }
+
+    /// MYR-326 — whether Settings' Tesla Account section should read the LIVE
+    /// linked-vehicle list (and therefore its loading branch) rather than the
+    /// fixture list. Same stand-in-for-a-live-session precedent as
+    /// `showsLiveSettings` / `rendersLiveVehicleFreshness`: the section's
+    /// `.connecting` state is live-only by construction, so a SIM capture of it
+    /// is impossible without this. Scoped to the one scene, so `ownerSettings`
+    /// keeps its fixture rows and stays byte-identical.
+    var rendersLiveLinkedVehicles: Bool { self == .ownerSettingsLoading }
 
     /// MYR-312/313 — whether `HomeScreen`'s incoming-request surface should take
     /// its LIVE branch even though the simulator composed the simulated app mode.
@@ -518,6 +558,8 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerServiceWindow || self == .ownerServiceWindowEditor
             || self == .ownerServiceWindowManual || self == .ownerServiceWindowSaved
             || self == .ownerNoticeRejected || self == .ownerVehicleEnriched
+            || self == .ownerConnecting || self == .ownerConnectingCold
+            || self == .ownerDrivesLoading || self == .ownerSettingsLoading
     }
 
     /// MYR-260 — a DEBUG fleet override for scenes that need a specific
@@ -591,6 +633,14 @@ enum DebugScene: String, CaseIterable {
                 color: "Quicksilver",
                 fsdVersion: "FSD (Supervised) v14.3.5"
             )
+        // MYR-326 — the live path's three loading branches, each held still.
+        // The Settings capture waits on the same thing the cold Home capture
+        // does — the fleet LIST — so they share a variant: `SettingsScreen`'s
+        // `.connecting` state is precisely "no rows AND still loading".
+        case .ownerConnectingCold, .ownerSettingsLoading:
+            return DebugLoadingFleet(variant: .fleetListPending)
+        case .ownerConnecting: return DebugLoadingFleet(variant: .snapshotPending)
+        case .ownerDrivesLoading: return DebugLoadingFleet(variant: .drivesPending)
         default: return nil
         }
     }
@@ -988,7 +1038,8 @@ enum DebugScene: String, CaseIterable {
              .ownerFreshnessStale, .ownerFreshnessWaking,
              .ownerServiceWindow, .ownerServiceWindowEditor, .ownerServiceWindowManual,
              .ownerServiceWindowSaved,
-             .ownerVehicleEnriched:
+             .ownerVehicleEnriched,
+             .ownerConnecting, .ownerConnectingCold, .ownerDrivesLoading, .ownerSettingsLoading:
             break // chooser / settings / rider live-map / owner scenes don't drive the viewer sheet
         }
     }

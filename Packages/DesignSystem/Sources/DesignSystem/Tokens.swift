@@ -642,6 +642,33 @@ public extension Color {
     /// `IncomingRequestSheet` requester-avatar gradient end — `#9D7CFF`
     /// (ride-request.jsx:1307).
     static let mrtRequesterAvatarEnd = Color(hex: Hex.requesterAvatarEnd)
+
+    // MARK: - MYR-326 — Skeleton loading placeholders
+    //
+    // The prototype has no loading state anywhere (its data is present at
+    // t=0), so there is no jsx recipe to port. Both values are alpha
+    // compositions of the existing text hex — NO new raw hex — and sit in the
+    // same quiet-fill-on-dark family the app already uses for non-content
+    // surfaces (`mrtStepButtonFill` 0.06, `mrtControlSegmentOff` 0.07). They
+    // are deliberately BELOW `mrtTextMuted`: a placeholder must read as
+    // "nothing here yet", never as dim content.
+
+    /// Resting skeleton block fill — rgba(255,255,255,0.06). Stands in for
+    /// body-weight text, chips and rows.
+    static let mrtSkeletonFill = Color(hex: Hex.text, alpha: 0.06)
+    /// Skeleton block for a HEADLINE-weight element (a vehicle name, a hero
+    /// figure) — rgba(255,255,255,0.10). One step up so the placeholder
+    /// carries the same visual hierarchy the real content will.
+    static let mrtSkeletonFillStrong = Color(hex: Hex.text, alpha: 0.10)
+    /// Card fill behind a ROW-shaped skeleton (a placeholder `DriveRow`) —
+    /// rgba(255,255,255,0.025). Deliberately BELOW `mrtSkeletonFill` so the
+    /// blocks inside the card still read against it, and deliberately not the
+    /// row's own gold gradient: gold is never decorative (CLAUDE.md), and a
+    /// gold-tinted card with no content in it reads as a real, tappable drive.
+    static let mrtSkeletonRowFill = Color(hex: Hex.text, alpha: 0.025)
+    /// Border of a row-shaped skeleton — rgba(255,255,255,0.07), the same
+    /// hairline presence `mrtControlSegmentOff` carries.
+    static let mrtSkeletonRowBorder = Color(hex: Hex.text, alpha: 0.07)
 }
 
 // MARK: - Hex init

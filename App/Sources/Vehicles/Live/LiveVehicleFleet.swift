@@ -33,19 +33,26 @@ final class LiveVehicleFleet: VehicleFleet {
         /// MYR-315 — injected clock for the foreground-refetch debounce (nil →
         /// `Date.init`), so the policy is provable without a 10s sleep.
         var now: (() -> Date)?
+        /// MYR-326 — how long the cold snapshot may stay "loading" before the
+        /// screen says something honest instead (nil → `ColdSnapshotLoad.budget()`,
+        /// ~21s). Tests inject a few milliseconds so the timeout is provable
+        /// without waiting out the Kit's real backoff schedule.
+        var coldSnapshotBudget: TimeInterval?
 
         init(
             environment: BackendEnvironment,
             tokenProvider: any TokenProvider,
             http: (any HTTPPerforming)? = nil,
             channelFactory: (any WebSocketChannelFactory)? = nil,
-            now: (() -> Date)? = nil
+            now: (() -> Date)? = nil,
+            coldSnapshotBudget: TimeInterval? = nil
         ) {
             self.environment = environment
             self.tokenProvider = tokenProvider
             self.http = http
             self.channelFactory = channelFactory
             self.now = now
+            self.coldSnapshotBudget = coldSnapshotBudget
         }
     }
 
@@ -76,11 +83,34 @@ final class LiveVehicleFleet: VehicleFleet {
     /// Injected clock, so the foreground debounce is testable without sleeping.
     private let now: () -> Date
 
-    private(set) var statusMessage: String?
+    /// MYR-326 — see `ColdSnapshotLoad`.
+    private let coldSnapshotBudget: TimeInterval
+    /// The vehicle whose cold snapshot never landed inside the budget, or `nil`.
+    /// Non-nil ends the loading state and produces the honest line below.
+    private var coldLoadTimedOutVehicleID: String?
+    /// The in-flight budget timer for the ACTIVE vehicle's cold read.
+    private var coldLoadWatchdog: Task<Void, Never>?
+
+    /// The fleet LIST's own status (auth / unreachable / empty account). Kept
+    /// separate from the published `statusMessage` so the MYR-326 cold-read
+    /// timeout can compose onto it without either one clobbering the other.
+    private var loadStatusMessage: String?
+
+    /// The quiet honest line, or `nil` when there is nothing to say. Two
+    /// sources, list first: a fleet list that failed says so, and only a fleet
+    /// list that SUCCEEDED can leave us waiting on a car's snapshot.
+    var statusMessage: String? {
+        if let loadStatusMessage { return loadStatusMessage }
+        guard let id = coldLoadTimedOutVehicleID else { return nil }
+        return ColdSnapshotLoad.unreachableMessage(
+            vehicleName: summaries.first(where: { $0.vehicleId == id })?.name
+        )
+    }
 
     init(config: Config) {
         environment = config.environment
         now = config.now ?? Date.init
+        coldSnapshotBudget = config.coldSnapshotBudget ?? ColdSnapshotLoad.budget()
         let http = config.http ?? URLSession(configuration: RestClient.defaultConfiguration())
         rest = RestClient(environment: config.environment, tokenProvider: config.tokenProvider, http: http)
         socket = TelemetrySocket(
@@ -104,8 +134,13 @@ final class LiveVehicleFleet: VehicleFleet {
 
     /// Subtle connecting state (deliverable 3): true while the fleet list is
     /// still loading, or while the SELECTED vehicle's first snapshot is in flight
-    /// — so the screen shows one calm "Connecting…" pass, then real data appears
-    /// at once (no 0%/blank flash). Suppressed once a `statusMessage` is set.
+    /// — so the screen shows one calm pass, then real data appears at once (no
+    /// 0%/blank flash). Suppressed once a `statusMessage` is set.
+    ///
+    /// MYR-326 — that suppression now also covers the cold-read TIMEOUT, which
+    /// is what stops this from being true forever for a car that never answers
+    /// (`ColdSnapshotLoad`). It matters more than it did: Home's loading
+    /// treatment is a skeleton now, and a skeleton is a promise.
     var isConnecting: Bool {
         if statusMessage != nil { return false }
         if !hasLoaded { return true }
@@ -151,6 +186,8 @@ final class LiveVehicleFleet: VehicleFleet {
         started = false
         loadTask?.cancel()
         loadTask = nil
+        coldLoadWatchdog?.cancel()
+        coldLoadWatchdog = nil
         sources.forEach { $0.stop() }
         let socket = self.socket
         Task { await socket.disconnect() }
@@ -162,7 +199,11 @@ final class LiveVehicleFleet: VehicleFleet {
         // old subscription, open the new one (which fetches its cold snapshot).
         if sources.indices.contains(activeIndex) { sources[activeIndex].stop() }
         activeIndex = index
+        // MYR-326 — the timeout belonged to the car we just left. The new
+        // selection's own cold read starts now, with a fresh budget.
+        clearColdLoadTimeout()
         if started, sources.indices.contains(activeIndex) { sources[activeIndex].start() }
+        armColdLoadWatchdog()
     }
 
     /// MYR-201 nudged the socket here and, if a prior load had FAILED, retried it.
@@ -191,8 +232,18 @@ final class LiveVehicleFleet: VehicleFleet {
         // Pre-existing recovery: a load that failed or never happened is retried on
         // EVERY resume, debounce or not — it is the low-friction recovery the design
         // prefers over a retry button, and there is nothing to preserve.
-        if statusMessage != nil || !hasLoaded {
+        if loadStatusMessage != nil || !hasLoaded {
             loadFleet()
+            return
+        }
+        // MYR-326 — the LIST is fine; it was the car that never answered inside
+        // its budget. Re-asking the list would change nothing (and `applyLoaded`
+        // would correctly adopt the unchanged rows without restarting the
+        // source), so the recovery is another cold read, on a fresh budget. Same
+        // "retry on every resume, no retry button" shape as the branch above.
+        if coldLoadTimedOutVehicleID != nil {
+            clearColdLoadTimeout()
+            refreshActiveSnapshot()
             return
         }
         guard ForegroundRefetchPolicy.shouldRefetch(backgroundedFor: backgroundedFor) else { return }
@@ -230,6 +281,56 @@ final class LiveVehicleFleet: VehicleFleet {
         let vehicleID = summaries[activeIndex].vehicleId
         let socket = self.socket
         Task { await socket.refreshSnapshot(vehicleId: vehicleID) }
+        // MYR-326 — a refetch runs the SAME bounded retry schedule, so it gets
+        // the same budget. No-op when a snapshot is already on screen (the
+        // watchdog only arms while `state` is nil).
+        armColdLoadWatchdog()
+    }
+
+    // MARK: - Cold-snapshot budget (MYR-326)
+
+    /// Start (or restart) the budget timer for the ACTIVE vehicle's cold read.
+    ///
+    /// Only arms while that vehicle has no state at all: a refetch behind an
+    /// already-rendered sheet is not a loading state, and letting it declare the
+    /// car unreachable would blank a sheet full of perfectly good last-known
+    /// values (NFR-3.12/3.13 — a failed read never clears what we hold).
+    private func armColdLoadWatchdog() {
+        coldLoadWatchdog?.cancel()
+        coldLoadWatchdog = nil
+        guard started,
+              sources.indices.contains(activeIndex),
+              sources[activeIndex].state == nil
+        else { return }
+        let vehicleID = summaries[activeIndex].vehicleId
+        let budget = coldSnapshotBudget
+        coldLoadWatchdog = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, budget) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.noteColdLoadBudgetExpired(vehicleID: vehicleID)
+        }
+    }
+
+    /// The budget ran out. Re-check everything that could have changed while it
+    /// was running — the snapshot may have landed a millisecond before the timer
+    /// fired, the selection may have moved, the car may have been removed — and
+    /// only then stop claiming to be loading.
+    private func noteColdLoadBudgetExpired(vehicleID: String) {
+        guard started,
+              let index = summaries.firstIndex(where: { $0.vehicleId == vehicleID }),
+              index == activeIndex,
+              sources[index].state == nil
+        else { return }
+        coldLoadTimedOutVehicleID = vehicleID
+    }
+
+    /// Forget a previous timeout and stand the watchdog down — the caller is
+    /// about to (re)start something that will produce a snapshot, or has just
+    /// received one.
+    private func clearColdLoadTimeout() {
+        coldLoadWatchdog?.cancel()
+        coldLoadWatchdog = nil
+        coldLoadTimedOutVehicleID = nil
     }
 
     /// MYR-258 (§7.12) — drop a vehicle after its authoritative backend teardown.
@@ -249,7 +350,8 @@ final class LiveVehicleFleet: VehicleFleet {
 
         if summaries.isEmpty {
             activeIndex = 0
-            statusMessage = "No vehicles linked to this account"
+            clearColdLoadTimeout()
+            loadStatusMessage = "No vehicles linked to this account"
             return
         }
         // Keep the active subscription valid: clamp the index, and if the removal
@@ -257,7 +359,11 @@ final class LiveVehicleFleet: VehicleFleet {
         let wasActiveAffected = removedIndex <= activeIndex
         activeIndex = min(activeIndex, summaries.count - 1)
         if started, wasActiveAffected, sources.indices.contains(activeIndex) {
+            // MYR-326 — a different car is now active and its cold read is
+            // starting; the previous car's timeout (if any) is not about it.
+            clearColdLoadTimeout()
             sources[activeIndex].start()
+            armColdLoadWatchdog()
         }
     }
 
@@ -265,7 +371,7 @@ final class LiveVehicleFleet: VehicleFleet {
 
     private func loadFleet() {
         loadTask?.cancel()
-        statusMessage = nil
+        loadStatusMessage = nil
         let rest = self.rest
         loadTask = Task { [weak self] in
             do {
@@ -292,7 +398,7 @@ final class LiveVehicleFleet: VehicleFleet {
         // and drive feeds keep their subscriptions, reconcile hooks and pagination.
         if !sources.isEmpty, summaries.map(\.vehicleId) == items.map(\.vehicleId) {
             summaries = items
-            statusMessage = nil
+            loadStatusMessage = nil
             return
         }
 
@@ -330,9 +436,16 @@ final class LiveVehicleFleet: VehicleFleet {
         // lock/climate/seat/trunk/charge-port/media state into the executor so its
         // tiles flip from honest-"—" to the car's true state. Only the active
         // vehicle's socket delivers frames, so only its executor reconciles.
-        for (source, executor) in zip(sources, liveExecutors) {
-            source.liveState.onStateChanged = { [weak executor] state in
+        for (index, pair) in zip(sources, liveExecutors).enumerated() {
+            let (source, executor) = pair
+            let vehicleID = items[index].vehicleId
+            source.liveState.onStateChanged = { [weak executor, weak self] state in
                 executor?.reconcile(from: state)
+                // MYR-326 — a snapshot (or any merged delta, which can only
+                // follow one) IS the cold read landing. Stand the budget timer
+                // down and drop any timeout we had already declared, so a car
+                // that answers late recovers on its own.
+                self?.noteSnapshotArrived(vehicleID: vehicleID)
             }
         }
         // MYR-286 — §7.14 fires NO WebSocket push, so a saved plate would not reach
@@ -363,7 +476,7 @@ final class LiveVehicleFleet: VehicleFleet {
             }
         }
         if items.isEmpty {
-            statusMessage = "No vehicles linked to this account"
+            loadStatusMessage = "No vehicles linked to this account"
             return
         }
         activeIndex = min(activeIndex, items.count - 1)
@@ -372,11 +485,23 @@ final class LiveVehicleFleet: VehicleFleet {
         if started {
             sources[activeIndex].start()
         }
+        // MYR-326 — the cold read starts here, so its budget starts here.
+        clearColdLoadTimeout()
+        armColdLoadWatchdog()
+    }
+
+    /// MYR-326 — the active vehicle's state landed (or a delta merged onto it).
+    private func noteSnapshotArrived(vehicleID: String) {
+        guard summaries.indices.contains(activeIndex),
+              summaries[activeIndex].vehicleId == vehicleID
+        else { return }
+        clearColdLoadTimeout()
     }
 
     private func applyLoadFailure(_ error: Error) {
         hasLoaded = false
-        statusMessage = Self.message(for: error)
+        clearColdLoadTimeout()
+        loadStatusMessage = Self.message(for: error)
     }
 
     /// Subtle, non-dramatic copy for the graceful state. The auth (401) case is

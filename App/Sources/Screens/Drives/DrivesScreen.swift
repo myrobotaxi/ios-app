@@ -255,10 +255,16 @@ struct DrivesScreen: View {
 
     /// The empty-history branch: a calm loading pass, then either the quiet
     /// status line (auth/unreachable) or the designed "no drives yet" state.
+    ///
+    /// MYR-326 — the loading pass is now a SKELETON of the list it is fetching
+    /// (a day heading + three row placeholders) rather than a spinner beside
+    /// "Loading drives…". The two branches beneath it are honest end states and
+    /// are unchanged: a skeleton must never stand in for "there is nothing here"
+    /// or "we couldn't reach the server".
     @ViewBuilder
     private var emptyHistoryContent: some View {
         if feed.isLoading {
-            connectingRow
+            DrivesListSkeleton()
         } else if let message = feed.statusMessage {
             statusRow(message)
         } else {
@@ -291,17 +297,6 @@ struct DrivesScreen: View {
         .padding(.vertical, 48)
     }
 
-    private var connectingRow: some View {
-        HStack(spacing: 10) {
-            ProgressView().tint(Color.mrtTextMuted)
-            Text("Loading drives…")
-                .font(.system(size: 13))
-                .foregroundStyle(Color.mrtTextMuted)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 40)
-    }
-
     private func statusRow(_ message: String) -> some View {
         Text(message)
             .font(.system(size: 13))
@@ -313,13 +308,17 @@ struct DrivesScreen: View {
     }
 
     /// Bottom-of-list paging trigger: fetches the next page as it appears.
+    ///
+    /// MYR-326 — one row-shaped placeholder rather than a spinner, so the list
+    /// continues into what is arriving instead of ending in a loading indicator.
+    /// The `.onAppear` fetch trigger is unchanged; the footer's presence is
+    /// still governed by `hasMore` (always false for the fixture feed, so the
+    /// simulated path never renders it).
     private var pagingFooter: some View {
-        HStack {
-            ProgressView().tint(Color.mrtTextMuted)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 20)
-        .onAppear { feed.loadMore() }
+        DriveRowSkeleton(index: 0)
+            .padding(.top, 4)
+            .mrtSkeletonAccessibility("Loading more drives")
+            .onAppear { feed.loadMore() }
     }
 
     private var sortMenu: some View {
