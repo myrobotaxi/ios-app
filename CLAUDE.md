@@ -87,6 +87,39 @@ Booking/pending/tracking scenes are seeded WITHOUT arming any timers, so they ho
 
 **Owner sheet peek band** (MYR-315) — the peek band is the prototype's 210/280 **plus** `MRTMetrics.homePeekQualifierLineHeight` (24) for each LIVE-ONLY qualifier line the hero actually renders: the freshness stamp and the service-completion line. The prototype's hero has neither, so appending them to a fixed band spent the clearance `BottomSheet` reserves above the floating nav (`components.jsx:542` `padding: '6px 24px 100px'`; the nav's own top edge is 86pt from the physical edge) — the client's "the stamp crowds the menu". Simulated scenes render zero such lines, so they land on 210/280 exactly and stay byte-identical; the in-service and freshness scenes sit 24–48pt taller by design (and their map `bottomContentInset` follows).
 
+**Expanded route viewer** (MYR-327) — tapping the map on the **Drive Summary**
+hero (owner Drives → a drive, and the rider's Ride History → a completed ride —
+one screen, `DriveSummaryScreen`) or on the **rider live tracking** map opens
+`ExpandedRouteMap`: a full-bleed, user-driven map rendering the SAME
+`@MapContentBuilder` its host draws inline (`driveRouteMapContent` /
+`TrackingRouteMapContent.content`), so the two can never diverge. Each surface
+also carries a visible `ExpandRouteButton` chip (Drive Summary: in the floating
+nav beside Share; tracking: one button-stack above the recenter control). The
+rider's POST-RIDE summary card is deliberately NOT expandable — its polyline is
+always the straight 2-point `[pickup, destination]` placeholder, never real road
+geometry, so blowing it up full-screen would present a fabricated route.
+
+On the expanded viewer the **USER owns the camera**: `ExpandedRouteCamera` issues
+exactly TWO programmatic writes for the view's whole life — the initial fit
+(once, ever) and an explicit recenter tap. A streaming fix, a leg flip, or the
+real polyline replacing a fallback can NOT re-fit it, so the MYR-222 loop class
+is structurally impossible rather than tuned away (probe verdict: 1 write across
+30s of moving fixes with the leg flipping). Two traps this cost a round each:
+MapKit settles its own `.automatic` framing BEFORE `onAppear` runs (so
+pre-fit settles must classify as layout, not gesture), and a second nested
+`ignoresSafeArea` on a child of an already-full-bleed parent pushes that child
+past the parent's bounds, where it still draws but its taps are dropped.
+
+Capture it with `MRT_EXPAND_ROUTE=1` (DEBUG, orthogonal to the scene — see the
+modifiers below): `MRT_SCENE=ownerDrives MRT_OPEN_FIRST_DRIVE=1
+MRT_EXPAND_ROUTE=1` for the client's own surface, `MRT_SCENE=trackingLeg1|
+trackingLeg2 MRT_EXPAND_ROUTE=1` for the rider's. Capture the tracking one at
+t≈2s to get the honest "Finding route…" line (before MKDirections lands) and
+later for the resolved road route. Unset, every existing scene is unchanged.
+The pan/pinch/recenter states cannot be reached headlessly at all —
+`App/UITests/ExpandedRouteUITests.swift` synthesizes those touches and attaches
+the captures to the xcresult (`xcrun xcresulttool export attachments`).
+
 **Owner-sheet capture modifiers** (DEBUG-only, orthogonal to the scene): `MRT_OWNER_DETENT=half` boots at the controls detent — MYR-319 makes it apply on the LIVE fleet too, not just the simulated/injected ones; `MRT_OWNER_VEHICLE=<n>` selects a fleet row; `MRT_OWNER_SCROLL=bottom|<0…1>` (MYR-319) overrides where the dense sheet's scroll rests, so a section can be framed on a scene that carries no per-scene anchor. The last two exist because the ONLY way to see the controls stack fed by a REAL REST snapshot is `MRT_SCENE=ownerHome MRT_TELEMETRY=live MRT_BACKEND_URL=…`, and headless tooling can neither drag nor scroll the sheet. Unset, every existing scene's detent and anchor are exactly as before.
 
 ### Streaming-fix camera probe (MYR-222)

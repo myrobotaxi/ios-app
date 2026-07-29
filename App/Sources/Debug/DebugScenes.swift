@@ -389,6 +389,26 @@ enum DebugScene: String, CaseIterable {
         return false
     }
 
+    /// MYR-327 capture modifier, orthogonal to the scene: `MRT_EXPAND_ROUTE=1`
+    /// (env or `-MRT_EXPAND_ROUTE 1` arg) boots the surface with the EXPANDED
+    /// route viewer already open. It exists because the viewer is only reachable
+    /// by tapping the map (or its expand chip) and headless capture tooling
+    /// cannot tap — the same stand-in-for-a-tap precedent as
+    /// `opensServiceWindowEditor` / `initialRefreshPhase`.
+    ///
+    /// Consumed by BOTH host surfaces, so one modifier covers every state:
+    ///   • `MRT_SCENE=ownerDrives MRT_OPEN_FIRST_DRIVE=1 MRT_EXPAND_ROUTE=1`
+    ///     → the Drive Summary hero expanded (the client's own surface);
+    ///   • `MRT_SCENE=trackingLeg1|trackingLeg2 MRT_EXPAND_ROUTE=1`
+    ///     → the rider's live two-leg route expanded.
+    /// Unset, every existing scene renders exactly as before (no overlay).
+    static var opensExpandedRouteMap: Bool {
+        if ProcessInfo.processInfo.environment["MRT_EXPAND_ROUTE"] == "1" { return true }
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-MRT_EXPAND_ROUTE"), i + 1 < args.count { return args[i + 1] == "1" }
+        return false
+    }
+
     /// Drift-gate flag for the `ownerHome` scene (MYR-236 r5.3): when
     /// `MRT_OWNER_DETENT=half` is set (env or `-MRT_OWNER_DETENT half` arg), the
     /// owner sheet boots resting at the HALF detent so the at-rest-half full-
