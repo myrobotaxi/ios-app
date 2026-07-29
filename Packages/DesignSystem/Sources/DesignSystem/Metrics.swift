@@ -140,6 +140,39 @@ public enum MRTMetrics {
         base + CGFloat(max(0, qualifierLines)) * homePeekQualifierLineHeight
     }
 
+    // MARK: Tall sheet detent (MYR-332)
+
+    /// The band of screen a sheet at its TALLEST detent leaves showing above
+    /// itself, measured from the PHYSICAL top edge.
+    ///
+    /// This is the design's own number, not an invention: the tallest surface in
+    /// the sheet grammar is the rider's search sheet, `SHEET_HEIGHTS.search` =
+    /// 712 on the prototype's full-bleed 852 canvas (ride-request.jsx:47) — so
+    /// the grammar's "as tall as a sheet goes" leaves exactly 852 − 712 = 140pt
+    /// of chrome above it. That band also clears the `MapHeader` vehicle switcher
+    /// whole (top 60 + 40pt chip ⇒ its bottom edge at 100), which is what makes
+    /// it a legible stop rather than a full-screen takeover: the owner can still
+    /// see WHICH car the controls belong to.
+    public static let sheetTallTopClearance: CGFloat = 140
+
+    /// The owner sheet's TALL detent (MYR-332, client ask): the controls stack
+    /// tops out at the half detent today and the rest is reached only by scrolling
+    /// inside it — the client wants to pull the sheet itself higher. Expressed as
+    /// the physical screen height less ``sheetTallTopClearance``, so the stop is
+    /// the sheet grammar's own tallest surface on any device.
+    ///
+    /// Returns `nil` when the geometry cannot produce a detent taller than `half`
+    /// (a very short screen, or a `half` already at the cap) — the sheet then
+    /// keeps exactly its peek/half pair, unchanged.
+    public static func sheetTallHeight(screenHeight: CGFloat, halfHeight: CGFloat) -> CGFloat? {
+        guard screenHeight.isFinite, halfHeight.isFinite else { return nil }
+        let tall = screenHeight - sheetTallTopClearance
+        // A tall detent must be meaningfully taller than half, or the extra stop
+        // is a second detent the finger cannot tell apart from the first.
+        guard tall > halfHeight + 24 else { return nil }
+        return tall
+    }
+
     /// Distance from the PHYSICAL bottom edge to the top of the floating
     /// `BottomNav` — its 60pt height plus the 26pt it floats above the edge
     /// (`BottomNav`: `.padding(.bottom, 26)`, components.jsx:566). The number the

@@ -94,6 +94,32 @@ Booking/pending/tracking scenes are seeded WITHOUT arming any timers, so they ho
 
 **Owner sheet peek band** (MYR-315) — the peek band is the prototype's 210/280 **plus** `MRTMetrics.homePeekQualifierLineHeight` (24) for each LIVE-ONLY qualifier line the hero actually renders: the freshness stamp and the service-completion line. The prototype's hero has neither, so appending them to a fixed band spent the clearance `BottomSheet` reserves above the floating nav (`components.jsx:542` `padding: '6px 24px 100px'`; the nav's own top edge is 86pt from the physical edge) — the client's "the stamp crowds the menu". Simulated scenes render zero such lines, so they land on 210/280 exactly and stay byte-identical; the in-service and freshness scenes sit 24–48pt taller by design (and their map `bottomContentInset` follows).
 
+**Owner sheet TALL detent** (MYR-332) — the owner sheet drags peek → half →
+**tall**, where tall is the physical screen less `MRTMetrics
+.sheetTallTopClearance` (140 = the prototype's 852 canvas less
+`SHEET_HEIGHTS.search` 712, ride-request.jsx:47 — the sheet grammar's own tallest
+surface, and enough to keep the `MapHeader` switcher showing). It is OPT-IN per
+sheet (`MRTDetentSheet(allowsTallDetent:)`); every other sheet keeps its
+peek↔half pair. Peek and half are byte-identical: their heights are unchanged,
+the crossfade still completes at HALF (`PanSheet(progressUpperDetentIndex:)` —
+without it the ramp would stretch to tall and leave half half-faded), and the
+dense layer's scroll content keeps a `tall − half` bottom reserve below tall so
+scrolling to the end lands exactly where it did before. Capture it with
+`MRT_OWNER_DETENT=tall`. The map's `bottomContentInset` follows the sheet ONLY at
+tall — at peek/half it stays the peek band every existing capture was taken
+against.
+
+**Quick-tile captions** (MYR-335) — the four `ControlTile`s split the sheet's
+content width, so each holds ~50pt of text on the narrowest supported device
+(375pt). Every caption is measured against that in
+`VehicleControlTileCaptionTests`; nothing may rely on the prototype's ellipsis
+fallback. This cost a deliberate deviation from the jsx's own copy, which does
+not fit its own tile ("Tap to unlock" ellipsizes in the running prototype too):
+the lock sub is the verb alone ("Unlock"/"Lock", the state is the label), the
+charge sub is the door state alone ("Open"/"Closed", "Port" is the label's job),
+and the per-tile "X ago" recency is gone — recency is stated once, by the
+MYR-315 freshness stamp in the hero, plus the "Not live" footer.
+
 **Expanded route viewer** (MYR-327) — tapping the map on the **Drive Summary**
 hero (owner Drives → a drive, and the rider's Ride History → a completed ride —
 one screen, `DriveSummaryScreen`) or on the **rider live tracking** map opens
@@ -162,7 +188,7 @@ The pan/pinch/recenter states cannot be reached headlessly at all —
 `App/UITests/ExpandedRouteUITests.swift` synthesizes those touches and attaches
 the captures to the xcresult (`xcrun xcresulttool export attachments`).
 
-**Owner-sheet capture modifiers** (DEBUG-only, orthogonal to the scene): `MRT_OWNER_DETENT=half` boots at the controls detent — MYR-319 makes it apply on the LIVE fleet too, not just the simulated/injected ones; `MRT_OWNER_VEHICLE=<n>` selects a fleet row; `MRT_OWNER_SCROLL=bottom|<0…1>` (MYR-319) overrides where the dense sheet's scroll rests, so a section can be framed on a scene that carries no per-scene anchor. The last two exist because the ONLY way to see the controls stack fed by a REAL REST snapshot is `MRT_SCENE=ownerHome MRT_TELEMETRY=live MRT_BACKEND_URL=…`, and headless tooling can neither drag nor scroll the sheet. Unset, every existing scene's detent and anchor are exactly as before.
+**Owner-sheet capture modifiers** (DEBUG-only, orthogonal to the scene): `MRT_OWNER_DETENT=half|tall` boots at the controls detent or (MYR-332) at the TALL one — MYR-319 makes it apply on the LIVE fleet too, not just the simulated/injected ones; `MRT_OWNER_VEHICLE=<n>` selects a fleet row; `MRT_OWNER_SCROLL=bottom|<0…1>` (MYR-319) overrides where the dense sheet's scroll rests, so a section can be framed on a scene that carries no per-scene anchor. The last two exist because the ONLY way to see the controls stack fed by a REAL REST snapshot is `MRT_SCENE=ownerHome MRT_TELEMETRY=live MRT_BACKEND_URL=…`, and headless tooling can neither drag nor scroll the sheet. Unset, every existing scene's detent and anchor are exactly as before.
 
 ### Streaming-fix camera probe (MYR-222)
 

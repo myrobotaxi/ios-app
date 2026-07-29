@@ -28,6 +28,66 @@ final class ComponentTests: XCTestCase {
         XCTAssertEqual(MRTMetrics.sheetPeekHeight, 260)
     }
 
+    // MARK: - Tall sheet detent (MYR-332 — pulling the owner sheet higher)
+
+    /// The stop is the sheet grammar's own tallest surface, not a new number: the
+    /// rider search sheet is `SHEET_HEIGHTS.search` = 712 on the prototype's 852pt
+    /// canvas (ride-request.jsx:47), which leaves 140pt of chrome above it. If
+    /// this ever drifts, the owner sheet and the rider sheet stop topping out at
+    /// the same place.
+    func testTallClearanceIsTheGrammarsOwnTallestSurface() {
+        XCTAssertEqual(MRTMetrics.sheetTallTopClearance, 852 - 712)
+        // …and it clears the MapHeader switcher whole (top 60 + a 40pt chip), so
+        // the owner can still see WHICH car the controls belong to.
+        XCTAssertGreaterThan(
+            MRTMetrics.sheetTallTopClearance,
+            MRTMetrics.mapHeaderTop + MRTMetrics.mapChipHeight,
+            "a tall sheet that covers the vehicle switcher is a takeover, not a detent"
+        )
+    }
+
+    /// The detent is measured from the PHYSICAL screen, so every device lands the
+    /// sheet's top edge at the same 140pt from its own top.
+    func testTallHeightIsTheScreenLessTheClearance() {
+        for screen in [CGFloat(667), 852, 874, 956] {
+            XCTAssertEqual(
+                MRTMetrics.sheetTallHeight(screenHeight: screen, halfHeight: 400),
+                screen - MRTMetrics.sheetTallTopClearance,
+                "screen \(screen)"
+            )
+        }
+    }
+
+    /// A sheet only gains the stop when it is worth having. Two detents a finger
+    /// cannot tell apart are worse than one, and a NaN must never reach layout
+    /// (MYR-227) — both collapse to "no tall detent", which leaves the peek↔half
+    /// pair exactly as it was.
+    func testTallHeightIsRefusedWhenItWouldNotBeADistinctStop() {
+        // Half already at/above the cap.
+        XCTAssertNil(MRTMetrics.sheetTallHeight(screenHeight: 852, halfHeight: 712))
+        // Half within a hair of it.
+        XCTAssertNil(MRTMetrics.sheetTallHeight(screenHeight: 852, halfHeight: 700))
+        // Comfortably below it — offered.
+        XCTAssertNotNil(MRTMetrics.sheetTallHeight(screenHeight: 852, halfHeight: 600))
+        // Non-finite inputs never produce a detent.
+        XCTAssertNil(MRTMetrics.sheetTallHeight(screenHeight: .nan, halfHeight: 400))
+        XCTAssertNil(MRTMetrics.sheetTallHeight(screenHeight: 852, halfHeight: .infinity))
+    }
+
+    /// The owner sheet's real geometry: the 0.58 half fraction leaves the tall
+    /// detent a genuine step up on every device this ships to.
+    func testOwnerSheetGainsAMeaningfulTallStepOnEveryDevice() {
+        for screen in [CGFloat(667), 852, 874, 956] {
+            // The sheet's container is the screen less the top safe area; 0 is the
+            // worst case for `half` being close to the cap.
+            let half = screen * MRTMetrics.homeHalfHeightFraction
+            let tall = MRTMetrics.sheetTallHeight(screenHeight: screen, halfHeight: half)
+            let step = try? XCTUnwrap(tall) - half
+            XCTAssertNotNil(tall, "screen \(screen) should offer a tall detent")
+            XCTAssertGreaterThan(step ?? 0, 100, "screen \(screen): the tall stop must be a real step above half")
+        }
+    }
+
     // MARK: - Owner sheet peek band (MYR-315 — the crowded freshness stamp)
 
     /// The band is the prototype's number when the hero holds the prototype's

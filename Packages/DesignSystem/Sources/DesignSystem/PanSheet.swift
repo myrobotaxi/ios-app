@@ -129,6 +129,17 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
     /// Optional crossfade layer pair driven by the same progress (the rider
     /// idle↔search sheet). `nil` → single-layer behavior (the owner sheet).
     let crossfade: PanSheetCrossfade?
+    /// MYR-332 — the detent index at which drag PROGRESS (and therefore the
+    /// crossfade) reaches 1. `nil` = the tallest detent, which is what every
+    /// two-detent sheet wants.
+    ///
+    /// A sheet with a THIRD, taller detent must NOT stretch its crossfade across
+    /// it: the owner sheet's expanded layer is fully faded in at HALF, and the
+    /// tall detent only shows more of that same layer. Normalizing to the last
+    /// detent would land half at progress ≈ 0.5 — a half-faded sheet where the
+    /// drift-gate expects an opaque one. Progress stays clamped to 1 above this
+    /// index, so peek and half are byte-identical to the two-detent sheet.
+    let progressUpperDetentIndex: Int?
     let content: Content
 
     public init(
@@ -142,6 +153,7 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
         onSettle: ((Int) -> Void)? = nil,
         onDragProgress: ((CGFloat) -> Void)? = nil,
         crossfade: PanSheetCrossfade? = nil,
+        progressUpperDetentIndex: Int? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.detentHeights = detentHeights
@@ -154,6 +166,7 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
         self.onSettle = onSettle
         self.onDragProgress = onDragProgress
         self.crossfade = crossfade
+        self.progressUpperDetentIndex = progressUpperDetentIndex
         self.content = content()
     }
 
@@ -168,6 +181,7 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
             accessibilityIdentifier: accessibilityIdentifier,
             accessibilityLabel: accessibilityLabel,
             onDragProgress: onDragProgress,
+            progressUpperDetentIndex: progressUpperDetentIndex,
             onSettleCommit: { index in
                 // Push the settled detent back into SwiftUI AND notify the caller,
                 // both AFTER settle so no binding write happens mid-drag.
@@ -222,6 +236,8 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
     private var hasCrossfade: Bool { lowHost != nil && highHost != nil }
     /// Per-finger-frame progress hook — UIKit-only mutations (see `PanSheet`).
     private var onDragProgress: ((CGFloat) -> Void)?
+    /// MYR-332 — the detent index at which progress reaches 1 (see `PanSheet`).
+    private var progressUpperDetentIndex: Int?
 
     private var detentHeights: [CGFloat] = [1]
     private var selection = 0
@@ -273,6 +289,35 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
     init(rootView: Content) {
         host = UIHostingController(rootView: rootView)
         super.init(nibName: nil, bundle: nil)
+        Self.pinContentToSurface(host)
+    }
+
+    /// MYR-331 — THE SHEET OWNS ITS OWN SURFACE.
+    ///
+    /// A `UIHostingController` applies SwiftUI's automatic KEYBOARD AVOIDANCE by
+    /// default (`safeAreaRegions` includes `.keyboard`). Inside this engine that
+    /// is actively harmful: the hosted layer's frame IS the sheet surface, so
+    /// avoidance TRANSLATES the drawn content out of the surface it belongs to.
+    /// Measured on the rider search sheet with the keyboard up (iPhone 17 Pro,
+    /// `MRT_SCENE=search`): the surface sat at window y 162…922 while its hosted
+    /// SwiftUI content was drawn at y −5…707 — 168pt higher. Everything above
+    /// `surface.minY − topGrabMargin` (the grab handle, the whole Now/Schedule ·
+    /// Me/Someone-else chip row, the top of the pickup card) then looked like
+    /// sheet but hit-tested as nothing: `PanSheetPassthroughView` returned nil and
+    /// the touch reached the MapKit view behind it, so a downward drag there
+    /// PANNED THE MAP instead of collapsing the sheet (the client's report).
+    ///
+    /// Restricting the regions to `.container` drops ONLY the keyboard inset:
+    /// with the keyboard down the layout is byte-identical (measured: content at
+    /// exactly the surface's own 162…874), and with it up the sheet renders at
+    /// its real detent — which is also what the design says (`SHEET_HEIGHTS
+    /// .search` 712 of an 852 canvas deliberately leaves the map showing above
+    /// it). Nothing in these sheets needs avoidance: every text field they host
+    /// (the destination row, the passenger name/phone) sits in the sheet's top
+    /// third, far above the keyboard, and the engine additionally force-resigns
+    /// the keyboard the moment a drag starts (`beginDrag`, MYR-236/239).
+    private static func pinContentToSurface(_ controller: UIHostingController<some View>) {
+        controller.safeAreaRegions = .container
     }
 
     @available(*, unavailable)
@@ -294,6 +339,7 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
         accessibilityIdentifier: String?,
         accessibilityLabel: String?,
         onDragProgress: ((CGFloat) -> Void)?,
+        progressUpperDetentIndex: Int? = nil,
         onSettleCommit: @escaping (Int) -> Void
     ) {
         self.detentHeights = detentHeights
@@ -302,6 +348,7 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
         self.dragEnabled = dragEnabled
         self.overshootPad = overshootPad
         self.onDragProgress = onDragProgress
+        self.progressUpperDetentIndex = progressUpperDetentIndex
         self.onSettleCommit = onSettleCommit
         surface.accessibilityIdentifier = accessibilityIdentifier
         if let accessibilityLabel {
@@ -323,6 +370,9 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
         let lowVC = UIHostingController(rootView: low)
         let highVC = UIHostingController(rootView: high)
         for vc in [lowVC, highVC] {
+            // MYR-331 — the crossfade layers are the sheet's visible surface;
+            // keyboard avoidance must never translate them off it.
+            Self.pinContentToSurface(vc)
             addChild(vc)
             vc.view.backgroundColor = .clear
             vc.view.translatesAutoresizingMaskIntoConstraints = true
@@ -425,10 +475,20 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
 
     // MARK: Drag progress + crossfade (MYR-236 round 5)
 
-    /// Progress of `height` between the min and max detents, clamped 0…1.
+    /// Progress of `height` between the min detent and the progress-reference
+    /// detent (``progressUpperDetentIndex``, default the tallest), clamped 0…1.
     private func progress(forHeight height: CGFloat) -> CGFloat {
         let lo = detentHeights.first ?? height
-        let hi = detentHeights.last ?? height
+        // MYR-332 — a sheet whose crossfade completes BELOW its tallest detent
+        // (the owner sheet: expanded content fully in at half, tall just shows
+        // more of it) normalizes to that detent instead of the last one. Clamped,
+        // so anything above it stays at 1.
+        let hi: CGFloat
+        if let index = progressUpperDetentIndex, detentHeights.indices.contains(index) {
+            hi = detentHeights[index]
+        } else {
+            hi = detentHeights.last ?? height
+        }
         guard hi > lo, height.isFinite else { return 0 }
         return min(1, max(0, (height - lo) / (hi - lo)))
     }

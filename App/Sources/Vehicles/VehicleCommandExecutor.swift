@@ -247,7 +247,11 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         case .asleep: "Asleep"
         case .pairKey: "Pair key"
         case .relink, .relinkCharging: "Re-link"
-        case .cooldown: "One sec\u{2026}"
+        // MYR-335 — the trailing ellipsis pushed this to 53.1pt against the
+        // 49.75pt tile on the narrowest supported device. The word carries the
+        // "wait a beat" sense on its own; the full "Just sent \u{2014} one moment"
+        // is on the notice row underneath.
+        case .cooldown: "One sec"
         // MYR-329 — every rejection keeps the SAME tile token regardless of
         // reason. The tile has ~54pt for one 11pt line; "In service" and
         // "Battery low" would fit, but "Confirm on screen" would not, and a
