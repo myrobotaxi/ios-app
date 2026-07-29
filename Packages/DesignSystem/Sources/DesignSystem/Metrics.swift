@@ -408,7 +408,22 @@ public enum MRTMetrics {
     /// Top offset of the expanded viewer's header row from the PHYSICAL top
     /// edge — the Drive Summary floating nav's own offset (screens.jsx:889
     /// `top: 52`), so closing the expanded view lands the ✕ where the ‹ was.
+    ///
+    /// MYR-334: this is a FLOOR, not the final offset. On the Drive Summary the
+    /// 52pt row carries a single icon that reads fine beside the clock, but this
+    /// surface puts a two/three-line TITLE there, and at 52 its first line runs
+    /// straight into the status bar and under the Dynamic Island (the client's
+    /// "the start to destination at the top is cutting off", iPhone 17 Pro Max).
+    /// The view takes `max(expandedRouteChromeTop, safeAreaTop + …SafeGap)`:
+    /// still a PHYSICAL-edge offset (MYR-196), just never one that collides with
+    /// system UI.
     public static let expandedRouteChromeTop: CGFloat = 52
+
+    /// Minimum air between the system's own top band (status bar / Dynamic
+    /// Island, i.e. the window's top safe-area inset) and the expanded viewer's
+    /// header row. Small on purpose — the map stays full-bleed underneath; only
+    /// the text moves out from under the clock.
+    public static let expandedRouteChromeSafeGap: CGFloat = 8
 
     /// Bottom offset of the expanded viewer's recenter button from the PHYSICAL
     /// bottom edge. There is no bottom chrome on this takeover, so it sits at
@@ -416,11 +431,20 @@ public enum MRTMetrics {
     /// indicator.
     public static let expandedRouteRecenterBottom: CGFloat = 46
 
-    /// Bands the expanded viewer's floating chrome occupies, reserved by the fit
-    /// so the route lands BETWEEN the header chip and the recenter button rather
-    /// than running under either. Measured from the PHYSICAL edges (MYR-196), and
-    /// fed to the same `VehicleRoute.insetRegion` compensation the tracking leg
-    /// fit uses. Equal top/bottom, so the route stays optically centred.
+    /// Bands the expanded viewer's floating chrome occupies, so the route lands
+    /// BETWEEN the header chip and the recenter button rather than running under
+    /// either. Measured from the PHYSICAL edges (MYR-196).
+    ///
+    /// MYR-334: these are now the Map's own `.safeAreaPadding`, not a
+    /// `VehicleRoute.insetRegion` pre-compensation of the written region — the
+    /// MYR-237 rule (`RideRequestRouteMap`), which every other map on the app
+    /// already follows: under `safeAreaPadding` MapKit ALREADY fits a `.region`
+    /// camera into the unobstructed band, so there must be exactly ONE
+    /// compensation. Expressing it as padding is what also lifts MapKit's
+    /// attribution off the physical bottom edge, where it was being clipped.
+    /// Kept EQUAL top/bottom for two reasons: the route stays optically centred,
+    /// and a symmetric band leaves the settled camera's CENTRE identical to the
+    /// written one, so `CameraSettleLedger` still recognises our own fit.
     public static let expandedRouteFitTopInset: CGFloat = 112
     public static let expandedRouteFitBottomInset: CGFloat = 112
 
@@ -434,8 +458,12 @@ public enum MRTMetrics {
     /// the two never share a touch.
     public static let trackingExpandButtonStackGap: CGFloat = 52
 
-    /// Scale the expanded viewer grows FROM on open / shrinks TO on close. Just
-    /// shy of 1 — the surface should read as the inline map enlarging, not as a
-    /// card flying in.
-    public static let expandedRouteEnterScale: CGFloat = 0.94
+    /// Duration of the expanded viewer's open/close cross-fade — the app's own
+    /// overlay grammar (`mrt-sched-up`, ride-request.jsx:1053, already used for
+    /// the rider's declined notice), on the Handoff §8 sheet-snap curve.
+    ///
+    /// MYR-334: shorter than the 0.42s it replaced, and there is no longer a
+    /// `scale` component at all. See `AnyTransition.mrtRouteExpand` for why a
+    /// scale over a live `MKMapView` was the jank.
+    public static let expandedRouteFadeDuration: Double = 0.3
 }
