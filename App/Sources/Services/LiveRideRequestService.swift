@@ -897,6 +897,21 @@ final class LiveRideRequestService: RideRequestService {
         rideID == serverRideID || rideID == activeRequest?.id
     }
 
+    /// MYR-186 — see `RideRequestService.activeServerRideID`. Prefer the server's
+    /// id; fall back to the local one for the window between `submit` and the
+    /// create POST's acknowledgement, where no server id exists yet (a push for a
+    /// ride the server has not created cannot arrive, so the fallback is only
+    /// ever a safe non-match).
+    var activeServerRideID: String? { serverRideID ?? activeRequest?.id }
+
+    /// MYR-186 — the rider half of push-tap re-sync. Runs the SAME cold-launch
+    /// adoption `start()` performs, so a rider who launched from a notification
+    /// lands in their open ride's flow. Self-guarding: a no-op when this device
+    /// already tracks a ride (the WS frames are then authoritative).
+    func refreshActiveRide() async {
+        await adoptOpenRiderRide()
+    }
+
     /// MYR-292 — may a brand-new incoming `pending` request take the single
     /// `activeRequest` slot? Yes when nothing is held, and yes when what is held is
     /// the OWNER's own adopted ride in the one status that is TERMINAL for the owner:

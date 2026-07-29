@@ -31,6 +31,8 @@ struct SharedViewerScreen: View {
     /// sim scenes stay pixel-identical; when set, they render the real first
     /// name (or a calm generic if the account has no name).
     var liveProfile: UserProfile? = nil
+    /// MYR-186 — forwarded to `RideRequestReviewContent`; see its declaration.
+    var onRideRequestSubmitted: (() -> Void)? = nil
 
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var isFollowing = true
@@ -373,7 +375,13 @@ struct SharedViewerScreen: View {
                 // requester from the first frame (scheduled requests return
                 // straight to idle, so the owner tab is reachable before the
                 // deferred create POST + WS refetch could supply it).
-                RideRequestReviewContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight, liveProfile: liveProfile)
+                RideRequestReviewContent(
+                    viewerState: viewerState,
+                    rideRequestService: rideRequestService,
+                    totalHeight: totalHeight,
+                    liveProfile: liveProfile,
+                    onRideRequestSubmitted: onRideRequestSubmitted
+                )
             case .booking:
                 RideRequestBookingContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
             case .tracking:

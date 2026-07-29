@@ -49,6 +49,10 @@ struct SettingsScreen: View {
     /// sheet) instead of the local `vehiclesState.unlink`. `nil` on sim / DEBUG
     /// keeps that local unlink pixel-identical (MYR-228).
     var teardown: VehicleTeardownSeam? = nil
+    /// MYR-186 — the system notification-authorization state. Drives the
+    /// `PushDeniedNotice` under the toggles and nothing else; `.notDetermined`
+    /// (the default, and what the simulated path always reports) renders nothing.
+    var pushAuthorization: PushAuthorizationState = .notDetermined
 
     private struct NotificationToggles {
         var driveStarted = true
@@ -575,6 +579,10 @@ struct SettingsScreen: View {
             notificationRow("Drive completed", isOn: $toggles.driveCompleted)
             notificationRow("Charging complete", isOn: $toggles.chargingComplete)
             notificationRow("Viewer joined", isOn: $toggles.viewerJoined)
+            // MYR-186 — renders only when the system authorization was DENIED;
+            // absent (and therefore pixel-identical) in every other state,
+            // including the whole simulated path.
+            PushDeniedNotice(state: pushAuthorization)
         }
         .padding(.horizontal, MRTMetrics.pageGutter)
         .padding(.vertical, 20)
