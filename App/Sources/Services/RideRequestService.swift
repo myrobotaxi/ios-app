@@ -126,6 +126,26 @@ public protocol RideRequestService: AnyObject, Observable {
     /// POSTs `/dropped-off`, reconciling on a 409/failure. Sim no-op.
     func droppedOff()
 
+    /// MYR-186 — the id a PUSH payload uses for the request this service is
+    /// currently holding, i.e. the SERVER's ride id.
+    ///
+    /// Distinct from `activeRequest?.id`, which for a rider-submitted ride is a
+    /// CLIENT UUID until the create POST returns. A push `userInfo.rideId` is
+    /// always the server's, so anything comparing the two — the foreground
+    /// banner-suppression decision — must compare against this. See the default
+    /// implementation for why the simulated service can answer with the local id.
+    var activeServerRideID: String? { get }
+
+    /// MYR-186 — re-sync the OWNER's incoming feed after a push tap, so the card
+    /// for the tapped ride surfaces through the EXISTING queue machinery rather
+    /// than any push-specific navigation. Sim is a no-op (no feed to fetch).
+    func refreshIncoming() async
+
+    /// MYR-186 — re-sync the RIDER's own open ride after a push tap, so a rider
+    /// who launched cold from a notification lands in their active flow. This is
+    /// the same adoption a cold launch already performs. Sim is a no-op.
+    func refreshActiveRide() async
+
     /// Ride Summary's "See you soon" — builds the completed-ride record for
     /// `RideHistoryStore` and resets `activeRequest` to `nil`. Returns `nil`
     /// if there's no request or it hasn't reached `trackProgress >= 0.999`.
@@ -161,6 +181,19 @@ public extension RideRequestService {
     /// later. Only `LiveRideRequestService` overrides this to fire the deferred
     /// create POST (MYR-218 defect 1).
     func confirmSend() {}
+
+    /// Default: the simulated service has no server, so its ONE local id is also
+    /// the only id anything could refer to. (Nothing ever pushes to a simulated
+    /// run — `PushPermissionMoment` refuses to even prompt — so this exists to
+    /// keep the protocol total, not because a sim notification can arrive.)
+    var activeServerRideID: String? { activeRequest?.id }
+
+    /// Default: no-op. The simulated service has no incoming FEED and no server
+    /// ride to re-adopt — its single `activeRequest` is the whole world (see
+    /// `waitingIncomingCount`). Only `LiveRideRequestService` overrides these
+    /// (MYR-186), so a simulated run's behaviour is unchanged.
+    func refreshIncoming() async {}
+    func refreshActiveRide() async {}
 
     /// Default: no-op. The simulated service has no server ride to advance — its
     /// tracking is driven by the `trackProgress` ticker, and the dispatch v2 CTAs

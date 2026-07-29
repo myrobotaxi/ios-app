@@ -25,6 +25,8 @@ struct SharedSettingsScreen: View {
     /// contract §7.0 RBAC v1), so live shows an honest empty state. Simulated
     /// keeps the fixtures so the M1 experience is pixel-identical.
     var isLive: Bool = false
+    /// MYR-186 — see `SettingsScreen.pushAuthorization`.
+    var pushAuthorization: PushAuthorizationState = .notDetermined
     /// MYR-224 — flip to the owner shell. Only invoked from the switch row, which
     /// renders only when `liveProfile != nil`.
     var onSwitchMode: () -> Void = {}
@@ -105,6 +107,11 @@ struct SharedSettingsScreen: View {
                         sharedWithCard
                         notificationsLabel
                         notificationsCard
+                        // MYR-186 — renders only when the system authorization was
+                        // DENIED; absent (and pixel-identical) in every other
+                        // state, including the whole simulated path.
+                        PushDeniedNotice(state: pushAuthorization)
+                            .padding(.horizontal, MRTMetrics.pageGutter)
                         if liveProfile != nil {
                             switchModeCard
                         }

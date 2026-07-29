@@ -51,6 +51,27 @@ targets:
       properties:
         com.apple.developer.applesignin:
           - Default
+        # MYR-186 — APNs. Same XcodeGen mechanism as the SIWA entitlement above:
+        # this file is generated/owned by XcodeGen and referenced through
+        # CODE_SIGN_ENTITLEMENTS, so it is never hand-edited.
+        #
+        # The committed value is `development` — the SANDBOX APNs environment a
+        # Debug/device build is signed into. It is deliberately NOT config-split:
+        # `xcodebuild -exportArchive` re-signs the archive with the managed
+        # App Store DISTRIBUTION profile (ExportOptions.plist, automatic signing),
+        # and that profile carries `aps-environment: production`, which wins for
+        # the exported .ipa. So TestFlight and App Store builds talk to production
+        # APNs while local device builds talk to sandbox, with one declared value.
+        #
+        # The app's `sandbox` flag on PUT /api/push/devices mirrors this exactly:
+        # it is the DEBUG compile flag, so a TestFlight build (Release) correctly
+        # registers as production. See `PushEnvironment`.
+        #
+        # PORTAL STEP (client): the `app.myrobotaxi.ios` App ID needs the Push
+        # Notifications capability enabled before a managed profile can carry this
+        # entitlement. Builds compile and every test passes without it — only real
+        # on-device registration fails until it is turned on.
+        aps-environment: development
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.myrobotaxi.ios

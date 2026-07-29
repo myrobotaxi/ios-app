@@ -104,6 +104,12 @@ struct RootView: View {
     /// consent-revoke runner into a `VehicleTeardownSeam` where `SettingsScreen` is
     /// built (needs the live `ownerHomeState` for the drop).
     private let vehicleTeardownRemover: ((String) async throws -> VehicleTeardownResponse)?
+    /// MYR-186 — push registration + the permission moments. Always present; on
+    /// the simulated path it is INERT (never prompts, never registers, never calls
+    /// the network), so the fixture demo and every DEBUG capture scene are
+    /// unchanged. Built in `init` from the resolved mode + session provider,
+    /// mirroring `teslaAuthenticator` / `vehicleTeardownRemover`.
+    @State private var pushCoordinator: PushRegistrationCoordinator
     /// MYR-169 — mirrors `ownerHomeState`'s reasoning: app.jsx keeps
     /// `ownerUpcoming` App-level, not local to `DrivesScreen`, so a
     /// cancelled reservation and an open drive summary both survive
@@ -200,6 +206,11 @@ struct RootView: View {
             mode: mode,
             sessionTokenProvider: auth.sessionTokenProvider
         )
+        // MYR-186 — push device registration, bound to the same session.
+        _pushCoordinator = State(initialValue: PushComposition.makeCoordinator(
+            mode: mode,
+            sessionTokenProvider: auth.sessionTokenProvider
+        ))
         // MYR-211 — compose the rider's place-search + location seams (sim
         // fixtures by default; live MapKit/CoreLocation on device / when live).
         let seams = PlaceSearchComposition.make(mode: mode, sessionTokenProvider: auth.sessionTokenProvider)
@@ -370,6 +381,77 @@ struct RootView: View {
         )
     }
 
+    // MARK: - Push (MYR-186)
+
+    /// What the app is showing, reduced to the two facts the foreground
+    /// banner-suppression decision needs. Read entirely from state that already
+    /// exists — this adds no source of truth, and the ride id it reports is the
+    /// SERVER's (`activeServerRideID`), because that is what a push carries.
+    private var pushSurfaceContext: PushSurfaceContext {
+        var ownerIncoming: String?
+        var riderTracking: String?
+        if role == .owner,
+           screen == .ownerHome, ownerTab == "home",
+           rideRequestService.activeRequest?.status == .pending {
+            // The incoming card renders on exactly this condition — see
+            // `HomeScreen.incomingRequest`.
+            ownerIncoming = rideRequestService.activeServerRideID
+        }
+        if role == .shared,
+           screen == .sharedHome, sharedTab == "shared",
+           sharedViewerState.sheetPhase == .tracking {
+            riderTracking = rideRequestService.activeServerRideID
+        }
+        return PushSurfaceContext(
+            role: role,
+            ownerIncomingRideID: ownerIncoming,
+            riderTrackingRideID: riderTracking
+        )
+    }
+
+    /// Apply a resolved notification tap. NO new navigation machinery: each arm
+    /// selects an EXISTING tab on the shell the user is already in and pokes the
+    /// EXISTING refresh that repopulates it — the owner's incoming queue, the
+    /// rider's own open-ride adoption. A tap that arrives while signed out (or on
+    /// an onboarding screen) routes nowhere; those surfaces do not exist yet, and
+    /// the normal post-sign-in refetch reaches the same state anyway.
+    @MainActor
+    private func applyPushTapRoute(_ route: PushTapRoute, notification: PushRideNotification?) {
+        let service = rideRequestService
+        switch route {
+        case .ownerHome:
+            guard screen == .ownerHome else { return }
+            ownerTab = "home"
+            Task { await service.refreshIncoming() }
+        case .riderActiveFlow:
+            guard screen == .sharedHome else { return }
+            sharedTab = "shared"
+            Task { await service.refreshActiveRide() }
+        }
+    }
+
+    /// Hand `RootView`'s state to the UIKit delegate (see `PushDelegateBridge`).
+    /// Installed from `body` rather than `init` so the closures capture the live
+    /// view value; idempotent, so a repeat appearance simply re-installs.
+    @MainActor
+    private func configurePushBridge() {
+        PushDelegateBridge.shared.coordinator = pushCoordinator
+        PushDelegateBridge.shared.surfaceContext = { pushSurfaceContext }
+        PushDelegateBridge.shared.applyTapRoute = { route, notification in
+            applyPushTapRoute(route, notification: notification)
+        }
+    }
+
+    /// MYR-186 — sign-out teardown shared by both shells: tell the backend to
+    /// forget this device, so the next account on this phone does not inherit the
+    /// previous one's ride alerts. Called BEFORE `session.signOut()` so the
+    /// `DELETE` still carries a valid Bearer. Best-effort and non-blocking, like
+    /// the token revoke it runs alongside (`LiveAuthSession.signOut`).
+    @MainActor
+    private func unregisterPushOnSignOut() {
+        pushCoordinator.handleSignOut()
+    }
+
     var body: some View {
         ZStack {
             switch screen {
@@ -512,6 +594,9 @@ struct RootView: View {
                             // MYR-201 — release the live socket + streams before
                             // dropping the session (no-op for the simulated fleet).
                             clearModeOnSignOut()
+                            // MYR-186 — before the session drops, so the DELETE
+                            // still carries a valid Bearer.
+                            unregisterPushOnSignOut()
                             ownerHomeState.stopTelemetry()
                             session.signOut()
                             screen = .signIn
@@ -529,7 +614,10 @@ struct RootView: View {
                         // DELETE + fleet drop (so the car leaves Home + this list at
                         // once) + consent-revoke browser session. nil in SIM keeps
                         // the local unlink pixel-identical (MYR-228).
-                        teardown: teardownSeam
+                        teardown: teardownSeam,
+                        // MYR-186 — drives the "notifications are off" notice
+                        // under the toggles. `.notDetermined` in SIM → nothing.
+                        pushAuthorization: pushCoordinator.authorizationState
                     )
                 default:
                     HomeScreen(
@@ -547,6 +635,17 @@ struct RootView: View {
                         // has no counterpart for.
                         isLive: ownerHomeIsLive
                     )
+                    // MYR-186 — the OWNER's permission moment: arrival on the live
+                    // home map. Deliberately keyed off the coordinator's own
+                    // liveness (the resolved `AppMode`), NOT `ownerHomeIsLive`,
+                    // which some DEBUG capture scenes force true — a drift-gate
+                    // screenshot must never grow a permission alert.
+                    .task {
+                        await pushCoordinator.handleMeaningfulMoment(
+                            .ownerLiveHomeAppeared,
+                            role: role
+                        )
+                    }
                 }
             case .sharedHome:
                 // app.jsx:110-115 — SharedSettingsScreen owns the
@@ -563,6 +662,8 @@ struct RootView: View {
                         // MYR-255 — gate the "Shared with me" personas: fixtures in
                         // SIM, honest empty state on live (no shared-vehicle endpoint).
                         isLive: isLiveMode,
+                        // MYR-186 — see the owner Settings call above.
+                        pushAuthorization: pushCoordinator.authorizationState,
                         onSwitchMode: switchViewMode,
                         onAddCode: {
                             inviteOrigin = .sharedSettings
@@ -570,6 +671,8 @@ struct RootView: View {
                         },
                         onSignOut: {
                             clearModeOnSignOut()
+                            // MYR-186 — same ordering as the owner shell above.
+                            unregisterPushOnSignOut()
                             session.signOut()
                             screen = .signIn
                         }
@@ -603,12 +706,25 @@ struct RootView: View {
                         historyStore: rideHistoryStore,
                         // MYR-224 — real rider identity for the greeting + summary
                         // (nil in SIM → the fixture "Sam", pixel-identical).
-                        liveProfile: session.currentUser
+                        liveProfile: session.currentUser,
+                        // MYR-186 — the RIDER's permission moment: their request
+                        // just submitted, and the owner's answer is now the only
+                        // thing they are waiting on.
+                        onRideRequestSubmitted: {
+                            Task {
+                                await pushCoordinator.handleMeaningfulMoment(
+                                    .riderRideRequestSubmitted,
+                                    role: role
+                                )
+                            }
+                        }
                     )
                 }
             }
         }
         .background(Color.mrtBg.ignoresSafeArea())
+        // MYR-186 — hand this view's state to the UIKit push delegate.
+        .onAppear { configurePushBridge() }
         // MYR-221 — returning-user silent resume. Runs once at launch when the
         // start screen is the resolving splash (a stored refresh token exists):
         // refresh silently and route straight into the app on success, or fall
@@ -632,6 +748,10 @@ struct RootView: View {
             case .active:
                 ownerHomeState.handleForeground()
                 sharedViewerState.handleForeground()
+                // MYR-186 — re-arm APNs (the token can rotate) and retry a
+                // registration PUT that failed earlier. Inert unless the user has
+                // already authorized; never blocks anything on screen.
+                Task { await pushCoordinator.handleForeground() }
             case .background:
                 ownerHomeState.handleBackground()
                 sharedViewerState.handleBackground()

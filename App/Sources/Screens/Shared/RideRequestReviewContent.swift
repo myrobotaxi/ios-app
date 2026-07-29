@@ -13,6 +13,12 @@ struct RideRequestReviewContent: View {
     /// incoming card names the requester from the first frame — see
     /// `IncomingRequestDisplay.localRequesterName`.
     var liveProfile: UserProfile?
+    /// MYR-186 — the rider's PERMISSION MOMENT. Fired once a request has actually
+    /// been submitted, which is the first moment a rider has something to be
+    /// notified about (the owner's accept/decline is now the only thing they are
+    /// waiting on). `nil` wherever push is not composed. The coordinator behind it
+    /// owns the one-shot gate, so calling it on every submit is free.
+    var onRideRequestSubmitted: (() -> Void)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var fleetPickerOpen = false
 
@@ -429,6 +435,9 @@ struct RideRequestReviewContent: View {
             requesterName: IncomingRequestDisplay.localRequesterName(profile: liveProfile)
         )
         rideRequestService.submit(input)
+        // MYR-186 — the rider's permission moment, fired for BOTH branches below
+        // (an instant ride and a scheduled one are equally worth a notification).
+        onRideRequestSubmitted?()
         if viewerState.draftSchedule != nil {
             // M1 scope: scheduled requests never start a live trip sim
             // (mirrors `SimulatedRideRequestService.accept()`'s own
