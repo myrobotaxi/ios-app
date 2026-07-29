@@ -301,6 +301,39 @@ enum DebugScene: String, CaseIterable {
     /// line and no time — a save the server had accepted, invisible. Capture at
     /// PEEK for the hero line; pair with `MRT_OWNER_DETENT=half` for the row.
     case ownerServiceWindowSaved
+    /// MYR-333 (client defect) — THE CHARGING SESSION THAT WAS INVISIBLE.
+    ///
+    /// Jul 29: "Service center was charging my car but I couldn't see it was
+    /// charging. We should ensure that state is working and the bar should be a
+    /// clean pulsing green animation when that happens." His two screenshots,
+    /// a minute apart, show the battery climbing 74% → 76% under a bar that says
+    /// nothing and a Charge tile that says "Port open" — the data was arriving,
+    /// the STATE had nowhere to render.
+    ///
+    /// This scene is that exact condition, and it needs its own scene because it
+    /// is a COMBINATION no other scene can reach: a car simultaneously
+    /// `in_service` (so the badge cannot say "charging" — the wire `status` enum
+    /// is single-valued and the server ranks in_service above charging) AND
+    /// carrying `chargeState: .charging`. It injects both on ONE live-shaped
+    /// `DebugVehicleDetailsFleet` snapshot and lets them travel the production
+    /// `VehicleContractMapping.snapshot` + `badgeStatus` folds, so the capture
+    /// proves the shipping mapping resolved the pulse — not a hand-set flag.
+    ///
+    /// Capture at PEEK for the hero (In Service badge on the left, "Charging"
+    /// beside the percentage, pulsing green bar beneath); pair with
+    /// `MRT_OWNER_DETENT=half` for the Charge tile's "Charging" sub. Because the
+    /// bar BREATHES, capture it TWICE a second or so apart to show both ends of
+    /// the cycle, and once more under
+    /// `xcrun simctl ui <udid> reduce_motion enabled` to prove the fallback: the
+    /// green stays, the breathing stops.
+    case ownerCharging
+    /// MYR-333 — the honest END of the same session. Identical injection except
+    /// `chargeState: .complete` and a full battery: the bar is the SAME green but
+    /// STATIC (the session is over, so motion would be a lie), the hero reads
+    /// "Charge complete", and the tile sub reads "Complete". The pair
+    /// `ownerCharging` / `ownerChargeComplete` is a clean before/after of exactly
+    /// the motion, on identical geometry.
+    case ownerChargeComplete
     /// MYR-301 (client defect) — the STUCK BANNER, now bounded. A real 502
     /// `command_failed` on `auto_conditioning_stop` settles the real `.rejected`
     /// notice ("The car didn't accept that"), which used to have no expiry and no
@@ -673,6 +706,7 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerFreshnessStale || self == .ownerFreshnessWaking
             || self == .ownerServiceWindow || self == .ownerServiceWindowEditor
             || self == .ownerServiceWindowManual || self == .ownerServiceWindowSaved
+            || self == .ownerCharging || self == .ownerChargeComplete
             || self == .ownerNoticeRejected || self == .ownerNoticeRejectedInService
             || self == .ownerVehicleEnriched
             || self == .ownerConnecting || self == .ownerConnectingCold
@@ -745,6 +779,25 @@ enum DebugScene: String, CaseIterable {
                 status: .inService,
                 serviceEstimatedEndAt: nil,
                 savesServiceWindowOnBoot: DebugScene.sampleServiceEnd()
+            )
+        // MYR-333 — the client's exact condition: a car IN SERVICE that is also
+        // CHARGING. Both facts ride one live-shaped snapshot and travel the real
+        // mapping, so the pulsing bar in the capture is the shipping resolver's.
+        // The 76% is his own second screenshot's reading.
+        case .ownerCharging:
+            return DebugVehicleDetailsFleet(
+                status: .inService,
+                serviceEstimatedEndAt: DebugScene.sampleServiceEnd(),
+                chargeState: .charging,
+                chargeLevel: 76
+            )
+        // MYR-333 — the same car at the end of the session: static green, no pulse.
+        case .ownerChargeComplete:
+            return DebugVehicleDetailsFleet(
+                status: .inService,
+                serviceEstimatedEndAt: DebugScene.sampleServiceEnd(),
+                chargeState: .complete,
+                chargeLevel: 100
             )
         // MYR-320 — every enrichment field at once: a real color off the wire, the
         // display-ready trim label composing the Model row (alongside the raw badge
@@ -1161,6 +1214,7 @@ enum DebugScene: String, CaseIterable {
              .ownerFreshnessStale, .ownerFreshnessWaking,
              .ownerServiceWindow, .ownerServiceWindowEditor, .ownerServiceWindowManual,
              .ownerServiceWindowSaved,
+             .ownerCharging, .ownerChargeComplete,
              .ownerVehicleEnriched,
              .ownerConnecting, .ownerConnectingCold, .ownerDrivesLoading, .ownerSettingsLoading,
              .ownerShare, .ownerShareLive, .riderSharedEmpty, .riderWatchOnly,

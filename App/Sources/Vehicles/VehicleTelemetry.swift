@@ -19,6 +19,39 @@ public enum VehicleTelemetryStatus: String, Sendable, Equatable {
     case parked
 }
 
+/// MYR-333 — the car's LIVE charge session, folded down to the three answers the
+/// UI actually renders differently.
+///
+/// The wire enum (`VehicleState.chargeState`, contracted since MYR-11, sourced
+/// from Tesla proto 179 since MYR-42) has seven members plus an open
+/// `.unrecognized` arm plus `null`. All of that collapses here, in ONE place
+/// (`VehicleContractMapping.chargingState(from:)`), so no screen ever has to
+/// know the wire vocabulary and a future Tesla enum value cannot invent a new
+/// look by accident.
+///
+/// Why this is SEPARATE from `status`: the wire `status` enum is single-valued,
+/// and `in_service` outranks `charging` in the server's own derivation
+/// (`deriveVehicleStatus`). A car being charged AT a service centre is therefore
+/// `in_service` on the wire and the charge session is invisible in `status` —
+/// which is exactly the client's report: "Service center was charging my car but
+/// I couldn't see it was charging." `chargeState` is the field that stays true
+/// through that, so the charging treatment reads from it, never from `status`.
+public enum VehicleChargingState: String, Sendable, Equatable {
+    /// Wire `Charging` — a live session. Pulsing green bar + "Charging".
+    case charging
+    /// Wire `Complete` — the session finished at the limit. Static green +
+    /// "Charge complete". Honest: it is NOT still charging, so it does not pulse.
+    case complete
+    /// Everything else — wire `Disconnected`, `Stopped`, `NoPower`, `Starting`,
+    /// `Unknown`, a forward-compat `.unrecognized` value, and `null` (a car that
+    /// has never charged). Renders exactly as the app did before MYR-333.
+    ///
+    /// `Starting` sits here deliberately: it is the pre-session handshake, and a
+    /// handshake that has not become a session yet must not claim "Charging".
+    /// It is transient by nature, so nothing rests in this state for long.
+    case idle
+}
+
 /// Everything a `HomeSheetContent` hero needs to render one tick
 /// (screens.jsx `HomeScreen` props `driving, progress, battery, speed` +
 /// the `eta` it derives at line 373).
@@ -85,6 +118,20 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
     /// SNAPSHOT-ONLY by contract: it rides the cold REST read, never a
     /// `vehicle_update` delta (see the Kit's `VehicleStateMerger`).
     public var serviceEstimatedEndAt: Date?
+    /// MYR-333 — the car's live charge session, mapped from the wire
+    /// `VehicleState.chargeState` by `VehicleContractMapping.chargingState(from:)`.
+    ///
+    /// Unlike `serviceEstimatedEndAt` this is a FOLDED STREAMING field: it is a
+    /// member of the `charge` atomic group, the Kit's `VehicleStateMerger`
+    /// already folds it off a live `vehicle_update`, and the backend re-asserts
+    /// it every 120s (MYR-333's `DetailedChargeState` resend). So it reaches the
+    /// hero on both the cold `/snapshot` AND every subsequent delta, which is
+    /// what lets a car that starts charging while the sheet is open begin
+    /// pulsing without a refetch.
+    ///
+    /// `.idle` on the simulated path and before the first live frame, so M1 and
+    /// every drift-gate scene stay pixel-identical.
+    public var chargingState: VehicleChargingState
 
     public init(
         status: VehicleTelemetryStatus,
@@ -99,7 +146,8 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
         lastUpdated: Date? = nil,
         isStreaming: Bool? = nil,
         nowPlaying: VehicleNowPlaying? = nil,
-        serviceEstimatedEndAt: Date? = nil
+        serviceEstimatedEndAt: Date? = nil,
+        chargingState: VehicleChargingState = .idle
     ) {
         self.status = status
         self.progress = progress
@@ -114,6 +162,7 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
         self.isStreaming = isStreaming
         self.nowPlaying = nowPlaying
         self.serviceEstimatedEndAt = serviceEstimatedEndAt
+        self.chargingState = chargingState
     }
 }
 
