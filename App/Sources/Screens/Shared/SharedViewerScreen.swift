@@ -183,13 +183,22 @@ struct SharedViewerScreen: View {
         // (nav included). A plain overlay rather than a `fullScreenCover` so the
         // open/close carries the app's own motion grammar (Handoff §8 sheet snap;
         // cross-fade under Reduce Motion) instead of the system modal slide.
+        //
+        // MYR-334: the animation is scoped to the OVERLAY, not hung off the
+        // whole rider screen. Attached outside, a `.animation(_:value:)` re-times
+        // every animatable difference the same transaction produces anywhere in
+        // this subtree — the detent sheet, the bottom nav, the declined notice —
+        // whenever the map is expanded. Inside, the cross-fade owns exactly the
+        // layer it belongs to.
         .overlay {
-            if showsExpandedRoute, isTrackingPhase {
-                expandedTrackingRouteViewer
-                    .transition(.mrtRouteExpand(reduceMotion: reduceMotion))
+            ZStack {
+                if showsExpandedRoute, isTrackingPhase {
+                    expandedTrackingRouteViewer
+                        .transition(.mrtRouteExpand(reduceMotion: reduceMotion))
+                }
             }
+            .animation(.mrtRouteExpand(reduceMotion: reduceMotion), value: showsExpandedRoute)
         }
-        .animation(.mrtRouteExpand(reduceMotion: reduceMotion), value: showsExpandedRoute)
         .onChange(of: isTrackingPhase) { _, tracking in
             // Leaving tracking (drop-off → summary, a decline, …) closes the
             // viewer: its content is the live ride, so it must not outlive it.

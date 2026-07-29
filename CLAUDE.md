@@ -117,6 +117,41 @@ pre-fit settles must classify as layout, not gesture), and a second nested
 `ignoresSafeArea` on a child of an already-full-bleed parent pushes that child
 past the parent's bounds, where it still draws but its taps are dropped.
 
+**MYR-334 (polish round, two TestFlight items on the day-old viewer):**
+
+- *"The drive map opening up is a bit glitchy, needs to be smooth"* — device-only,
+  which is the tell. Two causes, both structural. (1) The open animated a
+  `scaleEffect` over a live `MKMapView`; a *changing* scale makes MapKit
+  re-render its vector tiles every frame, and the combined `.opacity` forces the
+  whole full-screen map to composite off-screen as a group while it does. The
+  transition is now a **pure opacity cross-fade** — the surface is laid out ONCE
+  at final size and only a compositing property animates. (The scale also left a
+  3% border of the screen it came from visible for the whole transition, on a
+  takeover that is supposed to be full-bleed.) (2) The map was **born inside the
+  animation**: `cameraPosition` started `.automatic`, so MapKit framed the content
+  itself, requested tiles for that framing, then threw them away when the
+  `onAppear` fit landed — a re-frame mid-transition. `ExpandedRouteMap.init` now
+  seeds `cameraPosition` with `ExpandedRouteCamera.fitRegion` (a PURE function of
+  the route, no view height), so MapKit's first layout is the final one. Frame
+  captures pin it: **before**, the route's bounding box moves three times across
+  the open and is still moving after it lands; **after**, it is identical in
+  every frame from the first one the map draws.
+- *"the Apple Maps legal icon and the start to destination at the top are cutting
+  off"* — the header sat at a flat `expandedRouteChromeTop` (52) from the physical
+  edge, which on a Dynamic Island phone runs the title into the status bar; and
+  the map reserved NO bottom band, so MapKit drew its attribution into the
+  home-indicator strip. The header offset is now a FLOOR
+  (`max(chromeTop, windowSafeAreaTop + expandedRouteChromeSafeGap)`) — still
+  physical-edge geometry, just never colliding with system UI — and the chrome
+  bands are declared to MapKit as `.safeAreaPadding`, which lifts the attribution
+  clear. **Declaring them as padding replaces the `insetRegion` pre-compensation
+  of the written region**: MYR-237's rule (under `safeAreaPadding` MapKit already
+  fits a `.region` into the unobstructed band) means compensating in both places
+  renders the route half-size. Keep the top/bottom bands EQUAL — a symmetric band
+  leaves the settled camera's centre identical to the written one, which is the
+  only reason `CameraSettleLedger` still recognises the fit's own settle instead
+  of offering a recenter on a camera nobody touched.
+
 Capture it with `MRT_EXPAND_ROUTE=1` (DEBUG, orthogonal to the scene — see the
 modifiers below): `MRT_SCENE=ownerDrives MRT_OPEN_FIRST_DRIVE=1
 MRT_EXPAND_ROUTE=1` for the client's own surface, `MRT_SCENE=trackingLeg1|
