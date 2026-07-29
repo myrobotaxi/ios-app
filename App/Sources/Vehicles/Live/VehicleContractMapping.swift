@@ -115,8 +115,49 @@ enum VehicleContractMapping {
             // doesn't both resolve. An unparseable string degrades to `nil` — "no
             // window known" — which is the honest answer and the one every
             // consumer already handles, rather than a crash or a fabricated date.
-            serviceEstimatedEndAt: state.serviceEstimatedEndAt.flatMap(parseTimestamp)
+            serviceEstimatedEndAt: state.serviceEstimatedEndAt.flatMap(parseTimestamp),
+            // MYR-333 — the live charge session. Read from `chargeState`, NOT
+            // from `status`: see `chargingState(from:)`.
+            chargingState: chargingState(from: state.chargeState)
         )
+    }
+
+    /// Fold the wire `VehicleState.ChargeState` onto the three answers the UI
+    /// renders differently (MYR-333). THE one place the seven-member wire enum
+    /// collapses, so no screen learns the wire vocabulary.
+    ///
+    /// This exists as its own function — rather than inline in ``snapshot(from:)``
+    /// — because it is the whole client-facing decision and it needs to be
+    /// unit-testable against every arm including `.unrecognized`.
+    ///
+    /// **Why not `status`.** The wire `status` enum is single-valued and the
+    /// server's own derivation ranks `in_service` above `charging`
+    /// (`deriveVehicleStatus`, vehicle-state-schema.md §2.4). A car being charged
+    /// AT a service centre is therefore `in_service` on the wire, and the charge
+    /// session is simply not representable there. That is the client's exact
+    /// report — "Service center was charging my car but I couldn't see it was
+    /// charging" — so the charging treatment reads the field that stays true
+    /// through it. It also means the two are ORTHOGONAL by design: a car can be
+    /// In Service AND pulsing green, and both statements are correct.
+    ///
+    /// Every unhandled arm degrades to `.idle`, which is the pre-MYR-333
+    /// rendering — the neutral answer, never a spinner and never a guess.
+    static func chargingState(from wire: VehicleState.ChargeState?) -> VehicleChargingState {
+        switch wire {
+        case .charging: return .charging
+        case .complete: return .complete
+        // `Starting` is the pre-session handshake, not a session: claiming
+        // "Charging" before the car has actually begun would be the same class
+        // of small lie MYR-326 removed elsewhere. It is transient anyway.
+        case .disconnected, .stopped, .noPower, .starting, .unknown: return .idle
+        // Forward-compat wire value (MYR-195 open enum) — a value we have never
+        // seen must not pick a look. Neutral.
+        case .unrecognized: return .idle
+        // `null` — the car has never charged, or no charge frame has arrived yet.
+        // The contract requires consumers to tolerate this and render a neutral
+        // placeholder rather than a spinner.
+        case nil: return .idle
+        }
     }
 
     /// The live now-playing reading, or `nil` when the car has NEVER streamed any
