@@ -22,8 +22,12 @@ final class OwnerSheetTallDetentUITests: XCTestCase {
     }
 
     private func launchOwnerHome(detent: String? = nil) -> XCUIApplication {
+        launchOwner(scene: "ownerHome", detent: detent)
+    }
+
+    private func launchOwner(scene: String, detent: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchEnvironment["MRT_SCENE"] = "ownerHome"
+        app.launchEnvironment["MRT_SCENE"] = scene
         if let detent { app.launchEnvironment["MRT_OWNER_DETENT"] = detent }
         app.launch()
         return app
@@ -159,6 +163,83 @@ final class OwnerSheetTallDetentUITests: XCTestCase {
             "half is still `homeHalfHeightFraction` of the container"
         )
         NSLog("MRT_MYR332 peekH=\(screen.height - peek.minY) halfH=\(screen.height - half.minY)")
+    }
+
+    // MARK: - MYR-338 — the map stays FIXED past half
+
+    /// THE CLIENT'S REPORT (TestFlight, Jul 29, on the day-old tall detent):
+    /// "The map moves up with the bottom sheet. Map should stay fixed."
+    ///
+    /// MYR-332 let the map's camera-affecting bottom inset follow the sheet to
+    /// tall; MapKit then re-fit the written region into the ~200pt band still
+    /// showing, which lifted the framed centre until the vehicle pin and its
+    /// callout sat behind the `MapHeader` chip. This drags half → tall for real
+    /// and asserts the band of map that stays VISIBLE is the same pixels either
+    /// side of the drag — the sheet covers the map, it does not re-frame it.
+    ///
+    /// Deliberately NOT on `ownerHome`: that scene's car is DRIVING, so its map
+    /// legitimately moves on its own between the two samples. `ownerCharging` is
+    /// parked, so anything that moves in the strip is the camera.
+    func testDraggingPastHalfDoesNotMoveTheMap() {
+        let app = launchOwner(scene: "ownerCharging", detent: "half")
+        let s = sheet(in: app)
+        let half = settledFrame(of: s)
+        // Let the map's tiles finish arriving before the first sample, or the
+        // comparison measures the tile loader rather than the camera.
+        Thread.sleep(forTimeInterval: 4)
+
+        let before = app.screenshot().image
+        handleGrab(on: s).press(
+            forDuration: 1.2,
+            thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
+        )
+        let tall = settledFrame(of: s)
+        XCTAssertLessThan(tall.minY, half.minY - 100, "precondition: the drag reached tall")
+        Thread.sleep(forTimeInterval: 3)
+        let after = app.screenshot().image
+
+        attach(app, named: "myr338-after-drag-half-to-tall")
+
+        // The band that survives at tall, in image pixels. Sampled below the
+        // status bar (its clock/indicators are not the map) and above the
+        // settled sheet edge.
+        let scale = before.size.width > 0 ? before.size.width / app.windows.firstMatch.frame.width : 1
+        let top = Int(64 * scale)
+        let bottom = Int((tall.minY - 8) * scale)
+        let changed = Self.changedFraction(before, after, top: top, bottom: bottom)
+        NSLog("MRT_MYR338 visible-map-strip rows \(top)…\(bottom) changed=\(changed)")
+
+        // 0.0 in a quiet run; ~0.01 with a `simctl location` stream running under
+        // the MYR-222 probe. The regression it guards measures 0.42 here (run on
+        // `main`, which is how this test was proven to be one) — an order of
+        // magnitude clear either way.
+        XCTAssertLessThan(
+            changed, 0.05,
+            "the visible band of map must be the same pixels at half and at tall — a re-frame moves ~42% of it"
+        )
+    }
+
+    /// Fraction of sampled pixels in `top..<bottom` that differ beyond a small
+    /// tolerance. Sampled on a grid (every 4th pixel) — this is looking for a
+    /// camera re-frame, which moves the whole strip, not for a stray antialiased
+    /// edge.
+    private static func changedFraction(_ a: UIImage, _ b: UIImage, top: Int, bottom: Int) -> Double {
+        guard let ca = a.cgImage, let cb = b.cgImage,
+              ca.width == cb.width, bottom > top else { return 1 }
+        guard let da = ca.dataProvider?.data, let db = cb.dataProvider?.data,
+              let pa = CFDataGetBytePtr(da), let pb = CFDataGetBytePtr(db) else { return 1 }
+        let rowA = ca.bytesPerRow, rowB = cb.bytesPerRow
+        let bppA = ca.bitsPerPixel / 8, bppB = cb.bitsPerPixel / 8
+        var differing = 0, sampled = 0
+        for y in stride(from: top, to: min(bottom, ca.height), by: 4) {
+            for x in stride(from: 0, to: ca.width, by: 4) {
+                let ia = y * rowA + x * bppA, ib = y * rowB + x * bppB
+                let delta = (0..<3).reduce(0) { $0 + abs(Int(pa[ia + $1]) - Int(pb[ib + $1])) }
+                sampled += 1
+                if delta > 24 { differing += 1 }
+            }
+        }
+        return sampled == 0 ? 1 : Double(differing) / Double(sampled)
     }
 }
 

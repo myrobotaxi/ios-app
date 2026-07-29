@@ -59,12 +59,6 @@ public struct MRTDetentSheet<Content: View>: View {
     /// MYR-332 — offer the third, TALL detent above `half`. Opt-in: every other
     /// consumer keeps exactly the peek↔half pair it has always had.
     private let allowsTallDetent: Bool
-    /// MYR-332 — reports the sheet's RESOLVED detent heights (ascending, points
-    /// from the physical bottom edge) whenever the geometry produces a new set.
-    /// The owner map reads it so its `bottomContentInset` can follow the sheet up
-    /// to the tall detent (`half` is measured but deliberately unused there — see
-    /// `HomeScreen.mapBottomInset`). Same reporting shape as `RiderTrackingSheet`.
-    private let onResolvedHeights: (([CGFloat]) -> Void)?
 
     /// The two owner crossfade layers, type-erased (two different content
     /// shapes living side by side in one surface — see `PanSheetCrossfade`).
@@ -92,7 +86,6 @@ public struct MRTDetentSheet<Content: View>: View {
         self.content = content()
         self.crossfade = nil
         self.allowsTallDetent = false
-        self.onResolvedHeights = nil
     }
 
     /// Internal designated init used by the crossfade convenience init below.
@@ -103,8 +96,7 @@ public struct MRTDetentSheet<Content: View>: View {
         halfHeightFraction: CGFloat,
         content: Content,
         crossfade: OwnerCrossfade?,
-        allowsTallDetent: Bool = false,
-        onResolvedHeights: (([CGFloat]) -> Void)? = nil
+        allowsTallDetent: Bool = false
     ) {
         _detent = detent
         self.peekHeight = peekHeight
@@ -113,7 +105,6 @@ public struct MRTDetentSheet<Content: View>: View {
         self.content = content
         self.crossfade = crossfade
         self.allowsTallDetent = allowsTallDetent
-        self.onResolvedHeights = onResolvedHeights
     }
 
     /// peek ↔ 0, half ↔ 1, tall ↔ 2 — the engine works in detent indices. A
@@ -205,13 +196,6 @@ public struct MRTDetentSheet<Content: View>: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             #endif
             }
-            // MYR-332 — publish the resolved detent geometry so the host can
-            // re-anchor chrome off it (the owner map's `bottomContentInset`).
-            .preference(key: MRTDetentHeightsKey.self, value: detents)
-        }
-        .onPreferenceChange(MRTDetentHeightsKey.self) { heights in
-            guard !heights.isEmpty else { return }
-            onResolvedHeights?(heights)
         }
         // Full-bleed geometry (CLAUDE.md "Hard rules"): components.jsx
         // `BottomSheet` is called with `navHeight={0}` (screens.jsx:429) —
@@ -333,8 +317,6 @@ public extension MRTDetentSheet where Content == EmptyView {
         halfHeightFraction: CGFloat = 0.5,
         /// MYR-332 — offer the third, TALL detent above `half`.
         allowsTallDetent: Bool = false,
-        /// MYR-332 — resolved detent heights, ascending (see the stored property).
-        onResolvedHeights: (([CGFloat]) -> Void)? = nil,
         @ViewBuilder peek: () -> Peek,
         @ViewBuilder expanded: () -> Expanded
     ) {
@@ -345,22 +327,8 @@ public extension MRTDetentSheet where Content == EmptyView {
             halfHeightFraction: halfHeightFraction,
             content: EmptyView(),
             crossfade: OwnerCrossfade(low: AnyView(peek()), high: AnyView(expanded())),
-            allowsTallDetent: allowsTallDetent,
-            onResolvedHeights: onResolvedHeights
+            allowsTallDetent: allowsTallDetent
         )
-    }
-}
-
-// MARK: - Resolved detent geometry (MYR-332)
-
-/// Publishes ``MRTDetentSheet``'s resolved detent heights to its host, so chrome
-/// anchored off the sheet (the owner map's `bottomContentInset`) can follow it
-/// without re-deriving the geometry. Ascending, points from the physical bottom.
-private struct MRTDetentHeightsKey: PreferenceKey {
-    static let defaultValue: [CGFloat] = []
-    static func reduce(value: inout [CGFloat], nextValue: () -> [CGFloat]) {
-        let next = nextValue()
-        if !next.isEmpty { value = next }
     }
 }
 

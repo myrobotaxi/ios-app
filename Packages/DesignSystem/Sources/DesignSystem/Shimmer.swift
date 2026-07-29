@@ -15,7 +15,11 @@ import SwiftUI
 // color with no sweep, consistent with every other MYR-171/162 motion in
 // this package.
 public struct MRTTextShimmer: ViewModifier {
-    private let duration: Double
+    /// Internal (not private) so the travelling-highlight PERIOD can be asserted
+    /// shared rather than re-typed — `BatteryBar`'s MYR-337 sweep runs at the
+    /// same 2.6s, and that is a fact about the design's motion grammar, not a
+    /// coincidence worth letting drift.
+    let duration: Double
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(duration: Double = 2.6) {

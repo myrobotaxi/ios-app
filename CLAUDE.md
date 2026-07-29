@@ -105,9 +105,52 @@ the crossfade still completes at HALF (`PanSheet(progressUpperDetentIndex:)` —
 without it the ramp would stretch to tall and leave half half-faded), and the
 dense layer's scroll content keeps a `tall − half` bottom reserve below tall so
 scrolling to the end lands exactly where it did before. Capture it with
-`MRT_OWNER_DETENT=tall`. The map's `bottomContentInset` follows the sheet ONLY at
-tall — at peek/half it stays the peek band every existing capture was taken
-against.
+`MRT_OWNER_DETENT=tall`.
+
+**The map's camera inset is CAPPED at half** (MYR-338) — MYR-332 originally let
+the map's `bottomContentInset` follow the sheet to tall, so MapKit's legal
+attribution wouldn't be stranded behind it. But that inset is not only the
+attribution's: it is what MapKit fits the written `.region` into
+(`.safeAreaPadding(.bottom:)`), and at tall the unobstructed band is ~200pt, so
+the camera RE-FRAMED and the vehicle pin + its callout ended up crammed behind
+the `MapHeader` chip — the client's *"The map moves up with the bottom sheet.
+Map should stay fixed."* `HomeScreen.vehicleMapBottomInset` now resolves for
+`cameraDetent(for:)`, which caps everything above half AT half: past half the
+sheet simply COVERS the map (the Apple Maps model, and exactly what MYR-250
+settled for the rider sheet's idle↔search jump). It takes NO sheet geometry any
+more — `MRTDetentSheet.onResolvedHeights` and its preference key are deleted
+with it, so a sheet height cannot reach the camera even in principle. The
+attribution now sits behind the sheet at tall, which is the trade HALF has
+always made. Evidence: the visible map strip is byte-identical across a real
+half→tall drag (`OwnerSheetTallDetentUITests
+.testDraggingPastHalfDoesNotMoveTheMap` — 0.0 changed on this branch, 0.42 on
+the pre-fix build, which is how the test was proven to be a real guard), and the
+moving-fix probe across that same drag logs ONE `WRITE recenter` (the `onAppear`
+seating) and nothing after it.
+
+**Charge bar motion** (MYR-333 → MYR-337) — a live charge session is the ONE
+thing in this app that says "something is happening right now", and it says it
+with MOTION on the hero battery bar (`BatteryBar(charge:)`; scenes
+`ownerCharging` / `ownerChargeComplete`, the second of which is deliberately
+STATIC — the session is over, so motion would be a lie). MYR-333 shipped that as
+a whole-bar opacity breath and the client came straight back: *"Charging pulse
+is really faint. It should pulse across smoothly."* **A whole-surface fade has
+no direction, so there is nothing for the eye to track** — and composited over
+the dark sheet its two extremes were rgb(45,134,67) ↔ rgb(47,182,81), two greens
+that read as one. It is now a bright highlight TRAVELLING left→right across the
+fill on the design's established 2.6s travelling-highlight period
+(`mrt-text-shimmer`, the CTA border trace), built as a per-frame
+`TimelineView(.animation)` gradient — **not** a masked band moved by `offset`,
+because MYR-326's lesson is that a masked band can composite once and never
+re-render, looking motionless in stills AND in reality. Reduce Motion → static
+green (proven: 1 distinct bar rendering across 6 lossless screenshots, vs 6 of 6
+with motion on). **Prove charge motion by FRAME-DIFFING**, never by a still —
+extract frames from a screen recording and show the highlight's peak advancing
+0→1 over 2.6s. `simctl ui <udid> reduce_motion` does NOT take on this runtime:
+use `simctl spawn <udid> defaults write com.apple.Accessibility
+ReduceMotionEnabled -bool true` and relaunch. `MiniBattery` and the primitives
+showcase are on the prototype's own amber `charging:` axis and are untouched by
+all of this.
 
 **Quick-tile captions** (MYR-335) — the four `ControlTile`s split the sheet's
 content width, so each holds ~50pt of text on the narrowest supported device

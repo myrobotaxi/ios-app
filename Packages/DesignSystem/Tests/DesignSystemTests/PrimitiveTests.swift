@@ -57,6 +57,42 @@ final class PrimitiveTests: XCTestCase {
             "a finished session must not keep breathing")
     }
 
+    // MARK: The travelling sweep (MYR-337)
+
+    /// The client on the MYR-333 breath: "Charging pulse is really faint. It
+    /// should pulse across smoothly." A whole-bar opacity fade has no direction;
+    /// the highlight must actually TRAVEL. Its position is a strictly increasing
+    /// function of the phase — the frame-diff evidence in the PR is the same
+    /// claim measured on real pixels, this is it measured on the math.
+    func testTheHighlightTravelsLeftToRightAcrossTheWholeCycle() {
+        let samples = stride(from: 0.0, through: 1.0, by: 0.05)
+            .map { BatteryBar.sweepLocation(phase: $0) }
+        for (earlier, later) in zip(samples, samples.dropFirst()) {
+            XCTAssertLessThan(earlier, later, "the highlight must only ever move forward")
+        }
+    }
+
+    /// It enters from OFF the left edge and leaves OFF the right, so the loop
+    /// point carries no visible jump — the difference between "a highlight
+    /// sweeping across" and "a highlight blinking on at the left".
+    func testTheSweepStartsAndEndsClearOfTheBar() {
+        XCTAssertLessThanOrEqual(
+            BatteryBar.sweepLocation(phase: 0) + BatteryBar.sweepHalfBand, 0,
+            "at the top of the cycle the band is entirely off the left edge")
+        XCTAssertGreaterThanOrEqual(
+            BatteryBar.sweepLocation(phase: 1) - BatteryBar.sweepHalfBand, 1,
+            "at the bottom of the cycle the band is entirely off the right edge")
+        // …and it does cross the middle on the way.
+        XCTAssertEqual(BatteryBar.sweepLocation(phase: 0.5), 0.5, accuracy: 0.0001)
+    }
+
+    /// One traversal every 2.6s — the period the design's travelling-highlight
+    /// grammar already runs at (`mrt-text-shimmer`, the CTA border trace).
+    func testTheSweepSharesTheDesignsTravellingHighlightPeriod() {
+        XCTAssertEqual(BatteryBar.sweepPeriod, 2.6)
+        XCTAssertEqual(BatteryBar.sweepPeriod, MRTTextShimmer().duration)
+    }
+
     /// Only an ACTIVE session pulses. (The Reduce Motion half of this rule is
     /// environment-driven — `isPulsing` reads `\.accessibilityReduceMotion` — so
     /// it is proven in the simulator captures, per CLAUDE.md's Reduce Motion
