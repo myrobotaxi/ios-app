@@ -151,6 +151,41 @@ struct ParkedSummary: View {
     /// byte-identical.
     var serviceCompletion: String? = nil
 
+    /// MYR-333 — the hero's charge caption, or `nil` to render NOTHING.
+    ///
+    /// Only the two states the owner can act on the meaning of get words. Every
+    /// other wire value (`Disconnected`, `Stopped`, `NoPower`, `Starting`,
+    /// `Unknown`, an unrecognized value, and `null`) collapses to `.idle`
+    /// upstream and renders exactly as the hero did before this issue — no
+    /// "Not charging", no placeholder, no em dash. A parked car saying nothing
+    /// about charging is the correct and quiet default; only a live session, or
+    /// a session that just finished, is worth a word.
+    ///
+    /// Kept SHORT on purpose. This sits inline with the percentage in a row that
+    /// also carries the vehicle name and its status badge, so a long phrase
+    /// would eat the name. "Charging" is one word; "Charge complete" is the
+    /// shortest honest way to say a session ENDED rather than is running.
+    private var chargeCaption: String? {
+        switch snapshot.chargingState {
+        case .charging: return "Charging"
+        case .complete: return "Charge complete"
+        case .idle: return nil
+        }
+    }
+
+    /// MYR-333 — the bar treatment, derived from the same one field. Split out
+    /// so the mapping from wire state to DesignSystem treatment lives beside the
+    /// caption it must agree with: a bar that pulses while the caption says
+    /// "Charge complete" would be the exact kind of half-true state this issue
+    /// exists to remove.
+    private var batteryCharge: MRTBatteryCharge {
+        switch snapshot.chargingState {
+        case .charging: return .charging
+        case .complete: return .complete
+        case .idle: return .none
+        }
+    }
+
     /// The elapsed-since-parked label, or `nil` when the park-start is unknown
     /// (live path — no contracted park-start; MYR-268) so the view omits it
     /// rather than showing a fabricated "0m" that reads like "0 meters".
@@ -182,9 +217,40 @@ struct ParkedSummary: View {
                             .font(.system(size: 18, weight: .semibold))
                             .tracking(-0.3)
                             .foregroundStyle(Color.mrtText)
+                            // MYR-333 — the name is the ONE elastic element in
+                            // this row now that a charge caption can sit on the
+                            // right. Everything else is fixedSize, so a long
+                            // name truncates instead of squeezing the badge or
+                            // wrapping the row. "Lunar" and every other fixture
+                            // name is far short of the limit, so the simulated
+                            // scenes are pixel-identical.
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                         StatusBadge(status)
                     }
-                    Spacer()
+                    Spacer(minLength: 8)
+                    // MYR-333 — the charge caption sits IMMEDIATELY BEFORE the
+                    // percentage, so the hero reads left-to-right as
+                    // "Charging · 76 %" (the issue's own wording) with no new
+                    // line and no new vertical space. That placement is the
+                    // point: the client's complaint was that the number kept
+                    // climbing with nothing to explain WHY, and the explanation
+                    // belongs next to the number it explains rather than as a
+                    // detached caption elsewhere in the sheet.
+                    //
+                    // It is a SEPARATE signal from the status badge on the left,
+                    // deliberately: a car charging at a service centre is
+                    // `in_service` on the wire — `status` cannot say "charging"
+                    // and "in service" at once — so the badge keeps saying
+                    // In Service while this says Charging, and both are true.
+                    if let chargeCaption {
+                        Text(chargeCaption)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Color.mrtBatHigh)
+                            .lineLimit(1)
+                            .fixedSize()
+                            .accessibilityAddTraits(.updatesFrequently)
+                    }
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
                         Text("\(Int(snapshot.batteryPercent.rounded()))")
                             .font(.system(size: 18))
@@ -195,6 +261,7 @@ struct ParkedSummary: View {
                             .font(.system(size: 11))
                             .foregroundStyle(Color.mrtTextMuted)
                     }
+                    .fixedSize()
                 }
                 // Gated on BOTH the In Service badge and a resolved window
                 // upstream (`VehicleServiceWindow.completionLine`), so honest
@@ -216,7 +283,11 @@ struct ParkedSummary: View {
                         .lineLimit(1)
                 }
             }
-            BatteryBar(pct: snapshot.batteryPercent)
+            // MYR-333 — the client's own words: "the bar should be a clean
+            // pulsing green animation when that happens". `charge` is the ONLY
+            // thing added here; `.none` (every pre-existing path, simulated and
+            // live) resolves to the exact bar this line drew before.
+            BatteryBar(pct: snapshot.batteryPercent, charge: batteryCharge)
             HStack {
                 Text(location.label)
                     .font(.system(size: 12))
@@ -378,7 +449,10 @@ struct ParkedHeroContent: View {
                 // pre-MYR-316 values on the simulated path.
                 badgeStatus: status,
                 onEditServiceWindow: onEditServiceWindow,
-                serviceEstimatedEndAt: serviceEstimatedEndAt
+                serviceEstimatedEndAt: serviceEstimatedEndAt,
+                // MYR-333 — read off the SAME snapshot the hero's bar and caption
+                // use, so the tile sub can never disagree with the bar above it.
+                chargingState: snapshot.chargingState
             )
         }
     }

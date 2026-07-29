@@ -65,6 +65,11 @@ struct VehicleControls: View {
     /// Threaded from the telemetry snapshot like every other read-only live value
     /// in this sheet. `nil` on the simulated path → the row does not exist.
     var serviceEstimatedEndAt: Date? = nil
+    /// MYR-333 — the car's live charge session, threaded from the telemetry
+    /// snapshot like every other read-only live value here. `.idle` on the
+    /// simulated path and before the first live frame, so the tile keeps its
+    /// pre-MYR-333 port-door sub and M1 stays pixel-identical.
+    var chargingState: VehicleChargingState = .idle
 
     private var controls: VehicleControlsSnapshot { executor.controls }
 
@@ -324,11 +329,29 @@ struct VehicleControls: View {
     // so it too renders unknown until commanded (MYR-251).
     private var chargeTile: some View {
         let known = executor.isKnown(.chargePortOpen)
+        // MYR-333 — a live charge SESSION outranks the port-door position in
+        // this one line. "Port open" is a fact about a door; "Charging" is the
+        // fact the owner came to the sheet for, and the client's screenshot is
+        // the proof: it read "Port open" throughout a charging session and told
+        // him nothing about it. The port state is still exactly what the tile
+        // TOGGLES and what its `active` highlight tracks — only the sub-caption
+        // yields, and only while there is a session to report.
+        //
+        // Both strings are deliberately one word (MYR-335 tile truncation): the
+        // hero carries the full "Charge complete", the tile carries "Complete".
+        let sessionSub: String? = {
+            switch chargingState {
+            case .charging: return "Charging"
+            case .complete: return "Complete"
+            case .idle: return nil
+            }
+        }()
         return ControlTile(
             icon: "bolt.fill",
             label: "Charge",
-            sub: known ? (controls.chargePortOpen ? "Port open" : "Port closed")
-                : VehicleControlFreshness.unknownSub(hasSnapshot: hasSnapshot, isStreaming: isStreaming),
+            sub: sessionSub
+                ?? (known ? (controls.chargePortOpen ? "Port open" : "Port closed")
+                    : VehicleControlFreshness.unknownSub(hasSnapshot: hasSnapshot, isStreaming: isStreaming)),
             active: known && controls.chargePortOpen,
             activeColor: .mrtCharging,
             uiState: executor.uiState(for: .chargePort)
