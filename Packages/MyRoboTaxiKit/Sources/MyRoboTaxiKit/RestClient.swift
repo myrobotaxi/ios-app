@@ -17,7 +17,7 @@ public protocol SnapshotFetching: Sendable {
 ///
 /// Value type (`Sendable`): all dependencies are immutable, so it is free to
 /// share across tasks without a serialization bottleneck.
-public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleServiceWindowEndpoint, VehicleRefreshing, VehicleCommandSending {
+public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleServiceWindowEndpoint, VehicleRefreshing, VehicleCommandSending, PushDeviceEndpoint {
     private let environment: BackendEnvironment
     private let tokenProvider: any TokenProvider
     private let http: any HTTPPerforming
@@ -365,6 +365,42 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
         )
     }
 
+    // MARK: - APNs device-token registration (MYR-186)
+    //
+    // Both verbs carry the SAME body and BOTH discard the response — see
+    // ``PushDeviceEndpoint`` for why the token is a body field rather than a path
+    // component, and why `sandbox` is the build's decision to make.
+
+    /// `PUT /api/push/devices` (MYR-186) — register (upsert) this install's APNs
+    /// token against the signed-in account. Authenticated via the standard
+    /// pipeline (Bearer + single 401 refresh-retry); idempotent server-side.
+    ///
+    /// Returns `Void`: the contract's success is `200` with an empty-ish body
+    /// carrying nothing the client needs, so this runs `performDiscardingBody`
+    /// rather than decoding — a zero-byte `200` and a `{}` `200` are both success.
+    public func registerPushDevice(token: String, sandbox: Bool) async throws {
+        let body = try JSONEncoder().encode(PushDeviceRegistration(deviceToken: token, sandbox: sandbox))
+        try await performDiscardingBody(
+            ["push", "devices"],
+            method: "PUT",
+            body: body,
+            allowTokenRefresh: true
+        )
+    }
+
+    /// `DELETE /api/push/devices` (MYR-186) — forget this install's APNs token, so
+    /// the next account signed in on this phone does not inherit the previous
+    /// one's ride alerts. Same body as the register call; same discarded response.
+    public func unregisterPushDevice(token: String, sandbox: Bool) async throws {
+        let body = try JSONEncoder().encode(PushDeviceRegistration(deviceToken: token, sandbox: sandbox))
+        try await performDiscardingBody(
+            ["push", "devices"],
+            method: "DELETE",
+            body: body,
+            allowTokenRefresh: true
+        )
+    }
+
     // MARK: - Request pipeline
 
     private func get<T: Decodable>(_ segments: [String], query: [URLQueryItem] = []) async throws -> T {
@@ -386,6 +422,41 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
         body: Data?,
         allowTokenRefresh: Bool
     ) async throws -> T {
+        let data = try await send(segments, query: query, method: method, body: body, allowTokenRefresh: allowTokenRefresh)
+        do { return try decoder.decode(T.self, from: data) }
+        catch { throw RestError.decoding(underlying: error) }
+    }
+
+    /// The authenticated pipeline for endpoints whose 2xx body carries nothing the
+    /// caller needs (MYR-186's push-device register/unregister). Identical
+    /// transport, headers, 401 refresh-retry and typed error mapping as `perform`
+    /// — it only skips the decode, which is the point: `perform` would fail a
+    /// zero-byte `200` with `RestError.decoding`, so an endpoint documented as
+    /// returning an "empty-ish" body must not go through it.
+    ///
+    /// Mirrors how `sendAuth` backs both `performAuth` and `performAuthNoContent`
+    /// on the pre-auth pipeline.
+    private func performDiscardingBody(
+        _ segments: [String],
+        query: [URLQueryItem] = [],
+        method: String,
+        body: Data?,
+        allowTokenRefresh: Bool
+    ) async throws {
+        _ = try await send(segments, query: query, method: method, body: body, allowTokenRefresh: allowTokenRefresh)
+    }
+
+    /// Shared authenticated transport: build URL, guard transport, attach the
+    /// Bearer token + optional JSON body, and either return the 2xx bytes or throw
+    /// a typed `RestError`. Owns the single 401 refresh-retry (FR-6.2) so both
+    /// `perform` and `performDiscardingBody` inherit it unchanged.
+    private func send(
+        _ segments: [String],
+        query: [URLQueryItem] = [],
+        method: String,
+        body: Data?,
+        allowTokenRefresh: Bool
+    ) async throws -> Data {
         let url = try Self.buildURL(base: environment.restBaseURL, segments: segments, query: query)
         try validateTransport(url)
 
@@ -414,15 +485,14 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
 
         switch httpResponse.statusCode {
         case 200...299:
-            do { return try decoder.decode(T.self, from: data) }
-            catch { throw RestError.decoding(underlying: error) }
+            return data
         case 401 where allowTokenRefresh:
             // FR-6.2: do NOT retry with the same token — tell the provider the
             // token it vended was rejected (so a stateful provider forces a
             // refresh), refresh once, retry exactly once, then surface the typed
             // error on a second 401.
             await tokenProvider.invalidate(rejectedToken: token)
-            return try await perform(segments, query: query, method: method, body: body, allowTokenRefresh: false)
+            return try await send(segments, query: query, method: method, body: body, allowTokenRefresh: false)
         default:
             throw Self.mapError(status: httpResponse.statusCode, data: data)
         }
