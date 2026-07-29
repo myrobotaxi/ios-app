@@ -22,10 +22,9 @@ import DesignSystem
 //
 // Each gets a skeleton shaped like the content it is waiting for, so the screen
 // keeps its composition while it loads and the real data lands INTO the layout
-// instead of replacing a void. Built from `MRTSkeletonBar` +
-// `.mrtSkeletonShimmer()` (DesignSystem), so the sweep is the app's existing
-// `mrtShimmer` band and Reduce Motion degrades every one of them to static
-// blocks (CLAUDE.md).
+// instead of replacing a void. Built from `MRTSkeletonBar` (DesignSystem), so
+// the sweep is the app's existing `mrtShimmer` band and Reduce Motion degrades
+// every one of them to static blocks (CLAUDE.md).
 //
 // LOADING ≠ UNAVAILABLE. Every skeleton here is reached only from a
 // genuinely-in-flight branch. The honest states are untouched: "No drives yet",
@@ -72,7 +71,6 @@ struct OwnerHomeLoadingSkeleton: View {
                 // slot (screens.jsx:302 `top: 60`, height 40), so the chip does
                 // not pop into an empty band when the list lands.
                 MRTSkeletonBar(width: 132, height: MRTMetrics.mapChipHeight, radius: MRTMetrics.mapChipHeight / 2)
-                    .mrtSkeletonShimmer()
                     .padding(.top, MRTMetrics.mapHeaderTop)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .ignoresSafeArea(edges: .top)
@@ -124,7 +122,6 @@ private struct OwnerHomeSheetSkeleton: View {
                     MRTSkeletonBar(width: 34, height: 12)
                 }
             }
-            .mrtSkeletonShimmer()
             .padding(.horizontal, MRTMetrics.pageGutter)
             .padding(.top, 6)
             Spacer(minLength: 0)
@@ -174,7 +171,6 @@ struct DriveRowSkeleton: View {
             }
             MRTSkeletonBar(width: 8, height: 14, radius: 3)
         }
-        .mrtSkeletonShimmer()
         .padding(15)
         .background(Color.mrtSkeletonRowFill, in: RoundedRectangle(cornerRadius: MRTMetrics.cardRadius, style: .continuous))
         .overlay(
@@ -197,7 +193,6 @@ struct DrivesListSkeleton: View {
         VStack(alignment: .leading, spacing: 0) {
             // The "Today"/"Yesterday" group heading's own slot.
             MRTSkeletonBar(width: 62, height: 11, radius: 4)
-                .mrtSkeletonShimmer()
                 .padding(.horizontal, MRTMetrics.pageGutter)
                 .padding(.bottom, 10)
             ForEach(0..<Self.rowCount, id: \.self) { index in
@@ -222,7 +217,6 @@ struct TeslaAccountRowSkeleton: View {
             MRTSkeletonBar(width: 118, height: 14, radius: 5, emphasis: .strong)
             MRTSkeletonBar(width: 164, height: 12)
         }
-        .mrtSkeletonShimmer()
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 12)
         .overlay(alignment: .top) {
