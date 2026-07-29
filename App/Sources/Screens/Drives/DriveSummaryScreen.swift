@@ -64,6 +64,13 @@ struct DriveSummaryScreen: View {
     /// `drive.to` verbatim.
     @State private var startLabel: String?
     @State private var endLabel: String?
+    /// MYR-327 — the expanded, user-driven route viewer. The client's ask lands
+    /// on THIS screen (their TestFlight screenshot is this hero): the hero map is
+    /// `interactionModes: []`, so the route they wanted to look at could not be
+    /// zoomed or panned at all. Opened by tapping the hero or its expand chip;
+    /// only ever offered when a REAL polyline exists (`hasRoute`) — the routeless
+    /// placeholder hero stays inert rather than expanding to nothing.
+    @State private var showsExpandedRoute = false
 
     init(
         drive: Drive,
@@ -143,8 +150,39 @@ struct DriveSummaryScreen: View {
         .sheet(isPresented: $showShareSheet) {
             ActivityShareSheet(activityItems: shareItems)
         }
-        .onAppear { scheduleGoldMode() }
+        // MYR-327 — the expanded route viewer, hosted as a full-bleed overlay
+        // rather than a `fullScreenCover` so the open/close carries the app's own
+        // motion grammar (Handoff §8 sheet snap; plain cross-fade under Reduce
+        // Motion) instead of the system's modal slide.
+        .overlay {
+            if showsExpandedRoute {
+                expandedRouteViewer
+                    .transition(.mrtRouteExpand(reduceMotion: reduceMotion))
+            }
+        }
+        .animation(.mrtRouteExpand(reduceMotion: reduceMotion), value: showsExpandedRoute)
+        .onAppear {
+            scheduleGoldMode()
+            #if DEBUG
+            // Drift-gate capture hook: headless tooling cannot tap the hero.
+            if DebugScene.opensExpandedRouteMap, hasRoute { showsExpandedRoute = true }
+            #endif
+        }
         .task { await loadLiveRouteAndLabels() }
+    }
+
+    // MARK: MYR-327 — expanded route viewer
+
+    private var expandedRouteViewer: some View {
+        ExpandedRouteMap(
+            title: "\(fromLabel) → \(toLabel)",
+            subtitle: "\(dateLabel) · \(drive.start) – \(drive.end)",
+            fitCoordinates: effectiveRoute,
+            onClose: { showsExpandedRoute = false }
+        ) {
+            // The SAME builder the hero draws — one route recipe, two cameras.
+            driveRouteMapContent(route: effectiveRoute)
+        }
     }
 
     // MARK: Live route + header labels (MYR-204)
@@ -273,6 +311,18 @@ struct DriveSummaryScreen: View {
             .opacity(goldMode ? 1 : 0)
             .allowsHitTesting(false)
 
+            // MYR-327 — "click into the map": the whole hero is the tap target
+            // for the expanded viewer. Placed UNDER `floatingNav` in the stack so
+            // the back / share / expand buttons keep their own taps, and only
+            // when a real polyline exists (a routeless hero expands to nothing,
+            // which would be a fabricated affordance).
+            if hasRoute {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { showsExpandedRoute = true }
+                    .accessibilityHidden(true)
+            }
+
             floatingNav
         }
         .frame(height: MRTMetrics.driveSummaryHeroHeight)
@@ -280,7 +330,7 @@ struct DriveSummaryScreen: View {
     }
 
     private var floatingNav: some View {
-        HStack {
+        HStack(spacing: 10) {
             Button(action: onBack) {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 21))
@@ -294,6 +344,14 @@ struct DriveSummaryScreen: View {
             .accessibilityLabel("Back to Drives")
 
             Spacer()
+
+            // MYR-327 — the discoverable half of "click into the map". The hero
+            // is tappable everywhere, but nothing on the old screen said so; this
+            // chip is the visible cue, in the floating nav's existing language and
+            // geometry. Shown only alongside a real route, like the tap target.
+            if hasRoute {
+                ExpandRouteButton { showsExpandedRoute = true }
+            }
 
             Button {
                 Task { await prepareAndPresentShare() }
@@ -435,30 +493,38 @@ private struct DriveHeroMap: View {
 
     var body: some View {
         Map(initialPosition: .region(region), interactionModes: []) {
-            if route.count > 1 {
-                // Glow underlay + bright line (RouteLine.swift doc) — no dim
-                // full-path layer: `progress={1}` in the jsx means the whole
-                // route already reads as "travelled", so a separate dim
-                // layer would sit fully hidden underneath.
-                MapPolyline(coordinates: route)
-                    .stroke(Color.mrtGoldGlowSoft, style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round))
-                MapPolyline(coordinates: route)
-                    .stroke(Color.mrtGold.opacity(0.95), style: StrokeStyle(lineWidth: 4.5, lineCap: .round, lineJoin: .round))
-            }
-            if let origin = route.first {
-                Annotation("Origin", coordinate: origin) {
-                    MRTEndpointDot(color: .mrtDriving, size: 13)
-                }
-            }
-            if let destination = route.last {
-                Annotation("Destination", coordinate: destination) {
-                    MRTEndpointDot(color: .mrtGold, size: 13)
-                }
-            }
+            driveRouteMapContent(route: route)
         }
         .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll, showsTraffic: false))
         .preferredColorScheme(.dark)
         .allowsHitTesting(false)
+    }
+}
+
+/// The drive's route + endpoints as map content — ONE recipe consumed by the
+/// static hero above AND by the MYR-327 expanded viewer, so tapping into the
+/// map cannot show a different route treatment than the hero it came from.
+@MapContentBuilder
+func driveRouteMapContent(route: [CLLocationCoordinate2D]) -> some MapContent {
+    if route.count > 1 {
+        // Glow underlay + bright line (RouteLine.swift doc) — no dim
+        // full-path layer: `progress={1}` in the jsx means the whole
+        // route already reads as "travelled", so a separate dim
+        // layer would sit fully hidden underneath.
+        MapPolyline(coordinates: route)
+            .stroke(Color.mrtGoldGlowSoft, style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round))
+        MapPolyline(coordinates: route)
+            .stroke(Color.mrtGold.opacity(0.95), style: StrokeStyle(lineWidth: 4.5, lineCap: .round, lineJoin: .round))
+    }
+    if let origin = route.first {
+        Annotation("Origin", coordinate: origin) {
+            MRTEndpointDot(color: .mrtDriving, size: 13)
+        }
+    }
+    if let destination = route.last {
+        Annotation("Destination", coordinate: destination) {
+            MRTEndpointDot(color: .mrtGold, size: 13)
+        }
     }
 }
 

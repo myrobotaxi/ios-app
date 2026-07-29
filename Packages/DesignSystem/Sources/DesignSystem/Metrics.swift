@@ -376,4 +376,66 @@ public enum MRTMetrics {
     /// recenter button's bottom, so the button clears the card in EVERY detent
     /// (re-anchored off the settled detent height, not a fixed offset).
     public static let trackingRecenterSheetGap: CGFloat = 22
+
+    // MARK: - Expanded route viewer (MYR-327)
+    //
+    // The full-screen interactive route surface a map tap opens. It has NO
+    // prototype counterpart (a client feature ask, TestFlight ADFCbiKq28), so
+    // its chrome is keyed to the Drive Summary hero's own floating nav — same
+    // button diameter, same 52pt top offset from the PHYSICAL edge (MYR-196
+    // full-bleed geometry) — rather than inventing a second language.
+
+    /// Fit padding for the expanded viewer's initial framing — a touch more
+    /// generous than the tracking leg fit (`trackingLegFitPadding`, 1.28)
+    /// because nothing covers this map: the whole route should sit clear of the
+    /// header chip and the recenter button, not graze the edges.
+    public static let expandedRouteFitPadding: Double = 1.15
+
+    /// Smallest span the expanded viewer's fit will produce (~165m of latitude),
+    /// replacing `VehicleRoute.fittedRegion`'s default 0.02° (~2.2km) floor for
+    /// THIS surface only. That default floor is right for the fixed hero maps,
+    /// but on a short trip — the client's own 0.2 mi drive — it is ~10× the route,
+    /// so the "zoom in and look at it" view opened city-wide with the route a stub
+    /// in the middle. Small enough to frame a couple of blocks, large enough that a
+    /// degenerate one-point route still lands on a readable street view.
+    public static let expandedRouteMinSpanDelta: Double = 0.0015
+
+    /// Close / recenter / expand button diameter — matches
+    /// `driveSummaryFloatingButtonSize` (38) so the chip family reads as one;
+    /// each call site expands the hit area to `minTapTarget` (44).
+    public static let expandedRouteButtonSize: CGFloat = 38
+
+    /// Top offset of the expanded viewer's header row from the PHYSICAL top
+    /// edge — the Drive Summary floating nav's own offset (screens.jsx:889
+    /// `top: 52`), so closing the expanded view lands the ✕ where the ‹ was.
+    public static let expandedRouteChromeTop: CGFloat = 52
+
+    /// Bottom offset of the expanded viewer's recenter button from the PHYSICAL
+    /// bottom edge. There is no bottom chrome on this takeover, so it sits at
+    /// the `BottomNav`'s own 26pt float plus a 20pt breath above the home
+    /// indicator.
+    public static let expandedRouteRecenterBottom: CGFloat = 46
+
+    /// Bands the expanded viewer's floating chrome occupies, reserved by the fit
+    /// so the route lands BETWEEN the header chip and the recenter button rather
+    /// than running under either. Measured from the PHYSICAL edges (MYR-196), and
+    /// fed to the same `VehicleRoute.insetRegion` compensation the tracking leg
+    /// fit uses. Equal top/bottom, so the route stays optically centred.
+    public static let expandedRouteFitTopInset: CGFloat = 112
+    public static let expandedRouteFitBottomInset: CGFloat = 112
+
+    /// Legibility scrim height under the expanded viewer's header — the Drive
+    /// Summary hero's own top scrim (screens.jsx:882 `height: 100`), grown for
+    /// the taller two/three-line header.
+    public static let expandedRouteScrimHeight: CGFloat = 140
+
+    /// Vertical gap between the tracking map's recenter button and the expand
+    /// chip stacked above it — the 44pt hit target plus a hairline of air, so
+    /// the two never share a touch.
+    public static let trackingExpandButtonStackGap: CGFloat = 52
+
+    /// Scale the expanded viewer grows FROM on open / shrinks TO on close. Just
+    /// shy of 1 — the surface should read as the inline map enlarging, not as a
+    /// card flying in.
+    public static let expandedRouteEnterScale: CGFloat = 0.94
 }

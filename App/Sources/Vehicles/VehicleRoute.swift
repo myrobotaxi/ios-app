@@ -140,12 +140,21 @@ public enum VehicleRoute {
     /// the UNOBSTRUCTED area ABOVE the sheet (the destination endpoint no longer
     /// hides behind it). Defaults keep every non-inset caller (Drive Summary hero,
     /// scheduled/incoming previews) byte-identical.
+    /// MYR-327: `minimumSpanDelta` is the smallest span the fit will produce —
+    /// the floor that stops a degenerate/one-point route from framing a single
+    /// square metre. It defaults to the long-standing 0.02° (~2.2km), so every
+    /// pre-existing caller is byte-identical. The expanded route viewer passes a
+    /// much smaller floor: on a SHORT drive (the client's own 0.2 mi trip) the
+    /// 0.02° floor is ~10× the route, so "zoom in to look at it" opened on a
+    /// city-wide view with the route a stub in the middle — the floor, not the
+    /// padding, was the thing keeping it far away.
     static func fittedRegion(
         for route: [CLLocationCoordinate2D],
         paddingFactor: Double = 1.6,
         bottomInset: CGFloat = 0,
         viewHeight: CGFloat = 0,
-        topInset: CGFloat = 0
+        topInset: CGFloat = 0,
+        minimumSpanDelta: Double = 0.02
     ) -> MKCoordinateRegion {
         guard let first = route.first else {
             return MKCoordinateRegion(
@@ -153,6 +162,7 @@ public enum VehicleRoute {
                 span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
             )
         }
+        let floorSpan = max(0, minimumSpanDelta)
         var minLat = first.latitude, maxLat = first.latitude
         var minLon = first.longitude, maxLon = first.longitude
         for coordinate in route {
@@ -163,8 +173,8 @@ public enum VehicleRoute {
         }
         let center = CLLocationCoordinate2D(latitude: (minLat + maxLat) / 2, longitude: (minLon + maxLon) / 2)
         let span = MKCoordinateSpan(
-            latitudeDelta: max(0.02, (maxLat - minLat) * paddingFactor),
-            longitudeDelta: max(0.02, (maxLon - minLon) * paddingFactor)
+            latitudeDelta: max(floorSpan, (maxLat - minLat) * paddingFactor),
+            longitudeDelta: max(floorSpan, (maxLon - minLon) * paddingFactor)
         )
         return insetRegion(center: center, span: span, bottomInset: bottomInset, viewHeight: viewHeight, topInset: topInset)
     }

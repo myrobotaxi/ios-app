@@ -39,6 +39,11 @@ struct TrackingMapView: View {
     @Binding var isFollowing: Bool
     var controller: TrackingCameraController
     var showsUserLocation: Bool = false
+    /// MYR-327 — "click into the map". This map is already pannable, but the
+    /// tracking sheet covers most of it; a tap opens the full-bleed expanded
+    /// viewer where the whole route is reachable. `nil` leaves the map exactly as
+    /// it was (previews / any host that offers no expansion).
+    var onExpand: (() -> Void)?
 
     @State private var viewHeight: CGFloat = 0
     @State private var liveCameraRegion = LiveCameraRegionBox()
@@ -48,9 +53,11 @@ struct TrackingMapView: View {
     // MARK: Derived geometry
 
     private var pickupCoordinate: CLLocationCoordinate2D {
-        leg1Route.last ?? leg2Route.first ?? carCoordinate
+        TrackingRouteMapContent.pickup(leg1Route: leg1Route, leg2Route: leg2Route, carCoordinate: carCoordinate)
     }
-    private var destinationCoordinate: CLLocationCoordinate2D? { leg2Route.last }
+    private var destinationCoordinate: CLLocationCoordinate2D? {
+        TrackingRouteMapContent.destination(leg2Route: leg2Route)
+    }
 
     /// The coordinates the leg-fit camera frames: the REMAINING car → pickup in
     /// leg 1 (so the view zooms in as the car approaches), the whole pickup →
@@ -99,6 +106,10 @@ struct TrackingMapView: View {
             }
             .simultaneousGesture(DragGesture(minimumDistance: 8).onChanged { _ in handleUserGesture() })
             .simultaneousGesture(MagnifyGesture(minimumScaleDelta: 0.02).onChanged { _ in handleUserGesture() })
+            // MYR-327 — a discrete TAP (never a pan/pinch, which the two
+            // gestures above already claim) opens the expanded route viewer.
+            // `simultaneousGesture` so MapKit keeps its own recognizers intact.
+            .simultaneousGesture(TapGesture().onEnded { onExpand?() })
             .onAppear {
                 viewHeight = geo.size.height
                 engage()
@@ -172,6 +183,57 @@ struct TrackingMapView: View {
 
     @MapContentBuilder
     private var mapContent: some MapContent {
+        TrackingRouteMapContent.content(
+            leg: leg,
+            leg1Route: leg1Route,
+            leg2Route: leg2Route,
+            pickupCoordinate: pickupCoordinate,
+            destinationCoordinate: destinationCoordinate,
+            carCoordinate: carCoordinate,
+            carHeading: carHeading,
+            legProgress: legProgress,
+            showsUserLocation: showsUserLocation
+        )
+    }
+}
+
+// MARK: - TrackingRouteMapContent (MYR-327 — one recipe, two cameras)
+//
+// The two-leg route + pins + heading marker, lifted verbatim out of
+// `TrackingMapView` so the MYR-327 expanded viewer can draw EXACTLY what the
+// inline tracking map draws. Nothing about the rendering changed in the move —
+// the inline map calls straight through, so the tracking drift-gate scenes are
+// byte-identical.
+enum TrackingRouteMapContent {
+
+    /// The pickup the pins + fit use: the end of leg 1 when it exists, else the
+    /// start of leg 2, else the car itself. (Lifted from `TrackingMapView` so the
+    /// inline map and the expanded viewer can never derive different endpoints.)
+    static func pickup(
+        leg1Route: [CLLocationCoordinate2D],
+        leg2Route: [CLLocationCoordinate2D],
+        carCoordinate: CLLocationCoordinate2D
+    ) -> CLLocationCoordinate2D {
+        leg1Route.last ?? leg2Route.first ?? carCoordinate
+    }
+
+    /// The drop-off, or `nil` when leg 2 has no geometry yet.
+    static func destination(leg2Route: [CLLocationCoordinate2D]) -> CLLocationCoordinate2D? {
+        leg2Route.last
+    }
+
+    @MapContentBuilder
+    static func content(
+        leg: TrackingLeg,
+        leg1Route: [CLLocationCoordinate2D],
+        leg2Route: [CLLocationCoordinate2D],
+        pickupCoordinate: CLLocationCoordinate2D,
+        destinationCoordinate: CLLocationCoordinate2D?,
+        carCoordinate: CLLocationCoordinate2D,
+        carHeading: Double,
+        legProgress: Double,
+        showsUserLocation: Bool
+    ) -> some MapContent {
         if showsUserLocation {
             UserAnnotation()
         }
@@ -184,11 +246,11 @@ struct TrackingMapView: View {
         // The inactive leg is always drawn first so the active leg + its glow sit
         // on top.
         if leg.isLeg1Active {
-            routeLeg(leg2Route, active: false)
-            routeLeg(leg1Route, active: true)
+            routeLeg(leg2Route, active: false, legProgress: legProgress)
+            routeLeg(leg1Route, active: true, legProgress: legProgress)
         } else {
-            routeLeg(leg1Route, active: false)
-            routeLeg(leg2Route, active: true)
+            routeLeg(leg1Route, active: false, legProgress: legProgress)
+            routeLeg(leg2Route, active: true, legProgress: legProgress)
         }
 
         // Endpoints — slim Tesla-style pickup (donut lollipop) + destination
@@ -220,7 +282,7 @@ struct TrackingMapView: View {
     ///   • inactive — a single subdued same-hue line (`mrtRouteInactive`), so the
     ///     remaining trip is visibly dimmed against the live leg.
     @MapContentBuilder
-    private func routeLeg(_ route: [CLLocationCoordinate2D], active: Bool) -> some MapContent {
+    static func routeLeg(_ route: [CLLocationCoordinate2D], active: Bool, legProgress: Double) -> some MapContent {
         if route.count > 1 {
             if active {
                 // Whole leg at full strength — ahead segment included.
