@@ -61,7 +61,7 @@ final class VehicleCommandNoticeTests: XCTestCase {
             Case("rate_limited", 429, .cooldown, "Just sent \u{2014} one moment", "One sec\u{2026}"),
             // MYR-301 — 503 and 502 no longer share "Couldn't reach the car".
             Case("vehicle_asleep", 503, .asleep, "Car is asleep \u{2014} try again shortly", "Asleep"),
-            Case("command_failed", 502, .rejected, "The car didn\u{2019}t accept that", "Declined"),
+            Case("command_failed", 502, .rejected(nil), "The car didn\u{2019}t accept that", "Declined"),
             Case("invalid_request", 400, .failed, "Couldn\u{2019}t reach the car", "Failed"),
             Case("not_found", 404, .failed, "Couldn\u{2019}t reach the car", "Failed"),
         ]
@@ -87,10 +87,10 @@ final class VehicleCommandNoticeTests: XCTestCase {
     /// 503 and 502 must never read the same — that equivalence is exactly what
     /// hid "the car is asleep" behind "couldn't reach the car".
     func testAsleepAndRejectedAreDistinct() {
-        XCTAssertNotEqual(VehicleCommandNotice.asleep, .rejected)
-        XCTAssertNotEqual(VehicleCommandNotice.asleep.message, VehicleCommandNotice.rejected.message)
+        XCTAssertNotEqual(VehicleCommandNotice.asleep, .rejected(nil))
+        XCTAssertNotEqual(VehicleCommandNotice.asleep.message, VehicleCommandNotice.rejected(nil).message)
         XCTAssertNotEqual(VehicleCommandNotice.asleep.message, VehicleCommandNotice.failed.message)
-        XCTAssertNotEqual(VehicleCommandNotice.rejected.message, VehicleCommandNotice.failed.message)
+        XCTAssertNotEqual(VehicleCommandNotice.rejected(nil).message, VehicleCommandNotice.failed.message)
         // …and the settled asleep notice must not claim an ongoing wake.
         XCTAssertNotEqual(VehicleCommandNotice.asleep.message, VehicleCommandNotice.waking.message)
     }
@@ -155,7 +155,7 @@ final class VehicleCommandNoticeTests: XCTestCase {
     func testOnlyRelinkNoticesAreActionable() {
         XCTAssertEqual(VehicleCommandNotice.relink.action, .relinkTesla)
         XCTAssertEqual(VehicleCommandNotice.relinkCharging.action, .relinkTesla)
-        for notice in [VehicleCommandNotice.waking, .asleep, .pairKey, .cooldown, .rejected, .failed] {
+        for notice in [VehicleCommandNotice.waking, .asleep, .pairKey, .cooldown, .rejected(nil), .failed] {
             XCTAssertNil(notice.action, "\(notice) has no in-app fix to route to")
         }
         XCTAssertEqual(VehicleCommandNoticeAction.relinkTesla.label, "Reconnect")
@@ -167,7 +167,7 @@ final class VehicleCommandNoticeTests: XCTestCase {
     func testTransienceIsUnchangedByTheNewCases() {
         XCTAssertTrue(VehicleCommandNotice.waking.isTransient)
         XCTAssertTrue(VehicleCommandNotice.cooldown.isTransient)
-        for notice in [VehicleCommandNotice.asleep, .rejected, .failed, .relink, .relinkCharging, .pairKey] {
+        for notice in [VehicleCommandNotice.asleep, .rejected(nil), .failed, .relink, .relinkCharging, .pairKey] {
             XCTAssertFalse(notice.isTransient, "\(notice) persists until the owner acts")
         }
     }
@@ -216,6 +216,6 @@ final class VehicleCommandNoticeTests: XCTestCase {
     }
 
     private static let allNotices: [VehicleCommandNotice] = [
-        .waking, .asleep, .pairKey, .relink, .relinkCharging, .cooldown, .rejected, .failed,
+        .waking, .asleep, .pairKey, .relink, .relinkCharging, .cooldown, .rejected(nil), .failed,
     ]
 }

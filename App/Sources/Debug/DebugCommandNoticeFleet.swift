@@ -38,6 +38,16 @@ import Observation
 //     `LiveVehicleCommandExecutor.defaultNoticeDisplayDuration`, so capture at
 //     t≈2s (banner up) and t≈8s (gone), the same two-shot pattern
 //     `ownerDispatchedCompleted` uses for the 5s "Dropped off ✓" dismissal.
+//   • `.climateRejectedInService` — MYR-329, the SAME 502 on the SAME command,
+//     with the server naming the cause: `message` carries the canonical token
+//     `vehicle_in_service` (rest-api.md §7.9). The capture reads
+//     "Car is in service — commands are limited" instead of the generic line,
+//     and it is a genuine before/after against `.climateRejected`, which keeps
+//     `message: nil` and stays byte-identical. This is the client's Jul 28
+//     situation exactly: he asked whether a low battery was the cause because
+//     the generic copy gave him nothing else to reason from. No other capture
+//     route exists — it needs a car actually sitting in service mode behind a
+//     real auth session, refusing a real command.
 //
 // NOTE (MYR-301, this round) — that bounded display applies to the three variants
 // above too: they settle a REAL notice, and a real settled notice no longer lives
@@ -46,7 +56,12 @@ import Observation
 // Release builds never compile this file; it is reachable ONLY via the
 // `ownerNoticeCharge` / `ownerNoticeAsleep` / `ownerNoticeSeat` debug scenes, so
 // every other path — including the simulated drift-gate scenes — is untouched.
-enum DebugCommandNoticeVariant { case chargeRelink, asleep, seatRelink, climateRejected }
+enum DebugCommandNoticeVariant {
+    case chargeRelink, asleep, seatRelink, climateRejected
+    // MYR-329 — the named rejection. Separate from `.climateRejected` so that
+    // scene stays pixel-identical for the MYR-301 lifecycle capture.
+    case climateRejectedInService
+}
 
 @Observable
 @MainActor
@@ -94,7 +109,7 @@ final class DebugCommandNoticeFleet: VehicleFleet {
             case .asleep: try? await exec.setLocked(false)
             case .seatRelink: try? await exec.setSeatHeatLevel(.driver, level: 3)
             // The client's own action: turning climate OFF, and the car saying no.
-            case .climateRejected: try? await exec.setClimateOn(false)
+            case .climateRejected, .climateRejectedInService: try? await exec.setClimateOn(false)
             }
         }
     }
@@ -110,6 +125,18 @@ final class DebugCommandNoticeFleet: VehicleFleet {
         // rejection branch, `.rejected`).
         case .climateRejected:
             return .http(status: 502, code: ErrorPayload.Code(rawValue: "command_failed"), message: nil, subCode: nil)
+        // MYR-329 — the same 502, with the server naming the cause. The message
+        // is the REAL wire sentence `commandFailedMessage` builds server-side
+        // (internal/commands/reject_reason.go), so the capture exercises the
+        // shipping `RestError.commandRejectionReason` parse rather than a
+        // hand-set notice.
+        case .climateRejectedInService:
+            return .http(
+                status: 502,
+                code: ErrorPayload.Code(rawValue: "command_failed"),
+                message: "vehicle command failed: vehicle_in_service",
+                subCode: nil
+            )
         }
     }
 

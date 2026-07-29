@@ -623,7 +623,19 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     ///     command and refused it, which is a different fact (and a different
     ///     owner response) from being unable to reach it at all.
     /// `.transport`/`.invalidRequest`/`.notFound`/`.other` keep `.failed`.
-    static func notice(for kind: RestError.CommandFailureKind, key: VehicleControlKey) -> VehicleCommandNotice {
+    ///
+    /// MYR-329 adds `reason`: the cause the SERVER named on a `command_failed`,
+    /// or `nil` when it named none. It rides only the `.rejected` branch — the
+    /// one outcome that means the car itself refused — so no other notice can
+    /// be altered by it, and `.asleep` in particular is untouched (an asleep car
+    /// never reaches this branch: `attempt` intercepts `.vehicleAsleep` while
+    /// retries remain, and the server classifies asleep-class reasons as
+    /// `503 vehicle_asleep` rather than `502 command_failed` in the first place).
+    static func notice(
+        for kind: RestError.CommandFailureKind,
+        key: VehicleControlKey,
+        reason: VehicleCommandRejectionReason? = nil
+    ) -> VehicleCommandNotice {
         // MYR-286 — the plate write is §7.14, not §7.9. No Tesla call happens on
         // that path at all, so the whole "car" vocabulary below (asleep, waking,
         // key not paired, the car refused it) is unreachable AND untrue there.
@@ -634,7 +646,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         case .permissionDenied: key == .chargePort ? .relinkCharging : .relink
         case .notOwned, .auth: .relink
         case .rateLimited: .cooldown
-        case .commandFailed: .rejected
+        case .commandFailed: .rejected(reason)
         case .invalidRequest, .notFound, .transport, .other: .failed
         }
     }
@@ -1093,7 +1105,12 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
                 await attempt(key, command: command, apply: apply, wakeRetriesLeft: wakeRetriesLeft - 1)
                 return
             }
-            settle(key, notice: Self.notice(for: kind, key: key))
+            // MYR-329 — `commandRejectionReason` is non-nil only when the server
+            // NAMED the cause on a `command_failed`, so passing it here can
+            // never change any other outcome. The MYR-301 lifecycle is untouched:
+            // this is still one `settle`, still bounded, still cleared by the
+            // next successful reconcile.
+            settle(key, notice: Self.notice(for: kind, key: key, reason: error.commandRejectionReason))
         } catch {
             settle(key, notice: .failed)
         }
