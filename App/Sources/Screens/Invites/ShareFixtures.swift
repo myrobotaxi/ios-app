@@ -9,36 +9,85 @@ import SwiftUI
 
 /// Someone with live access to the owner's vehicle(s) (screens.jsx:35-38
 /// `VIEWERS`). Shown on both `InvitesScreen` and `SettingsScreen`.
+///
+/// MYR-184 — the identity moved from `email` to an explicit `id`. The prototype
+/// keyed viewers by email because its mock data had one; the SHIPPING contract is
+/// code-based and carries no email anywhere (§7.5: "Nothing in this family
+/// accepts, stores, or resolves an email address"), so `email` is now SIM-ONLY
+/// and the live row is keyed by its server invite id.
 public struct Viewer: Identifiable, Equatable, Sendable {
-    public var id: String { email }
+    public let id: String
     public let name: String
-    public let email: String
+    /// SIM ONLY — the prototype's fixture address. `nil` on the live path: the
+    /// server never sends one, and rendering a fabricated address on a real
+    /// viewer row would be exactly the MYR-228 class of lie.
+    public let email: String?
+    /// v1 has NO presence signal for a viewer — the wire carries no `isOnline`
+    /// (the pre-MYR-184 shape that had one never shipped). Always `false` on the
+    /// live path, so the dot stays OFF and the row never claims someone is
+    /// watching. The fixtures keep their values so SIM is pixel-identical.
     public let online: Bool
     /// Human-readable permission label, e.g. "Live location" / "Live + history".
     public let perm: String
+    /// MYR-184 — the cumulative tier this grant actually carries, when known
+    /// (live rows always; fixtures derive it from `perm`). `perm` remains the
+    /// rendered string; this is what any capability decision reads.
+    public let tier: ShareAccessLevel?
 
-    public init(name: String, email: String, online: Bool, perm: String) {
+    public init(id: String? = nil, name: String, email: String?, online: Bool, perm: String, tier: ShareAccessLevel? = nil) {
+        self.id = id ?? email ?? name
         self.name = name
         self.email = email
         self.online = online
         self.perm = perm
+        self.tier = tier
     }
 }
 
 /// An invite that has been sent but not yet accepted (screens.jsx:39-41 `PENDING`).
 public struct PendingInvite: Identifiable, Equatable, Sendable {
-    public var id: String { email }
+    public let id: String
     public let name: String
-    public let email: String
+    /// SIM ONLY — see ``Viewer/email``. `nil` on the live path.
+    public let email: String?
+    /// LIVE ONLY — the 6-character redemption code, present while the invite is
+    /// `pending` (§7.5.2: `code` appears only on pending rows). `nil` in SIM,
+    /// which has no server to mint one. This is the thing the owner actually
+    /// hands out, so it is what the live row's caption names.
+    public let code: String?
     /// "2d ago" / "just now" — a relative-time label, not a real Date; the
     /// prototype never re-renders this against a clock (screens.jsx:1264
     /// sets the literal string `'just now'` on send/resend).
     public var sent: String
+    /// MYR-184 — the tier the owner chose. The prototype's `doSend` DISCARDED
+    /// `accessLevel` entirely (screens.jsx:1258-1266, and this port's original
+    /// `sendInvite(email:accessLevel:)` did the same); carrying it is what lets a
+    /// pending row say what it will grant.
+    public let tier: ShareAccessLevel?
 
-    public init(name: String, email: String, sent: String) {
+    public init(
+        id: String? = nil,
+        name: String,
+        email: String?,
+        code: String? = nil,
+        sent: String,
+        tier: ShareAccessLevel? = nil
+    ) {
+        self.id = id ?? email ?? name
         self.name = name
         self.email = email
+        self.code = code
         self.sent = sent
+        self.tier = tier
+    }
+
+    /// What the row's caption renders before the "· sent" clause. SIM shows the
+    /// fixture email verbatim (pixel-identical to the prototype); LIVE shows the
+    /// code, which is the only handle either party has on this invite.
+    public var captionLead: String {
+        if let email { return email }
+        if let code { return "Code \(code)" }
+        return ""
     }
 }
 
@@ -48,6 +97,13 @@ public enum ShareAccessLevel: String, CaseIterable, Identifiable, Sendable {
     case live, history, rides
 
     public var id: String { rawValue }
+
+    /// MYR-184 — recover the tier from the rendered permission label, so a
+    /// fixture row (which only ever carried the string) still reports a tier.
+    /// Never used on the live path, which maps the wire enum directly.
+    public static func fromPermLabel(_ label: String) -> ShareAccessLevel? {
+        allCases.first { $0.info.perm == label }
+    }
 
     public var info: ShareAccessInfo {
         switch self {
@@ -99,13 +155,13 @@ public struct ShareCapability: Identifiable, Sendable {
 
 public enum ShareFixtures {
     public static let viewers: [Viewer] = [
-        Viewer(name: "Mira Chen", email: "mira@chen.co", online: true, perm: "Live location"),
-        Viewer(name: "Jonas Park", email: "jonas.park@hey", online: true, perm: "Live + history"),
-        Viewer(name: "Aanya Iyer", email: "aanya@iyer.dev", online: false, perm: "Live location"),
+        Viewer(name: "Mira Chen", email: "mira@chen.co", online: true, perm: "Live location", tier: .live),
+        Viewer(name: "Jonas Park", email: "jonas.park@hey", online: true, perm: "Live + history", tier: .history),
+        Viewer(name: "Aanya Iyer", email: "aanya@iyer.dev", online: false, perm: "Live location", tier: .live),
     ]
 
     public static let pending: [PendingInvite] = [
-        PendingInvite(name: "Diego Vega", email: "d.vega@studio.io", sent: "2d ago"),
+        PendingInvite(name: "Diego Vega", email: "d.vega@studio.io", sent: "2d ago", tier: .live),
     ]
 
     /// screens.jsx:1231-1235, in display order (top → bottom of the summary card).
@@ -149,12 +205,24 @@ public enum ShareDialogs {
     }
 
     /// "Resend invite?" — positive/gold, InvitesScreen only.
+    ///
+    /// MYR-184: the SIM copy is the prototype's verbatim (an email it has a
+    /// fixture address for). The LIVE copy says what actually happens — §7.5.4
+    /// mints a NEW code and invalidates the previous one across every vehicle the
+    /// invite covers — because "we'll email it again" would be false twice over
+    /// (no email is sent, and the old code stops working).
     public static func resend(_ invite: PendingInvite, action: @escaping () -> Void) -> MRTConfirmDialogConfig {
-        MRTConfirmDialogConfig(
+        let message: String
+        if let email = invite.email {
+            message = "We\u{2019}ll email the invite to \(email) again."
+        } else {
+            message = "\(invite.name) gets a new code to share. The old code stops working right away."
+        }
+        return MRTConfirmDialogConfig(
             kind: .positive,
             icon: "paperplane.fill",
             title: "Resend invite?",
-            message: "We\u{2019}ll email the invite to \(invite.email) again.",
+            message: message,
             actionLabel: "Resend invite",
             dismissLabel: "Not now",
             action: action

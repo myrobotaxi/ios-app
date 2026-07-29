@@ -39,7 +39,24 @@ let package = Package(
         // `snapshotOnlyFields` rather than folded — see `VehicleStateMerger`.
         // (0.17.0 added `serviceEstimatedEndAt`; 0.16.0 the eight media
         // now-playing fields + `seatCoolingCapable`.)
-        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.18.0")
+        // MYR-184 — 0.19.0 adds the whole VEHICLE-SHARING family (rest-api.md §7.5):
+        //   • `SharePermission` — `live | live_history | rides`, STRICTLY CUMULATIVE
+        //     (live < live_history < rides). Consumers MUST compare with `>=` over
+        //     that order, never equality — see `SharePermission.grants(_:)` below.
+        //   • `ShareInvite` / `ShareInviteListResponse` — the OWNER-facing grant row
+        //     in its two wire lives (`pending`, carrying the redeemable `code` +
+        //     `expiresAt`; `accepted`, carrying `acceptedAt`). Never delivered to an
+        //     invited party. The list envelope key is `invites`, NOT `items`.
+        //   • `CreateShareInviteRequest` — `{ label, permission, vehicleIds? }`.
+        //   • `RedeemShareInviteRequest` / `RedeemShareInviteResponse` — the RIDER's
+        //     `{ code }` → `{ ownerFirstName, vehicles }` join, the only sharing
+        //     payload an invited party ever sees.
+        // It also appends `VehicleSummary.sharePermission` (OPTIONAL, emitted iff
+        // `role` is `viewer`); an ABSENT value on a viewer row means the LOWEST tier,
+        // never full access — never fail open.
+        // (0.18.0 added `VehicleState.trimLabel` + `fsdVersion`; 0.17.0
+        // `serviceEstimatedEndAt`; 0.16.0 the media now-playing fields.)
+        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.19.0")
     ],
     targets: [
         .target(

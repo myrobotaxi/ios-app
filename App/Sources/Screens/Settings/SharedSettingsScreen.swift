@@ -18,13 +18,16 @@ struct SharedSettingsScreen: View {
     /// the fixture "Sam Rivera"). When non-nil, the profile card shows real
     /// name/email and the "Switch to Owner" row appears.
     var liveProfile: UserProfile? = nil
-    /// MYR-255 — the resolved live/simulated gate (threaded from `RootView`,
-    /// MYR-214/228). On the LIVE path the fixture "Shared with me" personas
-    /// (Alex/Mom/Jordan) must NOT render — there is no shared-with-me/invites-
-    /// accepted backend endpoint yet (GET /api/vehicles is owner-rows-only per
-    /// contract §7.0 RBAC v1), so live shows an honest empty state. Simulated
-    /// keeps the fixtures so the M1 experience is pixel-identical.
-    var isLive: Bool = false
+    /// MYR-184 — the rider's shared-vehicle catalog, the ONE source for the
+    /// "Shared with me" list in BOTH modes.
+    ///
+    /// This supersedes MYR-255's `isLive` gate, which existed because there was
+    /// no shared-with-me endpoint at all and the live path therefore had to render
+    /// an honest empty state rather than the fixture personas (Alex/Mom/Jordan).
+    /// MYR-184's viewer merge lands those rows on `GET /api/vehicles` with
+    /// `role: viewer`, so the live list is now REAL. The simulated catalog
+    /// publishes the prototype's three personas verbatim, so SIM is unchanged.
+    var catalog: any SharedVehicleCatalog = SimulatedSharedVehicleCatalog()
     /// MYR-186 — see `SettingsScreen.pushAuthorization`.
     var pushAuthorization: PushAuthorizationState = .notDetermined
     /// MYR-224 — flip to the owner shell. Only invoked from the switch row, which
@@ -75,25 +78,11 @@ struct SharedSettingsScreen: View {
         liveProfile?.avatarInitial ?? String(firstName.prefix(1)).uppercased()
     }
 
-    /// shared-screens.jsx:456-459 `sharedWith` — a local literal array in the
-    /// prototype (not a hoisted fixture like `VIEWERS`), ported the same way.
-    private struct SharedVehicleAccess: Identifiable {
-        let owner: String
-        let relationship: String
-        let vehicle: String
-        let access: String
-        var id: String { owner }
-    }
-
-    private static let sharedWith: [SharedVehicleAccess] = [
-        SharedVehicleAccess(owner: "Alex", relationship: "Roommate", vehicle: "Cybercab", access: "Request rides"),
-        SharedVehicleAccess(owner: "Mom", relationship: "Family", vehicle: "Model Y", access: "Request rides"),
-        SharedVehicleAccess(owner: "Jordan", relationship: "Friend", vehicle: "Model 3", access: "Request rides"),
-    ]
-
-    /// The rows actually rendered: the fixtures in SIM, an EMPTY list on the live
-    /// path (no shared-vehicle endpoint yet → honest empty state, MYR-228/255).
-    private var sharedList: [SharedVehicleAccess] { isLive ? [] : Self.sharedWith }
+    /// The rows actually rendered. shared-screens.jsx:456-459 `sharedWith` was a
+    /// local literal array in the prototype (not a hoisted fixture like `VIEWERS`);
+    /// it now lives on `SimulatedSharedVehicleCatalog`, so this screen reads ONE
+    /// seam in both modes and the live rows arrive by the same path.
+    private var sharedList: [SharedVehicleGrant] { catalog.grants }
 
     var body: some View {
         ZStack {
@@ -128,6 +117,9 @@ struct SharedSettingsScreen: View {
             isPresented: $confirmSignOut,
             config: ShareDialogs.signOutGuest(action: onSignOut)
         )
+        // MYR-184 — refresh on arrival so a grant revoked by its owner stops
+        // being listed here. No-op in sim.
+        .task { await catalog.load() }
     }
 
     // MARK: Header (shared-screens.jsx:694-696 `'74px 24px 12px'`)
@@ -242,21 +234,24 @@ struct SharedSettingsScreen: View {
         .padding(.vertical, 13)
     }
 
-    private func sharedWithRow(_ entry: SharedVehicleAccess, isFirst: Bool) -> some View {
+    private func sharedWithRow(_ entry: SharedVehicleGrant, isFirst: Bool) -> some View {
         HStack(spacing: 12) {
             ZStack {
                 Circle().fill(Color.mrtElevated)
-                Text(entry.owner.prefix(1))
+                // The initial of whatever the row is titled — the persona's name
+                // in SIM, the vehicle's nickname on live (which has no owner name
+                // to take an initial from; see `SharedVehicleGrant.ownerName`).
+                Text(entry.title.prefix(1))
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.mrtText)
             }
             .frame(width: 32, height: 32)
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(entry.owner)\u{2019}s \(entry.vehicle)")
+                Text(entry.title)
                     .font(.system(size: 14, weight: .medium))
                     .tracking(-0.1)
                     .foregroundStyle(Color.mrtText)
-                Text("\(entry.relationship) \u{00B7} \(entry.access)")
+                Text(entry.caption)
                     .font(.system(size: 11.5))
                     .foregroundStyle(Color.mrtTextSec)
             }

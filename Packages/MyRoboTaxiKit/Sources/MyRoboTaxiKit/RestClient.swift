@@ -17,7 +17,7 @@ public protocol SnapshotFetching: Sendable {
 ///
 /// Value type (`Sendable`): all dependencies are immutable, so it is free to
 /// share across tasks without a serialization bottleneck.
-public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleServiceWindowEndpoint, VehicleRefreshing, VehicleCommandSending, PushDeviceEndpoint {
+public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleServiceWindowEndpoint, VehicleRefreshing, VehicleCommandSending, VehicleSharingEndpoint, PushDeviceEndpoint {
     private let environment: BackendEnvironment
     private let tokenProvider: any TokenProvider
     private let http: any HTTPPerforming
@@ -363,6 +363,69 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
             body: nil,
             allowTokenRefresh: true
         )
+    }
+
+    // MARK: - Vehicle sharing (rest-api.md §7.5, MYR-184)
+    //
+    // Every body and every response here is a generated contracts v0.19.0 type —
+    // this family authors no local wire shapes at all (contrast §7.14/§7.16, whose
+    // write bodies predate codegen coverage). All five run the standard
+    // authenticated pipeline (Bearer + single 401 refresh-retry).
+
+    /// `POST /api/vehicles/{vehicleId}/invites` (§7.5.1) — mint one code across the
+    /// requested vehicle set. See ``VehicleSharingEndpoint/createShareInvite(_:vehicleID:)``.
+    public func createShareInvite(_ body: CreateShareInviteRequest, vehicleID: String) async throws -> ShareInvite {
+        try await post(["vehicles", vehicleID, "invites"], body: body)
+    }
+
+    /// `GET /api/vehicles/{vehicleId}/invites` (§7.5.2) — the owner's rows for one
+    /// vehicle. The `invites` envelope is unwrapped here; it is deliberately NOT the
+    /// `items`/`nextCursor`/`hasMore` shape of the paginated lists (this surface is
+    /// unpaginated by contract), which is exactly why it must not be routed through
+    /// any pagination helper.
+    public func shareInvites(vehicleID: String) async throws -> [ShareInvite] {
+        let response: ShareInviteListResponse = try await get(["vehicles", vehicleID, "invites"])
+        return response.invites
+    }
+
+    /// `DELETE /api/invites/{inviteId}` (§7.5.3) — cancel a pending invite or revoke
+    /// an accepted grant. `204 No Content`, so this runs `performDiscardingBody`:
+    /// `perform` would fail a zero-byte 204 with `RestError.decoding`.
+    public func revokeShareInvite(inviteID: String) async throws {
+        try await performDiscardingBody(
+            ["invites", inviteID],
+            method: "DELETE",
+            body: nil,
+            allowTokenRefresh: true
+        )
+    }
+
+    /// `POST /api/invites/{inviteId}/resend` (§7.5.4) — new code, fresh 7-day
+    /// expiry, every sibling row re-minted atomically. The body is the PATH row.
+    /// `409` (already accepted) surfaces typed via `RestError.isShareInviteAlreadyAccepted`.
+    public func resendShareInvite(inviteID: String) async throws -> ShareInvite {
+        try await post(["invites", inviteID, "resend"], body: Optional<Empty>.none)
+    }
+
+    /// `POST /api/invites/redeem` (§7.5.5) — the rider's join.
+    ///
+    /// The code is normalized CLIENT-SIDE (upper-case, strip everything outside
+    /// `[A-Z0-9]`) before sending, exactly as the contract instructs and exactly as
+    /// the entry field already does — the server normalizes identically, so this is
+    /// belt-and-braces for a caller that did not come through the six-cell field.
+    /// The code is a live bearer credential: it is never logged and never echoed.
+    public func redeemShareInvite(code: String) async throws -> RedeemShareInviteResponse {
+        let normalized = Self.normalizedInviteCode(code)
+        return try await post(["invites", "redeem"], body: RedeemShareInviteRequest(code: normalized))
+    }
+
+    /// §7.5.5 code normalization: upper-case, then keep only `[A-Z0-9]`. Mirrors
+    /// the design's entry field (`onboarding.jsx` `InviteCodeFlow` onChange), so a
+    /// code pasted with a stray space or hyphen still redeems.
+    static func normalizedInviteCode(_ raw: String) -> String {
+        String(raw.uppercased().unicodeScalars.filter {
+            $0.isASCII && (CharacterSet.uppercaseLetters.contains($0) || CharacterSet.decimalDigits.contains($0))
+        }.map(Character.init))
     }
 
     // MARK: - APNs device-token registration (MYR-186)

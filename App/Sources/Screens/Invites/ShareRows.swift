@@ -73,9 +73,20 @@ struct PendingRow: View {
                 // auto-links the email-shaped run in the accent color,
                 // ignoring `.foregroundStyle` (see InvitesScreen's
                 // `emailRow` comment).
-                Text(verbatim: "\(invite.email) \u{00B7} \(invite.sent)")
+                Text(verbatim: "\(invite.captionLead) \u{00B7} \(invite.sent)")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.mrtTextMuted)
+                // MYR-184 — the tier the owner chose, which the prototype
+                // DISCARDED on send (`doSend` dropped `accessLevel`), so a
+                // pending row could not say what it would grant. Rendered only on
+                // a code-based row: a fixture row carries an email in the line
+                // above and stays byte-identical to the prototype.
+                if invite.email == nil, let tier = invite.tier {
+                    Text(tier.info.perm)
+                        .font(.system(size: 11))
+                        .tracking(0.2)
+                        .foregroundStyle(Color.mrtTextMuted)
+                }
             }
             Spacer(minLength: 0)
             textButton("Resend", color: .mrtGold, action: onResend)

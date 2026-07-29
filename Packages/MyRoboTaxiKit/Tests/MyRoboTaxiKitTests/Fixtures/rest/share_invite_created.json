@@ -1,0 +1,15 @@
+{
+  "_meta": {
+    "description": "201 body of POST /api/vehicles/{vehicleId}/invites (rest-api.md §7.5.1), transcribed verbatim from the spec example. The row is for the PATH vehicle; on a multi-vehicle create the sibling rows are NOT returned and this `code` is the one to hand out for all of them. `code` + `expiresAt` are present because the row is `pending`; `acceptedAt` is omitted for the same reason.",
+    "scenario": "happy-path",
+    "addedBy": "MYR-184"
+  },
+  "inviteId": "csh0123456789abcdef0123456789abcd",
+  "vehicleId": "clxyz1234567890abcdef",
+  "label": "Mira Chen",
+  "permission": "live_history",
+  "status": "pending",
+  "code": "RBO246",
+  "createdAt": "2026-07-29T15:04:05Z",
+  "expiresAt": "2026-08-05T15:04:05Z"
+}

@@ -1,0 +1,27 @@
+{
+  "_meta": {
+    "description": "200 body of POST /api/invites/redeem (rest-api.md §7.5.5) — the only sharing payload an invited party ever sees. `ownerFirstName` is the sharing owner's FIRST NAME only (no surname, no email, no user id). `vehicles` are ordinary viewer-masked VehicleSummary rows, identical in shape to §7.0, so the client can seed its catalog from this one response; always non-empty, every row `role: viewer` with a `sharePermission`.",
+    "scenario": "happy-path",
+    "addedBy": "MYR-184"
+  },
+  "ownerFirstName": "Alex",
+  "vehicles": [
+    {
+      "vehicleId": "clxyz1234567890abcdef",
+      "name": "Alex's Model 3",
+      "model": "Model 3",
+      "year": 2024,
+      "color": "Pearl White",
+      "licensePlate": "8ABC123",
+      "vinLast4": "0001",
+      "status": "parked",
+      "chargeLevel": 72,
+      "estimatedRange": 210,
+      "lastUpdated": "2026-07-29T15:04:05Z",
+      "hasActiveRide": false,
+      "serviceEstimatedEndAt": null,
+      "role": "viewer",
+      "sharePermission": "rides"
+    }
+  ]
+}

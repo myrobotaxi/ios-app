@@ -54,8 +54,25 @@ public final class SharedViewerState {
     /// Teslas the rider can actually *request* in Review; M1 fixes the
     /// resting map's view to this one vehicle regardless of which fleet
     /// member ends up carrying an active request.
-    public let vehicle: Vehicle
-    public let telemetrySource: any VehicleTelemetrySource
+    ///
+    /// MYR-184 — now OPTIONAL, and that is the point. It used to default to
+    /// `VehicleFixtures.vehicles[0]` with **no live gate at all**: a signed-in
+    /// rider with nothing shared with them watched a map captioned "Cybercab", a
+    /// car that does not exist on any account (MYR-228 fix (c)). On the live path
+    /// it is seeded `nil` and ADOPTED from the first `role: viewer` row in
+    /// `SharedVehicleCatalog`; `nil` means the shell renders its honest empty
+    /// state instead of this screen. SIM still seeds `VehicleFixtures.vehicles[0]`,
+    /// so every simulated + DEBUG capture is unchanged.
+    public private(set) var sharedVehicle: Vehicle?
+    /// The rider's watched-vehicle telemetry. Still the MYR-191 SIMULATED source
+    /// even for a real shared car: a rider-side live subscription is the
+    /// shared-viewer live join (noted in `RiderLiveVehicleLocator`), not MYR-184's
+    /// scope. What MYR-184 fixes is the vehicle's IDENTITY — the name, model,
+    /// plate and status now come from the real `VehicleSummary` through the
+    /// production `VehicleContractMapping`, so the map is no longer captioned with
+    /// a fixture car. Re-created on adoption so the source's activity matches the
+    /// vehicle it belongs to.
+    public private(set) var telemetrySource: any VehicleTelemetrySource
 
     // MARK: MYR-211 — real place search + location seams
     //
@@ -113,9 +130,18 @@ public final class SharedViewerState {
 
     /// Designated init taking the composed seams (`PlaceSearchComposition.make()`
     /// wires live vs. sim in `RootView`). Internal — `Seams` is a module type.
-    init(vehicle: Vehicle = VehicleFixtures.vehicles[0], seams: PlaceSearchComposition.Seams) {
-        self.vehicle = vehicle
-        telemetrySource = SimulatedVehicleTelemetrySource(activity: vehicle.activity)
+    init(vehicle: Vehicle? = VehicleFixtures.vehicles[0], seams: PlaceSearchComposition.Seams) {
+        // MYR-184/228 — the ONE gate. `RootView` passes `nil` on the live path
+        // (the vehicle arrives from the catalog); every other caller keeps the
+        // fixture default, so sim is unchanged.
+        sharedVehicle = vehicle
+        telemetrySource = SimulatedVehicleTelemetrySource(
+            // No vehicle yet → an EMPTY parked activity carrying no fixture
+            // geometry and no fixture label at all. It is never on screen (the
+            // shell renders its empty state while `sharedVehicle` is nil), and it
+            // exists only so the source is non-optional for the rest of the class.
+            activity: vehicle?.activity ?? Self.unknownActivity
+        )
         placeSearch = seams.placeSearch
         userLocation = seams.userLocation
         liveVehicleLocator = seams.liveVehicleLocator
@@ -133,6 +159,79 @@ public final class SharedViewerState {
     }
 
     public var snapshot: VehicleTelemetrySnapshot { telemetrySource.snapshot }
+
+    // MARK: - MYR-184 — adopting the real shared vehicle
+
+    /// A parked activity with NO fixture content — no SF coordinate, no fixture
+    /// label, no park time. The honest stand-in for "we do not have a vehicle",
+    /// mirroring `VehicleContractMapping.placeholderActivity`'s own unknown case.
+    private static let unknownActivity = VehicleActivity.parked(
+        ParkedLocation(
+            label: "",
+            coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0),
+            parkedSince: nil
+        )
+    )
+
+    /// A vehicle with NO fixture content: no name, no plate, no model. The map's
+    /// input for the brief window between "the rider has nothing" and the shell
+    /// swapping to its empty state. Deliberately NOT `VehicleFixtures.vehicles[0]`
+    /// — that default with no live gate is the MYR-228 defect this issue fixes,
+    /// and a placeholder that renders an empty label is honest where "Cybercab"
+    /// is a lie.
+    private static let unknownVehicle = Vehicle(
+        id: "",
+        name: "",
+        model: "",
+        colorName: "",
+        plate: "",
+        seatHeat: false,
+        seatVent: false,
+        activity: unknownActivity
+    )
+
+    /// What the rider's map renders: the adopted shared vehicle, else the
+    /// contentless placeholder above.
+    public var mapVehicle: Vehicle { sharedVehicle ?? Self.unknownVehicle }
+
+    /// MYR-184 §7.5.0 — the rider's client-side capability gate for the vehicle
+    /// they are watching. `true` when the grant is on the top (`rides`) tier, or
+    /// on ANY simulated path (the prototype's rider can always request; every
+    /// simulated + DEBUG scene must stay pixel-identical).
+    ///
+    /// AFFORDANCE HINT ONLY — the server enforces §7.8's non-owner gate itself.
+    /// What this prevents is the app offering a "Where to?" that will 403.
+    public var canRequestRides: Bool {
+        guard let sharedVehicleTier else { return true }
+        return sharedVehicleTier == .rides
+    }
+
+    /// The tier of the grant behind `sharedVehicle`, or `nil` when tiers do not
+    /// apply (sim, and any path with no catalog behind it).
+    public private(set) var sharedVehicleTier: ShareAccessLevel?
+
+    /// Adopt the vehicle the rider actually has access to (MYR-184) — the first
+    /// `role: viewer` row in `SharedVehicleCatalog`.
+    ///
+    /// Idempotent by identity: re-adopting the SAME vehicle id is a no-op, so a
+    /// catalog refresh on every foreground does not tear down and re-create the
+    /// telemetry source (which would restart the ticker and jump the map) on a
+    /// list that has not changed.
+    func adoptSharedVehicle(_ grant: SharedVehicleGrant?) {
+        sharedVehicleTier = grant?.tier
+        adoptSharedVehicle(grant?.vehicle)
+    }
+
+    public func adoptSharedVehicle(_ vehicle: Vehicle?) {
+        guard sharedVehicle?.id != vehicle?.id else { return }
+        let wasRunning = telemetryStarted
+        telemetrySource.stop()
+        sharedVehicle = vehicle
+        telemetrySource = SimulatedVehicleTelemetrySource(
+            activity: vehicle?.activity ?? Self.unknownActivity
+        )
+        if wasRunning, vehicle != nil { telemetrySource.start() }
+    }
 
     // MARK: MYR-177 — live ride tracking (route provider + leg-fit camera owner)
     //
