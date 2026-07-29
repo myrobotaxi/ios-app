@@ -61,6 +61,10 @@ struct HomeScreen: View {
     /// off"). Reset on every status change so a re-shown button is tappable again
     /// (MYR-265 review: never leave the CTA permanently greyed after one advance).
     @State private var dispatchInFlight = false
+    /// MYR-332 — the sheet's RESOLVED detent heights, reported by
+    /// `MRTDetentSheet` (ascending: peek, half, tall). Only the TALL entry is
+    /// consumed, by `mapBottomInset`; see it for why half deliberately is not.
+    @State private var sheetDetentHeights: [CGFloat] = []
 
     /// MYR-171 — `IncomingRequestSheet` shows only while there's a request
     /// actually awaiting this owner's decision; once accepted/declined the
@@ -234,7 +238,7 @@ struct HomeScreen: View {
         // content declared above (matching the jsx's nav zIndex 40 vs. sheet
         // zIndex 30) and overlaps the sheet's bottom edge exactly like the
         // prototype.
-        .mrtBottomNav(selection: $ownerTab, hidden: homeState.sheetDetent == .half)
+        .mrtBottomNav(selection: $ownerTab, hidden: sheetCoversMap)
         .onAppear { homeState.startTelemetry() }
         .onChange(of: homeState.selectedVehicleIndex) { _, _ in
             isFollowing = true
@@ -386,7 +390,7 @@ struct HomeScreen: View {
             // Keeps MapKit's legal attribution label clear of the
             // (now physically flush) sheet below — see `VehicleMapView`'s
             // doc comment and MYR-196 punch-list #2.
-            bottomContentInset: peekHeight,
+            bottomContentInset: mapBottomInset(peekHeight: peekHeight),
             // MYR-277 B — draw the dispatched car→pickup route (leg 1) while the
             // owner's active ride is heading to the pickup (accepted/arrived).
             pickupCoordinate: leg1PickupCoordinate
@@ -402,7 +406,7 @@ struct HomeScreen: View {
         // full-bleed geometry (CLAUDE.md "Hard rules").
         FloatingMapButton(
             bottom: peekHeight + MRTMetrics.mapButtonBottomGap,
-            hidden: isFollowing || homeState.sheetDetent == .half
+            hidden: isFollowing || sheetCoversMap
         ) {
             isFollowing = true
         }
@@ -419,6 +423,14 @@ struct HomeScreen: View {
             detent: $homeState.sheetDetent,
             peekHeight: peekHeight,
             halfHeightFraction: MRTMetrics.homeHalfHeightFraction,
+            // MYR-332 (client ask) — the owner sheet stops at half today and the
+            // rest of the controls stack is reachable only by scrolling INSIDE
+            // it; the third detent lets the sheet itself be pulled up to the
+            // grammar's tallest surface (`MRTMetrics.sheetTallTopClearance`).
+            // Peek and half are untouched: same heights, same crossfade endpoints,
+            // same MYR-315 peek-band rule.
+            allowsTallDetent: true,
+            onResolvedHeights: { sheetDetentHeights = $0 },
             peek: {
                 // LOW layer — summary hero only, at the same top position and
                 // gutter as the expanded layer's summary so the crossfade reads
@@ -439,6 +451,31 @@ struct HomeScreen: View {
                 }
             }
         )
+    }
+
+    /// MYR-332 — the map's bottom content inset, which now FOLLOWS the sheet up
+    /// to the tall detent.
+    ///
+    /// Peek and half are deliberately left EXACTLY as they were (`peekHeight`,
+    /// the number this screen has always passed): the half detent's map framing
+    /// is what every `MRT_OWNER_DETENT=half` drift-gate capture was taken
+    /// against, and re-insetting it would move the camera in all of them for no
+    /// client-visible gain — at half the sheet already covers the band the
+    /// attribution would move into. The TALL detent is new geometry with no
+    /// capture to preserve, and there the old inset would strand MapKit's legal
+    /// attribution behind the sheet, so it tracks the real height.
+    private func mapBottomInset(peekHeight: CGFloat) -> CGFloat {
+        guard homeState.sheetDetent == .tall, let tall = sheetDetentHeights.last,
+              tall.isFinite, tall > peekHeight
+        else { return peekHeight }
+        return tall
+    }
+
+    /// MYR-332 — the detents at which the owner sheet covers the map: the
+    /// floating nav and the recenter button both stand down, exactly as they
+    /// already did at half.
+    private var sheetCoversMap: Bool {
+        homeState.sheetDetent == .half || homeState.sheetDetent == .tall
     }
 
     /// MYR-315 — how much taller the peek band must be than the prototype's

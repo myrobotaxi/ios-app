@@ -537,12 +537,23 @@ enum DebugScene: String, CaseIterable {
     /// Drift-gate flag for the `ownerHome` scene (MYR-236 r5.3): when
     /// `MRT_OWNER_DETENT=half` is set (env or `-MRT_OWNER_DETENT half` arg), the
     /// owner sheet boots resting at the HALF detent so the at-rest-half full-
-    /// frame can be captured without a synthesized drag. DEBUG-only.
-    static var initialOwnerDetentHalf: Bool {
-        if ProcessInfo.processInfo.environment["MRT_OWNER_DETENT"] == "half" { return true }
+    /// frame can be captured without a synthesized drag.
+    ///
+    /// MYR-332 adds `MRT_OWNER_DETENT=tall` for the new third detent, on the same
+    /// spelling — headless tooling can no more drag to tall than it could to
+    /// half. Unset, every scene boots at PEEK exactly as before. DEBUG-only.
+    static var initialOwnerDetent: MRTSheetDetent? {
+        func parse(_ raw: String?) -> MRTSheetDetent? {
+            switch raw {
+            case "half": return .half
+            case "tall": return .tall
+            default: return nil
+            }
+        }
+        if let value = parse(ProcessInfo.processInfo.environment["MRT_OWNER_DETENT"]) { return value }
         let args = ProcessInfo.processInfo.arguments
-        if let i = args.firstIndex(of: "-MRT_OWNER_DETENT"), i + 1 < args.count { return args[i + 1] == "half" }
-        return false
+        if let i = args.firstIndex(of: "-MRT_OWNER_DETENT"), i + 1 < args.count { return parse(args[i + 1]) }
+        return nil
     }
 
     /// Drift-gate selector for the `ownerHome` scene (MYR-236 r5.3): boots with

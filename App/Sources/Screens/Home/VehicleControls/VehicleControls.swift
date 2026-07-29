@@ -196,18 +196,6 @@ struct VehicleControls: View {
     /// on the simulated path (all fields known, so this is never consulted).
     private var hasSnapshot: Bool { isStreaming != nil }
 
-    /// The stale "X ago" label for a KNOWN safety value (Trunk/Lock), or `nil`
-    /// when the value is fresh enough to show bare. MYR-281: the qualifier now
-    /// appears ONLY once a value is genuinely STALE (past the freshness
-    /// threshold), so the everyday case keeps a short, uniform sub ("Closed", not
-    /// "Closed · just now") — the sub-60s "just now" is dropped. A non-streaming
-    /// car past the threshold still surfaces how long ago it was heard from, and
-    /// the footer always states "Not live", so honesty (MYR-260) is preserved.
-    private var staleAgo: String? {
-        VehicleControlFreshness.staleQualifier(
-            isStreaming: isStreaming, lastUpdated: lastUpdated, now: Date())
-    }
-
     /// The honest freshness footer. The simulated path (no `isStreaming` signal)
     /// keeps the original "Updated just now · Live" copy so M1 stays pixel-identical;
     /// a streaming car is genuinely live; a non-streaming car never claims "Live"
@@ -255,15 +243,20 @@ struct VehicleControls: View {
 
     private var lockTile: some View {
         let known = executor.isKnown(.locked)
-        // Fresh known → the affordance hint; stale known → an honest freshness
-        // note (the label already carries Locked/Unlocked, so the sub leads with
-        // when it was last synced); unknown → Syncing/Unavailable (MYR-260).
+        // MYR-335 — the sub is the ACTION the tap performs. The prototype spells
+        // it "Tap to unlock" (vehicle-controls.jsx:245), which does not fit its
+        // OWN tile: measured in the running prototype at 402pt it ellipsizes to
+        // "Tap to u…" (scrollWidth 65 vs clientWidth 56), and on iOS SF Pro it is
+        // 71.9pt against 49.75pt on the narrowest supported device — the client's
+        // "Tap to unl…". The verb alone says the same thing (the tile IS a button;
+        // "Tap to" was never carrying meaning) and the STATE is already the label
+        // right above it. Unknown → the tile-form Syncing / No data (MYR-260 copy,
+        // MYR-335 widths).
         let sub: String
         if known {
-            sub = staleAgo.map { "Synced \($0)" }
-                ?? (controls.locked ? "Tap to unlock" : "Tap to lock")
+            sub = controls.locked ? "Unlock" : "Lock"
         } else {
-            sub = VehicleControlFreshness.unknownSub(hasSnapshot: hasSnapshot, isStreaming: isStreaming)
+            sub = VehicleControlFreshness.tileUnknownSub(hasSnapshot: hasSnapshot, isStreaming: isStreaming)
         }
         return ControlTile(
             icon: known ? (controls.locked ? "lock.fill" : "lock.open.fill") : "lock",
@@ -271,7 +264,11 @@ struct VehicleControls: View {
             sub: sub,
             active: known && !controls.locked,
             activeColor: .mrtDriving,
-            uiState: executor.uiState(for: .lock)
+            uiState: executor.uiState(for: .lock),
+            // The screen reader has no width limit, so it keeps the full sentence.
+            spokenLabel: known
+                ? (controls.locked ? "Locked, tap to unlock" : "Unlocked, tap to lock")
+                : nil
         ) {
             // Unknown → lock (the safe default); known → toggle.
             let target = known ? !controls.locked : true
@@ -287,7 +284,7 @@ struct VehicleControls: View {
             icon: "fan",
             label: "Climate",
             sub: known ? (controls.climateOn ? onSub : "Off")
-                : VehicleControlFreshness.unknownSub(hasSnapshot: hasSnapshot, isStreaming: isStreaming),
+                : VehicleControlFreshness.tileUnknownSub(hasSnapshot: hasSnapshot, isStreaming: isStreaming),
             active: known && controls.climateOn,
             activeColor: .mrtGold,
             uiState: executor.uiState(for: .climate)
@@ -300,14 +297,17 @@ struct VehicleControls: View {
     private var trunkTile: some View {
         let known = executor.isKnown(.trunkOpen)
         // Trunk's label is generic, so the STATE (safety-critical) lives in the
-        // sub; when stale, keep the state and append when it was last synced
-        // ("Open · 2h ago") rather than presenting old state as current (MYR-260).
+        // sub — and, as of MYR-335, ONLY the state. MYR-260 appended "· 13m ago"
+        // when the read was stale; at 4-column width that sub measures 92pt
+        // against 49.75pt and ellipsized to "Closed · 1…", which loses the recency
+        // it was added for AND puts the state one character from being cut. The
+        // recency is now stated once by the sheet's freshness stamp (MYR-315) —
+        // see `VehicleControlFreshness`'s header.
         let sub: String
         if known {
-            let state = controls.trunkOpen ? "Open" : "Closed"
-            sub = staleAgo.map { "\(state) · \($0)" } ?? state
+            sub = controls.trunkOpen ? "Open" : "Closed"
         } else {
-            sub = VehicleControlFreshness.unknownSub(hasSnapshot: hasSnapshot, isStreaming: isStreaming)
+            sub = VehicleControlFreshness.tileUnknownSub(hasSnapshot: hasSnapshot, isStreaming: isStreaming)
         }
         return ControlTile(
             icon: "car.fill",
@@ -338,23 +338,39 @@ struct VehicleControls: View {
         // yields, and only while there is a session to report.
         //
         // Both strings are deliberately one word (MYR-335 tile truncation): the
-        // hero carries the full "Charge complete", the tile carries "Complete".
+        // hero carries the full "Charge complete", the tile carries the state.
+        // MYR-335 measured them: "Complete" is 51.7pt against 49.75pt of tile on
+        // the narrowest supported device — it fit the 393 canvas and nothing
+        // narrower — so the completed state is named as a STATE ("Charged",
+        // 45.9pt) rather than as an event. Same fact, and it reads as the answer
+        // to "what is my car doing" like "Charging" beside it does.
         let sessionSub: String? = {
             switch chargingState {
             case .charging: return "Charging"
-            case .complete: return "Complete"
+            case .complete: return "Charged"
             case .idle: return nil
             }
         }()
         return ControlTile(
             icon: "bolt.fill",
             label: "Charge",
+            // MYR-335 — the port-door fallback loses the word "Port": it was
+            // 61.1pt against 49.75pt of tile on the narrowest supported device
+            // (and 54.25 on the design's own 393 canvas), so it survived only on
+            // a Pro Max. "Port" is the label's job — the tile says "Charge"
+            // under a bolt — so the sub carries the door state alone, exactly as
+            // the Trunk tile's does. MYR-333's session strings, already written
+            // one word for this reason, keep their precedence unchanged.
             sub: sessionSub
-                ?? (known ? (controls.chargePortOpen ? "Port open" : "Port closed")
-                    : VehicleControlFreshness.unknownSub(hasSnapshot: hasSnapshot, isStreaming: isStreaming)),
+                ?? (known ? (controls.chargePortOpen ? "Open" : "Closed")
+                    : VehicleControlFreshness.tileUnknownSub(hasSnapshot: hasSnapshot, isStreaming: isStreaming)),
             active: known && controls.chargePortOpen,
             activeColor: .mrtCharging,
-            uiState: executor.uiState(for: .chargePort)
+            uiState: executor.uiState(for: .chargePort),
+            // The screen reader has no width limit, so it keeps the full
+            // sentence — including the session, which is what the owner came for.
+            spokenLabel: sessionSub.map { "Charge, \($0.lowercased())" }
+                ?? (known ? "Charge, charge port \(controls.chargePortOpen ? "open" : "closed")" : nil)
         ) {
             let target = known ? !controls.chargePortOpen : true
             Task { try? await executor.setChargePortOpen(target) }
@@ -373,6 +389,12 @@ private struct ControlTile: View {
     /// Live command state (MYR-249). `.idle` on the simulated path, so the M1 /
     /// drift-gate rendering is pixel-identical.
     var uiState: VehicleControlUIState = .idle
+    /// MYR-335 — what VoiceOver reads instead of the two visible strings, when
+    /// the visible copy had to be compressed to fit the 4-column tile. Nothing
+    /// on screen is a lie without it, but "Locked, Unlock" is a worse sentence
+    /// than "Locked, tap to unlock", and the screen reader has no width limit.
+    /// `nil` → the composed label + sub, exactly as before.
+    var spokenLabel: String? = nil
     let action: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -424,7 +446,16 @@ private struct ControlTile: View {
                         // than the browser's font substitution at the same
                         // nominal size, so scale down slightly before
                         // truncating rather than clipping mid-word.
-                        .minimumScaleFactor(0.85)
+                        //
+                        // MYR-335 — 0.85 was one hair too high for the widest
+                        // label on the narrowest supported device: "Unlocked" is
+                        // 59.3pt at 13pt semibold, and 59.3 × 0.85 = 50.4pt
+                        // against 49.75pt of tile, so it ellipsized on a 375pt
+                        // screen. 0.8 clears it. Nothing changes at 393/402,
+                        // where the label fits by scaling to ~0.92 and never
+                        // reaches the floor — the drift-gate captures are
+                        // untouched by this line.
+                        .minimumScaleFactor(0.8)
                     Text(subLine)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(subColor)
@@ -436,9 +467,13 @@ private struct ControlTile: View {
                         // sub at visibly different sizes ("looks cheap", client).
                         // Every sub now renders at the one 11pt size (matching the
                         // prototype, which is uniform 11px + ellipsis) and
-                        // tail-truncates on overflow like the prototype. The
-                        // freshness qualifier is kept off the fresh common case
-                        // (see `staleAgo`), so the everyday subs stay short.
+                        // tail-truncates on overflow like the prototype.
+                        //
+                        // MYR-335 makes that fallback unreachable instead of
+                        // relied upon: every sub this tile can render is now
+                        // measured against the 4-column width on the narrowest
+                        // supported device (`VehicleControlTileCaptionTests`), so
+                        // nothing ellipsizes and the one uniform size holds.
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -455,6 +490,7 @@ private struct ControlTile: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(spokenLabel ?? "\(label), \(subLine)")
     }
 }
 

@@ -64,33 +64,6 @@ final class VehicleControlFreshnessTests: XCTestCase {
         XCTAssertTrue(VehicleControlFreshness.unavailableSub.contains("Unavailable"))
     }
 
-    // MARK: showsQualifier — a non-streaming car's known value is never "live"
-
-    func testNonStreamingKnownValueAlwaysQualifiesEvenWhenRecent() {
-        let now = Date(timeIntervalSince1970: 1_000_000)
-        // Car just went offline 5s ago: NOT streaming → still qualifies, so a
-        // stale trunk never renders as bare "Open" (the trunk-open incident).
-        XCTAssertTrue(VehicleControlFreshness.showsQualifier(
-            isStreaming: false, lastUpdated: now.addingTimeInterval(-5), now: now))
-    }
-
-    func testStreamingKnownValueQualifiesOnlyWhenStale() {
-        let now = Date(timeIntervalSince1970: 1_000_000)
-        XCTAssertFalse(VehicleControlFreshness.showsQualifier(
-            isStreaming: true, lastUpdated: now.addingTimeInterval(-30), now: now), "fresh stream")
-        XCTAssertTrue(VehicleControlFreshness.showsQualifier(
-            isStreaming: true, lastUpdated: now.addingTimeInterval(-120), now: now), "stalled stream")
-    }
-
-    func testSimulatedPathNeverQualifies() {
-        let now = Date(timeIntervalSince1970: 1_000_000)
-        // nil isStreaming (M1) and/or nil lastUpdated → never a qualifier.
-        XCTAssertFalse(VehicleControlFreshness.showsQualifier(
-            isStreaming: nil, lastUpdated: now.addingTimeInterval(-9999), now: now))
-        XCTAssertFalse(VehicleControlFreshness.showsQualifier(
-            isStreaming: false, lastUpdated: nil, now: now))
-    }
-
     // MARK: State 3 — known but stale → value + "X ago"
 
     func testFreshKnownValueHasNoStaleQualifier() {
@@ -125,49 +98,33 @@ final class VehicleControlFreshnessTests: XCTestCase {
         XCTAssertEqual(VehicleControlFreshness.agoLabel(since: now.addingTimeInterval(10), now: now), "just now")
     }
 
-    // MARK: MYR-281 — staleQualifier: qualifier only when GENUINELY stale
-    //
-    // The tile sub drops the sub-60s "just now" so the everyday case stays short +
-    // uniform (the "cheap look" was a long sub scaling down beside a short one);
-    // a genuinely stale value still surfaces "X ago", and the simulated path never
-    // qualifies.
+    // MARK: MYR-335 — the tile forms of the two unknown subs
 
-    func testStaleQualifierOmitsFreshStreamingValue() {
+    /// The 4-column tiles hold ~50pt of text; "\u{2014} Unavailable" is 75pt and
+    /// "\u{2014} Syncing" 56pt, so both ellipsized there. The tile forms say the
+    /// SAME two states in the room a tile has, while the full-width rows
+    /// (`ClimateSection`) keep the em-dash grammar. Widths are asserted in
+    /// `VehicleControlTileCaptionTests`; this pins the DECISION.
+    func testTileUnknownSubMirrorsTheFullWidthDecision() {
         let now = Date(timeIntervalSince1970: 1_000_000)
-        XCTAssertNil(VehicleControlFreshness.staleQualifier(
-            isStreaming: true, lastUpdated: now.addingTimeInterval(-20), now: now),
-            "a fresh streaming value shows bare — no qualifier")
-    }
-
-    func testStaleQualifierOmitsRecentNonStreamingValue() {
-        let now = Date(timeIntervalSince1970: 1_000_000)
-        // Car offline 10s ago: showsQualifier is TRUE, but MYR-281 still omits the
-        // sub-60s "just now" so the tile stays short (footer carries "Not live").
-        XCTAssertNil(VehicleControlFreshness.staleQualifier(
-            isStreaming: false, lastUpdated: now.addingTimeInterval(-10), now: now),
-            "recent non-streaming value drops the noisy 'just now' qualifier")
-    }
-
-    func testStaleQualifierShowsAgoForOldNonStreamingValue() {
-        let now = Date(timeIntervalSince1970: 1_000_000)
-        XCTAssertEqual(VehicleControlFreshness.staleQualifier(
-            isStreaming: false, lastUpdated: now.addingTimeInterval(-2 * 3600), now: now), "2h ago",
-            "a genuinely stale offline value still surfaces how long ago")
-    }
-
-    func testStaleQualifierShowsAgoForStalledStream() {
-        let now = Date(timeIntervalSince1970: 1_000_000)
-        XCTAssertEqual(VehicleControlFreshness.staleQualifier(
-            isStreaming: true, lastUpdated: now.addingTimeInterval(-5 * 60), now: now), "5m ago")
-    }
-
-    func testStaleQualifierNilOnSimulatedPath() {
-        let now = Date(timeIntervalSince1970: 1_000_000)
-        XCTAssertNil(VehicleControlFreshness.staleQualifier(
-            isStreaming: nil, lastUpdated: nil, now: now))
-        XCTAssertNil(VehicleControlFreshness.staleQualifier(
-            isStreaming: nil, lastUpdated: now.addingTimeInterval(-9999), now: now),
-            "nil isStreaming (M1) never qualifies")
+        _ = now
+        XCTAssertEqual(
+            VehicleControlFreshness.tileUnknownSub(hasSnapshot: true, isStreaming: false),
+            VehicleControlFreshness.tileUnavailableSub,
+            "a reachable, non-streaming snapshot proves the value is not coming"
+        )
+        for (hasSnapshot, isStreaming) in [(false, nil), (false, Bool?.some(true)), (true, Bool?.some(true))] {
+            XCTAssertEqual(
+                VehicleControlFreshness.tileUnknownSub(hasSnapshot: hasSnapshot, isStreaming: isStreaming),
+                VehicleControlFreshness.tileSyncingSub,
+                "hasSnapshot=\(hasSnapshot) isStreaming=\(String(describing: isStreaming)) is genuinely in flight"
+            )
+        }
+        // The two states must never collapse into one word (MYR-260's whole point)
+        // and neither tile form may carry the em-dash the wide rows use.
+        XCTAssertNotEqual(VehicleControlFreshness.tileSyncingSub, VehicleControlFreshness.tileUnavailableSub)
+        XCTAssertFalse(VehicleControlFreshness.tileSyncingSub.contains(VehicleControlFreshness.dash))
+        XCTAssertFalse(VehicleControlFreshness.tileUnavailableSub.contains(VehicleControlFreshness.dash))
     }
 }
 

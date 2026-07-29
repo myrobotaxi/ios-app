@@ -13,6 +13,12 @@ public enum MRTSheetDetent: Sendable, Equatable {
     case peek
     /// ~50% of the sheet's container (or an explicit `halfHeight`).
     case half
+    /// MYR-332 — the TALLEST stop, the physical screen less
+    /// ``MRTMetrics/sheetTallTopClearance``. Opt-in per sheet
+    /// (`allowsTallDetent`); a sheet that does not offer it clamps this to
+    /// ``half``, so nothing that has only ever known peek/half can be driven
+    /// somewhere it has no height for.
+    case tall
 }
 
 /// The draggable home-map sheet (components.jsx `BottomSheet`): drag anywhere
@@ -50,6 +56,15 @@ public struct MRTDetentSheet<Content: View>: View {
     /// progress, over an always-opaque base wash, instead of the single
     /// `content`. `nil` for the single-content path (ButtonShowcase).
     private let crossfade: OwnerCrossfade?
+    /// MYR-332 — offer the third, TALL detent above `half`. Opt-in: every other
+    /// consumer keeps exactly the peek↔half pair it has always had.
+    private let allowsTallDetent: Bool
+    /// MYR-332 — reports the sheet's RESOLVED detent heights (ascending, points
+    /// from the physical bottom edge) whenever the geometry produces a new set.
+    /// The owner map reads it so its `bottomContentInset` can follow the sheet up
+    /// to the tall detent (`half` is measured but deliberately unused there — see
+    /// `HomeScreen.mapBottomInset`). Same reporting shape as `RiderTrackingSheet`.
+    private let onResolvedHeights: (([CGFloat]) -> Void)?
 
     /// The two owner crossfade layers, type-erased (two different content
     /// shapes living side by side in one surface — see `PanSheetCrossfade`).
@@ -76,6 +91,8 @@ public struct MRTDetentSheet<Content: View>: View {
         self.halfHeightFraction = halfHeightFraction
         self.content = content()
         self.crossfade = nil
+        self.allowsTallDetent = false
+        self.onResolvedHeights = nil
     }
 
     /// Internal designated init used by the crossfade convenience init below.
@@ -85,7 +102,9 @@ public struct MRTDetentSheet<Content: View>: View {
         halfHeight: CGFloat?,
         halfHeightFraction: CGFloat,
         content: Content,
-        crossfade: OwnerCrossfade?
+        crossfade: OwnerCrossfade?,
+        allowsTallDetent: Bool = false,
+        onResolvedHeights: (([CGFloat]) -> Void)? = nil
     ) {
         _detent = detent
         self.peekHeight = peekHeight
@@ -93,22 +112,57 @@ public struct MRTDetentSheet<Content: View>: View {
         self.halfHeightFraction = halfHeightFraction
         self.content = content
         self.crossfade = crossfade
+        self.allowsTallDetent = allowsTallDetent
+        self.onResolvedHeights = onResolvedHeights
     }
 
-    /// peek ↔ index 0, half ↔ index 1 — the engine works in detent indices.
-    private var selectionIndex: Binding<Int> {
+    /// peek ↔ 0, half ↔ 1, tall ↔ 2 — the engine works in detent indices. A
+    /// sheet without a tall detent clamps `.tall` to the top index it does have,
+    /// so the binding can never select a height that isn't there.
+    private func selectionIndex(count: Int) -> Binding<Int> {
         Binding(
-            get: { detent == .peek ? 0 : 1 },
-            set: { detent = $0 == 0 ? .peek : .half }
+            get: {
+                switch detent {
+                case .peek: return 0
+                case .half: return min(1, count - 1)
+                case .tall: return count - 1
+                }
+            },
+            set: { index in
+                switch index {
+                case 0: detent = .peek
+                case 1: detent = .half
+                default: detent = .tall
+                }
+            }
         )
+    }
+
+    /// The ascending detent heights this sheet offers for a given container.
+    /// `screenHeight` is the PHYSICAL screen height (the container's bottom edge
+    /// is flush with it — see `.ignoresSafeArea(edges: .bottom)` below), which is
+    /// what the tall detent's top clearance is measured against.
+    private func detentHeights(containerHeight: CGFloat, screenHeight: CGFloat) -> [CGFloat] {
+        let half = halfHeight ?? containerHeight * halfHeightFraction
+        // `.isFinite` guard (MYR-227): never let a stray NaN/∞ detent reach the
+        // engine's layout math.
+        let safeHalf = half.isFinite && half > peekHeight ? half : peekHeight + 1
+        guard allowsTallDetent,
+              let tall = MRTMetrics.sheetTallHeight(screenHeight: screenHeight, halfHeight: safeHalf)
+        else { return [peekHeight, safeHalf] }
+        return [peekHeight, safeHalf, tall]
     }
 
     public var body: some View {
         GeometryReader { geo in
-            let half = halfHeight ?? geo.size.height * halfHeightFraction
-            // `.isFinite` guard (MYR-227): never let a stray NaN/∞ detent reach
-            // the engine's layout math.
-            let safeHalf = half.isFinite && half > peekHeight ? half : peekHeight + 1
+            // The container runs flush to the PHYSICAL bottom edge (the
+            // `.ignoresSafeArea(edges: .bottom)` below), so its bottom in GLOBAL
+            // coordinates IS the screen's bottom — i.e. the screen height. Read
+            // that way rather than from `UIScreen` so the sheet stays correct in
+            // any host (previews, the showcase) and needs no UIKit import here.
+            let screenHeight = geo.frame(in: .global).maxY
+            let detents = detentHeights(containerHeight: geo.size.height, screenHeight: screenHeight)
+            Group {
             #if canImport(UIKit)
             if let crossfade {
                 // MYR-236 round 5.3 — two-layer crossfade (mirrors the rider
@@ -118,33 +172,46 @@ public struct MRTDetentSheet<Content: View>: View {
                 // dense content, so the engine's scroll handoff discovers ITS
                 // ScrollView (base + low have none).
                 PanSheet(
-                    detentHeights: [peekHeight, safeHalf],
-                    selection: selectionIndex,
+                    detentHeights: detents,
+                    selection: selectionIndex(count: detents.count),
                     reduceMotion: reduceMotion,
                     accessibilityIdentifier: "mrt.detentSheet",
                     accessibilityLabel: "Sheet",
                     crossfade: PanSheetCrossfade(
-                        low: { crossfadeLayer(crossfade.low) },
-                        high: { crossfadeLayer(crossfade.high) }
-                    )
+                        low: { crossfadeLayer(crossfade.low, scrollBottomReserve: scrollBottomReserve(detents)) },
+                        high: { crossfadeLayer(crossfade.high, scrollBottomReserve: scrollBottomReserve(detents)) }
+                    ),
+                    // MYR-332 — the expanded layer is fully faded in at HALF; the
+                    // tall detent only reveals more of that same layer, so the
+                    // crossfade must NOT stretch across it (peek/half stay
+                    // byte-identical to the two-detent sheet).
+                    progressUpperDetentIndex: 1
                 ) {
-                    baseWash(half: safeHalf)
+                    baseWash(surfaceHeight: detents[detents.count - 1])
                 }
             } else {
                 PanSheet(
-                    detentHeights: [peekHeight, safeHalf],
-                    selection: selectionIndex,
+                    detentHeights: detents,
+                    selection: selectionIndex(count: detents.count),
                     reduceMotion: reduceMotion,
                     accessibilityIdentifier: "mrt.detentSheet",
                     accessibilityLabel: "Sheet"
                 ) {
-                    sheetSurface(half: safeHalf)
+                    sheetSurface(surfaceHeight: detents[detents.count - 1])
                 }
             }
             #else
-            sheetSurface(half: safeHalf)
+            sheetSurface(surfaceHeight: detents[detents.count - 1])
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             #endif
+            }
+            // MYR-332 — publish the resolved detent geometry so the host can
+            // re-anchor chrome off it (the owner map's `bottomContentInset`).
+            .preference(key: MRTDetentHeightsKey.self, value: detents)
+        }
+        .onPreferenceChange(MRTDetentHeightsKey.self) { heights in
+            guard !heights.isEmpty else { return }
+            onResolvedHeights?(heights)
         }
         // Full-bleed geometry (CLAUDE.md "Hard rules"): components.jsx
         // `BottomSheet` is called with `navHeight={0}` (screens.jsx:429) —
@@ -160,27 +227,32 @@ public struct MRTDetentSheet<Content: View>: View {
     /// accessibility adjustable action keeps keyboard/VoiceOver detent control
     /// working: setting `detent` drives the engine's programmatic settle.
     @ViewBuilder
-    private func sheetSurface(half: CGFloat) -> some View {
+    private func sheetSurface(surfaceHeight: CGFloat) -> some View {
         VStack(spacing: 0) {
             grabHandle
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .frame(height: half + 48) // matches the engine's surface height (max detent + overshoot pad)
+        .frame(height: surfaceHeight + 48) // matches the engine's surface height (max detent + overshoot pad)
         .frame(maxWidth: .infinity)
         .mrtSurface(.sheet, fill: .mrtBgSecondary)
     }
 
     /// The grab handle + its VoiceOver adjustable-detent action, shared by the
-    /// single-content surface and the crossfade base.
+    /// single-content surface and the crossfade base. MYR-332: increment walks
+    /// peek → half → tall (and decrement back) on a sheet that offers the tall
+    /// detent, so the new stop is reachable without a finger; on every other
+    /// sheet the pair is exactly as before.
     private var grabHandle: some View {
         MRTGrabHandle()
             .contentShape(Rectangle().inset(by: -12))
             .accessibilityLabel("Sheet handle")
             .accessibilityAdjustableAction { direction in
                 switch direction {
-                case .increment: detent = .half
-                case .decrement: detent = .peek
+                case .increment:
+                    detent = (detent == .half && allowsTallDetent) ? .tall : .half
+                case .decrement:
+                    detent = detent == .tall ? .half : .peek
                 @unknown default: break
                 }
             }
@@ -193,12 +265,12 @@ public struct MRTDetentSheet<Content: View>: View {
     /// never leaks the map beneath the lifted sheet) + the stationary grab
     /// handle. The two crossfade layers ride OVER this with driven alphas.
     @ViewBuilder
-    private func baseWash(half: CGFloat) -> some View {
+    private func baseWash(surfaceHeight: CGFloat) -> some View {
         VStack(spacing: 0) {
             grabHandle
             Spacer(minLength: 0)
         }
-        .frame(height: half + 48)
+        .frame(height: surfaceHeight + 48)
         .frame(maxWidth: .infinity)
         .mrtSurface(.sheet, fill: .mrtBgSecondary)
     }
@@ -208,11 +280,38 @@ public struct MRTDetentSheet<Content: View>: View {
     /// top-aligns within the surface envelope. The layer background is
     /// transparent — the base wash shows through — so the peek layer contributes
     /// ONLY the summary and the expanded layer ONLY the dense content.
+    ///
+    /// `scrollBottomReserve` is a CONTENT margin (never a frame change — the layer
+    /// must keep filling the whole envelope or a mid-drag frame would show bare
+    /// wash below its content). See ``scrollBottomReserve(_:)``.
     @ViewBuilder
-    private func crossfadeLayer(_ layer: AnyView) -> some View {
+    private func crossfadeLayer(_ layer: AnyView, scrollBottomReserve: CGFloat) -> some View {
         layer
             .padding(.top, MRTMetrics.sheetGrabHandleHeight)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .contentMargins(.bottom, scrollBottomReserve, for: .scrollContent)
+    }
+
+    /// MYR-332 — how far the expanded layer's SCROLL CONTENT must stop short of
+    /// the surface envelope's bottom.
+    ///
+    /// The engine lays the surface out once at the TALLEST detent plus an
+    /// overshoot pad, and the hosted layer fills it. Adding the tall detent
+    /// therefore grew the scroll VIEWPORT by `tall − half` — and a viewport whose
+    /// bottom hangs that far below the screen means scrolling to the end parks the
+    /// last rows off-screen, unreachable. (The two-detent sheet had the same
+    /// effect at 48pt, harmlessly absorbed by the content's own 100pt bottom
+    /// padding; 300+ is not absorbable.)
+    ///
+    /// The reserve is exactly the growth, so at peek and half the scroll content
+    /// ends where it ended before this issue — byte-identical, including the
+    /// `MRT_OWNER_SCROLL=bottom` captures that rest against the content's end —
+    /// and at TALL it is zero, leaving the same 48pt overshoot the half detent
+    /// used to have. Zero (i.e. nothing at all changes) whenever the sheet has no
+    /// tall detent.
+    private func scrollBottomReserve(_ detents: [CGFloat]) -> CGFloat {
+        guard detents.count > 2, detent != .tall else { return 0 }
+        return max(0, detents[2] - detents[1])
     }
 }
 
@@ -232,6 +331,10 @@ public extension MRTDetentSheet where Content == EmptyView {
         peekHeight: CGFloat = MRTMetrics.sheetPeekHeight,
         halfHeight: CGFloat? = nil,
         halfHeightFraction: CGFloat = 0.5,
+        /// MYR-332 — offer the third, TALL detent above `half`.
+        allowsTallDetent: Bool = false,
+        /// MYR-332 — resolved detent heights, ascending (see the stored property).
+        onResolvedHeights: (([CGFloat]) -> Void)? = nil,
         @ViewBuilder peek: () -> Peek,
         @ViewBuilder expanded: () -> Expanded
     ) {
@@ -241,8 +344,23 @@ public extension MRTDetentSheet where Content == EmptyView {
             halfHeight: halfHeight,
             halfHeightFraction: halfHeightFraction,
             content: EmptyView(),
-            crossfade: OwnerCrossfade(low: AnyView(peek()), high: AnyView(expanded()))
+            crossfade: OwnerCrossfade(low: AnyView(peek()), high: AnyView(expanded())),
+            allowsTallDetent: allowsTallDetent,
+            onResolvedHeights: onResolvedHeights
         )
+    }
+}
+
+// MARK: - Resolved detent geometry (MYR-332)
+
+/// Publishes ``MRTDetentSheet``'s resolved detent heights to its host, so chrome
+/// anchored off the sheet (the owner map's `bottomContentInset`) can follow it
+/// without re-deriving the geometry. Ascending, points from the physical bottom.
+private struct MRTDetentHeightsKey: PreferenceKey {
+    static let defaultValue: [CGFloat] = []
+    static func reduce(value: inout [CGFloat], nextValue: () -> [CGFloat]) {
+        let next = nextValue()
+        if !next.isEmpty { value = next }
     }
 }
 

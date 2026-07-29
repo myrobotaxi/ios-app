@@ -71,7 +71,7 @@ public final class OwnerHomeState {
         #if DEBUG
         // Drift-gate: boot resting at half / on a chosen vehicle for the
         // at-rest captures only.
-        if DebugScene.initialOwnerDetentHalf { self.sheetDetent = .half }
+        if let detent = DebugScene.initialOwnerDetent { self.sheetDetent = detent }
         if let index = DebugScene.initialOwnerVehicleIndex { self.selectedVehicleIndex = index }
         #endif
     }

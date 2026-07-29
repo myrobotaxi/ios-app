@@ -29,7 +29,7 @@ enum TelemetryComposition {
         // path falls through to the normal live/simulated selection below.
         if let fleet = DebugScene.current?.previewFleet {
             let state = OwnerHomeState(fleet: fleet)
-            if DebugScene.initialOwnerDetentHalf { state.sheetDetent = .half }
+            if let detent = DebugScene.initialOwnerDetent { state.sheetDetent = detent }
             // MYR-315 — park the freshness stamp in a given phase (only
             // `ownerFreshnessWaking` sets one): the waking state lives between a tap
             // and the server's answer, which headless capture tooling cannot reach.
@@ -47,7 +47,7 @@ enum TelemetryComposition {
             // see the controls stack fed by a real snapshot) could never be taken
             // at half: headless tooling cannot drag the sheet. Same DEBUG-only,
             // capture-tooling-shaped seeding as `initialRefreshPhase` (MYR-315).
-            if DebugScene.initialOwnerDetentHalf { state.sheetDetent = .half }
+            if let detent = DebugScene.initialOwnerDetent { state.sheetDetent = detent }
             #endif
             return state
         }
