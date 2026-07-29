@@ -17,7 +17,10 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         serviceWindowEndpoint: any VehicleServiceWindowEndpoint = ScriptedServiceWindowEndpoint(),
         driving: Bool = false,
         maxWakeRetries: Int = 1,
-        settleWindow: TimeInterval = 15
+        settleWindow: TimeInterval = 15,
+        // MYR-301 — the settled-notice display window. Shortened per test so the
+        // auto-clear is deterministic without a 6-second wait.
+        noticeDisplayDuration: Duration = .seconds(600)
     ) -> LiveVehicleCommandExecutor {
         LiveVehicleCommandExecutor(
             vehicleID: "veh-1",
@@ -30,7 +33,8 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
             plate: "",
             wakeRetryDelay: .zero,
             maxWakeRetries: maxWakeRetries,
-            settleWindow: settleWindow
+            settleWindow: settleWindow,
+            noticeDisplayDuration: noticeDisplayDuration
         )
     }
 
@@ -129,6 +133,190 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
             executor.controls.serviceEstimatedEndAt,
             "a car out of service must not keep its old window — the floor would outlive the visit"
         )
+    }
+
+    /// THE client-reported defect (server-verified): the owner saved a manual
+    /// "Service completion date", the server persisted it — and the sheet kept
+    /// showing the old state. The field is SNAPSHOT-ONLY by contract, so the
+    /// `VehicleTelemetrySnapshot` the sheet renders cannot move until the next cold
+    /// `/snapshot` read; the save's echo landed on the EXECUTOR, which nothing on
+    /// screen was reading. This asserts the unified resolver against the very
+    /// snapshot the sheet is still holding.
+    @MainActor
+    func testASavedWindowDisplaysAgainstTheSnapshotTheSheetIsStillRendering() async throws {
+        // The client's own instant, as the live probe confirmed the server holds it.
+        let resolvedISO = "2026-08-01T22:00:00.000Z"
+        let expected = ISO8601DateFormatter().date(from: "2026-08-01T22:00:00Z")!
+        let executor = makeExecutor(
+            ScriptedCommandSender(),
+            serviceWindowEndpoint: ScriptedServiceWindowEndpoint(resolved: resolvedISO)
+        )
+
+        // The snapshot on screen when the owner opens the editor: in service, no
+        // window yet. Both read surfaces resolve to nothing, which is correct.
+        let beforeSave = VehicleContractMapping.snapshot(from: Self.serviceState(serviceEstimatedEndAt: nil))
+        XCTAssertNil(VehicleServiceWindow.resolvedEndAt(executor: executor, snapshot: beforeSave))
+
+        try await executor.setServiceWindow(expected)
+
+        // The snapshot has NOT been refetched — it is byte-for-byte the one above.
+        XCTAssertNil(beforeSave.serviceEstimatedEndAt, "the snapshot genuinely still knows nothing")
+        XCTAssertEqual(
+            VehicleServiceWindow.resolvedEndAt(executor: executor, snapshot: beforeSave), expected,
+            "a save the server accepted must be on screen before any refetch"
+        )
+        // And the hero line the owner actually reads is built from that same value.
+        XCTAssertEqual(
+            VehicleServiceWindow.completionLine(
+                for: VehicleServiceWindow.resolvedEndAt(executor: executor, snapshot: beforeSave),
+                isInService: true,
+                now: expected.addingTimeInterval(-3600)
+            ),
+            VehicleServiceWindow.completionLine(
+                for: expected, isInService: true, now: expected.addingTimeInterval(-3600)
+            )
+        )
+
+        // NO FLICKER BACK: the next cold snapshot carries the server's value, and
+        // the resolver holds the same instant across the hand-off.
+        let refetchedState = Self.serviceState(serviceEstimatedEndAt: resolvedISO)
+        executor.reconcile(from: refetchedState)
+        XCTAssertEqual(
+            VehicleServiceWindow.resolvedEndAt(
+                executor: executor, snapshot: VehicleContractMapping.snapshot(from: refetchedState)
+            ),
+            expected,
+            "the refetch agrees with the echo \u{2014} the value must not blink"
+        )
+    }
+
+    /// The mirror case: an owner who CLEARS the window sees it go immediately,
+    /// even though the stale snapshot still carries the old instant. A resolver
+    /// that merely preferred a non-nil executor value would fail this.
+    @MainActor
+    func testAClearedWindowDisappearsAgainstAStaleSnapshot() async throws {
+        let executor = makeExecutor(
+            ScriptedCommandSender(),
+            serviceWindowEndpoint: ScriptedServiceWindowEndpoint(resolved: nil)
+        )
+        let stale = VehicleContractMapping.snapshot(
+            from: Self.serviceState(serviceEstimatedEndAt: "2026-08-01T22:00:00.000Z")
+        )
+        XCTAssertNotNil(stale.serviceEstimatedEndAt)
+
+        try await executor.setServiceWindow(nil)
+
+        XCTAssertNil(
+            VehicleServiceWindow.resolvedEndAt(executor: executor, snapshot: stale),
+            "a cleared window must not linger on a snapshot that has not caught up"
+        )
+    }
+
+    // MARK: - MYR-301 notice lifecycle (the stuck "The car didn't accept that")
+
+    /// THE client-reported defect: the `.rejected` climate notice stayed on screen
+    /// indefinitely. Before this fix a settled notice had NO expiry and NO clearing
+    /// trigger short of issuing another command for the same control, so a car that
+    /// refused once left the banner up until the owner tapped again — possibly
+    /// never.
+    @MainActor
+    func testASettledNoticeClearsItselfAfterItsBoundedDisplay() async throws {
+        let executor = makeExecutor(
+            ScriptedCommandSender([.failure(Self.restError("command_failed", 502))]),
+            noticeDisplayDuration: .milliseconds(60)
+        )
+
+        try await executor.setClimateOn(false)
+        XCTAssertEqual(
+            executor.uiState(for: .climate).notice, .rejected,
+            "the car refused \u{2014} the owner is told so"
+        )
+        XCTAssertFalse(executor.uiState(for: .climate).isPending)
+
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(
+            executor.uiState(for: .climate), .idle,
+            "a settled notice must not outlive its bounded display"
+        )
+    }
+
+    /// The SECOND clear path: the car reporting its real state for that control
+    /// answers the notice, so the banner goes even before the display window is up.
+    /// A notice about a command is stale the moment the control reconciles.
+    @MainActor
+    func testASuccessfulReconcileClearsThatControlsNotice() async throws {
+        let executor = makeExecutor(
+            ScriptedCommandSender([.failure(Self.restError("command_failed", 502))]),
+            // Long enough that only the reconcile can be what cleared it.
+            noticeDisplayDuration: .seconds(600)
+        )
+
+        try await executor.setClimateOn(false)
+        XCTAssertEqual(executor.uiState(for: .climate).notice, .rejected)
+
+        var state = Self.serviceState(serviceEstimatedEndAt: nil)
+        state.status = .parked
+        state.isClimateOn = true
+        executor.reconcile(from: state)
+
+        XCTAssertEqual(
+            executor.uiState(for: .climate), .idle,
+            "the car told us where climate actually is \u{2014} the failure notice is answered"
+        )
+        // Only THAT control's notice is answered; an unrelated one is untouched.
+        XCTAssertTrue(executor.isKnown(.climateOn))
+    }
+
+    /// A notice must not be view state. It lives on the executor — which the fleet
+    /// owns and which outlives `HomeScreen` — so a tab switch neither wipes it nor
+    /// re-arms it, and the expiry that fires while nothing is mounted still lands
+    /// somewhere real. This is the MYR-292 owner-banner lesson applied to notices.
+    @MainActor
+    func testANoticeAndItsExpiryLiveOnTheExecutorNotTheView() async throws {
+        let executor = makeExecutor(
+            ScriptedCommandSender([.failure(Self.restError("command_failed", 502))]),
+            noticeDisplayDuration: .milliseconds(120)
+        )
+
+        try await executor.setClimateOn(false)
+        // "Remount": every reader re-reads the same executor and sees the notice.
+        XCTAssertEqual(executor.uiState(for: .climate).notice, .rejected)
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertEqual(
+            executor.uiState(for: .climate).notice, .rejected,
+            "the notice persists across a remount inside its display window"
+        )
+
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(
+            executor.uiState(for: .climate), .idle,
+            "and the expiry armed before the remount still fires"
+        )
+    }
+
+    /// A fresh failure restarts the clock rather than inheriting the old one's
+    /// remaining time — otherwise a retry that fails again could flash for a few
+    /// milliseconds and vanish.
+    @MainActor
+    func testARepeatedFailureRestartsTheDisplayWindow() async throws {
+        let executor = makeExecutor(
+            ScriptedCommandSender([
+                .failure(Self.restError("command_failed", 502)),
+                .failure(Self.restError("command_failed", 502)),
+            ]),
+            noticeDisplayDuration: .milliseconds(150)
+        )
+
+        try await executor.setClimateOn(false)
+        try await Task.sleep(for: .milliseconds(110))
+        try await executor.setClimateOn(false) // second tap, fails again
+        try await Task.sleep(for: .milliseconds(90))
+        XCTAssertEqual(
+            executor.uiState(for: .climate).notice, .rejected,
+            "the second failure gets its own full display window"
+        )
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(executor.uiState(for: .climate), .idle)
     }
 
     private static func serviceState(serviceEstimatedEndAt: String?) -> VehicleState {

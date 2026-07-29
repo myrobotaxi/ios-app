@@ -284,6 +284,32 @@ enum DebugScene: String, CaseIterable {
     /// the capture still proves the predicate rather than a hand-set string. Pair
     /// with `MRT_OWNER_DETENT=half`; the row shares `ownerServiceWindow`'s anchor.
     case ownerServiceWindowManual
+    /// MYR-316 (client defect, server-verified) — the SAVE-REFLECTS capture.
+    ///
+    /// The same in-service car, but its snapshot carries NO window: this is the
+    /// state the sheet is in when the owner opens the editor. On boot the fleet
+    /// runs the production `LiveVehicleCommandExecutor.setServiceWindow` against
+    /// `DebugServiceWindowEndpoint` — a real write, a real echo — and NOTHING
+    /// refetches the snapshot afterwards, because `serviceEstimatedEndAt` is
+    /// snapshot-only by contract and carries no WS delta.
+    ///
+    /// So the completion line in the hero and the "Service completion date" row
+    /// can only be showing the ECHO, through the unified
+    /// `VehicleServiceWindow.resolvedEndAt`. That is the whole fix: before it,
+    /// both surfaces read the (still empty) snapshot and this scene rendered no
+    /// line and no time — a save the server had accepted, invisible. Capture at
+    /// PEEK for the hero line; pair with `MRT_OWNER_DETENT=half` for the row.
+    case ownerServiceWindowSaved
+    /// MYR-301 (client defect) — the STUCK BANNER, now bounded. A real 502
+    /// `command_failed` on `auto_conditioning_stop` settles the real `.rejected`
+    /// notice ("The car didn't accept that"), which used to have no expiry and no
+    /// clearing trigger short of another command and so stayed up indefinitely on
+    /// the client's device. It now clears itself after
+    /// `LiveVehicleCommandExecutor.defaultNoticeDisplayDuration`, so this is a
+    /// TWO-SHOT capture — t≈2s (notice up) and t≈8s (gone) — exactly like
+    /// `ownerDispatchedCompleted`'s 5s "Dropped off ✓" pair. Pair with
+    /// `MRT_OWNER_DETENT=half`; the notice row sits under the quick tiles.
+    case ownerNoticeRejected
     /// MYR-320 — the vehicle-details section with EVERY enrichment field the
     /// client asked for populated at once, off one live-shaped snapshot:
     ///
@@ -490,7 +516,8 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerDispatchedEnroute || self == .ownerDispatchedCompleted
             || self == .ownerFreshnessStale || self == .ownerFreshnessWaking
             || self == .ownerServiceWindow || self == .ownerServiceWindowEditor
-            || self == .ownerServiceWindowManual || self == .ownerVehicleEnriched
+            || self == .ownerServiceWindowManual || self == .ownerServiceWindowSaved
+            || self == .ownerNoticeRejected || self == .ownerVehicleEnriched
     }
 
     /// MYR-260 — a DEBUG fleet override for scenes that need a specific
@@ -527,6 +554,8 @@ enum DebugScene: String, CaseIterable {
         case .ownerNoticeCharge: return DebugCommandNoticeFleet(variant: .chargeRelink)
         case .ownerNoticeAsleep: return DebugCommandNoticeFleet(variant: .asleep)
         case .ownerNoticeSeat: return DebugCommandNoticeFleet(variant: .seatRelink)
+        // MYR-301 — the client's own rejection: climate OFF, refused by the car.
+        case .ownerNoticeRejected: return DebugCommandNoticeFleet(variant: .climateRejected)
         // MYR-315 — a car offline for 7h, so the stamp resolves its stale branch
         // through the real mapping (see `DebugFreshnessFleet`).
         case .ownerFreshnessStale, .ownerFreshnessWaking: return DebugFreshnessFleet()
@@ -544,6 +573,15 @@ enum DebugScene: String, CaseIterable {
                 status: .inService,
                 serviceEstimatedEndAt: DebugScene.sampleServiceEnd(),
                 serviceWindowSource: .manual
+            )
+        // MYR-316 — the save-reflects proof: an EMPTY snapshot (no window on the
+        // wire at all) plus a real write on boot. Everything the capture shows
+        // about the window therefore came from the echo.
+        case .ownerServiceWindowSaved:
+            return DebugVehicleDetailsFleet(
+                status: .inService,
+                serviceEstimatedEndAt: nil,
+                savesServiceWindowOnBoot: DebugScene.sampleServiceEnd()
             )
         // MYR-320 — every enrichment field at once: a real color off the wire, the
         // display-ready trim label composing the Model row (alongside the raw badge
@@ -568,7 +606,8 @@ enum DebugScene: String, CaseIterable {
         // which sits below the Media card; this anchor frames it at the half
         // detent. (The summary line the `ownerServiceWindow` capture is really
         // about is at PEEK and needs no anchor.)
-        case .ownerServiceWindow, .ownerServiceWindowEditor, .ownerServiceWindowManual:
+        case .ownerServiceWindow, .ownerServiceWindowEditor, .ownerServiceWindowManual,
+             .ownerServiceWindowSaved:
             return .fraction(0.62)
         // The Tire pressure section sits a little above the vertical middle of the
         // dense content; anchoring the content's ~55% point to the viewport brings
@@ -589,7 +628,7 @@ enum DebugScene: String, CaseIterable {
         // same small anchor the climate scenes use frames the tile (with its
         // shortened sub) and the full-text row together; the seat notice needs
         // the Climate card's tail, like `ownerVehicleSeats`.
-        case .ownerNoticeCharge, .ownerNoticeAsleep: return .fraction(0.12)
+        case .ownerNoticeCharge, .ownerNoticeAsleep, .ownerNoticeRejected: return .fraction(0.12)
         case .ownerNoticeSeat: return .fraction(0.30)
         default: return nil
         }
@@ -943,11 +982,12 @@ enum DebugScene: String, CaseIterable {
              .ownerVehicleSeatsVented, .ownerVehicleSeatsHeatOnly, .ownerVehiclePlate,
              .ownerMediaNowPlaying, .ownerMediaNoSession,
              .ownerClimateAuto, .ownerClimateManual, .ownerClimateUnknown,
-             .ownerNoticeCharge, .ownerNoticeAsleep, .ownerNoticeSeat,
+             .ownerNoticeCharge, .ownerNoticeAsleep, .ownerNoticeSeat, .ownerNoticeRejected,
              .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute,
              .ownerDispatchedCompleted,
              .ownerFreshnessStale, .ownerFreshnessWaking,
              .ownerServiceWindow, .ownerServiceWindowEditor, .ownerServiceWindowManual,
+             .ownerServiceWindowSaved,
              .ownerVehicleEnriched:
             break // chooser / settings / rider live-map / owner scenes don't drive the viewer sheet
         }

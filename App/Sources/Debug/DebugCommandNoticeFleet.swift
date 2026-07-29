@@ -31,11 +31,22 @@ import Observation
 //   • `.seatRelink`   — the same 403 on a seat command, to capture the in-place
 //     notice line inside the Climate card (the surface that already had room for
 //     the full message and now also carries the route).
+//   • `.climateRejected` — 502 `command_failed` on `auto_conditioning_stop`: the
+//     client's OTHER reported bug, "The car didn't accept that" stuck on screen
+//     forever. This variant is the LIFECYCLE capture rather than a copy capture —
+//     the notice now clears itself after
+//     `LiveVehicleCommandExecutor.defaultNoticeDisplayDuration`, so capture at
+//     t≈2s (banner up) and t≈8s (gone), the same two-shot pattern
+//     `ownerDispatchedCompleted` uses for the 5s "Dropped off ✓" dismissal.
+//
+// NOTE (MYR-301, this round) — that bounded display applies to the three variants
+// above too: they settle a REAL notice, and a real settled notice no longer lives
+// forever. Take their captures inside the display window.
 //
 // Release builds never compile this file; it is reachable ONLY via the
 // `ownerNoticeCharge` / `ownerNoticeAsleep` / `ownerNoticeSeat` debug scenes, so
 // every other path — including the simulated drift-gate scenes — is untouched.
-enum DebugCommandNoticeVariant { case chargeRelink, asleep, seatRelink }
+enum DebugCommandNoticeVariant { case chargeRelink, asleep, seatRelink, climateRejected }
 
 @Observable
 @MainActor
@@ -82,6 +93,8 @@ final class DebugCommandNoticeFleet: VehicleFleet {
             case .chargeRelink: try? await exec.setChargePortOpen(true)
             case .asleep: try? await exec.setLocked(false)
             case .seatRelink: try? await exec.setSeatHeatLevel(.driver, level: 3)
+            // The client's own action: turning climate OFF, and the car saying no.
+            case .climateRejected: try? await exec.setClimateOn(false)
             }
         }
     }
@@ -93,6 +106,10 @@ final class DebugCommandNoticeFleet: VehicleFleet {
             return .http(status: 403, code: ErrorPayload.Code(rawValue: "permission_denied"), message: nil, subCode: nil)
         case .asleep:
             return .http(status: 503, code: ErrorPayload.Code(rawValue: "vehicle_asleep"), message: nil, subCode: nil)
+        // 502 `command_failed` — we REACHED the car and it refused (MYR-301's
+        // rejection branch, `.rejected`).
+        case .climateRejected:
+            return .http(status: 502, code: ErrorPayload.Code(rawValue: "command_failed"), message: nil, subCode: nil)
         }
     }
 

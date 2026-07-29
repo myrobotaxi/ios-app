@@ -250,7 +250,16 @@ struct HomeScreen: View {
                     // so the picker opens on whatever is actually in force —
                     // Tesla's estimate or the owner's own — rather than on a
                     // remembered local draft that may have been outranked.
-                    initialValue: executor.controls.serviceEstimatedEndAt,
+                    //
+                    // Resolved through the SAME rule the two read surfaces use, so
+                    // re-opening the editor prefills exactly what the sheet is
+                    // showing — including a value that has only ever arrived on a
+                    // snapshot and was never committed here.
+                    initialValue: VehicleServiceWindow.resolvedEndAt(
+                        executor: executor,
+                        snapshot: homeState.selectedTelemetry?.snapshot
+                            ?? LiveVehicleTelemetrySource.placeholder
+                    ),
                     vehicleName: vehicle.name,
                     onCancel: { isEditingServiceWindow = false },
                     onSave: { expectedEndAt in
@@ -351,9 +360,12 @@ struct HomeScreen: View {
         let snapshot = telemetry.snapshot
         // screens.jsx:400 — driving always uses the 280pt peek; parked uses the
         // 'floating' style's 210pt (the only `parkedStyle` this app ships).
-        let peekHeight = snapshot.status == .driving
-            ? MRTMetrics.homePeekHeightDriving
-            : MRTMetrics.homePeekHeightParked
+        let peekHeight = MRTMetrics.homePeekHeight(
+            base: snapshot.status == .driving
+                ? MRTMetrics.homePeekHeightDriving
+                : MRTMetrics.homePeekHeightParked,
+            qualifierLines: peekQualifierLines(snapshot: snapshot)
+        )
 
         VehicleMapView(
             vehicle: vehicle,
@@ -416,6 +428,41 @@ struct HomeScreen: View {
                 }
             }
         )
+    }
+
+    /// MYR-315 — how much taller the peek band must be than the prototype's
+    /// number, because this port's peek hero carries LIVE-ONLY lines the prototype
+    /// has none of.
+    ///
+    /// THE CLIENT'S REPORT: the "Synced …" stamp renders too close to the floating
+    /// menu. Measured on the isolated sim at peek (`ownerFreshnessStale`), the
+    /// stamp's ink ends 102pt from the physical bottom edge and its ≥44pt tap
+    /// region reaches 84pt — past the `BottomNav`'s own top edge at 86pt (60pt
+    /// tall, `padding(.bottom, 26)`) and 16pt inside the 100pt band the design
+    /// reserves for exactly this (`components.jsx:542`, ported as
+    /// `homeSheetContentBottomPadding`). On the client's car it is worse than the
+    /// capture shows: an IN-SERVICE vehicle also renders the MYR-319/320 completion
+    /// line, one 24pt line higher up, which pushes the stamp's ink itself to ~86pt
+    /// — flush against the menu.
+    ///
+    /// The fix is not to move the stamp (10pt below the line above it IS the
+    /// design's trailing-qualifier rhythm, `components.jsx:559`) but to stop the
+    /// band from being one line too short for what it now holds: the peek band is
+    /// content-sized in the prototype too (150 / 210 / 280 by `parkedStyle`), so
+    /// growing it per live-only line is the port's own grammar, not an invention.
+    ///
+    /// Both inputs are nil on the simulated path — the stamp is live-only by two
+    /// gates (`freshnessStamp`) and nothing simulated is ever in service — so this
+    /// returns 0 there and the drift-gate scenes keep the prototype's exact bands.
+    private func peekQualifierLines(snapshot: VehicleTelemetrySnapshot) -> Int {
+        var lines = 0
+        // Rendered by BOTH heroes (`mrtFreshnessStamp`).
+        if freshnessStamp(snapshot: snapshot) != nil { lines += 1 }
+        // Rendered by the PARKED hero only (`ParkedSummary.serviceCompletion`);
+        // a driving car is never `in_service`, but the gate is stated rather than
+        // assumed so the band can never grow for a line that isn't drawn.
+        if snapshot.status != .driving, serviceCompletionLine(snapshot: snapshot) != nil { lines += 1 }
+        return lines
     }
 
     /// The expanded-layer scroll view. Normally a plain `ScrollView`; the
@@ -542,9 +589,31 @@ struct HomeScreen: View {
     /// drift-gate scene stays byte-identical.
     private func serviceCompletionLine(snapshot: VehicleTelemetrySnapshot) -> String? {
         VehicleServiceWindow.completionLine(
-            for: snapshot.serviceEstimatedEndAt,
+            for: resolvedServiceWindow(snapshot: snapshot),
             isInService: homeState.selectedBadgeStatus == .inService
         )
+    }
+
+    /// The ONE resolution of the service window for this sheet — the hero line
+    /// above and the "Service completion date" row inside `VehicleControls` are
+    /// both built from this single call.
+    ///
+    /// It used to be resolved twice, independently, and BOTH times from
+    /// `snapshot.serviceEstimatedEndAt` — a value that cannot move until the next
+    /// cold `/snapshot` read, because the field carries no WS delta. A save wrote
+    /// its echo to the executor, which neither surface read, so a save the server
+    /// accepted changed nothing on screen (the client's report). See
+    /// `VehicleServiceWindow.resolvedEndAt(committed:isCommitted:snapshot:)` for
+    /// why the executor is the source and why `nil` had to be committable.
+    ///
+    /// Falls back to the snapshot when there is no executor at all — a state the
+    /// selection invariant does not actually produce, but resolving to the older
+    /// of the two values is the safe direction if it ever did.
+    private func resolvedServiceWindow(snapshot: VehicleTelemetrySnapshot) -> Date? {
+        guard let executor = homeState.selectedCommandExecutor else {
+            return snapshot.serviceEstimatedEndAt
+        }
+        return VehicleServiceWindow.resolvedEndAt(executor: executor, snapshot: snapshot)
     }
 
     /// The LOW crossfade layer — the summary hero only (peek). Identical pixels
@@ -610,7 +679,10 @@ struct HomeScreen: View {
                 // The SAME line the peek layer gets — the crossfade dissolves the
                 // two summaries into each other, so they must match line for line.
                 serviceCompletion: serviceCompletionLine(snapshot: snapshot),
-                onEditServiceWindow: { isEditingServiceWindow = true }
+                onEditServiceWindow: { isEditingServiceWindow = true },
+                // The SAME resolution the line above was built from, so the hero
+                // and the details row can never disagree about what is saved.
+                serviceEstimatedEndAt: resolvedServiceWindow(snapshot: snapshot)
             )
         }
     }

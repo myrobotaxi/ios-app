@@ -332,6 +332,13 @@ struct ParkedHeroContent: View {
     var serviceCompletion: String? = nil
     /// MYR-316 — opens the "Expected back" entry sheet. `nil` in previews.
     var onEditServiceWindow: (() -> Void)? = nil
+    /// MYR-316 — the RESOLVED service window, threaded from `HomeScreen`'s single
+    /// `resolvedServiceWindow(snapshot:)` call rather than re-read from the
+    /// snapshot here. Reading `snapshot.serviceEstimatedEndAt` at this call site is
+    /// precisely the defect that shipped: the snapshot is snapshot-only by contract
+    /// and does not carry a just-saved value, so the row (and the hero line, which
+    /// had the same bug) kept showing the pre-save state.
+    var serviceEstimatedEndAt: Date? = nil
 
     var body: some View {
         // Outer gap 14 (screens.jsx:585 `gap: 14`) between the summary and the
@@ -371,7 +378,7 @@ struct ParkedHeroContent: View {
                 // pre-MYR-316 values on the simulated path.
                 badgeStatus: status,
                 onEditServiceWindow: onEditServiceWindow,
-                serviceEstimatedEndAt: snapshot.serviceEstimatedEndAt
+                serviceEstimatedEndAt: serviceEstimatedEndAt
             )
         }
     }

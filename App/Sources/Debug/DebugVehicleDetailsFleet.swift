@@ -148,7 +148,8 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
         serviceEstimatedEndAt: Date? = nil,
         color: String = "",
         fsdVersion: String? = nil,
-        serviceWindowSource: ServiceWindowSource = .unknown
+        serviceWindowSource: ServiceWindowSource = .unknown,
+        savesServiceWindowOnBoot: Date? = nil
     ) {
         // A live-like snapshot: full model/year/trim, full VIN + software version,
         // and a BLANK color (onboarding gap, MYR-283). Streaming/online so the
@@ -219,6 +220,22 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             )
         }
         executor = exec
+
+        // MYR-316 — the SAVE-REFLECTS capture. The snapshot above deliberately
+        // carries NO window (`serviceEstimatedEndAt: nil`), which is the state the
+        // sheet is in when the owner opens the editor; this then runs the REAL
+        // `LiveVehicleCommandExecutor.setServiceWindow` against the REAL
+        // `DebugServiceWindowEndpoint`, and NOTHING refetches the snapshot
+        // afterwards — the field is snapshot-only by contract, so it cannot.
+        //
+        // So whatever the capture shows on the hero line and the details row came
+        // from the write ECHO alone, travelling the unified resolver. That is
+        // exactly the client's situation (server persisted, display did not move),
+        // and before the fix this scene rendered no line and no time at all.
+        // Standing in for a tap the way `ownerFreshnessWaking`'s seeded phase does.
+        if let savesServiceWindowOnBoot {
+            Task { @MainActor in try? await exec.setServiceWindow(savesServiceWindowOnBoot) }
+        }
     }
 
     func telemetry(at index: Int) -> any VehicleTelemetrySource { source }

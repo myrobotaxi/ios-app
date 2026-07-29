@@ -535,6 +535,47 @@ final class VehicleServiceWindowTests: XCTestCase {
         )
     }
 
+    // MARK: - The ONE resolver (MYR-316 save-doesn't-display defect)
+
+    /// THE bug this resolver exists to make unrepresentable: the owner sheet used
+    /// to read the service window from TWO places. The hero completion line and the
+    /// "Service completion date" row both read `VehicleTelemetrySnapshot
+    /// .serviceEstimatedEndAt` — which is derived ONLY from the accumulated
+    /// `VehicleState` and, because the field is snapshot-only by contract (no
+    /// `vehicle_update` ever carries it), does not move until the next cold
+    /// `/snapshot` read. The SAVE, meanwhile, wrote the server's echo to the
+    /// EXECUTOR. So a save that the server persisted correctly changed nothing on
+    /// screen. One resolver, and the executor is its source, because the executor
+    /// holds BOTH inputs: `reconcile(from:)` adopts every snapshot and
+    /// `setServiceWindow` adopts the echo.
+    func testResolverPrefersTheCommittedValueOverAStaleSnapshot() {
+        let saved = Date(timeIntervalSince1970: 1_785_000_000)
+        let stale = saved.addingTimeInterval(-86_400)
+
+        XCTAssertEqual(
+            VehicleServiceWindow.resolvedEndAt(committed: saved, isCommitted: true, snapshot: stale),
+            saved,
+            "a committed write outranks a snapshot that has not been refetched yet"
+        )
+        // The CLEAR case is the one a naive "prefer non-nil" resolver gets wrong:
+        // an owner who removes the window must see it go, even though the stale
+        // snapshot still carries the old instant.
+        XCTAssertNil(
+            VehicleServiceWindow.resolvedEndAt(committed: nil, isCommitted: true, snapshot: stale),
+            "a committed CLEAR must win over the stale snapshot it is clearing"
+        )
+        // Nothing committed → the snapshot is the only thing we know, and it is
+        // authoritative. This is the cold-launch path and the whole simulated path.
+        XCTAssertEqual(
+            VehicleServiceWindow.resolvedEndAt(committed: nil, isCommitted: false, snapshot: stale),
+            stale
+        )
+        XCTAssertNil(
+            VehicleServiceWindow.resolvedEndAt(committed: nil, isCommitted: false, snapshot: nil),
+            "no window anywhere is the COMMON case and must stay nil \u{2014} it renders nothing"
+        )
+    }
+
     // MARK: - Support
 
     private static func inServiceSummary(serviceEstimatedEndAt: String?) -> VehicleSummary {

@@ -112,6 +112,39 @@ public enum MRTMetrics {
     /// Sheet scroll-content bottom clearance above the floating tab bar
     /// (screens.jsx:542 `padding: '6px 24px 100px'`).
     public static let homeSheetContentBottomPadding: CGFloat = 100
+    /// Height one extra muted qualifier line adds to the owner sheet's peek hero
+    /// — a 12/11pt line plus the block's own 10pt lead (`components.jsx:559`
+    /// `gap: 8` + `marginTop: 2`, the design's rhythm for a trailing qualifier).
+    ///
+    /// MYR-315 (client polish) — `homePeekHeightParked`/`Driving` are the
+    /// prototype's numbers for the prototype's content, and the prototype's peek
+    /// hero has neither a freshness stamp nor a service-completion line: both are
+    /// LIVE-ONLY additions this port made to that block. Adding a line to fixed
+    /// bands spent the clearance `BottomSheet` reserves between sheet content and
+    /// the floating nav (`homeSheetContentBottomPadding`, components.jsx:542), and
+    /// the stamp — an interactive element whose ≥44pt target extends past its ink —
+    /// ended up touching the tab bar's own top edge (60pt tall, 26pt up ⇒ 86pt
+    /// from the physical edge). The band grows by this much per live-only line
+    /// actually rendered, so the added content brings its own room instead of
+    /// eating the nav's. Zero lines on the simulated path ⇒ the bands are the
+    /// prototype's 210/280 exactly and every drift-gate scene is byte-identical.
+    public static let homePeekQualifierLineHeight: CGFloat = 24
+
+    /// The owner sheet's peek band: the prototype's number for the hero's shape,
+    /// plus room for each LIVE-ONLY qualifier line the port adds to it. See
+    /// ``homePeekQualifierLineHeight``.
+    ///
+    /// `qualifierLines == 0` returns `base` UNCHANGED — that is the simulated /
+    /// drift-gate path, and it is what keeps every existing scene byte-identical.
+    public static func homePeekHeight(base: CGFloat, qualifierLines: Int) -> CGFloat {
+        base + CGFloat(max(0, qualifierLines)) * homePeekQualifierLineHeight
+    }
+
+    /// Distance from the PHYSICAL bottom edge to the top of the floating
+    /// `BottomNav` — its 60pt height plus the 26pt it floats above the edge
+    /// (`BottomNav`: `.padding(.bottom, 26)`, components.jsx:566). The number the
+    /// sheet's own reserved band (``homeSheetContentBottomPadding``) has to clear.
+    public static let bottomNavTopEdge: CGFloat = 86
     /// Total height of `MRTGrabHandle` (4pt bar + 10pt top pad + 6pt bottom
     /// pad). The crossfade owner sheet (MYR-236 r5.3) draws the handle in its
     /// always-opaque base and reserves this at the top of each crossfade layer,
