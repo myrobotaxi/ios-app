@@ -310,6 +310,30 @@ enum DebugScene: String, CaseIterable {
     /// `ownerDispatchedCompleted`'s 5s "Dropped off ✓" pair. Pair with
     /// `MRT_OWNER_DETENT=half`; the notice row sits under the quick tiles.
     case ownerNoticeRejected
+    /// MYR-329 (client defect) — the SAME rejection, with the reason NAMED.
+    ///
+    /// Jul 28, TestFlight: "Any reason why car didn't accept climate, is it
+    /// because low battery?" The car was in service mode; the battery was fine.
+    /// `ownerNoticeRejected`'s generic "The car didn't accept that" was all the
+    /// owner had, so a wrong guess was the only guess available to him.
+    ///
+    /// Same 502 `command_failed` on `auto_conditioning_stop`, same real
+    /// `LiveVehicleCommandExecutor`, same real `.rejected` settle — the ONE
+    /// difference is that the wire error carries the server's canonical token in
+    /// `message` ("vehicle command failed: vehicle_in_service", rest-api.md
+    /// §7.9), so the shipping `RestError.commandRejectionReason` parse runs and
+    /// the row reads "Car is in service — commands are limited". Nothing about
+    /// the notice is hand-set.
+    ///
+    /// It needs its own scene because `ownerNoticeRejected` must stay
+    /// byte-identical (it is MYR-301's lifecycle capture), and because the state
+    /// has no other capture route at all: it takes a car genuinely sitting in
+    /// service mode, behind a real auth session, refusing a real command. The
+    /// two scenes are a clean before/after of exactly the line.
+    ///
+    /// Same TWO-SHOT bounded display as its sibling — capture at t≈2s (notice
+    /// up) and t≈8s (gone). Pair with `MRT_OWNER_DETENT=half`.
+    case ownerNoticeRejectedInService
     /// MYR-320 — the vehicle-details section with EVERY enrichment field the
     /// client asked for populated at once, off one live-shaped snapshot:
     ///
@@ -577,7 +601,8 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerFreshnessStale || self == .ownerFreshnessWaking
             || self == .ownerServiceWindow || self == .ownerServiceWindowEditor
             || self == .ownerServiceWindowManual || self == .ownerServiceWindowSaved
-            || self == .ownerNoticeRejected || self == .ownerVehicleEnriched
+            || self == .ownerNoticeRejected || self == .ownerNoticeRejectedInService
+            || self == .ownerVehicleEnriched
             || self == .ownerConnecting || self == .ownerConnectingCold
             || self == .ownerDrivesLoading || self == .ownerSettingsLoading
     }
@@ -618,6 +643,9 @@ enum DebugScene: String, CaseIterable {
         case .ownerNoticeSeat: return DebugCommandNoticeFleet(variant: .seatRelink)
         // MYR-301 — the client's own rejection: climate OFF, refused by the car.
         case .ownerNoticeRejected: return DebugCommandNoticeFleet(variant: .climateRejected)
+        // MYR-329 — the same rejection, with the server naming service mode.
+        case .ownerNoticeRejectedInService:
+            return DebugCommandNoticeFleet(variant: .climateRejectedInService)
         // MYR-315 — a car offline for 7h, so the stamp resolves its stale branch
         // through the real mapping (see `DebugFreshnessFleet`).
         case .ownerFreshnessStale, .ownerFreshnessWaking: return DebugFreshnessFleet()
@@ -698,7 +726,8 @@ enum DebugScene: String, CaseIterable {
         // same small anchor the climate scenes use frames the tile (with its
         // shortened sub) and the full-text row together; the seat notice needs
         // the Climate card's tail, like `ownerVehicleSeats`.
-        case .ownerNoticeCharge, .ownerNoticeAsleep, .ownerNoticeRejected: return .fraction(0.12)
+        case .ownerNoticeCharge, .ownerNoticeAsleep, .ownerNoticeRejected,
+             .ownerNoticeRejectedInService: return .fraction(0.12)
         case .ownerNoticeSeat: return .fraction(0.30)
         default: return nil
         }
@@ -1053,6 +1082,7 @@ enum DebugScene: String, CaseIterable {
              .ownerMediaNowPlaying, .ownerMediaNoSession,
              .ownerClimateAuto, .ownerClimateManual, .ownerClimateUnknown,
              .ownerNoticeCharge, .ownerNoticeAsleep, .ownerNoticeSeat, .ownerNoticeRejected,
+             .ownerNoticeRejectedInService,
              .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute,
              .ownerDispatchedCompleted,
              .ownerFreshnessStale, .ownerFreshnessWaking,

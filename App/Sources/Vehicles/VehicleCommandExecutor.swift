@@ -1,4 +1,5 @@
 import Foundation
+import MyRoboTaxiKit
 import Observation
 
 // MARK: - Vehicle command seam (MYR-168 deliverable 2)
@@ -160,7 +161,12 @@ public enum VehicleCommandNotice: Sendable, Equatable {
     case relinkCharging  // permission_denied on a charge-port command — the token
                          // lacks the `vehicle_charging_cmds` scope specifically
     case cooldown        // rate_limited (429) — brief "just a moment"
-    case rejected        // command_failed (502) — the CAR refused the action (MYR-301)
+    // MYR-301 — command_failed (502): the CAR refused the action.
+    // MYR-329 — and now, when the server could name why, WHICH refusal it was.
+    // The payload is `nil` whenever we do not know (an older server, a reason
+    // outside the allow-list, a token this build predates), and that case must
+    // keep reading exactly as it did before this issue.
+    case rejected(VehicleCommandRejectionReason?)
     case failed          // transport / invalid / not-found — couldn't reach the car
     // MYR-286 — the two plate outcomes. The plate is NOT a Tesla command (§7.14 is
     // a local owner-scoped DB write with no Tesla call in it), so every notice
@@ -201,7 +207,14 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         // MYR-301 — 502 `command_failed` is a REJECTION by the vehicle, not a
         // reachability problem: we reached the car and it said no. Saying
         // "couldn't reach the car" for it is dishonest (and hid the asleep case).
-        case .rejected: "The car didn\u{2019}t accept that"
+        //
+        // MYR-329 — "it said no" was still not enough. A TestFlight owner whose
+        // climate command was refused by a car in service mode asked whether his
+        // battery was the problem, because this line gave him nothing to go on
+        // and low battery is the guess a reasonable person makes. When the
+        // server names the reason we say it; when it does not, we keep the
+        // honest, unchanged line rather than inventing a cause.
+        case .rejected(let reason): reason?.noticeMessage ?? "The car didn\u{2019}t accept that"
         case .failed: "Couldn\u{2019}t reach the car"
         // MYR-286 — the server normalizes (trim + uppercase) BEFORE validating, so
         // a 400 means the plate genuinely breaks the rule (charset or the 10-char
@@ -235,6 +248,12 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         case .pairKey: "Pair key"
         case .relink, .relinkCharging: "Re-link"
         case .cooldown: "One sec\u{2026}"
+        // MYR-329 — every rejection keeps the SAME tile token regardless of
+        // reason. The tile has ~54pt for one 11pt line; "In service" and
+        // "Battery low" would fit, but "Confirm on screen" would not, and a
+        // vocabulary that is specific for some reasons and generic for others
+        // reads as a glitch. The reason belongs on the full-width notice row,
+        // which has the space to say it properly.
         case .rejected: "Declined"
         case .failed: "Failed"
         // Never rendered on a tile (the plate is a details row, not a tile), but
@@ -277,6 +296,46 @@ public enum VehicleCommandNotice: Sendable, Equatable {
     /// of its control — see `LiveVehicleCommandExecutor`'s "Notice lifecycle"
     /// section, which owns both rules.
     public var isTransient: Bool { self == .waking || self == .cooldown }
+}
+
+/// Owner-facing copy for a named rejection (MYR-329).
+///
+/// The Kit's `VehicleCommandRejectionReason` is transport vocabulary — the
+/// server's canonical token. This is the only place it becomes words a car
+/// owner reads, so the copy lives here beside the rest of the notice catalog
+/// rather than in the Kit (which ships no user-facing strings).
+///
+/// Rules the whole table follows, learned from MYR-301's copy pass:
+///   • Name the CAUSE, not the failure. The owner already saw that the control
+///     did not move; what they came for is why.
+///   • Imply the fix where there is one the owner can perform, without a call
+///     to action — none of these route anywhere in-app (`action` stays `nil`),
+///     so a button-shaped sentence would be a dead end.
+///   • Stay one line at the notice row's width, and keep the quiet register of
+///     the rest of the catalog: no exclamation, no apology, no blame.
+extension VehicleCommandRejectionReason {
+    var noticeMessage: String {
+        switch self {
+        // The client's own case. "Commands are limited" rather than "blocked":
+        // Tesla still honors a few, so an absolute claim would be wrong the
+        // first time something did work.
+        case .vehicleInService: "Car is in service \u{2014} commands are limited"
+        // The car is waiting on its own touchscreen, so the fix is entirely
+        // physical and the owner needs to know to go to the car.
+        case .requiresUserAcknowledgement: "Confirm this on the car\u{2019}s screen"
+        case .userNotPresent: "Someone needs to be in the car for that"
+        // A setting inside the car, not a broken Tesla link — deliberately
+        // worded so it cannot be confused with the `.relink` notices, which are
+        // about this app's access rather than the car's own switch.
+        case .remoteAccessDisabled: "Remote access is off in the car\u{2019}s settings"
+        // The owner's own first guess on Jul 28. When it IS the answer, say so
+        // plainly; charging is the fix and needs no explaining.
+        case .lowBattery: "Battery is too low for that"
+        // The one genuinely transient reason in the set: worth telling the
+        // owner to simply try again, which is not true of the others.
+        case .vehicleBusy: "Car is busy \u{2014} try again in a moment"
+        }
+    }
 }
 
 /// A control whose CURRENT displayed state the live path may not yet know

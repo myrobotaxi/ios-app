@@ -228,7 +228,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
 
         try await executor.setClimateOn(false)
         XCTAssertEqual(
-            executor.uiState(for: .climate).notice, .rejected,
+            executor.uiState(for: .climate).notice, .rejected(nil),
             "the car refused \u{2014} the owner is told so"
         )
         XCTAssertFalse(executor.uiState(for: .climate).isPending)
@@ -252,7 +252,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         )
 
         try await executor.setClimateOn(false)
-        XCTAssertEqual(executor.uiState(for: .climate).notice, .rejected)
+        XCTAssertEqual(executor.uiState(for: .climate).notice, .rejected(nil))
 
         var state = Self.serviceState(serviceEstimatedEndAt: nil)
         state.status = .parked
@@ -280,10 +280,10 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
 
         try await executor.setClimateOn(false)
         // "Remount": every reader re-reads the same executor and sees the notice.
-        XCTAssertEqual(executor.uiState(for: .climate).notice, .rejected)
+        XCTAssertEqual(executor.uiState(for: .climate).notice, .rejected(nil))
         try await Task.sleep(for: .milliseconds(40))
         XCTAssertEqual(
-            executor.uiState(for: .climate).notice, .rejected,
+            executor.uiState(for: .climate).notice, .rejected(nil),
             "the notice persists across a remount inside its display window"
         )
 
@@ -312,7 +312,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         try await executor.setClimateOn(false) // second tap, fails again
         try await Task.sleep(for: .milliseconds(90))
         XCTAssertEqual(
-            executor.uiState(for: .climate).notice, .rejected,
+            executor.uiState(for: .climate).notice, .rejected(nil),
             "the second failure gets its own full display window"
         )
         try await Task.sleep(for: .milliseconds(200))
@@ -398,7 +398,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
             Case("rate_limited", 429, .cooldown),
             // MYR-301 — 502 is a REJECTION by the car, 503 is a car that never
             // woke; neither is the generic "couldn't reach the car".
-            Case("command_failed", 502, .rejected),
+            Case("command_failed", 502, .rejected(nil)),
             Case("invalid_request", 400, .failed),
             Case("not_found", 404, .failed),
             Case("vehicle_asleep", 503, .asleep),
@@ -518,7 +518,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         try? await exec.setLocked(false)
 
         XCTAssertFalse(exec.isKnown(.locked), "a failed command must NOT confirm the value — stays unknown")
-        XCTAssertEqual(exec.uiState(for: .lock).notice, .rejected)
+        XCTAssertEqual(exec.uiState(for: .lock).notice, .rejected(nil))
     }
 
     // MARK: capability — every keyed control is backend-backed now (charge port joined v186)
