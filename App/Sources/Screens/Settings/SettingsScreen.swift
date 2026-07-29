@@ -11,7 +11,10 @@ import MyRoboTaxiKit
 // own `BottomNav` like every other owner screen — replaces the MYR-167
 // `PlaceholderScreen` for the "settings" tab.
 struct SettingsScreen: View {
-    @Bindable var shareState: OwnerShareState
+    /// MYR-184 — the `ShareService` seam (was the concrete `OwnerShareState`).
+    /// This screen reads the viewer list and revokes from it; the invite
+    /// composer lives on `InvitesScreen`.
+    let shareService: any ShareService
     @Bindable var vehiclesState: OwnerVehiclesState
     @Binding var ownerTab: String
     /// MYR-224 — the real signed-in identity on the LIVE path, else nil (SIM →
@@ -104,6 +107,9 @@ struct SettingsScreen: View {
     @State private var isAddingTesla = false
     @State private var confirmRevoke: Viewer?
     @State private var revokedToastName: String?
+    /// MYR-184 — a revoke that FAILED. Same quiet bottom pill as the success,
+    /// because saying nothing would leave the owner believing access was cut.
+    @State private var revokeFailed = false
     // MYR-258 — live car-offboarding (§7.12) transient state.
     /// The car whose teardown `DELETE` is in flight (drives the busy overlay).
     @State private var teardownInFlight: Vehicle?
@@ -220,6 +226,10 @@ struct SettingsScreen: View {
         .mrtSuccessToast(
             isPresented: Binding(get: { revokedToastName != nil }, set: { if !$0 { revokedToastName = nil } }),
             message: "Access revoked for \(revokedToastName ?? "")"
+        )
+        .mrtSuccessToast(
+            isPresented: $revokeFailed,
+            message: "Couldn\u{2019}t revoke access"
         )
         // MYR-258 — post-teardown "Car removed" sheet with the two owner-only
         // follow-ups (live path only; teardownResult is set only by the live flow).
@@ -558,7 +568,7 @@ struct SettingsScreen: View {
                 .mrtTextStyle(.label())
                 .foregroundStyle(Color.mrtTextMuted)
             Spacer(minLength: 0)
-            Text("\(shareState.viewers.count) \(shareState.viewers.count == 1 ? "person" : "people")")
+            Text("\(shareService.viewers.count) \(shareService.viewers.count == 1 ? "person" : "people")")
                 .font(.system(size: 11))
                 .foregroundStyle(Color.mrtTextMuted)
         }
@@ -569,14 +579,14 @@ struct SettingsScreen: View {
 
     @ViewBuilder
     private var viewersList: some View {
-        if shareState.viewers.isEmpty {
+        if shareService.viewers.isEmpty {
             Text("No one has access yet.")
                 .font(.system(size: 13))
                 .foregroundStyle(Color.mrtTextMuted)
                 .padding(.horizontal, MRTMetrics.pageGutter)
                 .padding(.bottom, 14)
         }
-        ForEach(shareState.viewers) { viewer in
+        ForEach(shareService.viewers) { viewer in
             ViewerRow(viewer: viewer) { confirmRevoke = viewer }
         }
     }
@@ -1146,8 +1156,17 @@ struct SettingsScreen: View {
         let viewer = confirmRevoke
         return ShareDialogs.revoke(viewer ?? Viewer(name: "", email: "", online: false, perm: "")) {
             guard let viewer else { return }
-            shareState.revoke(viewer)
-            revokedToastName = viewer.name
+            Task { @MainActor in
+                do {
+                    try await shareService.revoke(viewer)
+                    revokedToastName = viewer.name
+                } catch {
+                    // MYR-184 — never claim a revoke that did not happen. The
+                    // list re-reads from the server either way, so the row simply
+                    // stays put, which is the truth.
+                    revokeFailed = true
+                }
+            }
         }
     }
 }
@@ -1169,7 +1188,7 @@ private struct PrimaryBadge: View {
 
 #Preview {
     SettingsScreen(
-        shareState: OwnerShareState(),
+        shareService: SimulatedShareService(),
         vehiclesState: OwnerVehiclesState(),
         ownerTab: .constant("settings"),
         onSignOut: {}

@@ -12,7 +12,10 @@ import DesignSystem
 // `BottomNav` like every other owner screen (see `HomeScreen`'s header
 // comment) — replaces the MYR-167 `PlaceholderScreen` for the "invites" tab.
 struct InvitesScreen: View {
-    @Bindable var shareState: OwnerShareState
+    /// MYR-184 — the `ShareService` seam (was the concrete `OwnerShareState`).
+    /// `let`, not `@Bindable`: this screen only READS the lists and CALLS the
+    /// mutations; it never binds a field to service state.
+    let shareService: any ShareService
     @Binding var ownerTab: String
 
     @State private var email = ""
@@ -25,11 +28,20 @@ struct InvitesScreen: View {
     @State private var confirmResend: PendingInvite?
     @State private var resentToastName: String?
     @State private var sentToastEmail: String?
+    /// MYR-184 — a mutation that FAILED. Surfaced as the same quiet bottom pill
+    /// the successes use, because the alternative (saying nothing) tells the
+    /// owner someone lost access when they did not.
+    @State private var failureToast: String?
 
     private enum SendStep { case config, sending, done }
     @State private var sendStep: SendStep?
     @State private var accessLevel: ShareAccessLevel = .live
-    @State private var shareVehicleIDs: Set<String> = [VehicleFixtures.vehicles[0].id]
+    @State private var shareVehicleIDs: Set<String> = []
+    /// MYR-184 — the minted code, held only long enough to present the system
+    /// share sheet. Set by a create OR a resend; the sheet is the whole point of
+    /// both on the live path (§7.5: the owner "sends the code out-of-band through
+    /// the iOS system share sheet").
+    @State private var handout: ShareHandout?
 
     var body: some View {
         ZStack {
@@ -79,8 +91,30 @@ struct InvitesScreen: View {
         )
         .mrtSuccessToast(
             isPresented: Binding(get: { sentToastEmail != nil }, set: { if !$0 { sentToastEmail = nil } }),
-            message: "Invite sent to \(sentToastEmail ?? "")"
+            message: sentToastMessage
         )
+        .mrtSuccessToast(
+            isPresented: Binding(get: { failureToast != nil }, set: { if !$0 { failureToast = nil } }),
+            message: failureToast ?? ""
+        )
+        // MYR-184 — the SYSTEM share sheet carrying the minted code. This is how
+        // an invite actually reaches its recipient: there is no email
+        // infrastructure and no web surface to link to, so the code travels
+        // through Messages/AirDrop/whatever the owner already uses.
+        .sheet(item: $handout) { handout in
+            ActivityShareSheet(activityItems: [handout.message])
+        }
+        // MYR-184 — read the owner's real grants on arrival. No-op in sim, so
+        // every simulated + DEBUG capture is unchanged.
+        .task { await shareService.load() }
+    }
+
+    /// The send toast. SIM keeps the prototype's "Invite sent to {email}"; LIVE
+    /// names the person, because there is no address to name and the code has
+    /// already gone out through the share sheet.
+    private var sentToastMessage: String {
+        let value = sentToastEmail ?? ""
+        return shareService.sharesByCode ? "Invite ready for \(value)" : "Invite sent to \(value)"
     }
 
     // MARK: Header (screens.jsx:97-100)
@@ -90,7 +124,14 @@ struct InvitesScreen: View {
             Text("Share Your Tesla")
                 .mrtTextStyle(.screenTitle)
                 .foregroundStyle(Color.mrtText)
-            Text("Let friends and family see live location and trips.")
+            // MYR-184 — the live sub-line names the ARTEFACT. "Let friends and
+            // family see…" describes the outcome but leaves the owner expecting
+            // an email to be sent; §7.5 sends nothing — it mints a code the owner
+            // hands over themselves, and the screen has to say so before the
+            // share sheet appears out of nowhere. SIM keeps the prototype's line.
+            Text(shareService.sharesByCode
+                ? "Send a code so friends and family can see live location and trips."
+                : "Let friends and family see live location and trips.")
                 .font(.system(size: 13))
                 .foregroundStyle(Color.mrtTextSec)
         }
@@ -102,17 +143,34 @@ struct InvitesScreen: View {
 
     // MARK: Email + invite row (screens.jsx:103-111)
 
-    private var validEmail: Bool {
+    /// Whether the recipient field holds something submittable.
+    ///
+    /// SIM keeps the prototype's email regex verbatim. LIVE validates the §7.5.1
+    /// `label` rule instead — non-blank, at most 120 characters — because there
+    /// is no email in this contract and rejecting "Mom" for not looking like an
+    /// address would be the app enforcing a rule the server does not have.
+    private var validRecipient: Bool {
         let trimmed = email.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.range(of: #"^.+@.+\..+$"#, options: .regularExpression) != nil
+        guard shareService.sharesByCode else {
+            return trimmed.range(of: #"^.+@.+\..+$"#, options: .regularExpression) != nil
+        }
+        return !trimmed.isEmpty && trimmed.count <= 120
+    }
+
+    /// The recipient's display name. SIM derives it from the email
+    /// (`emailToName`, screens.jsx:1237-1240); LIVE uses the typed label as-is —
+    /// it IS the name (§7.5.1: an owner-typed memo, never resolved to an account).
+    private var recipientName: String {
+        let trimmed = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        return shareService.sharesByCode ? trimmed : ShareFixtures.name(fromEmail: email)
     }
 
     private var emailRow: some View {
         HStack(spacing: 10) {
             TextField("", text: $email)
                 .textFieldStyle(.plain)
-                .keyboardType(.emailAddress)
-                .textInputAutocapitalization(.never)
+                .keyboardType(shareService.sharesByCode ? .default : .emailAddress)
+                .textInputAutocapitalization(shareService.sharesByCode ? .words : .never)
                 .autocorrectionDisabled()
                 .font(.system(size: 14))
                 .tint(Color.mrtGold)
@@ -130,7 +188,7 @@ struct InvitesScreen: View {
                         // `.foregroundStyle` below. `Text(verbatim:)` skips
                         // Markdown parsing so the placeholder actually
                         // renders `mrtTextMuted`, not system blue.
-                        Text(verbatim: "friend@example.com")
+                        Text(verbatim: shareService.sharesByCode ? "Their name" : "friend@example.com")
                             .font(.system(size: 14))
                             .foregroundStyle(Color.mrtTextMuted)
                             .allowsHitTesting(false)
@@ -153,7 +211,7 @@ struct InvitesScreen: View {
     }
 
     private func openSend() {
-        guard validEmail else {
+        guard validRecipient, let firstVehicle = shareService.shareableVehicles.first else {
             emailError = true
             emailShakeTrigger += 1
             Task {
@@ -163,7 +221,10 @@ struct InvitesScreen: View {
             return
         }
         accessLevel = .live
-        shareVehicleIDs = [VehicleFixtures.vehicles[0].id]
+        // MYR-228 fix (a) — the FIRST REAL vehicle, from the seam. This was
+        // `VehicleFixtures.vehicles[0].id` unconditionally, so a live owner's
+        // invite was pre-selected against a car that is not on their account.
+        shareVehicleIDs = [firstVehicle.id]
         sendStep = .config
     }
 
@@ -171,19 +232,19 @@ struct InvitesScreen: View {
 
     private var viewersSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Viewers \u{00B7} \(shareState.viewers.count)")
+            Text("Viewers \u{00B7} \(shareService.viewers.count)")
                 .mrtTextStyle(.label())
                 .foregroundStyle(Color.mrtTextMuted)
                 .padding(.horizontal, MRTMetrics.pageGutter)
                 .padding(.bottom, 14)
-            if shareState.viewers.isEmpty {
+            if shareService.viewers.isEmpty {
                 Text("No one has access yet.")
                     .font(.system(size: 13))
                     .foregroundStyle(Color.mrtTextMuted)
                     .padding(.horizontal, MRTMetrics.pageGutter)
                     .padding(.bottom, 14)
             }
-            ForEach(shareState.viewers) { viewer in
+            ForEach(shareService.viewers) { viewer in
                 ViewerRow(viewer: viewer) { confirmRevoke = viewer }
             }
         }
@@ -193,14 +254,14 @@ struct InvitesScreen: View {
 
     @ViewBuilder
     private var pendingSection: some View {
-        if !shareState.pending.isEmpty {
+        if !shareService.pending.isEmpty {
             Text("Pending")
                 .mrtTextStyle(.label())
                 .foregroundStyle(Color.mrtTextMuted)
                 .padding(.horizontal, MRTMetrics.pageGutter)
                 .padding(.top, 20)
                 .padding(.bottom, 14)
-            ForEach(shareState.pending) { invite in
+            ForEach(shareService.pending) { invite in
                 PendingRow(
                     invite: invite,
                     onResend: { confirmResend = invite },
@@ -249,7 +310,8 @@ struct InvitesScreen: View {
             .padding(.bottom, 9)
 
             HStack(spacing: 8) {
-                ForEach(VehicleFixtures.vehicles) { vehicle in
+                // MYR-228 fix (a) — the owner's REAL fleet on the live path.
+                ForEach(shareService.shareableVehicles) { vehicle in
                     vehicleCard(vehicle)
                 }
             }
@@ -278,12 +340,15 @@ struct InvitesScreen: View {
 
     private var recipientRow: some View {
         HStack(spacing: 12) {
-            Avatar(name: ShareFixtures.name(fromEmail: email), size: 36)
+            Avatar(name: recipientName, size: 36)
             VStack(alignment: .leading, spacing: 0) {
-                Text(ShareFixtures.name(fromEmail: email))
+                Text(recipientName)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color.mrtText)
-                Text(email)
+                // SIM shows the address under the derived name. LIVE has no
+                // second line to show — the label IS the name — so it says what
+                // the recipient will actually receive.
+                Text(shareService.sharesByCode ? "Gets a 6-character code" : email)
                     .font(.system(size: 11.5))
                     .foregroundStyle(Color.mrtTextMuted)
                     .lineLimit(1)
@@ -408,8 +473,8 @@ struct InvitesScreen: View {
     }
 
     private var summaryCard: some View {
-        let recipientFirst = ShareFixtures.name(fromEmail: email).split(separator: " ").first.map(String.init)
-            ?? ShareFixtures.name(fromEmail: email)
+        let recipientFirst = recipientName.split(separator: " ").first.map(String.init)
+            ?? recipientName
         return VStack(alignment: .leading, spacing: 3) {
             Text("\(recipientFirst) will be able to:")
                 .font(.system(size: 11))
@@ -455,7 +520,7 @@ struct InvitesScreen: View {
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Color.mrtText)
                 .padding(.top, 18)
-            Text(email)
+            Text(shareService.sharesByCode ? recipientName : email)
                 .font(.system(size: 12.5))
                 .foregroundStyle(Color.mrtTextMuted)
                 .padding(.top, 4)
@@ -472,7 +537,7 @@ struct InvitesScreen: View {
             Text("Invite sent")
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(Color.mrtText)
-            Text("We emailed \(ShareFixtures.name(fromEmail: email)) a link to join.")
+            Text("We emailed \(recipientName) a link to join.")
                 .font(.system(size: 12.5))
                 .foregroundStyle(Color.mrtTextSec)
                 .multilineTextAlignment(.center)
@@ -486,18 +551,56 @@ struct InvitesScreen: View {
 
     /// screens.jsx:1258-1266 `doSend` — sending (1150ms) → done (950ms) →
     /// appends to Pending, fires the toast, closes the sheet, clears the field.
+    ///
+    /// MYR-184 — the middle of that sequence is now a REAL `POST /api/vehicles/
+    /// {id}/invites`. Three deliberate choices about the timing:
+    ///
+    ///  • The 1150ms "Sending invite…" beat is the prototype's, and it now runs
+    ///    CONCURRENTLY with the create rather than in front of it — a fast server
+    ///    still gets the full beat, a slow one does not get beat-plus-latency.
+    ///  • The 950ms "Invite sent" celebration is SIM-ONLY. On live the meaningful
+    ///    next step is handing the code over, so the sheet closes straight into
+    ///    the system share sheet instead of holding a check mark first.
+    ///  • A FAILED create shows the honest pill and leaves the composer's values
+    ///    alone, so the owner can retry without retyping.
     private func doSend() {
         sendStep = .sending
+        let recipient = recipientName
+        let tier = accessLevel
+        let ids = Array(shareVehicleIDs)
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(1150))
+            async let beat: Void = Task.sleep(for: .milliseconds(1150))
+            let result: Result<ShareHandout?, Error>
+            do {
+                result = .success(try await shareService.createInvite(
+                    label: recipient, tier: tier, vehicleIDs: ids
+                ))
+            } catch {
+                result = .failure(error)
+            }
+            _ = try? await beat
             guard sendStep == .sending else { return }
-            sendStep = .done
-            try? await Task.sleep(for: .milliseconds(950))
-            let addr = email.trimmingCharacters(in: .whitespacesAndNewlines)
-            shareState.sendInvite(email: addr, accessLevel: accessLevel)
-            sentToastEmail = addr
-            sendStep = nil
-            email = ""
+
+            switch result {
+            case .failure:
+                sendStep = nil
+                failureToast = "Couldn\u{2019}t create that invite"
+            case .success(let minted):
+                if let minted {
+                    // Live: straight to the share sheet with the code.
+                    sendStep = nil
+                    handout = minted
+                } else {
+                    // Sim: the prototype's gold-check celebration, unchanged.
+                    sendStep = .done
+                    try? await Task.sleep(for: .milliseconds(950))
+                    sendStep = nil
+                }
+                sentToastEmail = shareService.sharesByCode
+                    ? recipient
+                    : email.trimmingCharacters(in: .whitespacesAndNewlines)
+                email = ""
+            }
         }
     }
 
@@ -507,8 +610,20 @@ struct InvitesScreen: View {
         let invite = confirmResend
         return ShareDialogs.resend(invite ?? PendingInvite(name: "", email: "", sent: "")) {
             guard let invite else { return }
-            shareState.resend(invite)
-            resentToastName = invite.name
+            Task { @MainActor in
+                do {
+                    // §7.5.4 mints a NEW code across every sibling row. The owner
+                    // MUST be handed it — the old one is dead the instant this
+                    // returns, so a resend that did not re-present the share sheet
+                    // would leave both parties holding nothing that works.
+                    if let minted = try await shareService.resend(invite) {
+                        handout = minted
+                    }
+                    resentToastName = invite.name
+                } catch {
+                    failureToast = "Couldn\u{2019}t resend that invite"
+                }
+            }
         }
     }
 
@@ -516,8 +631,15 @@ struct InvitesScreen: View {
         let viewer = confirmRevoke
         return ShareDialogs.revoke(viewer ?? Viewer(name: "", email: "", online: false, perm: "")) {
             guard let viewer else { return }
-            shareState.revoke(viewer)
-            revokedToastName = viewer.name
+            Task { @MainActor in
+                do {
+                    try await shareService.revoke(viewer)
+                    revokedToastName = viewer.name
+                } catch {
+                    // Never claim a revoke that did not happen.
+                    failureToast = "Couldn\u{2019}t revoke access"
+                }
+            }
         }
     }
 
@@ -525,7 +647,10 @@ struct InvitesScreen: View {
         let invite = confirmCancelInvite
         return ShareDialogs.cancelInvite(invite ?? PendingInvite(name: "", email: "", sent: "")) {
             guard let invite else { return }
-            shareState.cancelInvite(invite)
+            Task { @MainActor in
+                do { try await shareService.cancelInvite(invite) }
+                catch { failureToast = "Couldn\u{2019}t cancel that invite" }
+            }
         }
     }
 }
@@ -598,7 +723,7 @@ private struct InviteShake: ViewModifier {
 }
 
 #Preview {
-    InvitesScreen(shareState: OwnerShareState(), ownerTab: .constant("invites"))
+    InvitesScreen(shareService: SimulatedShareService(), ownerTab: .constant("invites"))
         .mrtSurfaceLook(.flat)
         .preferredColorScheme(.dark)
 }

@@ -551,7 +551,11 @@ struct SharedViewerScreen: View {
         switch viewerState.sheetPhase {
         case .idle, .search, .pinDrop:
             VehicleMapView(
-                vehicle: viewerState.vehicle,
+                // MYR-184 — the REAL shared vehicle on the live path (adopted from
+                // the first `role: viewer` row) and the fixture in sim. `mapVehicle`
+                // degrades to a CONTENTLESS placeholder, never a fixture car, for the
+                // window in which the shell has not yet swapped to its empty state.
+                vehicle: viewerState.mapVehicle,
                 snapshot: viewerState.snapshot,
                 cameraPosition: $cameraPosition,
                 isFollowing: $isFollowing,
@@ -1237,9 +1241,20 @@ struct SharedViewerScreen: View {
         VStack(alignment: .leading, spacing: 0) {
             GreetingHero(firstName: greetingFirstName)
                 .padding(.bottom, 16)
-            searchBar
-            if !viewerState.isLiveLocation {
-                quickPlaces
+            // MYR-184 §7.5.0 — the ride-request affordance needs the TOP
+            // (`rides`) tier. Below it the server will 403 the create, so the
+            // client must not offer it: a rider on `live`/`live_history` can
+            // watch the car and sees a quiet line saying exactly that, instead of
+            // a "Where to?" that dead-ends. Every simulated path keeps the CTA
+            // (`canRequestRides` is true when no tier applies), so the drift-gate
+            // scenes are byte-identical.
+            if viewerState.canRequestRides {
+                searchBar
+                if !viewerState.isLiveLocation {
+                    quickPlaces
+                }
+            } else {
+                watchOnlyNotice
             }
             Spacer(minLength: 0)
         }
@@ -1377,6 +1392,41 @@ struct SharedViewerScreen: View {
         .frame(minHeight: MRTMetrics.minTapTarget)
         .padding(.bottom, 14)
         .accessibilityLabel("Where to?")
+    }
+
+    /// MYR-184 — what stands where "Where to?" would be for a viewer whose tier is
+    /// below `rides`. Same 16pt row rhythm as the search bar it replaces, muted
+    /// rather than gold: this is not a disabled CTA (there is nothing to enable),
+    /// it is the honest description of what this grant is.
+    private var watchOnlyNotice: some View {
+        HStack(spacing: 11) {
+            Image(systemName: "eye")
+                .font(.system(size: 15))
+                .foregroundStyle(Color.mrtTextMuted)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(watchOnlyTitle)
+                    .font(.system(size: 14, weight: .medium))
+                    .tracking(-0.1)
+                    .foregroundStyle(Color.mrtText)
+                Text("The owner hasn\u{2019}t enabled ride requests for you.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Color.mrtTextSec)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
+        .background(Color.mrtText.opacity(0.025), in: RoundedRectangle(cornerRadius: MRTMetrics.controlRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: MRTMetrics.controlRadius, style: .continuous)
+                .strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline)
+        )
+        .padding(.bottom, 14)
+    }
+
+    private var watchOnlyTitle: String {
+        let name = viewerState.sharedVehicle?.name ?? ""
+        return name.isEmpty ? "You can watch this Tesla" : "You can watch \(name)"
     }
 
     private var quickPlaces: some View {

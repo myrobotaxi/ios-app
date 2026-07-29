@@ -2,6 +2,7 @@
 import CoreLocation
 import Foundation
 import DesignSystem
+import MyRoboTaxiKit
 import MyRobotaxiContracts
 
 // MARK: - Debug scene hook (MYR-200 — permanent verification infrastructure)
@@ -393,6 +394,73 @@ enum DebugScene: String, CaseIterable {
     case ownerDrivesLoading
     case ownerSettingsLoading
 
+    // MARK: - Vehicle sharing (MYR-184) — ALL live-path-only
+    //
+    // Every state below is unreachable from a simulated capture BY CONSTRUCTION,
+    // because the simulated sharing seams have no server: `SimulatedShareService`
+    // mints no CODE (so no share sheet, no code caption, no tier line on a pending
+    // row) and `SimulatedSharedVehicleCatalog` always has three grants on the
+    // `rides` tier and a redeem that cannot fail (onboarding.jsx:421's forgiving
+    // check). So the empty rider map, the sub-`rides` watch-only sheet, and every
+    // redeem refusal have no other capture route at all.
+    //
+    // All five inject `DebugShareEndpoint` and run the PRODUCTION
+    // `LiveShareService` / `LiveSharedVehicleCatalog` against it — the same
+    // "real code path, injected wire" precedent as `DebugServiceWindowEndpoint`.
+    // What the capture shows therefore came from the shipping grouping, the
+    // shipping tier mapping, and the shipping gates, not from a hand-set flag.
+    // Every existing scene is byte-identical: nothing consults these overrides
+    // unless the scene is one of the five.
+
+    /// MYR-184 — the owner Share tab on the SIMULATED path (`initialOwnerTab`
+    /// "invites"), i.e. the prototype's own render: an email field, three fixture
+    /// viewers with their presence dots, and a pending row captioned with an
+    /// email address. It is the BEFORE half of the pair below, and the drift-gate
+    /// anchor for this screen — it must stay byte-identical forever.
+    case ownerShare
+    /// MYR-184 — the owner Share tab on the LIVE path (`initialOwnerTab`
+    /// "invites"). The whole point of the pair with the simulated `ownerShare`:
+    ///
+    ///   • the pending row's caption names the CODE ("Code RBO246 · sent 2d ago")
+    ///     where the fixture row names an email — §7.5 has no email anywhere;
+    ///   • that row carries the TIER the owner chose ("Live + history"), which the
+    ///     prototype's `doSend` discarded outright;
+    ///   • the accepted viewer's presence dot is OFF, because v1 has NO presence
+    ///     signal on the wire and the row must not claim someone is watching;
+    ///   • ONE pending row stands for a MULTI-VEHICLE invite (two server rows,
+    ///     one code) — the §7.5.1 regrouping, running for real.
+    case ownerShareLive
+
+    /// MYR-184 (MYR-228 fix (c)) — the rider Live Map with ZERO shared vehicles.
+    /// A state that could not exist before this issue: `SharedViewerState.vehicle`
+    /// defaulted to `VehicleFixtures.vehicles[0]` with no live gate, so a rider who
+    /// had redeemed nothing watched a map captioned "Cybercab", a car on nobody's
+    /// account, ticking fixture telemetry. The honest render has no map at all.
+    case riderSharedEmpty
+
+    /// MYR-184 (§7.5.0) — the rider idle sheet for a viewer BELOW the `rides`
+    /// tier. The gold "Where to?" search bar is replaced by a muted "You can watch
+    /// {car}" line, because the server will 403 a ride create from this tier and
+    /// the client must not offer what will fail. Injects ONE `role: viewer` row on
+    /// `live` and lets the shipping `SharedViewerState.canRequestRides` decide.
+    case riderWatchOnly
+
+    /// MYR-184 (§7.5.5) — the invite-code screen refusing on the RATE LIMIT.
+    /// Distinct from the shake, deliberately: nothing is wrong with the code, and
+    /// clearing + shaking would say "wrong code" and send the rider off to ask for
+    /// a new one. The entry stays, and a quiet line says to wait. Auto-submits the
+    /// sample code on appear (headless tooling cannot type six characters).
+    case riderInviteRateLimited
+
+    /// MYR-184 (MYR-228 fix (b)) — the invite success screen built from a REAL
+    /// `RedeemShareInviteResponse`. It used to hardcode `InviteHostFixture`:
+    /// "Alex's Model Y · Roommate · 2025 Tesla Model Y", a person and a car that
+    /// exist nowhere. This one is the server's `ownerFirstName` + the granted
+    /// vehicle, on a MULTI-VEHICLE invite so the "+1 more vehicle" line shows, and
+    /// with the capability line reflecting the actual tier rather than promising
+    /// rides unconditionally. Auto-submits like the scene above.
+    case riderInviteJoined
+
     /// The active scene for this launch, or `nil` for a normal boot. Read
     /// from `MRT_SCENE` (env, the documented `SIMCTL_CHILD_MRT_SCENE=` path);
     /// also accepts `-MRT_SCENE <name>` launch arguments as a fallback for
@@ -486,6 +554,9 @@ enum DebugScene: String, CaseIterable {
     static var initialScreen: AppScreen {
         switch current {
         case .modeChooser: return .modeChooser
+        // MYR-184 — the invite-code screen is its own top-level `AppScreen`, not a
+        // rider tab, so it needs an explicit arm.
+        case .riderInviteRateLimited, .riderInviteJoined: return .inviteCode
         case .some(let scene) where scene.isOwner: return .ownerHome
         case .some: return .sharedHome
         case nil: return .signIn
@@ -506,6 +577,7 @@ enum DebugScene: String, CaseIterable {
         switch current {
         case .ownerDrives, .ownerDrivesLoading: return "drives"
         case .ownerSettings, .ownerSettingsLoading: return "settings"
+        case .ownerShare, .ownerShareLive: return "invites"
         default: return "home"
         }
     }
@@ -605,6 +677,7 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerVehicleEnriched
             || self == .ownerConnecting || self == .ownerConnectingCold
             || self == .ownerDrivesLoading || self == .ownerSettingsLoading
+            || self == .ownerShare || self == .ownerShareLive
     }
 
     /// MYR-260 — a DEBUG fleet override for scenes that need a specific
@@ -1089,9 +1162,170 @@ enum DebugScene: String, CaseIterable {
              .ownerServiceWindow, .ownerServiceWindowEditor, .ownerServiceWindowManual,
              .ownerServiceWindowSaved,
              .ownerVehicleEnriched,
-             .ownerConnecting, .ownerConnectingCold, .ownerDrivesLoading, .ownerSettingsLoading:
-            break // chooser / settings / rider live-map / owner scenes don't drive the viewer sheet
+             .ownerConnecting, .ownerConnectingCold, .ownerDrivesLoading, .ownerSettingsLoading,
+             .ownerShare, .ownerShareLive, .riderSharedEmpty, .riderWatchOnly,
+             .riderInviteRateLimited, .riderInviteJoined:
+            break // chooser / settings / sharing / rider live-map / owner scenes don't drive the viewer sheet
         }
+    }
+}
+
+// MARK: - Vehicle sharing capture support (MYR-184)
+
+/// A `VehicleSharingEndpoint` that answers from a canned script, so the five
+/// sharing capture scenes can drive the PRODUCTION `LiveShareService` /
+/// `LiveSharedVehicleCatalog` end to end without a server. Same precedent as
+/// `DebugServiceWindowEndpoint`: inject the WIRE, run the real code path, so the
+/// screenshot proves the shipping mapping rather than a hand-set view flag.
+///
+/// DEBUG-only, like the rest of this file.
+struct DebugShareEndpoint: VehicleSharingEndpoint {
+    /// Rows the owner's per-vehicle list returns, keyed by vehicle id.
+    var invitesByVehicle: [String: [ShareInvite]] = [:]
+    /// Viewer rows the rider's catalog sees on `GET /api/vehicles`.
+    var viewerRows: [VehicleSummary] = []
+    /// What redeem answers. `nil` → the §7.5.5 happy path built from `viewerRows`.
+    var redeemFailureStatus: Int?
+    var redeemOwnerFirstName: String = "Alex"
+
+    func createShareInvite(_ body: CreateShareInviteRequest, vehicleID: String) async throws -> ShareInvite {
+        ShareInvite(
+            inviteId: "debug-created",
+            vehicleId: vehicleID,
+            label: body.label,
+            permission: body.permission,
+            status: .pending,
+            code: "RBO246",
+            createdAt: ISO8601DateFormatter().string(from: Date()),
+            expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(7 * 86_400))
+        )
+    }
+
+    func shareInvites(vehicleID: String) async throws -> [ShareInvite] {
+        invitesByVehicle[vehicleID] ?? []
+    }
+
+    func revokeShareInvite(inviteID: String) async throws {}
+
+    func resendShareInvite(inviteID: String) async throws -> ShareInvite {
+        ShareInvite(
+            inviteId: inviteID,
+            vehicleId: "debug",
+            label: "Mira Chen",
+            permission: SharePermission(rawValue: "live_history"),
+            status: .pending,
+            code: "ZKQ913",
+            createdAt: ISO8601DateFormatter().string(from: Date()),
+            expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(7 * 86_400))
+        )
+    }
+
+    func redeemShareInvite(code: String) async throws -> RedeemShareInviteResponse {
+        if let status = redeemFailureStatus {
+            throw RestError.http(status: status, code: nil, message: nil, subCode: nil)
+        }
+        return RedeemShareInviteResponse(ownerFirstName: redeemOwnerFirstName, vehicles: viewerRows)
+    }
+}
+
+extension DebugScene {
+
+    /// A live-shaped `VehicleSummary` viewer row, built the way the server emits
+    /// one (§7.0 viewer projection: subtracts NOTHING from the owner field set and
+    /// adds `sharePermission`).
+    static func shareViewerRow(
+        id: String,
+        name: String,
+        permission: String
+    ) -> VehicleSummary {
+        VehicleSummary(
+            vehicleId: id,
+            name: name,
+            model: "Model 3",
+            year: 2024,
+            color: "Pearl White",
+            vinLast4: "0001",
+            status: .parked,
+            chargeLevel: 72,
+            estimatedRange: 210,
+            lastUpdated: ISO8601DateFormatter().string(from: Date()),
+            role: .viewer,
+            hasActiveRide: false,
+            licensePlate: "8ABC123",
+            serviceEstimatedEndAt: nil,
+            sharePermission: SharePermission(rawValue: permission)
+        )
+    }
+
+    /// The OWNER's sharing service for this scene, or `nil` to leave the composed
+    /// (simulated) one in place. Scoped to `ownerShareLive`, so every other owner
+    /// scene keeps the fixture list and stays byte-identical.
+    @MainActor
+    var shareServiceOverride: (any ShareService)? {
+        guard self == .ownerShareLive else { return nil }
+        let vehicles = VehicleFixtures.vehicles
+        let created = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-2 * 86_400))
+        let expires = ISO8601DateFormatter().string(from: Date().addingTimeInterval(5 * 86_400))
+        var endpoint = DebugShareEndpoint()
+        // ONE pending invite spanning TWO vehicles on ONE code — the §7.5.1 shape
+        // the screen must regroup into a single row.
+        endpoint.invitesByVehicle[vehicles[0].id] = [
+            ShareInvite(
+                inviteId: "pen-0", vehicleId: vehicles[0].id, label: "Mira Chen",
+                permission: SharePermission(rawValue: "live_history"), status: .pending,
+                code: "RBO246", createdAt: created, expiresAt: expires
+            ),
+            ShareInvite(
+                inviteId: "acc-0", vehicleId: vehicles[0].id, label: "Jonas Park",
+                permission: SharePermission(rawValue: "rides"), status: .accepted,
+                createdAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(-20 * 86_400)),
+                acceptedAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(-19 * 86_400))
+            ),
+        ]
+        endpoint.invitesByVehicle[vehicles[1].id] = [
+            ShareInvite(
+                inviteId: "pen-1", vehicleId: vehicles[1].id, label: "Mira Chen",
+                permission: SharePermission(rawValue: "live_history"), status: .pending,
+                code: "RBO246", createdAt: created, expiresAt: expires
+            )
+        ]
+        return LiveShareService(api: endpoint, ownedVehicles: { vehicles })
+    }
+
+    /// The RIDER's shared-vehicle catalog for this scene, or `nil` to leave the
+    /// composed (simulated) one in place.
+    @MainActor
+    var sharedCatalogOverride: (any SharedVehicleCatalog)? {
+        var endpoint = DebugShareEndpoint()
+        switch self {
+        case .riderSharedEmpty:
+            // Zero viewer rows — the honest empty map.
+            endpoint.viewerRows = []
+        case .riderWatchOnly:
+            // ONE grant on the LOWEST tier: watchable, not requestable.
+            endpoint.viewerRows = [Self.shareViewerRow(id: "shared-1", name: "Alex\u{2019}s Model 3", permission: "live")]
+        case .riderInviteRateLimited:
+            endpoint.redeemFailureStatus = 429
+        case .riderInviteJoined:
+            // A MULTI-VEHICLE invite, so the success card's "+1 more vehicle"
+            // line — real information the fixture host never had — is in frame.
+            endpoint.viewerRows = [
+                Self.shareViewerRow(id: "shared-1", name: "Alex\u{2019}s Model 3", permission: "live_history"),
+                Self.shareViewerRow(id: "shared-2", name: "Alex\u{2019}s Cybercab", permission: "live_history"),
+            ]
+        default:
+            return nil
+        }
+        let endpointCopy = endpoint
+        return LiveSharedVehicleCatalog(api: endpointCopy, listVehicles: { endpointCopy.viewerRows })
+    }
+
+    /// Whether the invite-code screen should submit the sample code on appear.
+    /// Headless capture tooling cannot type six characters into the hidden field,
+    /// so this is the same stand-in-for-a-tap precedent as `initialRefreshPhase`
+    /// and `opensServiceWindowEditor`.
+    var autoSubmitsInviteCode: Bool {
+        self == .riderInviteRateLimited || self == .riderInviteJoined
     }
 }
 

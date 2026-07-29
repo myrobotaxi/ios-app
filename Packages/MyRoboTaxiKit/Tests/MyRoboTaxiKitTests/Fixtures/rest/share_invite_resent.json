@@ -1,0 +1,15 @@
+{
+  "_meta": {
+    "description": "200 body of POST /api/invites/{inviteId}/resend (rest-api.md §7.5.4) — the PATH row after a re-mint. `inviteId` is UNCHANGED (a client holding it keeps working) and `createdAt` is UNCHANGED (the owner's 'sent {ago}' line still refers to the original send); only `code` and `expiresAt` move. Every sibling row sharing the previous code was re-minted in the SAME transaction and carries this same new code.",
+    "scenario": "happy-path",
+    "addedBy": "MYR-184"
+  },
+  "inviteId": "csh0123456789abcdef0123456789abcd",
+  "vehicleId": "clxyz1234567890abcdef",
+  "label": "Mira Chen",
+  "permission": "live_history",
+  "status": "pending",
+  "code": "ZKQ913",
+  "createdAt": "2026-07-29T15:04:05Z",
+  "expiresAt": "2026-08-06T09:00:00Z"
+}

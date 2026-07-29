@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "description": "200 body of GET /api/vehicles/{vehicleId}/invites (rest-api.md §7.5.2), verbatim from the spec example. Note the envelope key is `invites`, NOT `items`: this surface is deliberately unpaginated (no cursor, no hasMore) and the distinct key keeps an SDK pagination helper from mistaking it for a page. Revoked rows are never serialized, so a consumer never filters. `code`/`expiresAt` appear only on the pending row; `acceptedAt` only on the accepted one.",
+    "scenario": "happy-path",
+    "addedBy": "MYR-184"
+  },
+  "invites": [
+    {
+      "inviteId": "csh0123456789abcdef0123456789abcd",
+      "vehicleId": "clxyz1234567890abcdef",
+      "label": "Mira Chen",
+      "permission": "live_history",
+      "status": "pending",
+      "code": "RBO246",
+      "createdAt": "2026-07-29T15:04:05Z",
+      "expiresAt": "2026-08-05T15:04:05Z"
+    },
+    {
+      "inviteId": "csh0123456789abcdef0123456789abce",
+      "vehicleId": "clxyz1234567890abcdef",
+      "label": "Roommate",
+      "permission": "live",
+      "status": "accepted",
+      "createdAt": "2026-07-01T10:00:00Z",
+      "acceptedAt": "2026-07-01T11:23:00Z"
+    }
+  ]
+}
