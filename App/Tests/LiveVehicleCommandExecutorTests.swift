@@ -1186,7 +1186,7 @@ final class GatedCommandSender: VehicleCommandSending, @unchecked Sendable {
 /// A scripted stand-in for the service-window write. `resolved` is what the
 /// SERVER decides the window is, which is deliberately separate from what the
 /// caller submits — that separation is the whole point of the endpoint's echo.
-private actor ScriptedServiceWindowEndpoint: VehicleServiceWindowEndpoint {
+actor ScriptedServiceWindowEndpoint: VehicleServiceWindowEndpoint {
     private let resolved: String?
     private let failure: RestError?
     private var lastSubmitted: String?
