@@ -266,8 +266,16 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         }
     }
 
-    /// Transient notices resolve on their own (the car is waking / cooling down);
-    /// the others need an owner action and persist until the next tap.
+    /// Transient notices describe a state that is still MOVING (the car is waking
+    /// / cooling down) rather than an attempt that has finished.
+    ///
+    /// MYR-301 (client defect) — this used to also say the others "persist until
+    /// the next tap", and that was the bug: a `.rejected` notice with no expiry and
+    /// no clearing trigger short of another command stayed on the client's device
+    /// indefinitely. NO notice persists indefinitely any more. A settled notice now
+    /// has a bounded display and is also answered by the next successful reconcile
+    /// of its control — see `LiveVehicleCommandExecutor`'s "Notice lifecycle"
+    /// section, which owns both rules.
     public var isTransient: Bool { self == .waking || self == .cooldown }
 }
 

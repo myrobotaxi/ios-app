@@ -107,6 +107,13 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// tests for determinism; ~2 s in production, matching the §7.9 wake curve).
     private let wakeRetryDelay: Duration
     private let maxWakeRetries: Int
+    /// MYR-301 — how long a SETTLED notice stays on screen before clearing itself.
+    /// See ``settle(_:notice:)``.
+    private let noticeDisplayDuration: Duration
+    /// Per-key monotonic stamp for the settled notice currently on screen, so an
+    /// expiry can tell "still mine" from "a newer failure replaced me" without
+    /// holding (and having to cancel) a task handle per control.
+    private var noticeGeneration: [VehicleControlKey: Int] = [:]
     private let trackCount = 3
 
     /// One-in-flight coalescer for the volume slider (`adjust_volume`): while a
@@ -164,7 +171,8 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         plate: String,
         wakeRetryDelay: Duration = .seconds(2),
         maxWakeRetries: Int = 1,
-        settleWindow: TimeInterval = 15
+        settleWindow: TimeInterval = 15,
+        noticeDisplayDuration: Duration = LiveVehicleCommandExecutor.defaultNoticeDisplayDuration
     ) {
         self.vehicleID = vehicleID
         self.sender = sender
@@ -173,6 +181,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         self.wakeRetryDelay = wakeRetryDelay
         self.maxWakeRetries = maxWakeRetries
         self.settleWindow = settleWindow
+        self.noticeDisplayDuration = noticeDisplayDuration
         // Seed identical to the simulated executor, but on the live path these
         // values are NEVER displayed until `knownFields` confirms them (MYR-251):
         // they only serve as the optimistic base a command mutates. The UI reads
@@ -202,6 +211,84 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
 
     func uiState(for key: VehicleControlKey) -> VehicleControlUIState {
         uiStates[key] ?? .idle
+    }
+
+    // MARK: - Notice lifecycle (MYR-301 — the stuck banner)
+    //
+    // THE DEFECT this section fixes, reported from the client's device: the
+    // `.rejected` climate notice ("The car didn't accept that") stayed up
+    // indefinitely. A settled notice had exactly ONE clearing trigger — issuing
+    // another command for the SAME control, which sets the key pending with
+    // `notice: nil` — and no expiry at all. `reconcile(from:)` never touched
+    // notices. So an owner who tapped once, was refused once, and did not tap
+    // again kept a failure banner about a moment that had long passed.
+    //
+    // THE TWO RULES SHIPPED, both of which had to exist because either alone
+    // leaves a real hole:
+    //
+    //   1. BOUNDED DISPLAY. Every settled notice clears itself after
+    //      ``defaultNoticeDisplayDuration``. A notice is a report about ONE
+    //      attempt, not a persistent status: the fact it describes stops being
+    //      true the moment the owner could act on it again. This follows the
+    //      repo's own banner precedent — the owner's "Dropped off ✓" confirmation
+    //      auto-dismisses after 5s (`HomeScreen.scheduleDroppedOffDismiss`,
+    //      MYR-292) — with a slightly longer window because a notice carries a
+    //      SENTENCE to read (and sometimes a "Reconnect" pill to reach) rather
+    //      than a three-word confirmation.
+    //   2. RECONCILE CLEARS. When the car reports where a control ACTUALLY is,
+    //      the notice about a failed attempt to move it is answered, and goes at
+    //      once rather than waiting out the window. Without this the owner can be
+    //      looking at a live, correct, reconciled tile with a stale failure line
+    //      underneath it.
+    //
+    // The expiry deliberately lives HERE, on the executor, and never in a view:
+    // the executor is owned by `LiveVehicleFleet` and outlives `HomeScreen`, so a
+    // notice survives a tab switch (it is not re-armed or wiped by a remount) and
+    // an expiry that fires while nothing is mounted still lands in live storage.
+    // That is the MYR-292 lesson — an auto-dismiss written into torn-down `@State`
+    // is a banner that comes back — applied to this surface.
+
+    /// How long a settled notice stays on screen. 6s: long enough to read the
+    /// longest message in the catalog and reach a 44pt "Reconnect" pill, short
+    /// enough that it cannot become furniture. Sits alongside MYR-292's 5s
+    /// confirmation rather than diverging from it.
+    static let defaultNoticeDisplayDuration: Duration = .seconds(6)
+
+    /// Settle `key` on `notice` and arm its bounded display.
+    ///
+    /// Every settled (non-pending) notice goes through here, so there is exactly
+    /// one place the expiry rule is applied and no failure path can accidentally
+    /// opt out of it. In-flight notices (`.waking`) are NOT settled and never pass
+    /// through: they resolve with the command they belong to.
+    private func settle(_ key: VehicleControlKey, notice: VehicleCommandNotice) {
+        let generation = (noticeGeneration[key] ?? 0) + 1
+        noticeGeneration[key] = generation
+        uiStates[key] = VehicleControlUIState(isPending: false, notice: notice)
+        let duration = noticeDisplayDuration
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: duration)
+            // Still the notice we armed for? A newer failure (or a new command)
+            // bumps the generation and owns the surface from then on.
+            guard let self, self.noticeGeneration[key] == generation else { return }
+            self.clearNotice(key)
+        }
+    }
+
+    /// Drop `key`'s settled notice. A no-op while a command is in flight — that
+    /// notice belongs to the running attempt (`.waking`) and is cleared by it.
+    private func clearNotice(_ key: VehicleControlKey) {
+        guard let state = uiStates[key], state.notice != nil, !state.isPending else { return }
+        noticeGeneration[key] = (noticeGeneration[key] ?? 0) + 1
+        uiStates[key] = VehicleControlUIState(isPending: false, notice: nil)
+    }
+
+    /// Take `key` pending for a new attempt, disowning any expiry still armed for
+    /// the notice this attempt replaces. (Without the bump, a late expiry from the
+    /// PREVIOUS failure could fire during the new attempt; it would be a no-op
+    /// today, but only by accident of ordering.)
+    private func beginPending(_ key: VehicleControlKey) {
+        noticeGeneration[key] = (noticeGeneration[key] ?? 0) + 1
+        uiStates[key] = VehicleControlUIState(isPending: true, notice: nil)
     }
 
     /// MYR-251 — a live control's value is only KNOWN once the owner has
@@ -374,6 +461,9 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         if let key, uiState(for: key).isPending { return }
         apply()
         knownFields.insert(field)
+        // MYR-301 clear path 2 — the car just told us where this control really
+        // is, which answers any settled notice about a failed attempt to move it.
+        if let key { clearNotice(key) }
     }
 
     /// Like `reconcileField` for a COMMANDED boolean toggle, but also honors the
@@ -397,6 +487,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         }
         assign(wire)
         knownFields.insert(field)
+        clearNotice(key) // MYR-301 clear path 2 — see `reconcileField`
     }
 
     /// Reconcile one seat from its heater + cooler read-back levels (both 0–3 on the
@@ -450,6 +541,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             controls.passengerSeatHeatLevel = level
             knownFields.insert(.passengerSeat)
         }
+        clearNotice(key) // MYR-301 clear path 2 — see `reconcileField`
     }
 
     /// Reconcile the car's reported HVAC mode onto the Auto/Cool/Heat segment
@@ -474,6 +566,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         }
         controls.climateMode = mode
         knownFields.insert(.climateMode)
+        clearNotice(.climate) // MYR-301 clear path 2 — see `reconcileField`
     }
 
     /// Fold the HVAC auto-mode + AC-enabled read-back onto the app's Auto/Cool/Heat
@@ -794,7 +887,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// there is no car in this path to wake.
     func setPlate(_ plate: String) async throws {
         guard uiState(for: .plate).isPending == false else { return }
-        uiStates[.plate] = VehicleControlUIState(isPending: true, notice: nil)
+        beginPending(.plate)
         do {
             let response = try await plateEndpoint.setLicensePlate(plate, vehicleID: vehicleID)
             controls.plate = response.licensePlate
@@ -802,11 +895,9 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             uiStates[.plate] = .idle
             onPlateSaved?(response.licensePlate)
         } catch let error as RestError {
-            uiStates[.plate] = VehicleControlUIState(
-                isPending: false, notice: Self.plateNotice(for: error.commandFailureKind)
-            )
+            settle(.plate, notice: Self.plateNotice(for: error.commandFailureKind))
         } catch {
-            uiStates[.plate] = VehicleControlUIState(isPending: false, notice: .plateNotSaved)
+            settle(.plate, notice: .plateNotSaved)
         }
     }
 
@@ -840,7 +931,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// the wake-retry: there is no car in this path to wake.
     func setServiceWindow(_ expectedEndAt: Date?) async throws {
         guard uiState(for: .serviceWindow).isPending == false else { return }
-        uiStates[.serviceWindow] = VehicleControlUIState(isPending: true, notice: nil)
+        beginPending(.serviceWindow)
         do {
             let response = try await serviceWindowEndpoint.setServiceWindow(
                 expectedEndAt: expectedEndAt.map(Self.rfc3339.string(from:)),
@@ -859,11 +950,9 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             uiStates[.serviceWindow] = .idle
             onServiceWindowSaved?(resolved)
         } catch let error as RestError {
-            uiStates[.serviceWindow] = VehicleControlUIState(
-                isPending: false, notice: Self.serviceWindowNotice(for: error.commandFailureKind)
-            )
+            settle(.serviceWindow, notice: Self.serviceWindowNotice(for: error.commandFailureKind))
         } catch {
-            uiStates[.serviceWindow] = VehicleControlUIState(isPending: false, notice: .serviceWindowNotSaved)
+            settle(.serviceWindow, notice: .serviceWindowNotSaved)
         }
     }
 
@@ -980,7 +1069,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// command for `key` is already in flight (double-tap suppression).
     private func run(_ key: VehicleControlKey, command: VehicleCommand, apply: @escaping @MainActor () -> Void) async {
         guard uiState(for: key).isPending == false else { return }
-        uiStates[key] = VehicleControlUIState(isPending: true, notice: nil)
+        beginPending(key)
         await attempt(key, command: command, apply: apply, wakeRetriesLeft: maxWakeRetries)
     }
 
@@ -1004,9 +1093,9 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
                 await attempt(key, command: command, apply: apply, wakeRetriesLeft: wakeRetriesLeft - 1)
                 return
             }
-            uiStates[key] = VehicleControlUIState(isPending: false, notice: Self.notice(for: kind, key: key))
+            settle(key, notice: Self.notice(for: kind, key: key))
         } catch {
-            uiStates[key] = VehicleControlUIState(isPending: false, notice: .failed)
+            settle(key, notice: .failed)
         }
     }
 }
