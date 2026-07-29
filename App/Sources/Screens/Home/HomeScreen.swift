@@ -61,10 +61,6 @@ struct HomeScreen: View {
     /// off"). Reset on every status change so a re-shown button is tappable again
     /// (MYR-265 review: never leave the CTA permanently greyed after one advance).
     @State private var dispatchInFlight = false
-    /// MYR-332 — the sheet's RESOLVED detent heights, reported by
-    /// `MRTDetentSheet` (ascending: peek, half, tall). Only the TALL entry is
-    /// consumed, by `mapBottomInset`; see it for why half deliberately is not.
-    @State private var sheetDetentHeights: [CGFloat] = []
 
     /// MYR-171 — `IncomingRequestSheet` shows only while there's a request
     /// actually awaiting this owner's decision; once accepted/declined the
@@ -430,7 +426,6 @@ struct HomeScreen: View {
             // Peek and half are untouched: same heights, same crossfade endpoints,
             // same MYR-315 peek-band rule.
             allowsTallDetent: true,
-            onResolvedHeights: { sheetDetentHeights = $0 },
             peek: {
                 // LOW layer — summary hero only, at the same top position and
                 // gutter as the expanded layer's summary so the crossfade reads
@@ -453,22 +448,54 @@ struct HomeScreen: View {
         )
     }
 
-    /// MYR-332 — the map's bottom content inset, which now FOLLOWS the sheet up
-    /// to the tall detent.
+    /// The map's bottom content inset — the value MapKit fits the written camera
+    /// region into (`VehicleMapView`'s `.safeAreaPadding(.bottom:)`), so it is
+    /// the camera's geometry, not just the attribution's.
     ///
-    /// Peek and half are deliberately left EXACTLY as they were (`peekHeight`,
-    /// the number this screen has always passed): the half detent's map framing
-    /// is what every `MRT_OWNER_DETENT=half` drift-gate capture was taken
-    /// against, and re-insetting it would move the camera in all of them for no
-    /// client-visible gain — at half the sheet already covers the band the
-    /// attribution would move into. The TALL detent is new geometry with no
-    /// capture to preserve, and there the old inset would strand MapKit's legal
-    /// attribution behind the sheet, so it tracks the real height.
+    /// MYR-338 (client, on the day-old tall detent): *"The map moves up with the
+    /// bottom sheet. Map should stay fixed."* MYR-332 had let this FOLLOW the
+    /// sheet to tall so MapKit's legal attribution wouldn't be stranded behind
+    /// it — but at tall the unobstructed band is ~200pt, and re-fitting the
+    /// region into 200pt lifts the framed centre until the vehicle pin and its
+    /// callout sit behind the `MapHeader` chip. That is the whole of the client's
+    /// screenshot.
+    ///
+    /// So the inset is now resolved for `cameraDetent(for:)` — capped at HALF.
+    /// Past half the sheet just COVERS the map (the Apple Maps model, and
+    /// exactly what MYR-250 settled for the rider sheet). The attribution ends
+    /// up behind the sheet at tall, which is the same trade half has always
+    /// made and the strictly better one: a legal label the sheet hides for as
+    /// long as the sheet is up, versus the car moving out from under the user
+    /// every time they reach for a control.
     private func mapBottomInset(peekHeight: CGFloat) -> CGFloat {
-        guard homeState.sheetDetent == .tall, let tall = sheetDetentHeights.last,
-              tall.isFinite, tall > peekHeight
-        else { return peekHeight }
-        return tall
+        Self.vehicleMapBottomInset(detent: homeState.sheetDetent, peekHeight: peekHeight)
+    }
+
+    /// The detent the CAMERA is framed for, which is not always the detent the
+    /// sheet is resting at: everything above half resolves to half. Pure and
+    /// separate from the inset below so the cap itself is the thing under test
+    /// (`OwnerMapCameraInsetTests`), independent of what half happens to resolve
+    /// to today.
+    static func cameraDetent(for detent: MRTSheetDetent) -> MRTSheetDetent {
+        detent == .tall ? .half : detent
+    }
+
+    /// The camera-affecting inset for a sheet detent. Peek and half both resolve
+    /// the peek band — the number this screen has always passed, and what every
+    /// `MRT_OWNER_DETENT=half` drift-gate capture was taken against — and tall
+    /// resolves half's, by the cap above.
+    ///
+    /// It takes NO sheet geometry on purpose. MYR-332 fed the sheet's resolved
+    /// heights in here; removing that parameter is what makes the re-frame
+    /// structurally impossible rather than merely clamped — there is no longer a
+    /// path by which a sheet height can reach the camera at all.
+    static func vehicleMapBottomInset(detent: MRTSheetDetent, peekHeight: CGFloat) -> CGFloat {
+        switch cameraDetent(for: detent) {
+        // `.tall` is unreachable — the cap above rewrites it to `.half` — but
+        // the switch stays exhaustive so a fourth detent has to declare what
+        // the camera does about it rather than inheriting a default.
+        case .peek, .half, .tall: return peekHeight
+        }
     }
 
     /// MYR-332 — the detents at which the owner sheet covers the map: the

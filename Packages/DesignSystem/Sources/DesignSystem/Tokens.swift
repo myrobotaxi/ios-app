@@ -54,6 +54,13 @@ enum Hex {
     static let goldDeepButtonLabel: UInt32 = 0x1C1505 // label on goldDeep (flat onboarding gold)
     static let goldTrace: UInt32 = 0xE7C975 // border-trace highlight (conic 120°/180° stops)
     static let goldTraceBright: UInt32 = 0xFFF3C8 // border-trace hot spot (conic 150° stop)
+    // MYR-337 — the charge bar's travelling hot spot, the GREEN analogue of
+    // `goldTraceBright`. Net-new (the prototype's `BatteryBar` has no charge
+    // motion at all, so there is no hex to port) and derived the same way the
+    // gold trace is: the base token lightened to a near-white tint, so the
+    // sweep reads as the SAME material catching the light rather than as a
+    // second colour. Used only by `BatteryBar`'s active-charge sweep.
+    static let batHighSweep: UInt32 = 0xC8F9D8
     static let goldPulse: UInt32 = 0xF0D27A // mrt-gold-pulse peak text color
 
     // Overlays (Handoff §7)
@@ -209,6 +216,9 @@ public extension Color {
     // Battery (batHigh/batMid share the driving/charging hexes in tokens.js)
     static let mrtBatHigh = Color(hex: Hex.driving)
     static let mrtBatMid = Color(hex: Hex.charging)
+    /// MYR-337 — the hot spot of the charge bar's travelling sweep. See
+    /// `Hex.batHighSweep`; consumed only by `BatteryBar`.
+    static let mrtBatHighSweep = Color(hex: Hex.batHighSweep)
 
     // Danger
     static let mrtBatLow = Color(hex: Hex.danger)

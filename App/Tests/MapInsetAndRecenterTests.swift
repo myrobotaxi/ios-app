@@ -85,6 +85,65 @@ final class PerPhaseMapInsetTests: XCTestCase {
     }
 }
 
+// MARK: - MYR-338 — the OWNER map's camera inset is capped at the half detent
+//
+// The client, on the day-old tall detent (MYR-332): "The map moves up with the
+// bottom sheet. Map should stay fixed." MYR-332 let the map's camera-affecting
+// `bottomContentInset` follow the sheet to TALL, so at tall MapKit re-fit the
+// written region into the ~200pt of map still showing and the vehicle pin + its
+// "Lunar" callout ended up crammed behind the `MapHeader` chip.
+//
+// This is the SAME class of bug MYR-250 fixed on the rider sheet, and it takes
+// the same shape of fix (see `testVehicleMapInsetForSearchEqualsIdleSoTheMapStaysPut`
+// above): the taller sheet simply COVERS more of the same map — the Apple Maps
+// model — instead of re-framing it. The cap is the HALF detent's value, so
+// peek↔half is byte-identical to every capture ever taken against it.
+
+@MainActor
+final class OwnerMapCameraInsetTests: XCTestCase {
+
+    /// The peek band of an in-service, charging car — the client's own case
+    /// (two MYR-315 qualifier lines on the parked base).
+    private let peek = MRTMetrics.homePeekHeight(
+        base: MRTMetrics.homePeekHeightParked, qualifierLines: 2
+    )
+
+    /// THE REGRESSION GUARD. Dragging past half must not move the camera: the
+    /// inset the tall detent resolves is exactly the one HALF resolves.
+    func testTallDetentUsesTheHalfDetentInsetSoTheMapStaysFixed() {
+        let half = HomeScreen.vehicleMapBottomInset(detent: .half, peekHeight: peek)
+        let tall = HomeScreen.vehicleMapBottomInset(detent: .tall, peekHeight: peek)
+        XCTAssertEqual(
+            tall, half,
+            "raising the owner sheet past half must COVER the map, not re-frame it")
+    }
+
+    /// Peek and half are untouched — still the peek band this screen has always
+    /// passed, which is what every `MRT_OWNER_DETENT=half` capture was taken
+    /// against.
+    func testPeekAndHalfAreExactlyAsBefore() {
+        XCTAssertEqual(HomeScreen.vehicleMapBottomInset(detent: .peek, peekHeight: peek), peek)
+        XCTAssertEqual(HomeScreen.vehicleMapBottomInset(detent: .half, peekHeight: peek), peek)
+    }
+
+    /// The cap itself, stated once and independently of what half resolves to:
+    /// everything above half is framed as half.
+    func testTheCameraDetentCapsAtHalf() {
+        XCTAssertEqual(HomeScreen.cameraDetent(for: .tall), .half)
+        XCTAssertEqual(HomeScreen.cameraDetent(for: .half), .half)
+        XCTAssertEqual(HomeScreen.cameraDetent(for: .peek), .peek)
+    }
+
+    /// The peek band itself still varies with the MYR-315 qualifier lines — the
+    /// cap is on the DETENT, not on the band. A car with a freshness stamp and a
+    /// service-completion line frames against its own taller peek, at tall too.
+    func testTheCapDoesNotFreezeThePeekBandItself() {
+        let bare = MRTMetrics.homePeekHeight(base: MRTMetrics.homePeekHeightParked, qualifierLines: 0)
+        XCTAssertNotEqual(bare, peek)
+        XCTAssertEqual(HomeScreen.vehicleMapBottomInset(detent: .tall, peekHeight: bare), bare)
+    }
+}
+
 // MARK: - MYR-223 deliverable 3 — rider recenter re-engages follow cleanly
 //
 // The recenter button sets `isFollowing = true`, which drives the same
