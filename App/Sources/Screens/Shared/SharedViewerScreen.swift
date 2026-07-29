@@ -65,6 +65,11 @@ struct SharedViewerScreen: View {
     /// `RiderTrackingSheet` on every settle. The recenter button + the tracking map
     /// camera inset re-anchor ABOVE this so both clear the card in every detent.
     @State private var trackingSettledHeight: CGFloat = MRTMetrics.trackingMapBottomInset
+    /// MYR-327 — the expanded, user-driven route viewer over the live tracking
+    /// map. The tracking map is pannable in place, but the sheet covers ~312pt of
+    /// it; this is where the rider can actually "zoom in and out to look at" the
+    /// whole trip. Only reachable from the tracking phase.
+    @State private var showsExpandedRoute = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -145,6 +150,16 @@ struct SharedViewerScreen: View {
                         isFollowing = true
                     }
                     .ignoresSafeArea(edges: .bottom)
+
+                    // MYR-327 — the visible half of "click into the map". The map
+                    // tap works anywhere, but nothing said so; this chip sits one
+                    // button-stack above the recenter control (which is itself
+                    // conditional), always available while tracking.
+                    ExpandRouteButton { showsExpandedRoute = true }
+                        .padding(.trailing, 16)
+                        .padding(.bottom, trackingSettledHeight + MRTMetrics.trackingRecenterSheetGap + MRTMetrics.trackingExpandButtonStackGap)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                        .ignoresSafeArea(edges: .bottom)
                 }
             }
         }
@@ -164,6 +179,22 @@ struct SharedViewerScreen: View {
             value: viewerState.showDeclinedNotice
         )
         .mrtBottomNav(selection: $sharedTab, tabs: MRTTab.sharedTabs, hidden: hideBottomNav)
+        // MYR-327 — the expanded route viewer, above every rider chrome layer
+        // (nav included). A plain overlay rather than a `fullScreenCover` so the
+        // open/close carries the app's own motion grammar (Handoff §8 sheet snap;
+        // cross-fade under Reduce Motion) instead of the system modal slide.
+        .overlay {
+            if showsExpandedRoute, isTrackingPhase {
+                expandedTrackingRouteViewer
+                    .transition(.mrtRouteExpand(reduceMotion: reduceMotion))
+            }
+        }
+        .animation(.mrtRouteExpand(reduceMotion: reduceMotion), value: showsExpandedRoute)
+        .onChange(of: isTrackingPhase) { _, tracking in
+            // Leaving tracking (drop-off → summary, a decline, …) closes the
+            // viewer: its content is the live ride, so it must not outlive it.
+            if !tracking { showsExpandedRoute = false }
+        }
         .onAppear {
             viewerState.startTelemetry()
             // MYR-230 deliverable 1: reconcile the CURRENT active ride into the
@@ -178,6 +209,10 @@ struct SharedViewerScreen: View {
             // MYR-177: if we mounted straight into tracking (cold scene / adopted
             // ride), prime the route cache so the leg-fit map has real geometry.
             if isTrackingPhase { isFollowing = true; reconcileTrackingRoutes() }
+            #if DEBUG
+            // MYR-327 drift-gate capture hook: headless tooling cannot tap the map.
+            if isTrackingPhase, DebugScene.opensExpandedRouteMap { showsExpandedRoute = true }
+            #endif
             // MYR-237: mounted into Review/Booking (DEBUG scene / retryable
             // session-failure return) — prime the real Apple route to draw/etch.
             reconcileReviewRoute()
@@ -585,7 +620,9 @@ struct SharedViewerScreen: View {
                 cameraPosition: $cameraPosition,
                 isFollowing: $isFollowing,
                 controller: viewerState.trackingCamera,
-                showsUserLocation: viewerState.userLocation.showsUserLocationDot
+                showsUserLocation: viewerState.userLocation.showsUserLocationDot,
+                // MYR-327 — tap anywhere on the map to open the expanded viewer.
+                onExpand: { showsExpandedRoute = true }
             )
         case .summary:
             // Summary is a full-screen takeover (its own hero-map layout), not a
@@ -840,6 +877,64 @@ struct SharedViewerScreen: View {
     }
 
     private var isTrackingPhase: Bool { viewerState.sheetPhase == .tracking }
+
+    // MARK: MYR-327 — expanded route viewer (tracking)
+
+    /// The whole trip, full-bleed and user-driven, over the SAME map content the
+    /// inline tracking map draws (`TrackingRouteMapContent`) — both legs with
+    /// their active/inactive treatment, both pins, and the live heading marker.
+    /// The camera is the rider's: one initial fit, then nothing until they tap
+    /// recenter (see `ExpandedRouteCamera`).
+    private var expandedTrackingRouteViewer: some View {
+        ExpandedRouteMap(
+            title: expandedRouteTitle,
+            subtitle: trackingLeg == .toPickup ? "Heading to pickup" : "In ride",
+            // Fit the WHOLE trip (both legs), not just the active one: the point
+            // of expanding is to see the trip, and the leg fit is what the inline
+            // map already gives.
+            fitCoordinates: trackingLeg1Route + trackingLeg2Route,
+            // Honest: while a leg is still the straight 2-point endpoint fallback,
+            // MKDirections has not produced road geometry yet — say so instead of
+            // letting the placeholder read as the route.
+            routeIsResolving: trackingRouteIsResolving,
+            onClose: { showsExpandedRoute = false }
+        ) {
+            TrackingRouteMapContent.content(
+                leg: trackingLeg,
+                leg1Route: trackingLeg1Route,
+                leg2Route: trackingLeg2Route,
+                pickupCoordinate: TrackingRouteMapContent.pickup(
+                    leg1Route: trackingLeg1Route,
+                    leg2Route: trackingLeg2Route,
+                    carCoordinate: trackingCarPosition.coordinate
+                ),
+                destinationCoordinate: TrackingRouteMapContent.destination(leg2Route: trackingLeg2Route),
+                carCoordinate: trackingCarPosition.coordinate,
+                carHeading: trackingCarPosition.headingDegrees,
+                legProgress: trackingLegProgress,
+                showsUserLocation: viewerState.userLocation.showsUserLocationDot
+            )
+            .annotationTitles(.hidden)
+        }
+    }
+
+    /// "{pickup} → {destination}" from the ride's own record — never a fixture
+    /// persona or a fabricated place (MYR-228).
+    private var expandedRouteTitle: String {
+        let pickup = rideRequestService.activeRequest?.input.pickup.label
+            ?? viewerState.draftPickup?.label
+            ?? "Current location"
+        let destination = rideRequestService.activeRequest?.input.destination.label
+            ?? viewerState.draftDestination?.label
+        guard let destination else { return pickup }
+        return "\(pickup) → \(destination)"
+    }
+
+    /// Whether either leg is still the straight `[from, to]` fallback — i.e. the
+    /// real road polyline has not landed for it yet.
+    private var trackingRouteIsResolving: Bool {
+        viewerState.rideRouteStore.leg1.count <= 2 || viewerState.rideRouteStore.leg2.count <= 2
+    }
 
     /// Reconcile the route cache for the active ride — leg 2 always (drawn dimmed
     /// in leg 1, solid in leg 2), leg 1 only while heading to pickup. Cheap: the
