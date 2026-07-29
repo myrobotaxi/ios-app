@@ -360,9 +360,12 @@ struct HomeScreen: View {
         let snapshot = telemetry.snapshot
         // screens.jsx:400 — driving always uses the 280pt peek; parked uses the
         // 'floating' style's 210pt (the only `parkedStyle` this app ships).
-        let peekHeight = snapshot.status == .driving
-            ? MRTMetrics.homePeekHeightDriving
-            : MRTMetrics.homePeekHeightParked
+        let peekHeight = MRTMetrics.homePeekHeight(
+            base: snapshot.status == .driving
+                ? MRTMetrics.homePeekHeightDriving
+                : MRTMetrics.homePeekHeightParked,
+            qualifierLines: peekQualifierLines(snapshot: snapshot)
+        )
 
         VehicleMapView(
             vehicle: vehicle,
@@ -425,6 +428,41 @@ struct HomeScreen: View {
                 }
             }
         )
+    }
+
+    /// MYR-315 — how much taller the peek band must be than the prototype's
+    /// number, because this port's peek hero carries LIVE-ONLY lines the prototype
+    /// has none of.
+    ///
+    /// THE CLIENT'S REPORT: the "Synced …" stamp renders too close to the floating
+    /// menu. Measured on the isolated sim at peek (`ownerFreshnessStale`), the
+    /// stamp's ink ends 102pt from the physical bottom edge and its ≥44pt tap
+    /// region reaches 84pt — past the `BottomNav`'s own top edge at 86pt (60pt
+    /// tall, `padding(.bottom, 26)`) and 16pt inside the 100pt band the design
+    /// reserves for exactly this (`components.jsx:542`, ported as
+    /// `homeSheetContentBottomPadding`). On the client's car it is worse than the
+    /// capture shows: an IN-SERVICE vehicle also renders the MYR-319/320 completion
+    /// line, one 24pt line higher up, which pushes the stamp's ink itself to ~86pt
+    /// — flush against the menu.
+    ///
+    /// The fix is not to move the stamp (10pt below the line above it IS the
+    /// design's trailing-qualifier rhythm, `components.jsx:559`) but to stop the
+    /// band from being one line too short for what it now holds: the peek band is
+    /// content-sized in the prototype too (150 / 210 / 280 by `parkedStyle`), so
+    /// growing it per live-only line is the port's own grammar, not an invention.
+    ///
+    /// Both inputs are nil on the simulated path — the stamp is live-only by two
+    /// gates (`freshnessStamp`) and nothing simulated is ever in service — so this
+    /// returns 0 there and the drift-gate scenes keep the prototype's exact bands.
+    private func peekQualifierLines(snapshot: VehicleTelemetrySnapshot) -> Int {
+        var lines = 0
+        // Rendered by BOTH heroes (`mrtFreshnessStamp`).
+        if freshnessStamp(snapshot: snapshot) != nil { lines += 1 }
+        // Rendered by the PARKED hero only (`ParkedSummary.serviceCompletion`);
+        // a driving car is never `in_service`, but the gate is stated rather than
+        // assumed so the band can never grow for a line that isn't drawn.
+        if snapshot.status != .driving, serviceCompletionLine(snapshot: snapshot) != nil { lines += 1 }
+        return lines
     }
 
     /// The expanded-layer scroll view. Normally a plain `ScrollView`; the
