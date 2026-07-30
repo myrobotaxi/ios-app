@@ -331,24 +331,73 @@ flattening the whole layer tree into ONE offscreen buffer, a pass in which the
 backdrop IS available and the blend DOES resolve — which is why the client had to
 photograph the phone, and why the simulator can't reproduce it either (both its
 framebuffer and `XCUIScreen.screenshot()` render soft-light correctly, matching
-the prediction to rmse 0.0225). The tint is now the same treatment
-**pre-resolved to normal compositing** (`MRTDriveCelebration`, DesignSystem): the
-gold opacity ramp that least-squares-reproduces soft-light's own output over this
-hero, 0.07→0.09. It asks nothing of the compositor, so it has no failure mode.
-The rule generalizes: **never let a blend mode, or any effect needing a backdrop
-read, be what stands between the user and a hosted `MKMapView`** — resolve it to
-normal compositing and put the number in a token a test can assert on
-(`heroTintBlendMode` must stay `.normal`).
+the prediction to rmse 0.0225). MYR-339 fixed that by pre-resolving the tint to
+normal compositing at 0.07→0.09. The rule generalizes and OUTLIVES the layer:
+**never let a blend mode, or any effect needing a backdrop read, be what stands
+between the user and a hosted `MKMapView`** — resolve it to normal compositing
+and put the number in a token a test can assert on
+(`MRTDriveCelebration.celebrationBlendMode` must stay `.normal`).
 
 The capture route was its own trap: `MRT_SCENE=ownerDrives
 MRT_OPEN_FIRST_DRIVE=1` opens `DriveFixtures.drives[0]` — **97% FSD**, so
-`isFullFSD` is false and not one celebration layer is ever constructed. The
+`celebrates` is false and not one celebration branch is ever constructed. The
 celebration has no cold-scene route at all; the 100% drive is the SECOND row.
-`App/UITests/DriveSummaryGoldWashUITests.swift` reaches it by real taps on the
-real navigation path and emits the drift-gate captures (100% at t0/t3/t6 plus the
-97% control, which must stay byte-identical) — the same
+`App/UITests/DriveSummaryCelebrationUITests.swift` reaches it by real taps on the
+real navigation path and emits the drift-gate captures — the same
 `ExpandedRouteUITests` precedent, and a live instance of the repo's own "cold
 scenes passing while real paths fail" lesson.
+
+**The celebration is a MOMENT in the ELEMENTS, not a wash** (MYR-346 —
+**a DELIBERATE, CLIENT-DIRECTED DEVIATION FROM THE PROTOTYPE**). On the FIXED
+MYR-339 build the client rejected the treatment itself, twice: *"I know we fixed
+this and the prototype looks like this but it literally looks like someone puked
+on the screen and it's hard to read. I still want a special look to the page with
+100% FSD but something cleaner with the gold. Try something cleaner, crisper, and
+more rewarding."* **Client outranks prototype** (standing precedent), so
+screens.jsx:852-886's page wash + hero tint + hero highlight and
+screens.jsx:1030-1136's pop / glow halo / ring flash / 34-particle confetti burst
+are **all deleted** — the prototype's own celebration is not ported at all. This
+is also the strongest form of the MYR-339 fix: the layer whose compositing was
+the defect no longer exists, so it cannot regress in any compositing environment.
+
+On a 100% drive the map, the page ground, the header and every non-FSD tile are
+now **byte-identical to a 97% drive's** (measured: the whole page below the hero
+diffs bbox=None, maxdelta=0 base vs branch). What is left is concentrated in the
+FSD stat block and shaped as an ENTRY MOMENT, `MRTDriveCelebration
+.momentDuration` = **1.72s**, then perfectly static:
+
+- **The ring is the hero.** It draws itself on the 97% ring's OWN schedule
+  (0.12s delay + 1.15s `cubic-bezier(0.32,0.72,0,1)`) behind a bright
+  `goldTraceBright` head — `RouteEtchTrace`'s three layers verbatim (wide bloom →
+  tight glow → hot core), i.e. the ride-CTA outline-draw / route-etch grammar at
+  ring scale — and the head **glints once at 12 o'clock** as it lands (0.45s
+  easeOut, scaling 1→1.6 as it fades, so the moment ends on a brightening).
+- **It settles slightly richer than the 97% ring**: the same gold as an angular
+  gradient with a `goldLight` highlight at 12 o'clock where the glint landed,
+  plus a faint static `mrtGoldGlowFaint` halo. **Every stop is `gold` or
+  LIGHTER** — asserted, because half the client's complaint was readability and
+  "richer" may never mean "dimmer than the 97% ring".
+- **The "100%" numeral + "FULL SELF-DRIVING" kicker** take a permanent
+  `goldLight → gold → goldDeep` struck-metal gradient — but the `goldDeep` stop
+  is held to the bottom 30% so the gradient's MEAN luminance still lands above
+  flat gold's (also asserted). Permanent, and local to the stat block.
+- **One fine gold hairline** on the FSD tile (`mrtGoldBorderQuiet`, gold @0.18)
+  replaces its neutral border. Fill, radius and padding untouched.
+- **Reduce Motion boots straight to the settled state** — no draw, no glint.
+
+Nothing animates after 1.72s, which is the whole point: the old wash arrived at
+t=2.7s and then simply stayed. **Prove this pair by FRAME SEQUENCE, never by a
+still** — `DriveSummaryCelebrationUITests` captures back-to-back
+`XCUIScreen.screenshot()`s (~75ms apart, no sleep) across the entry and names each
+with its wall-clock offset, so the sequence reads against the numbers above.
+Verdicts that must hold: **~22 distinct ring renderings of 32 frames** with motion
+on, **every frame from t≥1.8s identical**, and under Reduce Motion **1 distinct
+ring rendering across all 33 frames, byte-identical to the motion-on settled
+ring**.
+(`simctl ui reduce_motion` does not take on this runtime — use `simctl spawn
+<udid> defaults write com.apple.Accessibility ReduceMotionEnabled -bool true`.)
+The `mrtConfettiPale` token went with the burst; every other colour it used was
+already a shared gold.
 
 **The rider's "N min away" is ONE estimate** (MYR-341) — the idle sheet's
 rotating placeholder ("A ride is N min away", screens.jsx:1977-1980), Review's
