@@ -61,6 +61,78 @@ final class InviteLinkParsingTests: XCTestCase {
         XCTAssertEqual(code("https://MyRoboTaxi.app/join/RBO246"), "RBO246", "hosts are case-insensitive")
     }
 
+    // MARK: MYR-359 — the `?from=` parameter the app itself now sends
+
+    /// EVERY link this app hands out carries `?from={Name}` when the owner's
+    /// account has a name on it, so tolerating the query stopped being politeness
+    /// towards other people's tracking parameters and became the difference
+    /// between the feature working and not. The code lives in the PATH; the query
+    /// is the web page's business and this parser has no opinion about it.
+    func testTheFromParameterIsToleratedAndIgnored() {
+        XCTAssertEqual(code("https://myrobotaxi.app/join/RBO246?from=Thomas"), "RBO246")
+        XCTAssertEqual(code("https://myrobotaxi.app/join/rbo246?from=Thomas"), "RBO246")
+        XCTAssertEqual(code("https://myrobotaxi.app/join/RBO246/?from=Thomas"), "RBO246")
+        XCTAssertEqual(code("https://myrobotaxi.app/join/RBO246?from=Thomas#top"), "RBO246")
+        XCTAssertEqual(code("https://myrobotaxi.app/join/RBO246?from="), "RBO246", "an empty name is still a link")
+        XCTAssertEqual(
+            code("https://myrobotaxi.app/join/RBO246?utm_source=imessage&from=Thomas"), "RBO246",
+            "a forwarded link picks up parameters on the way"
+        )
+    }
+
+    /// A hand-edited or hostile query changes nothing about the code — the two
+    /// values never meet. (What the WEB does with such a value is guarded on the
+    /// web side; here the point is that the app neither reads nor is confused by
+    /// it.)
+    func testAJunkQueryDoesNotChangeTheCodeTheLinkCarries() {
+        XCTAssertEqual(code("https://myrobotaxi.app/join/RBO246?from=%3Cscript%3E"), "RBO246")
+        XCTAssertEqual(code("https://myrobotaxi.app/join/RBO246?from=ZKQ913"), "RBO246",
+                       "a six-character name in the query is not the code")
+        XCTAssertEqual(code("https://myrobotaxi.app/join/RBO246?code=ZKQ913"), "RBO246")
+        XCTAssertNil(code("https://myrobotaxi.app/join/?from=RBO246"), "the query cannot supply a missing code")
+    }
+
+    /// The whole from-matrix, end to end: composed by the shipping builder,
+    /// parsed by the shipping parser. Name, no name, and a name that does not
+    /// survive sanitisation all have to land on the same code.
+    func testEveryComposedLinkInTheFromMatrixParsesBackToItsCode() {
+        let names: [String?] = [nil, "", "   ", "Thomas", "  Thomas  ", "Mary-Jane",
+                                "José", "<script>alert(1)</script>", "123",
+                                String(repeating: "z", count: 99)]
+        for name in names {
+            let composed = InviteLink.url(code: "RBO246", from: name)
+            XCTAssertEqual(
+                code(composed), "RBO246",
+                "\(String(describing: name)) → \(composed)"
+            )
+        }
+    }
+
+    /// The client's own filter on the name. The page filters again on arrival —
+    /// neither side trusts the other — but a link this app writes must never
+    /// carry junk in the first place.
+    func testTheInviterNameIsFilteredBeforeItEverReachesALink() {
+        XCTAssertEqual(InviteLink.inviterName("Thomas"), "Thomas")
+        XCTAssertEqual(InviteLink.inviterName("  Thomas\n"), "Thomas")
+        XCTAssertEqual(InviteLink.inviterName("Mary-Jane"), "MaryJane", "separators drop, letters stay")
+        XCTAssertNil(InviteLink.inviterName("Thomas2"), "a digit means this is not a name")
+        XCTAssertEqual(
+            InviteLink.inviterName(String(repeating: "a", count: 40)),
+            String(repeating: "a", count: InviteLink.inviterNameMaxLength)
+        )
+
+        XCTAssertNil(InviteLink.inviterName(nil))
+        XCTAssertNil(InviteLink.inviterName(""))
+        XCTAssertNil(InviteLink.inviterName("   "))
+        XCTAssertNil(InviteLink.inviterName("123"))
+        XCTAssertNil(InviteLink.inviterName("Thomas & Co"), "an ampersand is not name punctuation")
+        XCTAssertNil(InviteLink.inviterName("<script>alert(1)</script>"))
+        // A name we cannot SPELL in ASCII is omitted whole rather than reduced to
+        // the letters it happens to share with English.
+        XCTAssertNil(InviteLink.inviterName("José"))
+        XCTAssertNil(InviteLink.inviterName("Ольга"))
+    }
+
     /// Strict about the ENVELOPE. Each of these is a URL that could plausibly
     /// reach `code(from:)` — from a pasted string, a `myrobotaxi://` callback,
     /// or a look-alike domain — and none of them may produce a code.

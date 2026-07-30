@@ -102,34 +102,73 @@ A `-MRT_SCENE <name>` launch **argument** is accepted as a fallback for tooling 
 
   All six are **live-path-only and unreachable from a simulated capture by construction**: `SimulatedShareService` mints no code (so no share sheet, no code caption, no tier line) and `SimulatedSharedVehicleCatalog` always holds three `rides`-tier grants with a redeem that cannot fail (onboarding.jsx:421's forgiving check). They inject `DebugShareEndpoint` and run the **production** `LiveShareService` / `LiveSharedVehicleCatalog` against it — the same "real code path, injected wire" precedent as `DebugServiceWindowEndpoint` — so what the capture shows came from the shipping grouping, tier mapping and gates, not a hand-set flag. The two invite-code scenes also set `autoSubmitsSampleCode`, because headless tooling cannot type six characters into the hidden field (the same stand-in-for-a-tap precedent as `ownerFreshnessWaking`). Nothing consults these overrides unless the scene is one of the six, so every existing scene is byte-identical.
 
-  **The share MESSAGE is a mini-onboarding** (MYR-340) — scenes
+  **The share payload is ONE LINK** (MYR-340 → MYR-346 → **MYR-359**) — scenes
   `ownerShareMessage` / `ownerShareMessageNoName`. MYR-184 handed the recipient
-  the code and nothing else, on the then-true reasoning that there was nowhere to
-  send anyone; the client's *"Feels strange just sending a text message, where do
-  they go"* was the missing half showing. The public TestFlight link went live
-  2026-07-29, so `ShareInviteMessage.compose` now writes the three steps in the
-  order they are performed (get the app → sign in with Apple → enter the code),
-  with the **code alone on its own line** and the 7-day expiry stated last. The
-  URL is a **plain https string** — Messages and Mail auto-detect it, so no
-  `LPLinkMetadata`/`NSItemProvider` preview infrastructure exists or is wanted.
-  The link lives in ONE constant, `AppDistribution.testFlightPublicJoinURL`
-  (ASC ⇢ TestFlight ⇢ **Friends & Family** external group; **capped at 100
-  testers**, after which the link refuses new joins and nothing in the client can
-  detect it). **Email needed no server**: the same share sheet already reaches
-  Mail — the gap was never the transport, it was that the message said nothing.
-  ONE presentation serves BOTH the create and the resend path (`doSend` and
-  `resendDialogConfig` both just set `handout`), so both get it for free. The
-  opening line has **two grammars, not one with a hole in it**: named when the
-  account carries a name, first-person ("I shared my Tesla with you") when it does
-  not — `UserProfile.firstName` is genuinely nil for anyone Apple did not hand a
-  name for on the FIRST authorization. Both scenes are live-path-only (SIM mints
-  no code, so it never opens a share sheet at all) and run the **production**
-  `LiveShareService.resend` against `ownerShareLive`'s own `DebugShareEndpoint` on
-  appear, because the sheet is otherwise behind a Resend → confirm → Resend tap
-  chain headless tooling cannot perform. **The share sheet's preview truncates to
-  one line**, so a screenshot can only ever prove the opening grammar —
-  `ShareInviteMessageUITests` taps the sheet's own **Copy** and asserts the
-  pasteboard, which is the only way to see the full delivered string.
+  the code and nothing else; MYR-340 wrapped it in a mini-onboarding paragraph
+  (steps, TestFlight link, bare code line, expiry) after the client's *"Feels
+  strange just sending a text message, where do they go"*; MYR-346 moved the
+  invite's own link to the head of that paragraph so the FIRST link in the body
+  would be the one platforms preview. The client came back on 2026-07-30: the
+  branded card still never showed. **iMessage's rule is not "preview the first
+  link" — it is "a message that is NOTHING BUT a link becomes a rich link"**, so
+  the prose written to introduce the card was what suppressed it.
+  `ShareInviteMessage.shareURL` now returns exactly
+  `https://myrobotaxi.app/join/{CODE}?from={Name}` and `InvitesScreen` hands it
+  to `UIActivityViewController` as a **`URL` activity item, not a `String`** —
+  the item TYPE is half the fix, since a string that happens to be a URL is
+  still a body of text. Still **no `LPLinkMetadata`/`NSItemProvider`**: the
+  sheet's preview is the system's to compose, and interposing an item source is
+  exactly how a pure-URL payload stops being one.
+
+  **Nothing was lost with the paragraph**, which is the only reason it could go:
+  a phone WITH the app never read it (the AASA hands the link to
+  `InviteLinkRouting`, the code prefills and auto-submits), and a phone without
+  it lands on the page at the other end, which carries the code, a copy button,
+  the TestFlight button and the same steps — server-rendered, and a better
+  version of every line the message held. `AppDistribution
+  .testFlightPublicJoinURL` survives as the ONE home for the build link (ASC ⇢
+  TestFlight ⇢ **Friends & Family**; **capped at 100 testers**, undetectably
+  from the client) but is **asserted ABSENT from the payload**, which is what
+  keeps the demotion from quietly reversing.
+
+  **`?from=` is the two grammars, moved to where they are read.** The opening
+  line used to switch between named and first-person in Swift; the page now
+  titles itself "{Name} invited you to ride their Tesla" or falls back to the
+  generic line, in the OG card AND the heading (both server-rendered, since
+  scrapers never run JS). `InviteLink.inviterName` decides what may travel: the
+  value must be **letters plus name punctuation only** (space, hyphen,
+  apostrophe, period), which are then dropped — "Mary-Jane" → `MaryJane` — and
+  the result capped at 20. **One character that is not a name character drops
+  the whole parameter**, never a scrubbed remnant: `Thomas3` is not evidence the
+  owner is called Thomas, and `<script>alert(1)</script>` reduced to its letters
+  would put "scriptalertscript invited you…" in a page title. A name carrying
+  non-ASCII letters ("José", "Ольга") is omitted whole rather than misspelled to
+  a stranger — `[A-Za-z]` is the web's accepted alphabet, so widening it means
+  widening both sides. The page filters again, independently, on arrival: neither
+  side trusts the other. `UserProfile.firstName` is genuinely nil for anyone
+  Apple did not name on the FIRST authorization, and that case simply omits the
+  parameter — never `?from=`.
+
+  **The parser ignores the query, and that is now load-bearing** — every link
+  the app hands out carries one, so `InviteLink.code(from:)` reading the code
+  from the PATH regardless of query is what keeps the app's own links working
+  (`InviteLinkParsingTests`). `InviteCodeEntry.extractCode` gained a matching
+  pass 0: a pasted `/join/{CODE}` link is read STRUCTURALLY through the same
+  parser rather than scanned, because the token heuristic sees two six-character
+  candidates on `?from=Thomas` and would lose the coin toss for an all-letter
+  code.
+
+  ONE presentation still serves BOTH the create and the resend path (`doSend`
+  and `resendDialogConfig` both just set `handout`). Both scenes are
+  live-path-only (SIM mints no code, so it never opens a share sheet at all) and
+  run the **production** `LiveShareService.resend` against `ownerShareLive`'s own
+  `DebugShareEndpoint` on appear, because the sheet is otherwise behind a Resend
+  → confirm → Resend tap chain headless tooling cannot perform.
+  `ShareInviteMessageUITests` proves the sheet PRESENTS over the real
+  activity-item plumbing and stops there — the preview row is system-composed for
+  a URL item, so asserting on it would be asserting on iOS; the delivered bytes
+  are pinned exactly by `ShareInviteMessageTests` (MYR-350: a UI test must never
+  read `UIPasteboard`).
 
   **"What is shared with me" is not "what can I ride"** (MYR-343) — scenes
   `riderOwnerSelfRide` / `riderVehiclesResolving` / `riderVehiclesUnreachable`.
@@ -580,11 +619,13 @@ six characters somewhere to point.
   and needed no new code: §7.5.5 answers `409`, the Kit folds it to
   `.alreadyHasAccess`, and the entry screen already renders that honestly —
   "You already have access to that Tesla", entry left intact, no shake.
-- **The share message leads with the join link** — alone on its own line directly
-  under the opening, BEFORE the TestFlight link, because platforms preview the
-  FIRST link and the old ordering produced TestFlight's generic "join the beta"
-  tile. The TestFlight link survives as the demoted no-app step (it is still the
-  only way to get the build), and the bare code line survives for manual entry.
+- **The share payload is the link and nothing else** (superseded by MYR-359 —
+  see "The share payload is ONE LINK" above). MYR-346 led the message with the
+  join link on the reading that platforms preview the FIRST link; iMessage
+  actually requires the message to be nothing BUT a link, so the steps, the
+  TestFlight link and the bare code line are gone from the payload and live on
+  the landing page instead. The link now also carries `?from={Name}`, which
+  `code(from:)` ignores by design.
 - **End-to-end cannot be verified until the web AASA deploys** — until then
   `simctl openurl` opens Safari, not the app. The routing is pinned by
   `App/Tests/InviteLinkRoutingTests.swift`; to drive the real screens use the

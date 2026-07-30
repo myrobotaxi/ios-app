@@ -78,16 +78,50 @@ final class InviteCodePasteTests: XCTestCase {
         XCTAssertEqual(InviteCodeEntry.extractCode(from: "ABCDEF"), "ABCDEF")
     }
 
-    /// The likeliest paste of all: the rider selects the WHOLE message rather
-    /// than six characters inside a bubble. MYR-340 put the code alone on its own
-    /// line, and that is what resolves this — a token-first rule would return
-    /// "THOMAS", the first six-letter word in the opening line.
-    func testPastingTheEntireShareMessageFindsTheCode() {
-        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
-        XCTAssertEqual(InviteCodeEntry.extractCode(from: message), "RBO246")
+    /// The likeliest paste of all, and MYR-359 changed what it is: the recipient
+    /// copies the LINK out of the thread, because the message is now nothing but
+    /// that link. Both grammars — with and without the `?from=` name — resolve to
+    /// the code in the path.
+    func testPastingTheSharedInviteLinkFindsTheCode() {
+        let named = ShareInviteMessage.shareURL(code: "RBO246", ownerFirstName: "Thomas")
+        XCTAssertEqual(InviteCodeEntry.extractCode(from: named.absoluteString), "RBO246")
 
-        let noName = ShareInviteMessage.compose(code: "ZKQ913", ownerFirstName: nil)
-        XCTAssertEqual(InviteCodeEntry.extractCode(from: noName), "ZKQ913")
+        let anonymous = ShareInviteMessage.shareURL(code: "ZKQ913", ownerFirstName: nil)
+        XCTAssertEqual(InviteCodeEntry.extractCode(from: anonymous.absoluteString), "ZKQ913")
+    }
+
+    /// The link is read STRUCTURALLY, not scanned. On `?from=Thomas` the token
+    /// pass sees two six-character candidates and picks the code only because
+    /// codes usually mix letters and digits — an ALL-LETTER code would lose that
+    /// coin toss and paste the sender's name into the field. Pass 0 never has the
+    /// question: the code is the path segment.
+    func testAnAllLetterCodeInALinkIsNotConfusedWithTheSendersName() {
+        let url = ShareInviteMessage.shareURL(code: "ABCDEF", ownerFirstName: "Thomas")
+        XCTAssertEqual(url.absoluteString, "https://myrobotaxi.app/join/ABCDEF?from=Thomas")
+        XCTAssertEqual(InviteCodeEntry.extractCode(from: url.absoluteString), "ABCDEF")
+    }
+
+    /// A link pasted the way people actually paste — with a sentence around it,
+    /// or with the trailing punctuation of the sentence it was written into.
+    func testALinkSurroundedByProseOrPunctuationStillResolves() {
+        XCTAssertEqual(
+            InviteCodeEntry.extractCode(from: "here you go https://myrobotaxi.app/join/RBO246?from=Thomas"),
+            "RBO246"
+        )
+        XCTAssertEqual(
+            InviteCodeEntry.extractCode(from: "join at https://myrobotaxi.app/join/rbo246."),
+            "RBO246"
+        )
+    }
+
+    /// A link that is not ours falls through to the ordinary passes rather than
+    /// being trusted — pass 0 is a fast path for a known shape, not a rule that
+    /// any URL contains a code.
+    func testALinkOnAnotherHostIsNotTreatedAsAnInviteLink() {
+        XCTAssertEqual(
+            InviteCodeEntry.extractCode(from: "https://evil.example/join/HACKED code: RBO246"),
+            "RBO246"
+        )
     }
 
     /// Separators inside the code itself — how a code gets read aloud and retyped
@@ -119,7 +153,8 @@ final class InviteCodePasteTests: XCTestCase {
         let pastes = [
             "RBO246", "rbo246", "  RBO246  ", "code: rbo246!", "RBO 246", "12-34-56",
             "ABCDEFGH", "rbo24", "", "!!!",
-            ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas"),
+            ShareInviteMessage.shareURL(code: "RBO246", ownerFirstName: "Thomas").absoluteString,
+            ShareInviteMessage.shareURL(code: "RBO246", ownerFirstName: nil).absoluteString,
         ]
         for paste in pastes {
             let extracted = InviteCodeEntry.extractCode(from: paste)

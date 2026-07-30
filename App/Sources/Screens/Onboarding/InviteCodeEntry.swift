@@ -47,16 +47,21 @@ enum InviteCodeEntry {
     /// The PASTE rule: find the six-character `[A-Z0-9]` candidate in an
     /// arbitrary pasted string.
     ///
-    /// Three passes, in this order, because the order is what makes the common
+    /// Four passes, in this order, because the order is what makes the common
     /// pastes land:
     ///
-    ///  1. **By line.** `ShareInviteMessage.compose` (MYR-340) deliberately puts
-    ///     the code ALONE on its own line, so a rider who copies the whole message
-    ///     — the most likely thing to happen, since selecting six characters
-    ///     inside a text bubble is precisely the chore this issue is about — is
-    ///     resolved by the message's own shape. A line-first pass is also what
-    ///     keeps that case honest: pass 2 on the full message would hand back
-    ///     "THOMAS", the first six-letter word in the opening line.
+    ///  0. **One of OUR links.** MYR-359 made the shared payload a bare
+    ///     `https://myrobotaxi.app/join/{CODE}?from={Name}` and nothing else, so
+    ///     the likeliest paste in existence is now that URL — copied out of a
+    ///     thread on a phone whose app is not installed, or forwarded to a laptop.
+    ///     A link is not guessed at: the code is the PATH SEGMENT, read by the
+    ///     same `InviteLink.code(from:)` the universal-link handler uses. This
+    ///     has to lead, because the token pass below cannot see structure — on a
+    ///     link carrying `?from=Thomas` it has two six-character candidates
+    ///     ("RBO246", "THOMAS") and only wins on the shape heuristic, which an
+    ///     all-letter code would lose.
+    ///  1. **By line.** A code handed over on a line of its own — how MYR-340's
+    ///     message shaped it, and how a human writing one out still does.
     ///  2. **By token.** Split on everything that is not `[A-Z0-9]` and take the
     ///     first run of exactly six — the client's own "code: rbo246!" shape,
     ///     where the code shares a line with a label.
@@ -67,6 +72,15 @@ enum InviteCodeEntry {
     /// Returns "" when there is nothing `[A-Z0-9]` in the string at all; the
     /// caller says so rather than silently doing nothing.
     static func extractCode(from raw: String) -> String {
+        // 0 — a link we minted. Case is preserved for this pass because a URL
+        // host is case-insensitive but a percent-escape is not; `InviteLink`
+        // does its own normalisation.
+        for token in raw.split(whereSeparator: { $0.isWhitespace }) {
+            if let url = URL(string: String(token)), let code = InviteLink.code(from: url) {
+                return code
+            }
+        }
+
         let upper = raw.uppercased()
 
         // 1 — a line that IS the code.
