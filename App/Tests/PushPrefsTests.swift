@@ -62,10 +62,15 @@ final class PushPrefsTests: XCTestCase {
     // Every row on BOTH screens, and the category it writes. The tables under test
     // are the ones the screens render (`ForEach` over them), so this is the
     // shipping mapping and not a second copy of it.
+    //
+    // MYR-354 reshaped both ends: the owner gained the `ride_lifecycle` row it
+    // never had, at the HEAD, and the rider's two `rideLifecycle` rows merged into
+    // one. Six rows still, over the same five categories.
     func testEveryRowIsBoundToItsOwnCategory() {
         XCTAssertEqual(
             SettingsNotificationRows.owner,
             [
+                .init(label: "Ride requests", category: .rideLifecycle),
                 .init(label: "Drive started", category: .driveStarted),
                 .init(label: "Drive completed", category: .driveCompleted),
                 .init(label: "Charging complete", category: .chargingComplete),
@@ -75,27 +80,55 @@ final class PushPrefsTests: XCTestCase {
         XCTAssertEqual(
             SettingsNotificationRows.rider,
             [
-                .init(label: "Request accepted / declined", category: .rideLifecycle),
-                .init(label: "Pick-up & arrival alerts", category: .rideLifecycle),
+                .init(
+                    label: "Ride updates",
+                    caption: "Accepted, declined, pick-up and arrival",
+                    category: .rideLifecycle
+                ),
             ]
         )
     }
 
-    // The four owner categories are DISTINCT — nothing there is shared, so a
+    // The five owner categories are DISTINCT — nothing there is shared, so a
     // copy-paste slip that pointed two rows at one column would be caught here
     // even if the literals above were updated to match it.
-    func testTheOwnerRowsUseFourDifferentCategories() {
+    func testTheOwnerRowsUseFiveDifferentCategories() {
         let categories = SettingsNotificationRows.owner.map(\.category)
         XCTAssertEqual(Set(categories).count, categories.count)
+        XCTAssertEqual(categories.count, 5)
     }
 
-    // The rider's two rows SHARE `rideLifecycle`, deliberately: `ride_lifecycle`
+    // MYR-354 — "Ride requests" LEADS the owner card. The prototype's four are all
+    // about the CAR; this one is about the ride-hailing loop, and it is the row an
+    // owner comes to this section to find. Order is a product decision, so it is
+    // asserted rather than left to the literal above.
+    func testTheOwnerCardLeadsWithRideRequests() {
+        XCTAssertEqual(SettingsNotificationRows.owner.first?.label, "Ride requests")
+        XCTAssertEqual(SettingsNotificationRows.owner.first?.category, .rideLifecycle)
+    }
+
+    // The rider's two prototype rows both carried `rideLifecycle`: `ride_lifecycle`
     // covers the whole requested/accepted/declined/arrived/completed status class
-    // and every rider-facing send site is inside it. There is no column that could
-    // switch one of these off and leave the other on, so they must always agree —
-    // asserted below by driving one row and reading the other.
-    func testBothRiderRowsShareOneCategoryOnPurpose() {
-        XCTAssertEqual(SettingsNotificationRows.rider.map(\.category), [.rideLifecycle, .rideLifecycle])
+    // and every rider-facing send site is inside it. There was no column that could
+    // switch one off and leave the other on, so they were one preference wearing
+    // two masks — MYR-349 named that as its open question and MYR-354 answers it by
+    // MERGING them. The caption is the receipt: it names what the one switch
+    // governs, so nothing the deleted row promised has gone unstated.
+    func testTheRiderRowsAreMergedIntoOneOverOneCategory() {
+        XCTAssertEqual(SettingsNotificationRows.rider.map(\.category), [.rideLifecycle])
+        XCTAssertEqual(
+            SettingsNotificationRows.rider.first?.caption,
+            "Accepted, declined, pick-up and arrival",
+            "the sub-line is the receipt for the merge, not decoration"
+        )
+    }
+
+    // The rider's is the ONLY row on either page carrying a sub-line, and the owner
+    // page has none — a caption there would be inventing copy the merge never
+    // required.
+    func testOnlyTheMergedRiderRowCarriesACaption() {
+        XCTAssertTrue(SettingsNotificationRows.owner.allSatisfy { $0.caption == nil })
+        XCTAssertEqual(SettingsNotificationRows.rider.compactMap(\.caption).count, 1)
     }
 
     // The client: "the tips notification seems useless." It is gone from the table
@@ -105,7 +138,16 @@ final class PushPrefsTests: XCTestCase {
         let labels = (SettingsNotificationRows.owner + SettingsNotificationRows.rider).map(\.label)
         XCTAssertFalse(labels.contains { $0.lowercased().contains("tips") })
         XCTAssertFalse(PushPrefCategory.allCases.map(\.rawValue).contains { $0.lowercased().contains("promo") })
-        XCTAssertEqual(SettingsNotificationRows.rider.count, 2, "the rider card is two rows now, not three")
+        XCTAssertEqual(SettingsNotificationRows.rider.count, 1, "the rider card is ONE row now (MYR-354's merge), not three")
+    }
+
+    // The copy the two screens render is the copy `SettingsNotificationCopy`
+    // documents. MYR-354 isolated these strings there precisely so this merge could
+    // absorb them as a table edit; that is only true while the two agree.
+    func testTheTableCarriesTheDocumentedCopy() {
+        XCTAssertEqual(SettingsNotificationRows.owner.first?.label, SettingsNotificationCopy.ownerRideRequests)
+        XCTAssertEqual(SettingsNotificationRows.rider.first?.label, SettingsNotificationCopy.riderRideUpdates)
+        XCTAssertEqual(SettingsNotificationRows.rider.first?.caption, SettingsNotificationCopy.riderRideUpdatesCaption)
     }
 
     // MARK: - (2) The write pattern
@@ -320,14 +362,18 @@ final class PushPrefsTests: XCTestCase {
         XCTAssertNil(service.statusMessage, "nothing here can fail, so nothing here can notice")
     }
 
-    // The two rider rows are ONE value: driving either moves both, always.
-    func testDrivingEitherRiderRowMovesBoth() async {
+    // The rider's merged row and the owner's new lead row are ONE account value:
+    // `ride_lifecycle`. MYR-349 asserted this by driving one rider row and reading
+    // the other; MYR-354 merged those two, so the surviving cross-check is the one
+    // that now matters more — the two SCREENS cannot contradict each other either.
+    func testTheRiderRowAndTheOwnerRideRequestsRowAreOneValue() async {
         let service = SimulatedPushPrefsService()
-        let first = SettingsNotificationRows.rider[0].category
-        let second = SettingsNotificationRows.rider[1].category
+        let riderCategory = SettingsNotificationRows.rider[0].category
+        let ownerCategory = SettingsNotificationRows.owner[0].category
+        XCTAssertEqual(riderCategory, ownerCategory)
 
-        await service.setEnabled(first, false)
-        XCTAssertFalse(service.prefs[second], "one category, so the rows can never contradict each other")
+        await service.setEnabled(riderCategory, false)
+        XCTAssertFalse(service.prefs[ownerCategory], "one category, so the two pages can never disagree")
     }
 
     // MARK: - The notice view's own gate
