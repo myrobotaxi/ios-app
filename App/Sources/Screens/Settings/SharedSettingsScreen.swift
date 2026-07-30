@@ -332,8 +332,9 @@ struct SharedSettingsScreen: View {
     // §7.19 deliberately has no column for it.
     private var notificationsCard: some View {
         VStack(spacing: 0) {
-            notificationRow("Request accepted / declined", category: .rideLifecycle, isFirst: true)
-            notificationRow("Pick-up & arrival alerts", category: .rideLifecycle, isFirst: false)
+            ForEach(Array(SettingsNotificationRows.rider.enumerated()), id: \.element.id) { index, row in
+                notificationRow(row.label, category: row.category, isFirst: index == 0)
+            }
         }
         .mrtSurface(.card)
         .padding(.horizontal, MRTMetrics.pageGutter)

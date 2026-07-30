@@ -604,10 +604,13 @@ struct SettingsScreen: View {
                 .mrtTextStyle(.label())
                 .foregroundStyle(Color.mrtTextMuted)
                 .padding(.bottom, 14)
-            notificationRow("Drive started", category: .driveStarted)
-            notificationRow("Drive completed", category: .driveCompleted)
-            notificationRow("Charging complete", category: .chargingComplete)
-            notificationRow("Viewer joined", category: .viewerJoined)
+            // MYR-349 — the rows and their §7.19 categories come from the ONE
+            // shared table, so the mapping a test asserts is the mapping that
+            // renders. Four children of this `VStack` either way: order, copy and
+            // spacing are exactly the prototype's.
+            ForEach(SettingsNotificationRows.owner) { row in
+                notificationRow(row.label, category: row.category)
+            }
             // MYR-349 — a write that did not land, or a read that did not answer.
             // Never present on the simulated path.
             PushPrefsNotice(message: pushPrefs.statusMessage)

@@ -90,6 +90,45 @@ struct PushPrefs: Equatable, Sendable {
     }
 }
 
+/// The rows each Settings screen renders, and the §7.19 category each one is
+/// bound to.
+///
+/// It lives HERE, outside the two views, for one reason: the row → category
+/// mapping is the thing most likely to be wrong in a way nothing catches. A row
+/// wired to the neighbouring category still moves, still saves, still comes back
+/// with the position the user chose — it just silences the wrong notification.
+/// No decode, no error and no screenshot can see that. The tables are what the
+/// screens actually render (`ForEach` over these arrays, not literal call
+/// sequences), so the matrix test asserts the shipping mapping rather than a
+/// second copy of it.
+enum SettingsNotificationRows {
+    struct Row: Equatable, Identifiable {
+        var label: String
+        var category: PushPrefCategory
+        var id: String { label }
+    }
+
+    /// screens.jsx:473-486 — the owner's four, in the prototype's order.
+    static let owner: [Row] = [
+        Row(label: "Drive started", category: .driveStarted),
+        Row(label: "Drive completed", category: .driveCompleted),
+        Row(label: "Charging complete", category: .chargingComplete),
+        Row(label: "Viewer joined", category: .viewerJoined),
+    ]
+
+    /// shared-screens.jsx:501-505 — the rider's, LESS "Tips & product news"
+    /// (MYR-349 deletes it; §7.19 has no column for it and no send site ever
+    /// produced it).
+    ///
+    /// BOTH remaining rows carry `rideLifecycle`. See `SharedSettingsScreen
+    /// .notificationsCard` for why that is the schema rather than a shortcut, and
+    /// for the open design question it leaves.
+    static let rider: [Row] = [
+        Row(label: "Request accepted / declined", category: .rideLifecycle),
+        Row(label: "Pick-up & arrival alerts", category: .rideLifecycle),
+    ]
+}
+
 /// What both Settings screens read their notification rows from, and write them
 /// through.
 @MainActor
