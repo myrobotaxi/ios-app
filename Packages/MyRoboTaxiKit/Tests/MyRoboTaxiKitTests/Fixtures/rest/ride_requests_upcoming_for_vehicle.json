@@ -1,0 +1,38 @@
+{
+  "_meta": {
+    "description": "RideRequestsListResponse envelope from GET /api/ride-requests/incoming?upcomingForVehicle={vehicleId} (MYR-360) — the owner's ACCEPTED reservations for ONE vehicle whose scheduled_for is strictly in the future, SOONEST FIRST. Every item carries requesterName (server-resolved first name) and scheduledFor; the second omits requesterName, the case the client must render honestly rather than name.",
+    "anchoredFRs": ["FR-9.1", "FR-9.3"],
+    "scenario": "ride-request"
+  },
+  "items": [
+    {
+      "id": "clride0000000000000031",
+      "riderId": "cluser0000000000rider0",
+      "ownerId": "cluser0000000000owner0",
+      "vehicleId": "clxyz1234567890abcdef",
+      "pickup": { "lat": 37.7749, "lng": -122.4194, "label": "Home" },
+      "dropoff": { "lat": 37.6156, "lng": -122.3900, "label": "SFO · Terminal 2", "address": "San Francisco International" },
+      "status": "accepted",
+      "requesterName": "Alex",
+      "scheduledFor": "2026-08-02T17:30:00.000Z",
+      "acceptedAt": "2026-07-30T18:04:11.482Z",
+      "createdAt": "2026-07-30T18:00:00.000Z",
+      "updatedAt": "2026-07-30T18:04:11.482Z"
+    },
+    {
+      "id": "clride0000000000000032",
+      "riderId": "cluser0000000000rider1",
+      "ownerId": "cluser0000000000owner0",
+      "vehicleId": "clxyz1234567890abcdef",
+      "pickup": { "lat": 37.7793, "lng": -122.3937, "label": "Ferry Building" },
+      "dropoff": { "lat": 37.7955, "lng": -122.3937, "label": "Oracle Park" },
+      "status": "accepted",
+      "scheduledFor": "2026-08-03T01:15:00.000Z",
+      "acceptedAt": "2026-07-30T18:09:00.000Z",
+      "createdAt": "2026-07-30T18:08:00.000Z",
+      "updatedAt": "2026-07-30T18:09:00.000Z"
+    }
+  ],
+  "nextCursor": null,
+  "hasMore": false
+}

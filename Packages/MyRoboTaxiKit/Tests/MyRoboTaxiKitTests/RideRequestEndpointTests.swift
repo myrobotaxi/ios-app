@@ -102,6 +102,81 @@ final class RideRequestEndpointTests: XCTestCase {
         XCTAssertEqual(requests[0].url?.path, "/api/ride-requests/incoming")
     }
 
+    // MARK: - Owner upcoming reservations for ONE vehicle (MYR-360)
+
+    /// The WIRE, exactly: the same `/incoming` resource, plus the one query
+    /// parameter that selects the upcoming-reservations slice for a vehicle. The
+    /// parameter NAME is the single thing the client and the server must agree on
+    /// by string, so it is asserted against the constant AND against the literal.
+    func testUpcomingReservationsTargetsIncomingWithTheVehicleQuery() async throws {
+        let (client, http) = client([
+            .init(status: 200, body: try Fixture.data("rest/ride_requests_upcoming_for_vehicle.json"))
+        ])
+
+        _ = try await client.upcomingReservations(vehicleID: "clxyz1234567890abcdef")
+
+        let requests = await http.capturedRequests()
+        XCTAssertEqual(requests[0].httpMethod, "GET")
+        let components = URLComponents(url: requests[0].url!, resolvingAgainstBaseURL: false)!
+        XCTAssertEqual(components.path, "/api/ride-requests/incoming", "the same resource as the owner feed")
+        XCTAssertEqual(RestClient.upcomingForVehicleQueryName, "upcomingForVehicle")
+        XCTAssertEqual(
+            components.queryItems,
+            [
+                URLQueryItem(name: "upcomingForVehicle", value: "clxyz1234567890abcdef"),
+                URLQueryItem(name: "limit", value: "20")
+            ],
+            "exactly two query items on a cursorless first page, default limit 20"
+        )
+    }
+
+    /// The decode the pause warning is built from: `requesterName` and
+    /// `scheduledFor` on every item, SOONEST FIRST, and an absent `requesterName`
+    /// surviving as `nil` rather than as an empty string the client would then have
+    /// to guess about.
+    func testUpcomingReservationsDecodeCarriesRequesterNameAndScheduledFor() async throws {
+        let (client, _) = client([
+            .init(status: 200, body: try Fixture.data("rest/ride_requests_upcoming_for_vehicle.json"))
+        ])
+
+        let page = try await client.upcomingReservations(vehicleID: "clxyz1234567890abcdef")
+
+        XCTAssertEqual(page.items.count, 2)
+        XCTAssertFalse(page.hasMore)
+        XCTAssertNil(page.nextCursor, "null nextCursor => the final page")
+        XCTAssertTrue(page.items.allSatisfy { $0.status == .accepted }, "reservations are ACCEPTED, not requested")
+
+        XCTAssertEqual(page.items[0].requesterName, "Alex")
+        XCTAssertEqual(page.items[0].scheduledFor, "2026-08-02T17:30:00.000Z")
+        XCTAssertNil(page.items[1].requesterName, "an omitted name decodes as absent, never as \"\"")
+        XCTAssertEqual(page.items[1].scheduledFor, "2026-08-03T01:15:00.000Z")
+
+        let times = page.items.compactMap(\.scheduledFor)
+        XCTAssertEqual(times, times.sorted(), "the server orders soonest first")
+    }
+
+    /// Cursor + limit behave exactly as the sibling list endpoints', because they
+    /// ARE the sibling list endpoint — same envelope, same `(createdAt, id)` cursor,
+    /// same 1…100 clamp.
+    func testUpcomingReservationsForwardsCursorAndClampsLimit() async throws {
+        let (client, http) = client([
+            .init(status: 200, body: try Fixture.data("rest/ride_requests_upcoming_for_vehicle.json"))
+        ])
+
+        _ = try await client.upcomingReservations(vehicleID: "veh-1", cursor: "PAGE2", limit: 500)
+
+        let requests = await http.capturedRequests()
+        let components = URLComponents(url: requests[0].url!, resolvingAgainstBaseURL: false)!
+        XCTAssertEqual(
+            components.queryItems,
+            [
+                URLQueryItem(name: "upcomingForVehicle", value: "veh-1"),
+                URLQueryItem(name: "limit", value: "100"),
+                URLQueryItem(name: "cursor", value: "PAGE2")
+            ]
+        )
+    }
+
     // MARK: - Owner accept (POST, no body, acceptedAt stamped)
 
     func testAcceptTargetsPostAcceptPathAndDecodesAcceptedAt() async throws {

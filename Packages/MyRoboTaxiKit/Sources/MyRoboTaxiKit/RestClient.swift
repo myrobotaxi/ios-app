@@ -139,6 +139,39 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
         return try await get(["ride-requests", "incoming"], query: query)
     }
 
+    /// The query parameter that turns the owner's incoming feed into the
+    /// UPCOMING-RESERVATIONS view of ONE vehicle (MYR-360).
+    ///
+    /// Named as a constant rather than spelled inline because it is the ONE piece
+    /// of this feature the client and the server have to agree on by string: if the
+    /// backend lands a different name, this is a one-line change with a test on it,
+    /// not a search across the app.
+    public static let upcomingForVehicleQueryName = "upcomingForVehicle"
+
+    /// `GET /api/ride-requests/incoming?upcomingForVehicle={id}` (MYR-360) — the
+    /// owner's ACCEPTED reservations for ONE vehicle whose `scheduled_for` is
+    /// strictly in the FUTURE, ordered SOONEST FIRST.
+    ///
+    /// The same endpoint, envelope, cursor and limit clamp as
+    /// ``incomingRideRequests(cursor:limit:)`` — the parameter selects a different
+    /// SLICE of the owner's ride requests, not a different resource. Two properties
+    /// the caller depends on: items carry `requesterName` (server-resolved FIRST
+    /// name) and `scheduledFor`, and an unknown or unowned `vehicleID` answers an
+    /// EMPTY PAGE rather than an error, so a stale vehicle id degrades to "no
+    /// reservations" instead of to a failure the owner has to interpret.
+    public func upcomingReservations(
+        vehicleID: String,
+        cursor: String? = nil,
+        limit: Int = 20
+    ) async throws -> RideRequestsListResponse {
+        var query: [URLQueryItem] = [
+            URLQueryItem(name: Self.upcomingForVehicleQueryName, value: vehicleID),
+            URLQueryItem(name: "limit", value: String(min(100, max(1, limit))))
+        ]
+        if let cursor, !cursor.isEmpty { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+        return try await get(["ride-requests", "incoming"], query: query)
+    }
+
     /// `GET /api/ride-requests/{id}` (rest-api.md §7.8) — the full `RideRequest`
     /// behind a `ride_request_created` / `ride_status_changed` summary frame
     /// (the frames are summary-only; pickup/dropoff/passenger live here). Party-
@@ -163,7 +196,11 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
     }
 
     /// `POST /api/ride-requests/{id}/decline` (rest-api.md §7.8, MYR-175) —
-    /// OWNER-only. Legal only from `requested` → `declined`; else `409 conflict`.
+    /// OWNER-only. Legal from `requested` → `declined`, and — MYR-360 — from
+    /// `accepted` → `declined` for a SCHEDULED ride, so an owner pausing ride
+    /// sharing can withdraw the reservations that pause would otherwise strand.
+    /// An accepted INSTANT ride is still `409 conflict` (a car already on its way
+    /// is not declinable), as is every other state.
     public func declineRideRequest(id: String) async throws -> RideRequest {
         try await post(["ride-requests", id, "decline"], body: Optional<Empty>.none)
     }
