@@ -235,24 +235,26 @@ struct DriveSummaryScreen: View {
     private func scheduleGoldMode() {
         guard isFullFSD else { return }
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(reduceMotion ? 200 : 2700))
-            guard !reduceMotion else {
-                goldMode = true
-                return
-            }
-            withAnimation(.timingCurve(0.4, 0, 0.2, 1, duration: 1.4)) {
+            try? await Task.sleep(for: MRTDriveCelebration.washDelay(reduceMotion: reduceMotion))
+            // MYR-339 — one clamped terminal for every celebration layer. Under
+            // Reduce Motion `washAnimation` is nil and this snaps, exactly as
+            // the prototype's `transition: none` does.
+            withAnimation(MRTDriveCelebration.washAnimation(reduceMotion: reduceMotion)) {
                 goldMode = true
             }
         }
     }
 
-    /// screens.jsx:866-871 — page-wide radial + linear gold wash.
+    /// screens.jsx:866-871 — page-wide radial + linear gold wash. Normal
+    /// compositing in the prototype too (no `mix-blend-mode`), and it never
+    /// reaches the map: it is painted behind the scrolling page and the hero
+    /// map is opaque.
     private var goldWash: some View {
         ZStack {
             EllipticalGradient(
                 stops: [
-                    .init(color: Color.mrtGold.opacity(0.22), location: 0),
-                    .init(color: Color.mrtGold.opacity(0.08), location: 0.46),
+                    .init(color: Color.mrtGold.opacity(MRTDriveCelebration.washRadialInnerOpacity), location: 0),
+                    .init(color: Color.mrtGold.opacity(MRTDriveCelebration.washRadialMidOpacity), location: 0.46),
                     .init(color: .clear, location: 0.76),
                 ],
                 center: UnitPoint(x: 0.5, y: 0.6),
@@ -262,14 +264,14 @@ struct DriveSummaryScreen: View {
             LinearGradient(
                 stops: [
                     .init(color: .clear, location: 0.32),
-                    .init(color: Color.mrtGold.opacity(0.05), location: 0.55),
-                    .init(color: Color.mrtGold.opacity(0.12), location: 1),
+                    .init(color: Color.mrtGold.opacity(MRTDriveCelebration.washLinearMidOpacity), location: 0.55),
+                    .init(color: Color.mrtGold.opacity(MRTDriveCelebration.washLinearEndOpacity), location: 1),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
             )
         }
-        .opacity(goldMode ? 1 : 0)
+        .opacity(MRTDriveCelebration.layerOpacity(goldMode: goldMode))
         .allowsHitTesting(false)
     }
 
@@ -301,23 +303,48 @@ struct DriveSummaryScreen: View {
             }
             .allowsHitTesting(false)
 
-            // screens.jsx:885-886 — gold reward tint over the map itself
-            // (soft-light blend + a soft radial highlight), same `goldMode`
-            // fade as the page wash.
-            LinearGradient(colors: [Color.mrtGold.opacity(0.5), Color.mrtGold.opacity(0.85)], startPoint: .top, endPoint: .bottom)
-                .blendMode(.softLight)
-                .opacity(goldMode ? 1 : 0)
-                .allowsHitTesting(false)
+            // screens.jsx:885-886 — gold reward tint over the map itself, same
+            // `goldMode` fade as the page wash.
+            //
+            // MYR-339: the prototype spells the first layer `mix-blend-mode:
+            // soft-light` over gold at α 0.5→0.85, and this port copied both
+            // verbatim. In CSS that is safe — the tint's parent (screens.jsx:873)
+            // creates a stacking context, so the blend is isolated to ordinary
+            // painted DOM. Here the layer sits directly above a UIKit-hosted
+            // `MKMapView` on its own compositing surface, where a blend mode is
+            // resolved against whatever backdrop the compositor has; with none it
+            // paints SOURCE-OVER, and α 0.5→0.85 gold over the map is the flood
+            // the client photographed. A screenshot flattens the tree into one
+            // offscreen buffer, the blend resolves there, and the still looks
+            // right — which is exactly why he had to photograph the phone.
+            //
+            // The tint is now the same treatment PRE-RESOLVED to normal
+            // compositing (`MRTDriveCelebration`, where the numbers and the
+            // measurements behind them live). It asks nothing of the compositor,
+            // so it has no failure mode.
+            LinearGradient(
+                colors: [
+                    Color.mrtGold.opacity(MRTDriveCelebration.heroTintTopOpacity),
+                    Color.mrtGold.opacity(MRTDriveCelebration.heroTintBottomOpacity),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .blendMode(MRTDriveCelebration.heroTintBlendMode)
+            .opacity(MRTDriveCelebration.layerOpacity(goldMode: goldMode))
+            .allowsHitTesting(false)
+            // screens.jsx:886 — the prototype gives this one no `mix-blend-mode`,
+            // so it was already normal compositing and keeps its own opacity.
             EllipticalGradient(
                 stops: [
-                    .init(color: Color.mrtGold.opacity(0.18), location: 0),
+                    .init(color: Color.mrtGold.opacity(MRTDriveCelebration.heroHighlightOpacity), location: 0),
                     .init(color: .clear, location: 0.7),
                 ],
                 center: UnitPoint(x: 0.5, y: 0.3),
                 startRadiusFraction: 0,
                 endRadiusFraction: 0.75
             )
-            .opacity(goldMode ? 1 : 0)
+            .opacity(MRTDriveCelebration.layerOpacity(goldMode: goldMode))
             .allowsHitTesting(false)
 
             // MYR-327 — "click into the map": the whole hero is the tap target
