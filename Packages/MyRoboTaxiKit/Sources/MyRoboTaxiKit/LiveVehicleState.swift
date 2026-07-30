@@ -34,6 +34,15 @@ public final class LiveVehicleState {
     /// Vehicle↔server connectivity, once a `connectivity` frame has arrived.
     public private(set) var vehicleOnline: Bool?
 
+    /// MYR-351 — when the `/snapshot` GET behind the current ``state``'s
+    /// SNAPSHOT-ONLY fields was issued. `nil` until the first snapshot arrives.
+    ///
+    /// It does NOT advance on a delta: a delta refreshes the streamed fields and
+    /// leaves the snapshot-only ones exactly as old as they were, so advancing it
+    /// would claim a freshness the carried-forward values do not have — which is
+    /// the whole defect this exists to close.
+    public private(set) var snapshotReadIssuedAt: Date?
+
     /// Optional hook fired when a `drive_ended` frame arrives for this vehicle
     /// (FR-9.2). The app's live Drives list wires this to a first-page refresh so
     /// a completed drive appears without re-deriving anything from telemetry.
@@ -47,7 +56,17 @@ public final class LiveVehicleState {
     /// seats, trunk/charge-port, media) so a control shows the car's REAL state
     /// instead of an honest "—". `@MainActor` because the bridge is main-actor
     /// isolated. Fired AFTER `state` is updated, with the new value.
-    public var onStateChanged: (@MainActor (VehicleState) -> Void)?
+    ///
+    /// The second argument is the instant the `/snapshot` GET that produced this
+    /// state's SNAPSHOT-ONLY fields was issued (MYR-351). On a `.snapshot` that is
+    /// this read's own stamp. On a folded delta it is the stamp of the snapshot the
+    /// delta was folded ONTO — which is exactly right, because
+    /// ``VehicleStateMerger/apply(fields:to:)`` opens with `var state = original`
+    /// and therefore carries every snapshot-only field forward VERBATIM. The
+    /// merger declining to FOLD those fields is not the same as the state not
+    /// CARRYING them, and a consumer that could not tell the two apart re-applied a
+    /// stale value on every frame.
+    public var onStateChanged: (@MainActor (VehicleState, _ snapshotReadIssuedAt: Date) -> Void)?
 
     private let socket: TelemetrySocket
     private var eventTask: Task<Void, Never>?
@@ -92,16 +111,28 @@ public final class LiveVehicleState {
         Task { await socket.unsubscribe(from: vehicleId) }
     }
 
-    private func apply(_ event: VehicleTelemetryEvent) {
+    /// Fold one event into the observable state.
+    ///
+    /// INTERNAL rather than private (MYR-351) so `@testable` can drive the fold
+    /// directly. It stays out of the public API — the ordering rules it enforces
+    /// (a snapshot precedes the updates it baselines; a delta inherits the
+    /// snapshot's read stamp) are this type's own invariants, not a seam callers
+    /// are invited to reach into.
+    func apply(_ event: VehicleTelemetryEvent) {
         switch event {
-        case .snapshot(let snapshot):
+        case .snapshot(let snapshot, let readIssuedAt):
             state = snapshot
-            onStateChanged?(snapshot)
+            snapshotReadIssuedAt = readIssuedAt
+            onStateChanged?(snapshot, readIssuedAt)
         case .update(let payload):
             guard let current = state else { return } // ordering: snapshot precedes updates
             let merged = VehicleStateMerger.apply(fields: payload.fields, to: current).state
             state = merged
-            onStateChanged?(merged)
+            // MYR-351 — the delta's own fields are current, but its SNAPSHOT-ONLY
+            // fields are as old as the snapshot it was folded onto. The ordering
+            // guarantee above (a snapshot always precedes the updates it baselines)
+            // is what makes this non-nil whenever `state` is.
+            onStateChanged?(merged, snapshotReadIssuedAt ?? .distantPast)
         case .driveStarted:
             isDriving = true
         case .driveEnded(let summary):

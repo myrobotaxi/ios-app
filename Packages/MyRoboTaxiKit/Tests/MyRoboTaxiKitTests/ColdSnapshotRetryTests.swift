@@ -55,7 +55,7 @@ final class ColdSnapshotRetryTests: XCTestCase {
         // `.dataState(.error)` first — the honest in-between the sheet renders).
         var snapshot: VehicleState?
         while let event = await iterator.next() {
-            if case .snapshot(let state) = event { snapshot = state; break }
+            if case .snapshot(let state, _) = event { snapshot = state; break }
         }
         XCTAssertEqual(snapshot?.vehicleId, "clxyz1234567890abcdef")
         let calls = await snapshots.callCount()
