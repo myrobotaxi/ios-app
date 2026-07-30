@@ -105,7 +105,8 @@ final class OwnerMapCameraInsetTests: XCTestCase {
     /// The peek band of an in-service, charging car — the client's own case
     /// (two MYR-315 qualifier lines on the parked base).
     private let peek = MRTMetrics.homePeekHeight(
-        base: MRTMetrics.homePeekHeightParked, qualifierLines: 2
+        base: MRTMetrics.homePeekHeightParked,
+        qualifiers: [.serviceCompletion, .freshnessStamp]
     )
 
     /// THE REGRESSION GUARD. Dragging past half must not move the camera: the
@@ -138,7 +139,7 @@ final class OwnerMapCameraInsetTests: XCTestCase {
     /// cap is on the DETENT, not on the band. A car with a freshness stamp and a
     /// service-completion line frames against its own taller peek, at tall too.
     func testTheCapDoesNotFreezeThePeekBandItself() {
-        let bare = MRTMetrics.homePeekHeight(base: MRTMetrics.homePeekHeightParked, qualifierLines: 0)
+        let bare = MRTMetrics.homePeekHeight(base: MRTMetrics.homePeekHeightParked, qualifiers: [])
         XCTAssertNotEqual(bare, peek)
         XCTAssertEqual(HomeScreen.vehicleMapBottomInset(detent: .tall, peekHeight: bare), bare)
     }

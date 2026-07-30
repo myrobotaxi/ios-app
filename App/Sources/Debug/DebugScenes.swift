@@ -280,6 +280,29 @@ enum DebugScene: String, CaseIterable {
     /// `MRT_OWNER_DETENT=half` to see it under the controls stack.
     case ownerFreshnessStale
     case ownerFreshnessWaking
+    /// MYR-345 — **the client's own screenshot** (AKXUQLSW…, Jul 29): a car IN
+    /// SERVICE whose snapshot was read moments ago, so the peek hero carries BOTH
+    /// live-only qualifier lines at once — the service-completion line under the
+    /// In Service badge, and "Synced just now" at the foot. No scene reached that
+    /// pair before: `ownerFreshnessStale` renders the stamp alone and
+    /// `ownerServiceWindow` the completion line alone, and the peek band's
+    /// per-line allowance only over-reserves when a line is actually drawn. It is
+    /// the SAME fleet `ownerServiceWindow` injects, with the freshness stamp's live
+    /// rendering forced on, so `ownerServiceWindow` itself stays byte-identical.
+    ///
+    /// It is also the DEAD-TAP repro: a car read "just now" is already current, so
+    /// `VehicleFreshnessStamp.wakes` is false and the tap resolves to the
+    /// acknowledgement — the branch that, before this issue, rendered NO copy at
+    /// all and read as a stamp that does nothing.
+    case ownerFreshnessInService
+    /// MYR-345 — the same in-service car, STALE, whose §7.15 refresh the server
+    /// legitimately REFUSES with the MYR-329 token (`502 command_failed`,
+    /// `"vehicle command failed: vehicle_in_service"`). The tap therefore spends a
+    /// real refresh, shows "Waking Model Y…", and settles on the NAMED reason
+    /// rather than the generic "Couldn't reach the car" — the same lesson MYR-329
+    /// taught on the command path, now on the refresh path. Capture at t≈1s
+    /// (waking) and t≈4s (settled).
+    case ownerFreshnessRefused
     /// MYR-316 — the owner sheet for a car that is IN SERVICE with a known
     /// estimated completion. Injects `DebugVehicleDetailsFleet(status:
     /// .inService, serviceEstimatedEndAt: <next Sat 2 PM>)`, so the instant rides
@@ -796,6 +819,10 @@ enum DebugScene: String, CaseIterable {
     /// simulated, byte-identical rendering (CLAUDE.md drift gate).
     var rendersLiveVehicleFreshness: Bool {
         self == .ownerFreshnessStale || self == .ownerFreshnessWaking
+            // MYR-345 — the client's two-qualifier-line variant + the refusal
+            // settle. Both are the freshness stamp on an in-service car, so they
+            // need the same live rendering the two MYR-315 scenes force.
+            || self == .ownerFreshnessInService || self == .ownerFreshnessRefused
     }
 
     /// MYR-316 — whether `HomeScreen` should boot with the "Expected back" entry
@@ -845,6 +872,7 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerDispatched || self == .ownerDispatchedArrived
             || self == .ownerDispatchedEnroute || self == .ownerDispatchedCompleted
             || self == .ownerFreshnessStale || self == .ownerFreshnessWaking
+            || self == .ownerFreshnessInService || self == .ownerFreshnessRefused
             || self == .ownerServiceWindow || self == .ownerServiceWindowEditor
             || self == .ownerServiceWindowManual || self == .ownerServiceWindowSaved
             || self == .ownerCharging || self == .ownerChargeComplete
@@ -898,6 +926,31 @@ enum DebugScene: String, CaseIterable {
         // MYR-315 — a car offline for 7h, so the stamp resolves its stale branch
         // through the real mapping (see `DebugFreshnessFleet`).
         case .ownerFreshnessStale, .ownerFreshnessWaking: return DebugFreshnessFleet()
+        // MYR-345 — the client's own condition: the SAME in-service fleet
+        // `ownerServiceWindow` injects (so that scene stays byte-identical), read
+        // moments ago, with the stamp's live rendering forced on. Both live-only
+        // qualifier lines are therefore drawn at once — the pair the peek band's
+        // per-line allowance is measured against.
+        case .ownerFreshnessInService:
+            return DebugVehicleDetailsFleet(
+                status: .inService,
+                serviceEstimatedEndAt: DebugScene.sampleServiceEnd()
+            )
+        // MYR-345 — the same car read HOURS ago, so the tap spends a real §7.15
+        // call, and a server that refuses it by NAME (§7.9's `command_failed`
+        // carrying MYR-329's `vehicle_in_service` token).
+        case .ownerFreshnessRefused:
+            return DebugVehicleDetailsFleet(
+                status: .inService,
+                serviceEstimatedEndAt: DebugScene.sampleServiceEnd(),
+                lastReadAt: Date().addingTimeInterval(-7 * 3600),
+                refreshFailure: .http(
+                    status: 502,
+                    code: ErrorPayload.Code(rawValue: "command_failed"),
+                    message: "vehicle command failed: vehicle_in_service",
+                    subCode: nil
+                )
+            )
         // MYR-316 — an IN SERVICE car with a known estimated completion, on both
         // read surfaces, exactly as a real server emits it.
         case .ownerServiceWindow, .ownerServiceWindowEditor:
@@ -1398,6 +1451,7 @@ enum DebugScene: String, CaseIterable {
              .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute,
              .ownerDispatchedCompleted,
              .ownerFreshnessStale, .ownerFreshnessWaking,
+             .ownerFreshnessInService, .ownerFreshnessRefused,
              .ownerServiceWindow, .ownerServiceWindowEditor, .ownerServiceWindowManual,
              .ownerServiceWindowSaved,
              .ownerCharging, .ownerChargeComplete,

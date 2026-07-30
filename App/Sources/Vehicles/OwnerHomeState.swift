@@ -225,12 +225,23 @@ public final class OwnerHomeState {
         }
     }
 
+    /// How long the no-op acknowledgement holds the stamp before the resting
+    /// recency line comes back.
+    ///
+    /// MYR-345 raised this from 0.9s. At 0.9 the acknowledgement was tuned for a
+    /// state change nobody could see (it rendered no copy at all); now that it
+    /// carries a sentence, the hold has to be long enough to READ one on a line
+    /// the owner is not looking directly at. Still well under the 6s a settled
+    /// notice gets (`LiveVehicleCommandExecutor.defaultNoticeDisplayDuration`) —
+    /// nothing is wrong here, so it should not linger like something that is.
+    public static let acknowledgementDisplayDuration: TimeInterval = 1.8
+
     /// Hold the no-op acknowledgement just long enough to register as a response,
     /// then fall back to the plain stamp. Guarded on the phase so a real refresh
     /// started in the meantime is never clobbered.
     private func clearAcknowledgement() {
         Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(900))
+            try? await Task.sleep(for: .seconds(Self.acknowledgementDisplayDuration))
             guard let self, self.refreshPhase == .acknowledged else { return }
             self.refreshPhase = .idle
         }
@@ -244,6 +255,12 @@ public final class OwnerHomeState {
         switch restError.commandFailureKind {
         case .vehicleAsleep: return .vehicleAsleep
         case .rateLimited: return .rateLimited
+        // MYR-345 — the refusal arm, with the server's own reason token when it
+        // named one. `commandRejectionReason` is already gated on
+        // `commandFailureKind == .commandFailed`, so this is the ONE fold: the
+        // typed catalog decides WHICH failure, and the closed token set decides
+        // which refusal. Neither reads the human message as prose (FR-7.1).
+        case .commandFailed: return .rejected(restError.commandRejectionReason)
         default: return .other
         }
     }

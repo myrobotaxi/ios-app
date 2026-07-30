@@ -7,6 +7,56 @@ import SwiftUI
 // `look.cardRadius` / `look.sheetRadius` instead of the raw constants when a
 // look is in scope.
 
+/// A LIVE-ONLY line the owner sheet's peek hero carries that the prototype's
+/// hero does not, and the room the peek band grows by to hold it
+/// (``MRTMetrics/homePeekHeight(base:qualifiers:)``).
+///
+/// MYR-315 introduced one flat number for both of these. MYR-345 (client defect)
+/// is why they are now separate: the reserve is what stands between the hero's
+/// last line and the floating nav, so reserving MORE than a line measures puts
+/// the surplus straight into that gap — *"Weird gap between menu and synced just
+/// now"*. Each case therefore carries what its own line actually measures, and
+/// the numbers are pinned against the REAL views in `OwnerPeekBandTests`.
+public enum MRTHomePeekQualifier: Sendable, Equatable, CaseIterable {
+    /// MYR-315's tappable recency stamp at the FOOT of the hero: a standalone
+    /// 13⅓pt row (an 11pt line box, with the 9.5pt semibold glyph beside it
+    /// fitting inside) plus the 10pt lead `mrtFreshnessStamp` gives it — the
+    /// design's trailing-qualifier rhythm (`components.jsx:559`).
+    ///
+    /// Its ≥44pt TOUCH region is bigger than that and is deliberately NOT part of
+    /// this number: a `contentShape` inset does not move layout, and the region
+    /// still stops clear of the nav (MYR-345).
+    case freshnessStamp
+    /// MYR-316's "Service Estimated Completion · …" line, GROUPED under the hero
+    /// header at 2pt (MYR-319) rather than standing alone: a 12pt muted line box
+    /// (~14.3pt) plus that 2pt lead. It is the smaller of the two because it is
+    /// the header's own second line, not a new block.
+    case serviceCompletion
+
+    /// What the line costs the gap the OWNER sees — measured off full-frame
+    /// captures, not derived on paper.
+    ///
+    /// `serviceCompletion` is 2 + 14⅓ ⇒ **16**: it neither is nor follows the
+    /// hero's last line, so its layout cost and its optical cost are the same
+    /// number.
+    ///
+    /// `freshnessStamp` is 10 + 13⅓ ⇒ 23⅓ of LAYOUT, but **25** here. It is the
+    /// hero's last line, and the gap under the hero is measured from INK, not from
+    /// a layout box: the stamp's glyphs (an 11pt line with a 9.5pt semibold
+    /// `arrow.clockwise` beside it) sit ~2pt lower in their box than the 12pt
+    /// location line they take over from, so a reserve equal to the layout cost
+    /// leaves the visible gap 2pt tighter than the prototype's. Two points is
+    /// small and this client measured six; optical parity is the point of the
+    /// issue. Verified full-frame: 43.0pt of ink clearance with no qualifier line,
+    /// 43.0 with the stamp, 42.7 with both lines.
+    public var reservedHeight: CGFloat {
+        switch self {
+        case .freshnessStamp: 25
+        case .serviceCompletion: 16
+        }
+    }
+}
+
 public enum MRTMetrics {
     /// Horizontal page padding.
     public static let pageGutter: CGFloat = 24
@@ -112,9 +162,8 @@ public enum MRTMetrics {
     /// Sheet scroll-content bottom clearance above the floating tab bar
     /// (screens.jsx:542 `padding: '6px 24px 100px'`).
     public static let homeSheetContentBottomPadding: CGFloat = 100
-    /// Height one extra muted qualifier line adds to the owner sheet's peek hero
-    /// — a 12/11pt line plus the block's own 10pt lead (`components.jsx:559`
-    /// `gap: 8` + `marginTop: 2`, the design's rhythm for a trailing qualifier).
+    /// The owner sheet's peek band: the prototype's number for the hero's shape,
+    /// plus room for each LIVE-ONLY qualifier line the port adds to it.
     ///
     /// MYR-315 (client polish) — `homePeekHeightParked`/`Driving` are the
     /// prototype's numbers for the prototype's content, and the prototype's peek
@@ -124,20 +173,17 @@ public enum MRTMetrics {
     /// the floating nav (`homeSheetContentBottomPadding`, components.jsx:542), and
     /// the stamp — an interactive element whose ≥44pt target extends past its ink —
     /// ended up touching the tab bar's own top edge (60pt tall, 26pt up ⇒ 86pt
-    /// from the physical edge). The band grows by this much per live-only line
-    /// actually rendered, so the added content brings its own room instead of
-    /// eating the nav's. Zero lines on the simulated path ⇒ the bands are the
-    /// prototype's 210/280 exactly and every drift-gate scene is byte-identical.
-    public static let homePeekQualifierLineHeight: CGFloat = 24
-
-    /// The owner sheet's peek band: the prototype's number for the hero's shape,
-    /// plus room for each LIVE-ONLY qualifier line the port adds to it. See
-    /// ``homePeekQualifierLineHeight``.
+    /// from the physical edge). The band grows per live-only line actually
+    /// rendered, so the added content brings its own room instead of eating the
+    /// nav's.
     ///
-    /// `qualifierLines == 0` returns `base` UNCHANGED — that is the simulated /
+    /// MYR-345 (the client again) — that room is now PER LINE, not a flat 24 for
+    /// whichever line it is: see ``MRTHomePeekQualifier``.
+    ///
+    /// An EMPTY list returns `base` unchanged — that is the simulated /
     /// drift-gate path, and it is what keeps every existing scene byte-identical.
-    public static func homePeekHeight(base: CGFloat, qualifierLines: Int) -> CGFloat {
-        base + CGFloat(max(0, qualifierLines)) * homePeekQualifierLineHeight
+    public static func homePeekHeight(base: CGFloat, qualifiers: [MRTHomePeekQualifier]) -> CGFloat {
+        base + qualifiers.reduce(0) { $0 + $1.reservedHeight }
     }
 
     // MARK: Tall sheet detent (MYR-332)

@@ -95,33 +95,44 @@ final class ComponentTests: XCTestCase {
     /// renders no live-only qualifier line, so it must land on 210 / 280 exactly.
     func testPeekBandIsThePrototypeNumberWithNoLiveOnlyLines() {
         XCTAssertEqual(
-            MRTMetrics.homePeekHeight(base: MRTMetrics.homePeekHeightParked, qualifierLines: 0),
+            MRTMetrics.homePeekHeight(base: MRTMetrics.homePeekHeightParked, qualifiers: []),
             MRTMetrics.homePeekHeightParked
         )
         XCTAssertEqual(
-            MRTMetrics.homePeekHeight(base: MRTMetrics.homePeekHeightDriving, qualifierLines: 0),
+            MRTMetrics.homePeekHeight(base: MRTMetrics.homePeekHeightDriving, qualifiers: []),
             MRTMetrics.homePeekHeightDriving
-        )
-        XCTAssertEqual(
-            MRTMetrics.homePeekHeight(base: 210, qualifierLines: -1), 210,
-            "a negative count is nonsense and must not SHRINK the band"
         )
     }
 
     /// A live-only qualifier line brings its OWN room. The client's complaint was
     /// that it did not: MYR-315 appended the freshness stamp to a fixed 210pt band,
     /// so the added line ate into the clearance `BottomSheet` reserves above the
-    /// floating nav — and the stamp, being interactive, put its ≥44pt target across
-    /// the nav's top edge. Growing the band by at least a full line + the tap
-    /// overhang is what puts that clearance back.
-    func testEachLiveOnlyQualifierLineGrowsTheBandByItsOwnHeight() {
-        let one = MRTMetrics.homePeekHeight(base: 210, qualifierLines: 1)
-        let two = MRTMetrics.homePeekHeight(base: 210, qualifierLines: 2)
-        XCTAssertEqual(one - 210, MRTMetrics.homePeekQualifierLineHeight)
-        XCTAssertEqual(two - one, MRTMetrics.homePeekQualifierLineHeight)
+    /// floating nav — and the stamp, being interactive, put its ≥44pt target
+    /// across the nav's top edge.
+    ///
+    /// MYR-345 (the client again, on the day-old band): its OWN room, not a flat
+    /// allowance. One number for both lines over-reserved for the completion line
+    /// by ~8pt, and because the hero is top-aligned every surplus point landed in
+    /// the one place the client was looking — *"Weird gap between menu and synced
+    /// just now"*. The two lines are different sizes and now say so.
+    func testEachLiveOnlyQualifierReservesItsOwnMeasuredHeight() {
+        for qualifier in MRTHomePeekQualifier.allCases {
+            XCTAssertEqual(
+                MRTMetrics.homePeekHeight(base: 210, qualifiers: [qualifier]) - 210,
+                qualifier.reservedHeight
+            )
+        }
+        XCTAssertNotEqual(
+            MRTHomePeekQualifier.freshnessStamp.reservedHeight,
+            MRTHomePeekQualifier.serviceCompletion.reservedHeight,
+            "a standalone 11pt row with a 10pt lead and a 12pt line grouped at 2pt are not the same size"
+        )
         // An in-service car on the live path renders BOTH lines — the case the
         // client was actually looking at.
-        XCTAssertEqual(two, 258)
+        XCTAssertEqual(
+            MRTMetrics.homePeekHeight(base: 210, qualifiers: [.serviceCompletion, .freshnessStamp]),
+            251
+        )
     }
 
     /// The arithmetic the fix rests on, asserted rather than left in a comment:
@@ -136,7 +147,7 @@ final class ComponentTests: XCTestCase {
             "the reserved band must extend ABOVE the nav, or it reserves nothing"
         )
         XCTAssertGreaterThanOrEqual(
-            MRTMetrics.homePeekQualifierLineHeight,
+            MRTHomePeekQualifier.freshnessStamp.reservedHeight,
             MRTMetrics.homeSheetContentBottomPadding - MRTMetrics.bottomNavTopEdge,
             "one added line must at least restore the 14pt the nav band leaves over"
         )

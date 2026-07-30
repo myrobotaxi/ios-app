@@ -151,8 +151,11 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
         serviceWindowSource: ServiceWindowSource = .unknown,
         savesServiceWindowOnBoot: Date? = nil,
         chargeState: VehicleState.ChargeState? = nil,
-        chargeLevel: Int = 71
+        chargeLevel: Int = 71,
+        lastReadAt: Date? = nil,
+        refreshFailure: RestError? = nil
     ) {
+        self.refreshFailure = refreshFailure
         // A live-like snapshot: full model/year/trim, full VIN + software version,
         // and a BLANK color (onboarding gap, MYR-283). Streaming/online so the
         // footer honestly reads "Live".
@@ -166,7 +169,8 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             color: color,
             fsdVersion: fsdVersion,
             chargeState: chargeState,
-            chargeLevel: chargeLevel
+            chargeLevel: chargeLevel,
+            lastReadAt: lastReadAt
         )
         let summary = VehicleSummary(
             vehicleId: "debug-mdy",
@@ -247,6 +251,28 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
     func drivesFeed(at index: Int) -> any DrivesFeed { feed }
     func badgeStatus(at index: Int) -> MRTVehicleStatus { badge }
 
+    /// MYR-345 — the typed §7.15 failure this scene's refresh answers with, or
+    /// `nil` for the protocol default (`.unsupported`, which is what every
+    /// pre-existing scene keeps).
+    private let refreshFailure: RestError?
+
+    /// A tap in a capture scene must not hang on a network call that can never
+    /// resolve. With no seeded failure this falls through to the `.unsupported`
+    /// default; with one it throws exactly what the server sent, so the settle the
+    /// capture shows came from the shipping fold.
+    func refreshVehicle(at index: Int) async throws -> VehicleRefreshOutcome {
+        if let refreshFailure {
+            // A real §7.15 refusal is not instant — the server tries the car and
+            // is told no. Holding for a beat is what makes the in-flight
+            // "Waking …" phase a real, observable state rather than a frame that
+            // exists only between two statements (`OwnerFreshnessStampUITests`
+            // asserts on it, and a capture has to be able to photograph it).
+            try? await Task.sleep(for: .seconds(1.5))
+            throw refreshFailure
+        }
+        return .unsupported
+    }
+
     func start() {}
     func stop() {}
     func setActive(index: Int) {}
@@ -265,9 +291,14 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
         color: String = "",
         fsdVersion: String? = nil,
         chargeState: VehicleState.ChargeState? = nil,
-        chargeLevel: Int = 71
+        chargeLevel: Int = 71,
+        lastReadAt: Date? = nil
     ) -> VehicleState {
-        let iso = ISO8601DateFormatter().string(from: Date())
+        // MYR-345 — the READ TIME the freshness stamp reports on. `nil` (every
+        // pre-existing scene) is "now", exactly as before; a value in the past is
+        // what makes `VehicleFreshnessStamp.wakes` true, so the tap spends a real
+        // §7.15 call instead of resolving to the acknowledgement.
+        let iso = ISO8601DateFormatter().string(from: lastReadAt ?? Date())
         var state = VehicleState(
             vehicleId: "debug-mdy",
             name: "Model Y",

@@ -1,4 +1,9 @@
 import Foundation
+// MYR-345 — for `VehicleCommandRejectionReason` only: the server's closed set of
+// canonical refusal tokens. It is a plain value enum, not a transport type, so
+// the "pure decision layer" rule below still holds — `RestError` is still folded
+// once, by `OwnerHomeState`, and never reaches this file.
+import MyRoboTaxiKit
 
 // MARK: - VehicleFreshness (MYR-315)
 //
@@ -123,12 +128,23 @@ public enum VehicleRefreshNotice: Equatable {
     /// in every case — try again — so they are not split into copy the owner
     /// cannot act on differently.
     case failed
+    /// 502 `command_failed` — we REACHED the car (or the server reached it on our
+    /// behalf) and the refresh was refused, with the reason named when the server
+    /// could name one (MYR-329's closed token set).
+    ///
+    /// MYR-345 (client defect): this arm did not exist, so an in-service car's
+    /// refusal folded to `.failed` — "Couldn't reach the car" — which is both
+    /// untrue and exactly the wrong-guess problem MYR-329 fixed on the command
+    /// path. The copy is REUSED from that catalog rather than reworded: it is the
+    /// same physical fact, and a second sentence about it would be a fork.
+    case rejected(VehicleCommandRejectionReason?)
 
     public var message: String {
         switch self {
         case .asleep: VehicleCommandNotice.asleep.message
         case .cooldown: "Just refreshed \u{2014} one moment"
         case .failed: VehicleCommandNotice.failed.message
+        case .rejected(let reason): VehicleCommandNotice.rejected(reason).message
         }
     }
 
@@ -139,6 +155,10 @@ public enum VehicleRefreshNotice: Equatable {
         switch kind {
         case .vehicleAsleep: .asleep
         case .rateLimited: .cooldown
+        // MYR-345 — a 502 is the car (or the server on its behalf) REFUSING, which
+        // is not the same fact as "couldn't reach the car"; and when the server
+        // named the reason, that name is carried straight through.
+        case .rejected(let reason): .rejected(reason)
         case .other: .failed
         }
     }
@@ -151,6 +171,12 @@ public enum VehicleRefreshNotice: Equatable {
 public enum VehicleRefreshFailureKind: Equatable {
     case vehicleAsleep
     case rateLimited
+    /// MYR-345 — `502 command_failed`, carrying the server's canonical reason
+    /// token when it recognized one (`RestError.commandRejectionReason`, the
+    /// MYR-329 closed set) and `nil` when it did not. The payload is the whole
+    /// point of the arm: without it every refusal reads the same, which is what
+    /// left a client guessing at his battery in MYR-329.
+    case rejected(VehicleCommandRejectionReason?)
     case other
 }
 
@@ -162,18 +188,33 @@ public enum VehicleRefreshPhase: Equatable {
     /// several seconds, and silence during it reads as a dead tap.
     case waking(String)
     /// The tap was a deliberate no-op (already current). Held only long enough to
-    /// register as a response; the stamp itself re-renders underneath.
+    /// be read, then the resting stamp comes back.
     case acknowledged
     /// The refresh couldn't deliver; shows the honest line until the next tap.
     case notice(VehicleRefreshNotice)
 
-    /// The in-progress copy, naming the actual car ("Waking Lunar…") so an owner
-    /// with several vehicles knows which one is being woken.
+    /// The copy that REPLACES the resting stamp while this phase holds, or `nil`
+    /// when the resting stamp is the whole truth.
+    ///
+    /// `.waking` names the actual car ("Waking Lunar…") so an owner with several
+    /// vehicles knows which one is being woken.
+    ///
+    /// MYR-345 (client defect) — `.acknowledged` used to return `nil` on the
+    /// reasoning that "the resting stamp showing through IS the acknowledgement".
+    /// That is true of the STATE and false of the EVENT: the owner taps, every
+    /// pixel stays as it was, and a deliberate no-op is indistinguishable from a
+    /// dead button — *"when I select the refresh icon to refresh the data it
+    /// doesn't work"*. It is also the single most likely tap on a healthy car,
+    /// since a car read within the staleness threshold never spends a §7.15 call.
+    /// So the no-op says what it did: nothing, because there was nothing to do.
     public var text: String? {
         switch self {
         case .waking(let name): "Waking \(name)\u{2026}"
         case .notice(let notice): notice.message
-        case .idle, .acknowledged: nil
+        // Deliberately NOT "Refreshed": no read happened, and claiming one would
+        // be the same class of half-truth MYR-301/329 spent two rounds removing.
+        case .acknowledged: "Already up to date"
+        case .idle: nil
         }
     }
 }
