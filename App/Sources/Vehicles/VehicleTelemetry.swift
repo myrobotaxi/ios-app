@@ -132,6 +132,26 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
     /// `.idle` on the simulated path and before the first live frame, so M1 and
     /// every drift-gate scene stay pixel-identical.
     public var chargingState: VehicleChargingState
+    /// MYR-342 — the owner's ride-sharing switch as the last REST read reported it
+    /// (contracts 0.20.0 `rideShareEnabled`). `true` = riders can request this car,
+    /// `false` = the owner has PAUSED requests.
+    ///
+    /// OPTIONAL, and the nil is doing something different here from every other
+    /// optional on this struct. Elsewhere `nil` means "not known yet → render an
+    /// honest dash". Here it means "the wire did not say", and the contract's rule
+    /// is that a silent wire means ENABLED — so nothing ever renders a dash off
+    /// this field. It stays optional anyway rather than defaulting to `true` at
+    /// this layer, so that "the snapshot never told us" and "the snapshot said
+    /// true" remain distinguishable for the resolver that has to decide whether the
+    /// executor's committed value outranks it.
+    ///
+    /// SNAPSHOT-ONLY by contract: it rides the cold REST read, never a
+    /// `vehicle_update` delta (see the Kit's `VehicleStateMerger`, where the
+    /// non-fold is a security property rather than a style choice).
+    ///
+    /// `nil` on the simulated path, where it renders nothing at all — the toggle
+    /// row is live-only — so M1 and every drift-gate scene are unchanged.
+    public var rideShareEnabled: Bool?
 
     public init(
         status: VehicleTelemetryStatus,
@@ -147,7 +167,8 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
         isStreaming: Bool? = nil,
         nowPlaying: VehicleNowPlaying? = nil,
         serviceEstimatedEndAt: Date? = nil,
-        chargingState: VehicleChargingState = .idle
+        chargingState: VehicleChargingState = .idle,
+        rideShareEnabled: Bool? = nil
     ) {
         self.status = status
         self.progress = progress
@@ -163,6 +184,7 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
         self.nowPlaying = nowPlaying
         self.serviceEstimatedEndAt = serviceEstimatedEndAt
         self.chargingState = chargingState
+        self.rideShareEnabled = rideShareEnabled
     }
 }
 

@@ -1,0 +1,10 @@
+{
+  "_meta": {
+    "description": "200 response for PUT /api/tesla/vehicles/{vehicleId}/ride-share (MYR-342, rest-api.md §7.18) — the owner PAUSING ride requests for one car. Authored here from the locked endpoint contract because the telemetry repo ships no fixture for this endpoint (docs/contracts/fixtures/rest/ covers read paths only); replace with the upstream file the moment one exists. NOTE THE RESPONSE KEY: `enabled`, the same word the REQUEST uses — NOT the read shapes' `rideShareEnabled`. §7.18 says this server writes exactly what was asked, so the echo always equals the request today; clients adopt the echo anyway, because the contract's rule is that the client adopts the SERVER's answer, which keeps a future server free to refuse or coerce without breaking them.",
+    "anchoredFRs": ["FR-9.3"],
+    "scenario": "paused",
+    "addedBy": "MYR-342"
+  },
+  "vehicleId": "clxyz1234567890abcdef",
+  "enabled": false
+}

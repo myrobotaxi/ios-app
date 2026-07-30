@@ -1,0 +1,25 @@
+# pack-refs with: peeled fully-peeled sorted 
+7c69bab07a0559985096502a053cefc120ea5d49 refs/heads/feature/myr-195-contracts-decode-tolerant-wire-enums-for-swift-forward
+718d3465c63529230b9278903467cc0d0405116c refs/heads/main
+e544af55a63113cad293ed00158f6ca63379483f refs/pull/1/head
+6e71e1a11a3389b42699ff768a7d2a0a65a21b8e refs/pull/10/head
+6645a9212e9d2a059da7814b0568103bcf9099c0 refs/pull/11/head
+7c69bab07a0559985096502a053cefc120ea5d49 refs/pull/12/head
+96b75d55fcde75b38fcc75a3e03391ac38ec2ba8 refs/pull/2/head
+ac9b2ffaaa597ab96d74d524c7a5211496e2e138 refs/pull/3/head
+db525decd1821be7403c82e3bcff1617f2dea05f refs/pull/4/head
+d32b2f67a32d7b6cf31f06ea23ddeaccd467990e refs/pull/5/head
+270eb5cb00da36cf6d5e41c0313e24156a2c6f38 refs/pull/6/head
+dbd0a8c1999b56f804c8b549614163da0e4f476c refs/pull/7/head
+940bfdfe3cc88d83828b899ee84080a5e7516c97 refs/pull/8/head
+0ad96c193620a21c6d36c8a3a44a79db794e0379 refs/pull/9/head
+5b76cc90c7eccb1ea03c0a9240cf027d80c8337f refs/tags/v0.1.0
+^928d2abb59b0bf7445b7fed14d1a6d7459b78eb2
+b2799f66fb2599451a8cf9bfa9881df6c83268be refs/tags/v0.1.4
+^9c2d67e0ac96f0d21b25f06c0fca3528790b6fdd
+2ffb38a174cf8e3b2aba02ffdbda7a7b9e74bef4 refs/tags/v0.2.0
+^493e29aaa0096fe5a3224250194e133d1f354905
+f20d07d16c936a230d512d936cfaefe18ca8fc63 refs/tags/v0.3.0
+^48dbe34fc6eff23e408f951cfc020d518ecfa7f9
+09c36498e22a088c7264159b1c375a26c94c4543 refs/tags/v0.4.0
+718d3465c63529230b9278903467cc0d0405116c refs/tags/v0.5.0

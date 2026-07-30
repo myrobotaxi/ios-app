@@ -57,6 +57,20 @@ public enum FleetUnavailability: String, Sendable, Equatable, CaseIterable {
     case inService
     /// Wire status `offline`.
     case offline
+    /// MYR-342 — `VehicleSummary.rideShareEnabled == false`: the OWNER has paused
+    /// ride requests for this car.
+    ///
+    /// The odd one out, and every rule below turns on the difference. The other
+    /// three are facts about the CAR (or about a ride it is already on) and every
+    /// one of them ENDS on its own — a ride finishes, a service visit completes, a
+    /// car comes back online. A pause is an OWNER INTENTION and is open-ended:
+    /// nothing clears it but the owner reaching for the switch again.
+    ///
+    /// That is why the server refuses SCHEDULED rides against a paused car as well
+    /// as instant ones (rest-api.md §7.18), a deliberate deviation from the
+    /// reservation exemption MYR-313 grants the other three — and therefore why
+    /// this case alone offers the rider no "Schedule instead" route.
+    case paused
 
     /// The rider-facing word — the muted chip's label AND the vehicle row's
     /// status word. One source so they can never drift.
@@ -65,8 +79,50 @@ public enum FleetUnavailability: String, Sendable, Equatable, CaseIterable {
         case .busy: return "Busy"
         case .inService: return "In service"
         case .offline: return "Offline"
+        // MYR-342 — "Paused", chosen over the more precise "Rides off" on a
+        // MEASUREMENT, not a preference: at the MYR-335 four-column budget (49.75pt
+        // on the narrowest supported device, 11pt semibold) "Rides off" overflows
+        // and "Paused" clears it with room to spare. It is also the word the
+        // OWNER's own row leads with, so both people see the same word for the same
+        // state. See `RideSharePauseTests
+        // .testChipWordFitsTheFourColumnBudgetAndRejectsTheAlternative`, which
+        // records the rejected alternative alongside the chosen one.
+        case .paused: return "Paused"
         }
     }
+
+    /// MYR-342 — whether this reason leaves SCHEDULING open as an alternative.
+    ///
+    /// MYR-233's rule was "never a dead end": an unavailable car replaces the gold
+    /// instant CTA with a muted route into the scheduling flow. That rule survives
+    /// intact for the three reasons that END on their own — the car will be back,
+    /// and the server accepts a reservation against it (MYR-313).
+    ///
+    /// A pause is the exception, and offering scheduling would be a WORSE dead end
+    /// than offering nothing: the server refuses scheduled rides against a paused
+    /// car on all three enforcement layers, so the rider would pick a pickup, a
+    /// time and a passenger and be `409 vehicle_unavailable`'d at the very end. The
+    /// CTA area shows the helper line alone instead — one honest sentence, at the
+    /// start, costing nothing.
+    public var offersScheduling: Bool {
+        switch self {
+        case .busy, .inService, .offline: return true
+        case .paused: return false
+        }
+    }
+
+    /// MYR-342 — whether a draft that ALREADY carries a schedule is exempt from
+    /// this reason.
+    ///
+    /// The other side of the same coin as ``offersScheduling``, and it must be
+    /// stated separately because the two answer different questions: this one is
+    /// about a request the rider has already made scheduled, not about what to
+    /// offer them next. MYR-233 exempts scheduled drafts wholesale, on the
+    /// contract's own guidance that a reservation is outside the availability
+    /// index. §7.18 removes a paused car from that exemption in as many words —
+    /// "the pause does NOT inherit that exemption, on any layer" — so a scheduled
+    /// draft against a paused car is gated exactly like an instant one.
+    public var exemptWhenScheduled: Bool { offersScheduling }
 }
 
 /// Whose Tesla — the Review step's fleet picker (design/app/screens.jsx:15-19

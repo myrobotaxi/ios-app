@@ -118,7 +118,17 @@ enum VehicleContractMapping {
             serviceEstimatedEndAt: state.serviceEstimatedEndAt.flatMap(parseTimestamp),
             // MYR-333 — the live charge session. Read from `chargeState`, NOT
             // from `status`: see `chargingState(from:)`.
-            chargingState: chargingState(from: state.chargeState)
+            chargingState: chargingState(from: state.chargeState),
+            // MYR-342 — the owner's ride-share switch (contracts 0.20.0), carried
+            // through VERBATIM including its nil. This mapping deliberately does
+            // NOT apply the "absent means enabled" rule: collapsing nil to `true`
+            // here would erase the distinction between "the wire said true" and
+            // "the wire said nothing", which is exactly what
+            // `VehicleRideShare.resolvedEnabled` needs to decide whether a value the
+            // owner just committed outranks the snapshot. The default is applied
+            // once, at read time, by `VehicleRideShare.isEnabled` — one place, not
+            // two, so the two can never drift into disagreeing about absence.
+            rideShareEnabled: state.rideShareEnabled
         )
     }
 

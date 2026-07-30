@@ -153,7 +153,9 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
         chargeState: VehicleState.ChargeState? = nil,
         chargeLevel: Int = 71,
         lastReadAt: Date? = nil,
-        refreshFailure: RestError? = nil
+        refreshFailure: RestError? = nil,
+        rideShareEnabled: Bool? = nil,
+        rideShareWriteOutcome: DebugRideShareWriteOutcome = .succeeds
     ) {
         self.refreshFailure = refreshFailure
         // A live-like snapshot: full model/year/trim, full VIN + software version,
@@ -170,7 +172,8 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             fsdVersion: fsdVersion,
             chargeState: chargeState,
             chargeLevel: chargeLevel,
-            lastReadAt: lastReadAt
+            lastReadAt: lastReadAt,
+            rideShareEnabled: rideShareEnabled
         )
         let summary = VehicleSummary(
             vehicleId: "debug-mdy",
@@ -189,7 +192,13 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             lastUpdated: state.lastUpdated,
             role: .owner,
             licensePlate: licensePlate,
-            serviceEstimatedEndAt: serviceEstimatedEndAt.map(Self.rfc3339.string(from:))
+            serviceEstimatedEndAt: serviceEstimatedEndAt.map(Self.rfc3339.string(from:)),
+            // MYR-342 — carried on BOTH read surfaces, exactly as a real server
+            // emits it. `nil` (the default) is the ABSENT key a pre-0.20.0 server
+            // sends, which every consumer must read as ENABLED — so every
+            // pre-MYR-342 scene keeps a switch that is on, and byte-identical
+            // pixels everywhere the row does not render.
+            rideShareEnabled: rideShareEnabled
         )
         // The REAL production mapping: the details rows read exactly what live
         // would render (composed model, snapshot VIN/software, honest color, no
@@ -208,6 +217,12 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             // precedence, echo back), so a Save in the scene exercises the
             // shipping persist path rather than a local assignment.
             serviceWindowEndpoint: DebugServiceWindowEndpoint(),
+            // MYR-342 — the REAL §7.18 seam. A flip in the scene therefore runs the
+            // shipping optimistic-flip / adopt-echo / roll-back-and-notice path
+            // rather than a local assignment, which is what makes the three
+            // `ownerRideShare*` captures proof of the executor rather than of a
+            // hand-set row model.
+            rideShareEndpoint: rideShareWriteOutcome.endpoint,
             driving: false,
             // The RAW plate (empty when unset) — `controls.plate` is the editable
             // value, not the `VIN ····xxxx` display fallback (MYR-286).
@@ -243,6 +258,19 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
         // Standing in for a tap the way `ownerFreshnessWaking`'s seeded phase does.
         if let savesServiceWindowOnBoot {
             Task { @MainActor in try? await exec.setServiceWindow(savesServiceWindowOnBoot) }
+        }
+        // MYR-342 — the PENDING capture, by the same on-boot-write route the
+        // service-window save above uses. The row's in-flight state has no other
+        // capture route at all: against a real backend it lasts milliseconds, and
+        // headless tooling cannot tap a toggle inside a half-detent scroll. So the
+        // scene flips the switch through the SHIPPING `setRideShareEnabled` against
+        // an endpoint that never answers — the write really is in flight, and the
+        // spinner really is `uiState(for: .rideShare).isPending`. Nothing about the
+        // state is hand-set.
+        //
+        // Only ever armed by `.hangs`, so no other scene performs a write on boot.
+        if case .hangs = rideShareWriteOutcome {
+            Task { @MainActor in try? await exec.setRideShareEnabled(false) }
         }
     }
 
@@ -292,7 +320,8 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
         fsdVersion: String? = nil,
         chargeState: VehicleState.ChargeState? = nil,
         chargeLevel: Int = 71,
-        lastReadAt: Date? = nil
+        lastReadAt: Date? = nil,
+        rideShareEnabled: Bool? = nil
     ) -> VehicleState {
         // MYR-345 — the READ TIME the freshness stamp reports on. `nil` (every
         // pre-existing scene) is "now", exactly as before; a value in the past is
@@ -334,6 +363,11 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             // MYR-286 — snapshot-only by contract (§7.14: no WS delta ever carries
             // it), so the details capture is exactly the shape a cold read has.
             licensePlate: licensePlate,
+            // MYR-342 — snapshot-only by contract too (§7.18: a ride-share edit
+            // fires no push and a `vehicle_update` never carries the field), so
+            // this is exactly the shape a cold read has. `nil` = the absent key,
+            // which reads as ENABLED.
+            rideShareEnabled: rideShareEnabled,
             lastUpdated: iso
         )
         // MYR-308 — the REST-sourced seat SPEC field (contracts 0.16.0), absent by

@@ -319,12 +319,31 @@ final class VehicleStateMergerTests: XCTestCase {
     /// a REST surface with no `vehicle_data` field and no proto behind it at all.
     /// The schema states for both that "a `vehicle_update` frame NEVER contains"
     /// them, so folding either would invent a delivery path the server lacks.
+    /// MYR-342 — `rideShareEnabled` (contracts 0.20.0) joins the set, and it is the
+    /// most important entry to justify because it is the first one whose TYPE
+    /// argues the other way: a plain optional `Bool`, indistinguishable in shape
+    /// from the twenty-odd folded cabin booleans. The distinction is not the type,
+    /// it is the SOURCE. Every folded field is something the CAR reports; this is
+    /// something the OWNER decided, written only by `PUT /api/tesla/vehicles/{id}/
+    /// ride-share` (rest-api.md §7.18). Tesla has no proto for it, the schema says a
+    /// `vehicle_update` frame NEVER carries it, and §7.18 says the edit fires no
+    /// push at all.
+    ///
+    /// And the server treats a telemetry path to this column as a SECURITY
+    /// property, not a tidiness one: it is deliberately excluded from the shared
+    /// telemetry-fed control-state upsert so no routine frame can re-enable ride
+    /// sharing on a car its owner paused, asserted upstream by
+    /// `TestVehicleRepo_RideShareIsNotReachableFromTelemetry`. Folding it here would
+    /// re-open that path on the client. If the server ever DOES start pushing it,
+    /// that is a contract change to argue upstream first — not a `foldCases` row to
+    /// add quietly.
     private static let snapshotOnlyFields: Set<String> = [
         "vehicleId", "name", "model", "year", "color", "vin", "softwareVersion", "trim",
         "licensePlate",
         "seatCoolingCapable",
         "serviceEstimatedEndAt",
         "trimLabel", "fsdVersion",
+        "rideShareEnabled",
     ]
 
     /// The table must account for EVERY property on the generated `VehicleState`.
@@ -550,6 +569,51 @@ final class VehicleStateMergerTests: XCTestCase {
 
         XCTAssertTrue(Self.snapshotOnlyFields.contains("trimLabel"))
         XCTAssertTrue(Self.snapshotOnlyFields.contains("fsdVersion"))
+    }
+
+    /// MYR-342 — the contracts-0.20.0 ride-share switch is OWNER INTENT, not
+    /// telemetry, and a live delta claiming to carry it must be IGNORED.
+    ///
+    /// This is the strongest of the non-fold assertions, because upstream treats it
+    /// as a SECURITY property rather than a tidiness one: rest-api.md §7.18 keeps
+    /// the column off the shared telemetry-fed control-state upsert specifically so
+    /// no routine frame from the car can re-enable ride sharing on a vehicle its
+    /// owner paused (`TestVehicleRepo_RideShareIsNotReachableFromTelemetry`). A
+    /// merger arm here would hand that path straight back on the client side, so
+    /// the PAUSED direction is asserted first and most explicitly: a frame carrying
+    /// `true` against a paused car must change nothing.
+    func testMyr342RideShareEnabledIsNotFoldedFromALiveDelta() throws {
+        var paused = try baseState()
+        paused.rideShareEnabled = false
+
+        // The one that matters: a phantom `true` must NOT lift the owner's pause.
+        let phantomResume = VehicleStateMerger.apply(fields: ["rideShareEnabled": .bool(true)], to: paused)
+        XCTAssertEqual(
+            phantomResume.state.rideShareEnabled, false,
+            "no telemetry frame may lift an owner's pause — §7.18 keeps this column off the telemetry write path on purpose"
+        )
+
+        // And the mirror: a phantom `false` must not withdraw a car nobody
+        // withdrew. Both directions, because "only the owner writes it" is a
+        // property of the field, not a property of one value.
+        var enabled = try baseState()
+        enabled.rideShareEnabled = true
+        let phantomPause = VehicleStateMerger.apply(fields: ["rideShareEnabled": .bool(false)], to: enabled)
+        XCTAssertEqual(phantomPause.state.rideShareEnabled, true)
+
+        // A delta carrying an explicit NULL must not clear it either. The field has
+        // no "unknown" state at all server-side (`BOOLEAN NOT NULL DEFAULT true`),
+        // so a null here is a phantom by construction.
+        let cleared = VehicleStateMerger.apply(fields: ["rideShareEnabled": .null], to: paused)
+        XCTAssertEqual(cleared.state.rideShareEnabled, false)
+
+        // No atomic group is touched, so a phantom cannot even move a dataState
+        // dimension sideways.
+        let (groups, navCleared) = VehicleStateMerger.classify(fields: ["rideShareEnabled": .bool(true)])
+        XCTAssertTrue(groups.isEmpty)
+        XCTAssertFalse(navCleared)
+
+        XCTAssertTrue(Self.snapshotOnlyFields.contains("rideShareEnabled"))
     }
 
     /// Unknown wire values on the two MYR-298 string enums survive as

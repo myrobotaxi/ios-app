@@ -1,0 +1,51 @@
+{
+  "_meta": {
+    "description": "GET /api/vehicles (rest-api.md §7.0) carrying rideShareEnabled in all THREE of the states a consumer must tell apart (MYR-342, contracts 0.20.0). Lunar is PAUSED (explicit false) on a car that is otherwise perfectly healthy — online, parked, idle, not in service — which is the whole point of the field: the pause is owner intent, not vehicle state. Stumpy carries an explicit true. Boxy OMITS the key entirely, the shape a pre-0.20.0 server emits, and it MUST read as ENABLED: absence never means paused, and a consumer that failed closed on a missing key would withdraw a car nobody withdrew.",
+    "anchoredFRs": ["FR-4.x", "FR-5.4", "FR-9.3"],
+    "scenario": "ride-share-paused",
+    "addedBy": "MYR-342"
+  },
+  "items": [
+    {
+      "vehicleId": "clxyz1234567890abcdef",
+      "name": "Lunar",
+      "model": "Model Y",
+      "year": 2026,
+      "color": "Quicksilver",
+      "vinLast4": "2046",
+      "status": "parked",
+      "chargeLevel": 61,
+      "estimatedRange": 166,
+      "lastUpdated": "2026-07-29T16:00:00Z",
+      "role": "owner",
+      "rideShareEnabled": false
+    },
+    {
+      "vehicleId": "clmno5678901234ghijkl",
+      "name": "Stumpy",
+      "model": "Model 3",
+      "year": 2024,
+      "color": "Midnight Silver Metallic",
+      "vinLast4": "0001",
+      "status": "parked",
+      "chargeLevel": 78,
+      "estimatedRange": 245,
+      "lastUpdated": "2026-07-29T15:58:00Z",
+      "role": "owner",
+      "rideShareEnabled": true
+    },
+    {
+      "vehicleId": "clpqr9012345678mnopq",
+      "name": "Boxy",
+      "model": "Cybertruck",
+      "year": 2025,
+      "color": "Stainless",
+      "vinLast4": "7788",
+      "status": "parked",
+      "chargeLevel": 52,
+      "estimatedRange": 168,
+      "lastUpdated": "2026-07-29T15:55:00Z",
+      "role": "owner"
+    }
+  ]
+}
