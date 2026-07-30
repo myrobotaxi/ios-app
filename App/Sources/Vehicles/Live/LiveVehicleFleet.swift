@@ -440,8 +440,8 @@ final class LiveVehicleFleet: VehicleFleet {
         for (index, pair) in zip(sources, liveExecutors).enumerated() {
             let (source, executor) = pair
             let vehicleID = items[index].vehicleId
-            source.liveState.onStateChanged = { [weak executor, weak self] state in
-                executor?.reconcile(from: state)
+            source.liveState.onStateChanged = { [weak executor, weak self] state, snapshotReadIssuedAt in
+                executor?.reconcile(from: state, snapshotReadIssuedAt: snapshotReadIssuedAt)
                 // MYR-326 — a snapshot (or any merged delta, which can only
                 // follow one) IS the cold read landing. Stand the budget timer
                 // down and drop any timeout we had already declared, so a car

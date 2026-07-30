@@ -124,6 +124,12 @@ struct RideShareRowModel: Equatable {
     /// this view holds no precedence logic and no knowledge of what an absent wire
     /// value means.
     var isEnabled: Bool
+    /// MYR-358 — whether the switch may be moved at all. `false` while the car is
+    /// IN SERVICE, where the position is DERIVED (forced off) rather than stored.
+    /// Carried as its own field rather than inferred from `isEnabled`, because
+    /// "off" and "not yours to change right now" are different facts and a row that
+    /// collapsed them could not render a paused-but-editable car.
+    var isInteractive: Bool = true
     /// The write's pending/notice state (`VehicleControlUIState`).
     var state: VehicleControlUIState = .idle
     /// Flips the switch. Async because the write is; the row fires and forgets,
@@ -132,10 +138,13 @@ struct RideShareRowModel: Equatable {
 
     /// The muted line under the label, from the single copy source so the owner's
     /// row and any future surface can never word this differently.
-    var caption: String { VehicleRideShare.rowCaption(isEnabled: isEnabled) }
+    var caption: String
 
     static func == (lhs: RideShareRowModel, rhs: RideShareRowModel) -> Bool {
-        lhs.isEnabled == rhs.isEnabled && lhs.state == rhs.state
+        lhs.isEnabled == rhs.isEnabled
+            && lhs.isInteractive == rhs.isInteractive
+            && lhs.caption == rhs.caption
+            && lhs.state == rhs.state
     }
 }
 
@@ -167,8 +176,19 @@ private struct RideShareRow: View {
     /// forwards to the executor and the getter always re-reads the resolved truth.
     /// A local `@State` mirror is exactly how a rolled-back write would leave the
     /// switch showing a position the server does not hold.
+    /// MYR-358 — the setter REFUSES while the row is non-interactive, as well as the
+    /// switch being hit-test-disabled below. Belt AND braces on purpose: hit testing
+    /// stops a finger, but a `Binding` is reachable from accessibility actions and
+    /// from any future programmatic path, and the one thing this row must never do
+    /// is fire a §7.18 write the owner did not ask for and cannot see the result of.
     private var isOn: Binding<Bool> {
-        Binding(get: { model.isEnabled }, set: { model.onToggle($0) })
+        Binding(
+            get: { model.isEnabled },
+            set: { newValue in
+                guard model.isInteractive else { return }
+                model.onToggle(newValue)
+            }
+        )
     }
 
     var body: some View {
@@ -207,9 +227,15 @@ private struct RideShareRow: View {
                     // Reduce Motion has no spinner to show, so the switch stays put
                     // and simply goes inert for the duration — no animation, no
                     // second write.
-                    .allowsHitTesting(!model.state.isPending)
-                    .opacity(model.state.isPending ? 0.5 : 1)
+                    //
+                    // MYR-358 — the IN-SERVICE state is inert for the same reason and
+                    // wears the same muting, so the sheet has one visual grammar for
+                    // "this switch is not yours to move right now" rather than two.
+                    .allowsHitTesting(model.isInteractive && !model.state.isPending)
+                    .opacity(model.isInteractive && !model.state.isPending ? 1 : 0.5)
                     .accessibilityLabel(VehicleRideShare.rowLabel)
+                    .accessibilityValue(model.caption)
+                    .accessibilityAddTraits(model.isInteractive ? [] : .isStaticText)
             }
         }
         .padding(.vertical, 8)

@@ -356,6 +356,21 @@ enum DebugScene: String, CaseIterable {
     case ownerRideShareOn
     case ownerRideSharePaused
     case ownerRideSharePending
+    /// MYR-358 — the SAME toggle on a car that is IN SERVICE: forced OFF, inert,
+    /// and captioned "Off while in service — resumes automatically".
+    ///
+    /// It is the fourth rendering of one row and it needs its own scene because it
+    /// is the only one whose position is DERIVED rather than read. The scene stores
+    /// `rideShareEnabled: TRUE` deliberately — the capture is only proof of anything
+    /// if the switch it shows OFF is a switch the server says is ON. A scene that
+    /// seeded `false` would render an identical frame for the wrong reason and would
+    /// still pass if the derivation were deleted.
+    ///
+    /// Nothing is written on the transition: the stored `true` is untouched for the
+    /// whole visit and renders again the moment the car leaves service, which is the
+    /// property that keeps this state out of MYR-351's revert class entirely. Pair
+    /// with `MRT_OWNER_DETENT=half`.
+    case ownerRideShareInService
     /// MYR-320 — the SAME in-service car, with the "Service completion date" row
     /// carrying its MANUAL sub-caption ("Set manually — Tesla hasn't provided an
     /// estimate for this visit"). That caption is only reachable AFTER a save
@@ -878,7 +893,8 @@ enum DebugScene: String, CaseIterable {
     /// so every other scene keeps its simulated, byte-identical rendering (CLAUDE.md
     /// drift gate) — the Status & location card grows its row only here.
     var rendersLiveRideShareToggle: Bool {
-        self == .ownerRideShareOn || self == .ownerRideSharePaused || self == .ownerRideSharePending
+        self == .ownerRideShareOn || self == .ownerRideSharePaused
+            || self == .ownerRideSharePending || self == .ownerRideShareInService
     }
 
     /// MYR-316 — whether `HomeScreen` should boot with the "Expected back" entry
@@ -932,7 +948,7 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerServiceWindow || self == .ownerServiceWindowEditor
             || self == .ownerServiceWindowManual || self == .ownerServiceWindowSaved
             || self == .ownerRideShareOn || self == .ownerRideSharePaused
-            || self == .ownerRideSharePending
+            || self == .ownerRideSharePending || self == .ownerRideShareInService
             || self == .ownerCharging || self == .ownerChargeComplete
             || self == .ownerNoticeRejected || self == .ownerNoticeRejectedInService
             || self == .ownerVehicleEnriched
@@ -1065,6 +1081,11 @@ enum DebugScene: String, CaseIterable {
         // pending state, not a seeded one.
         case .ownerRideSharePending:
             return DebugVehicleDetailsFleet(rideShareEnabled: true, rideShareWriteOutcome: .hangs)
+        // MYR-358 — in service, with the stored switch explicitly ON. The row must
+        // render OFF anyway; that disagreement between the wire and the row IS the
+        // capture.
+        case .ownerRideShareInService:
+            return DebugVehicleDetailsFleet(status: .inService, rideShareEnabled: true)
         // MYR-320 — every enrichment field at once: a real color off the wire, the
         // display-ready trim label composing the Model row (alongside the raw badge
         // it must NOT substitute), and the FSD designation in its own row.
@@ -1103,7 +1124,8 @@ enum DebugScene: String, CaseIterable {
         // location card, so it sits just below the service-window anchor. A little
         // further down frames it (plus its notice line, when there is one) at the
         // half detent.
-        case .ownerRideShareOn, .ownerRideSharePaused, .ownerRideSharePending:
+        case .ownerRideShareOn, .ownerRideSharePaused, .ownerRideSharePending,
+             .ownerRideShareInService:
             return .fraction(0.68)
         // The Tire pressure section sits a little above the vertical middle of the
         // dense content; anchoring the content's ~55% point to the viewport brings
@@ -1544,6 +1566,7 @@ enum DebugScene: String, CaseIterable {
              .ownerServiceWindow, .ownerServiceWindowEditor, .ownerServiceWindowManual,
              .ownerServiceWindowSaved,
              .ownerRideShareOn, .ownerRideSharePaused, .ownerRideSharePending,
+             .ownerRideShareInService,
              .ownerCharging, .ownerChargeComplete,
              .ownerVehicleEnriched,
              .ownerConnecting, .ownerConnectingCold, .ownerDrivesLoading, .ownerSettingsLoading,

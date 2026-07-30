@@ -228,7 +228,11 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             // value, not the `VIN ····xxxx` display fallback (MYR-286).
             plate: VehicleContractMapping.editablePlate(licensePlate: summary.licensePlate)
         )
-        exec.reconcile(from: state)
+        // MYR-351 — a scene's seed IS its cold read, so it is issued now. The
+        // `ownerRideSharePaused` / `ownerServiceWindowSaved` scenes then perform
+        // their write THROUGH the shipping executor, after this, so the write is
+        // newer than the read exactly as it is against a real backend.
+        exec.reconcile(from: state, snapshotReadIssuedAt: Date())
         // MYR-320 — the source note the "Service completion date" row shows. Run
         // through the SHIPPING classifier rather than assigned as a literal, so
         // the capture still proves the predicate: `.tesla` is the echo disagreeing

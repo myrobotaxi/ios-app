@@ -35,7 +35,7 @@ final class ReconnectStateMachineTests: XCTestCase {
         // First event on the stream MUST be the snapshot baseline.
         var iterator = stream.makeAsyncIterator()
         let first = await iterator.next()
-        guard case .snapshot(let state)? = first else {
+        guard case .snapshot(let state, _)? = first else {
             return XCTFail("expected snapshot first, got \(String(describing: first))")
         }
         XCTAssertEqual(state.vehicleId, "clxyz1234567890abcdef")

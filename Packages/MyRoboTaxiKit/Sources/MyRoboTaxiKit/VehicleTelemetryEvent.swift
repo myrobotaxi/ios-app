@@ -1,3 +1,4 @@
+import Foundation
 import MyRobotaxiContracts
 
 /// One event on a single vehicle's telemetry stream.
@@ -12,7 +13,18 @@ import MyRobotaxiContracts
 public enum VehicleTelemetryEvent: Sendable {
     /// REST snapshot baseline for this vehicle. Emitted on first subscribe and
     /// again after every reconnect, before any live ``update``.
-    case snapshot(VehicleState)
+    ///
+    /// `readIssuedAt` is the instant the `/snapshot` GET was **ISSUED**, not the
+    /// instant its response landed here (MYR-351). Consumers that hold a value
+    /// they committed themselves — the three snapshot-only fields have no WS
+    /// delta, so a write echo is the only way they can be current — need to know
+    /// whether this read SAW that write, and only the issue instant answers that.
+    /// A GET issued before a write and served before it lands is the newest thing
+    /// to ARRIVE and the oldest information in the system; an arrival stamp calls
+    /// it fresh and is wrong. The straddle is routine rather than rare: the cold
+    /// read retries on a 0/0.8/3/9s ladder and the app refetches on every
+    /// foreground.
+    case snapshot(VehicleState, readIssuedAt: Date)
     /// A live field delta (the raw `vehicle_update.payload`). `fields` carries
     /// members of at most one atomic group plus ungrouped fields (§3.2). Fold it
     /// onto the last ``snapshot`` with ``VehicleStateMerger`` — which also
