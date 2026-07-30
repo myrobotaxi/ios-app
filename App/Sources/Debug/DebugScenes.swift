@@ -632,11 +632,51 @@ enum DebugScene: String, CaseIterable {
     // unless the scene is one of the five.
 
     /// MYR-184 — the owner Share tab on the SIMULATED path (`initialOwnerTab`
-    /// "invites"), i.e. the prototype's own render: an email field, three fixture
-    /// viewers with their presence dots, and a pending row captioned with an
-    /// email address. It is the BEFORE half of the pair below, and the drift-gate
-    /// anchor for this screen — it must stay byte-identical forever.
+    /// "invites"), carrying the fixture roster: three accepted viewers with their
+    /// presence dots and one pending invite. It is the MIXED arm of MYR-347's
+    /// state matrix and the drift-gate anchor for this screen.
+    ///
+    /// MYR-347 CHANGED IT DELIBERATELY. It was the prototype's own render (an
+    /// email field, two bare header+row stacks) and this comment used to say it
+    /// must stay byte-identical forever; the client rejected that layout by name,
+    /// and client outranks prototype. It is now the redesign's mixed-state
+    /// capture and is byte-stable from this issue forward.
     case ownerShare
+
+    /// MYR-347 — the state matrix the client actually photographed, on the
+    /// SIMULATED path so the whole set is one cheap before/after.
+    ///
+    /// `ownerShareEmpty` is a brand-new account: nothing accepted, nothing
+    /// pending, so the hero is the only thing on screen. It could not be captured
+    /// at all before this issue — `SimulatedShareService` seeded
+    /// `ShareFixtures.viewers`/`.pending` unconditionally, and the LIVE endpoint
+    /// scenes all inject rows — which is exactly why the empty layout was never
+    /// looked at.
+    ///
+    /// `ownerSharePendingOnly` is HIS state and the whole reason for the issue:
+    /// zero accepted, one invite out. Before the redesign that rendered
+    /// "VIEWERS · 0", a consolation sentence, then a "PENDING" header over one
+    /// row — the "weird text in the middle saying viewers 0" verbatim.
+    ///
+    /// `ownerShareAcceptedOnly` is the other single-section arm, which proves the
+    /// collapse works in both directions rather than only for the section that
+    /// happened to be empty in his screenshot.
+    case ownerShareEmpty
+    case ownerSharePendingOnly
+    case ownerShareAcceptedOnly
+
+    /// MYR-347 — the two composer steps, which headless tooling cannot reach:
+    /// step one is behind a tap on the hero CTA / "Invite someone" row, and step
+    /// two additionally needs six characters typed into a field. Both seed the
+    /// TAP (`initialSendStep`), not the result, so what the capture shows is the
+    /// shipping composer with the shipping validation in front of it.
+    ///
+    /// `ownerShareComposer` is the recipient step WITH the keyboard up — the
+    /// state MYR-344 was reported in, now structurally short enough to hold it.
+    /// `ownerShareComposerAccess` is the configuration step, i.e. the sheet
+    /// MYR-344 fixed, reached with a sample recipient already entered.
+    case ownerShareComposer
+    case ownerShareComposerAccess
     /// MYR-184 — the owner Share tab on the LIVE path (`initialOwnerTab`
     /// "invites"). The whole point of the pair with the simulated `ownerShare`:
     ///
@@ -918,7 +958,9 @@ enum DebugScene: String, CaseIterable {
         switch current {
         case .ownerDrives, .ownerDrivesLoading: return "drives"
         case .ownerSettings, .ownerSettingsLoading: return "settings"
-        case .ownerShare, .ownerShareLive, .ownerShareMessage, .ownerShareMessageNoName:
+        case .ownerShare, .ownerShareLive, .ownerShareMessage, .ownerShareMessageNoName,
+             .ownerShareEmpty, .ownerSharePendingOnly, .ownerShareAcceptedOnly,
+             .ownerShareComposer, .ownerShareComposerAccess:
             return "invites"
         default: return "home"
         }
@@ -1141,6 +1183,9 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerDrivesLoading || self == .ownerSettingsLoading
             || self == .ownerShare || self == .ownerShareLive
             || self == .ownerShareMessage || self == .ownerShareMessageNoName
+            || self == .ownerShareEmpty || self == .ownerSharePendingOnly
+            || self == .ownerShareAcceptedOnly
+            || self == .ownerShareComposer || self == .ownerShareComposerAccess
     }
 
     /// MYR-260 — a DEBUG fleet override for scenes that need a specific
@@ -1830,6 +1875,8 @@ enum DebugScene: String, CaseIterable {
              .ownerVehicleEnriched,
              .ownerConnecting, .ownerConnectingCold, .ownerDrivesLoading, .ownerSettingsLoading,
              .ownerShare, .ownerShareLive, .ownerShareMessage, .ownerShareMessageNoName,
+             .ownerShareEmpty, .ownerSharePendingOnly, .ownerShareAcceptedOnly,
+             .ownerShareComposer, .ownerShareComposerAccess,
              .riderSharedEmpty, .riderWatchOnly,
              .riderOwnerSelfRide, .riderVehiclesResolving, .riderVehiclesUnreachable,
              .riderInviteRateLimited, .riderInviteJoined, .riderInviteEntry:
@@ -1954,6 +2001,25 @@ extension DebugScene {
     /// scene keeps the fixture list and stays byte-identical.
     @MainActor
     var shareServiceOverride: (any ShareService)? {
+        // MYR-347 — the state-matrix scenes stay on the SIMULATED service and
+        // simply seed a different roster, because the states they capture are
+        // presentation, not contract: what MYR-347 changed is how the screen
+        // renders zero/one/both sections, and that is identical whichever service
+        // published the rows. Keeping them simulated is also what makes them
+        // cheap and deterministic (`SimulatedShareService` has no network, no
+        // loading branch and no clock). The empty roster is genuinely
+        // unreachable otherwise — the simulated service seeds the fixtures in its
+        // `init` and always has.
+        switch self {
+        case .ownerShareEmpty:
+            return SimulatedShareService(viewers: [], pending: [])
+        case .ownerSharePendingOnly, .ownerShareComposer, .ownerShareComposerAccess:
+            return SimulatedShareService(viewers: [], pending: ShareFixtures.pending)
+        case .ownerShareAcceptedOnly:
+            return SimulatedShareService(viewers: ShareFixtures.viewers, pending: [])
+        default:
+            break
+        }
         // MYR-340 — the two share-sheet scenes reuse this endpoint verbatim, so
         // the code their resend re-mints comes off the same §7.5 wire shape.
         guard self == .ownerShareLive
@@ -2061,6 +2127,38 @@ extension DebugScene {
     var opensShareSheetForFirstPending: Bool {
         self == .ownerShareMessage || self == .ownerShareMessageNoName
     }
+
+    /// MYR-347 — which composer step the Share tab should boot with open, or
+    /// `nil` for every other scene (which is all of them but two, so the whole
+    /// existing set is byte-identical).
+    ///
+    /// Same stand-in-for-a-tap precedent as `autoSubmitsInviteCode` /
+    /// `opensServiceWindowEditor`: the composer is behind a tap, and its second
+    /// step is behind a tap plus typing, neither of which headless capture
+    /// tooling can perform. The scene seeds only the ENTRY — the step is then
+    /// rendered by the shipping composer, and `.access` arrives through the
+    /// shipping `openConfig()`, so its keyboard dismissal, its vehicle
+    /// pre-selection and its default tier are all the real ones.
+    enum ComposerEntry { case recipient, access }
+
+    var initialComposerEntry: ComposerEntry? {
+        switch self {
+        case .ownerShareComposer: .recipient
+        case .ownerShareComposerAccess: .access
+        default: nil
+        }
+    }
+
+    /// What the `.access` composer scene types into the recipient field.
+    ///
+    /// TWO values because the field means two different things: LIVE takes an
+    /// owner-typed LABEL (§7.5.1 — never resolved to an account), SIM takes an
+    /// EMAIL and derives the display name from it (`ShareFixtures.name(fromEmail:)`,
+    /// screens.jsx:1237-1240). Seeding one string for both would fail the
+    /// shipping `validRecipient` on whichever path it did not suit — and the
+    /// scene runs that real validation on the way in, which is the point.
+    static let sampleComposerLabel = "Mira Chen"
+    static let sampleComposerEmail = "mira.chen@example.com"
 }
 
 // MARK: - Dense-sheet scroll target (MYR-279 drift-gate)
