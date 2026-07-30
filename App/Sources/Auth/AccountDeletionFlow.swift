@@ -101,6 +101,23 @@ enum AccountDeletionDialog {
     static let failureNoticeTitle = "Couldn\u{2019}t delete your account."
     static let failureNoticeBody = "Nothing was lost \u{2014} try again."
 
+    // MARK: The Account section itself
+    //
+    // The section's own three strings live here too rather than inline in two
+    // views, for the same reason the dialogs' do: they are the same copy on both
+    // screens, and two literals is two places for them to drift.
+
+    static let sectionTitle = "Account"
+    /// The row label. Identical to `actionLabel` on purpose — the tap that opens
+    /// the first dialog and the tap that advances it say the same words, so they
+    /// read as one action rather than two decisions.
+    static let deleteRowLabel = "Delete account"
+    /// The caption under the display-only name: the whole answer to "why can't I
+    /// change this?", which is the question a name with no edit control provokes.
+    /// Naming Apple is the truth — SIWA hands the name over once, on the FIRST
+    /// authorization, and nothing in this product can change it afterwards.
+    static let nameProvenanceCaption = "Set by Apple when you signed in"
+
     // MARK: Factories
 
     /// The role-specific first dialog.

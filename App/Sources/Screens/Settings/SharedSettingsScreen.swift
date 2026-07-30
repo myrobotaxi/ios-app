@@ -475,7 +475,7 @@ struct SharedSettingsScreen: View {
     // things: who is signed in, and the way out of the product.
 
     private var accountLabel: some View {
-        Text("Account")
+        Text(AccountDeletionDialog.sectionTitle)
             .mrtTextStyle(.label())
             .foregroundStyle(Color.mrtTextMuted)
             .padding(.horizontal, MRTMetrics.pageGutter)
@@ -502,7 +502,7 @@ struct SharedSettingsScreen: View {
                 .font(.system(size: 14, weight: .medium))
                 .tracking(-0.1)
                 .foregroundStyle(Color.mrtText)
-            Text("Set by Apple when you signed in")
+            Text(AccountDeletionDialog.nameProvenanceCaption)
                 .font(.system(size: 11.5))
                 .foregroundStyle(Color.mrtTextMuted)
         }
@@ -510,6 +510,7 @@ struct SharedSettingsScreen: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 13)
         .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("mrt.accountNameRow")
     }
 
     /// The destructive row, in the danger grammar this app already uses for
@@ -520,7 +521,7 @@ struct SharedSettingsScreen: View {
             HStack(spacing: 12) {
                 Image(systemName: "trash")
                     .font(.system(size: 14, weight: .semibold))
-                Text("Delete account")
+                Text(AccountDeletionDialog.deleteRowLabel)
                     .font(.system(size: 14, weight: .semibold))
                     .tracking(-0.1)
                 Spacer(minLength: 0)
@@ -534,6 +535,7 @@ struct SharedSettingsScreen: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("mrt.deleteAccountRow")
     }
 
     // MARK: Sign out + footer (shared-screens.jsx:748-756)

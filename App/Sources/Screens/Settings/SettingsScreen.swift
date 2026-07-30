@@ -756,7 +756,7 @@ struct SettingsScreen: View {
 
     private var accountSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Account")
+            Text(AccountDeletionDialog.sectionTitle)
                 .mrtTextStyle(.label())
                 .foregroundStyle(Color.mrtTextMuted)
                 .padding(.bottom, 14)
@@ -786,13 +786,14 @@ struct SettingsScreen: View {
             Text(profileName)
                 .font(.system(size: 14))
                 .foregroundStyle(Color.mrtText)
-            Text("Set by Apple when you signed in")
+            Text(AccountDeletionDialog.nameProvenanceCaption)
                 .font(.system(size: 11.5))
                 .foregroundStyle(Color.mrtTextMuted)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 12)
         .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("mrt.accountNameRow")
     }
 
     /// The destructive row, in the danger grammar this app already uses for
@@ -803,7 +804,7 @@ struct SettingsScreen: View {
             HStack(spacing: 8) {
                 Image(systemName: "trash")
                     .font(.system(size: 13, weight: .semibold))
-                Text("Delete account")
+                Text(AccountDeletionDialog.deleteRowLabel)
                     .font(.system(size: 14, weight: .medium))
                 Spacer(minLength: 0)
             }
@@ -812,6 +813,7 @@ struct SettingsScreen: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("mrt.deleteAccountRow")
     }
 
     // MARK: Sign out + footer (screens.jsx:488-493)
