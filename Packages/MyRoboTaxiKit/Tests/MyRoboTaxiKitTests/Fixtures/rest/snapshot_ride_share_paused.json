@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "description": "GET /api/vehicles/{vehicleId}/snapshot (rest-api.md §7.1) for a car whose owner has PAUSED ride sharing (MYR-342, contracts 0.20.0). Everything about the car itself is healthy — parked, charged, streaming, NOT in service — which is exactly the state no pre-MYR-342 field could express. The pause lives in rideShareEnabled alone, and it is the SAME value and the same semantics as the VehicleSummary sibling on the list row (see vehicles_list_ride_share.json). The parked snapshot.json every other test uses deliberately OMITS the key, which is what keeps 'absent means enabled' observable rather than asserted in prose.",
+    "anchoredFRs": ["FR-4.x", "FR-9.3"],
+    "scenario": "ride-share-paused",
+    "addedBy": "MYR-342"
+  },
+  "vehicleId": "clxyz1234567890abcdef",
+  "name": "Lunar",
+  "model": "Model Y",
+  "year": 2026,
+  "color": "Quicksilver",
+  "status": "parked",
+  "speed": 0,
+  "heading": 0,
+  "latitude": 37.7955,
+  "longitude": -122.3937,
+  "locationName": "Embarcadero Center",
+  "locationAddress": "1 Embarcadero Ctr, San Francisco",
+  "chargeLevel": 61,
+  "estimatedRange": 166,
+  "interiorTemp": 70,
+  "exteriorTemp": 63,
+  "odometerMiles": 18432,
+  "fsdMilesSinceReset": 11274,
+  "rideShareEnabled": false,
+  "lastUpdated": "2026-07-29T16:00:00Z"
+}

@@ -302,6 +302,37 @@ enum DebugScene: String, CaseIterable {
     /// `DebugServiceWindowEndpoint` (validate future → apply Tesla precedence →
     /// echo back).
     case ownerServiceWindowEditor
+    /// MYR-342 — the owner's RIDE-SHARING toggle, in the Status & location card,
+    /// in its three renderings. One row, three scenes, because each needs a
+    /// different WIRE outcome to reach it honestly rather than a view flag:
+    ///
+    ///   • `ownerRideShareOn` — the resting ON state. The car's snapshot carries an
+    ///     explicit `rideShareEnabled: true`, so the capture proves the row renders
+    ///     the SERVER's position rather than its own default.
+    ///   • `ownerRideSharePaused` — the resting PAUSED state, from an explicit
+    ///     `false` on both read surfaces. This is the whole feature in one frame: a
+    ///     car that is parked, charged and perfectly healthy, and still not
+    ///     bookable, because its owner said so.
+    ///   • `ownerRideSharePending` — the write IN FLIGHT. It has no other capture
+    ///     route at all: against a real backend the pending state lasts
+    ///     milliseconds and cannot be raced by a screenshot, so the scene parks the
+    ///     write inside a stub that never answers
+    ///     (`DebugHangingRideShareEndpoint`) and flips the switch on appear. The
+    ///     spinner in the capture is therefore the REAL
+    ///     `uiState(for: .rideShare).isPending`, raised by the shipping
+    ///     `beginPending` — the same park-in-one-branch precedent MYR-326's
+    ///     `DebugLoadingFleet` set, and the same standing-in-for-a-tap precedent as
+    ///     `ownerFreshnessWaking`.
+    ///
+    /// All three are LIVE-PATH-ONLY and unreachable from a simulated capture by
+    /// construction: the row is gated on `HomeScreen`'s `isLive`, because a switch
+    /// that cannot reach §7.18 would appear to withdraw the owner's car and do
+    /// nothing. So every existing scene renders the Status & location card exactly
+    /// as before — the card grows its one new row only here. Pair all three with
+    /// `MRT_OWNER_DETENT=half`.
+    case ownerRideShareOn
+    case ownerRideSharePaused
+    case ownerRideSharePending
     /// MYR-320 — the SAME in-service car, with the "Service completion date" row
     /// carrying its MANUAL sub-caption ("Set manually — Tesla hasn't provided an
     /// estimate for this visit"). That caption is only reachable AFTER a save
@@ -764,6 +795,19 @@ enum DebugScene: String, CaseIterable {
         self == .ownerFreshnessStale || self == .ownerFreshnessWaking
     }
 
+    /// MYR-342 — whether owner Home should render its LIVE surfaces so the
+    /// ride-sharing toggle row exists at all. Exactly the same precedent as
+    /// `rendersLiveVehicleFreshness` above, and for a stronger reason: the row is
+    /// deliberately gated on the live path because a switch that cannot reach
+    /// `PUT …/ride-share` would appear to withdraw the owner's car from
+    /// ride-hailing and do nothing. That gate is the feature, so a capture has to
+    /// go through it rather than around it. Scoped to the three ride-share scenes,
+    /// so every other scene keeps its simulated, byte-identical rendering (CLAUDE.md
+    /// drift gate) — the Status & location card grows its row only here.
+    var rendersLiveRideShareToggle: Bool {
+        self == .ownerRideShareOn || self == .ownerRideSharePaused || self == .ownerRideSharePending
+    }
+
     /// MYR-316 — whether `HomeScreen` should boot with the "Expected back" entry
     /// sheet already presented. The sheet opens from a row inside the half-detent
     /// controls scroll, which headless capture tooling cannot tap; seeding the
@@ -813,6 +857,8 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerFreshnessStale || self == .ownerFreshnessWaking
             || self == .ownerServiceWindow || self == .ownerServiceWindowEditor
             || self == .ownerServiceWindowManual || self == .ownerServiceWindowSaved
+            || self == .ownerRideShareOn || self == .ownerRideSharePaused
+            || self == .ownerRideSharePending
             || self == .ownerCharging || self == .ownerChargeComplete
             || self == .ownerNoticeRejected || self == .ownerNoticeRejectedInService
             || self == .ownerVehicleEnriched
@@ -907,6 +953,19 @@ enum DebugScene: String, CaseIterable {
                 chargeState: .complete,
                 chargeLevel: 100
             )
+        // MYR-342 — the ride-sharing switch in its three renderings. All three are
+        // a PARKED, healthy car on purpose: the pause is owner intent, and a
+        // capture that paired it with an in-service or offline car would let the
+        // reader attribute the unavailability to the vehicle instead.
+        case .ownerRideShareOn:
+            return DebugVehicleDetailsFleet(rideShareEnabled: true)
+        case .ownerRideSharePaused:
+            return DebugVehicleDetailsFleet(rideShareEnabled: false)
+        // The write is parked in flight by an endpoint that never answers, and the
+        // flip is performed on boot by `RootView` — so the spinner is the shipping
+        // pending state, not a seeded one.
+        case .ownerRideSharePending:
+            return DebugVehicleDetailsFleet(rideShareEnabled: true, rideShareWriteOutcome: .hangs)
         // MYR-320 — every enrichment field at once: a real color off the wire, the
         // display-ready trim label composing the Model row (alongside the raw badge
         // it must NOT substitute), and the FSD designation in its own row.
@@ -941,6 +1000,12 @@ enum DebugScene: String, CaseIterable {
         case .ownerServiceWindow, .ownerServiceWindowEditor, .ownerServiceWindowManual,
              .ownerServiceWindowSaved:
             return .fraction(0.62)
+        // MYR-342 — the ride-sharing row is the LAST row of the same Status &
+        // location card, so it sits just below the service-window anchor. A little
+        // further down frames it (plus its notice line, when there is one) at the
+        // half detent.
+        case .ownerRideShareOn, .ownerRideSharePaused, .ownerRideSharePending:
+            return .fraction(0.68)
         // The Tire pressure section sits a little above the vertical middle of the
         // dense content; anchoring the content's ~55% point to the viewport brings
         // its honest state in-frame at the half detent.
@@ -1122,6 +1187,12 @@ enum DebugScene: String, CaseIterable {
         case .busy: status = .parked
         case .inService: status = .inService
         case .offline: status = .offline
+        // MYR-342 — a PARKED car, deliberately: the whole point of the pause is
+        // that the vehicle itself is perfectly healthy and available and the OWNER
+        // has withdrawn it. Driving the wire input this way means the capture
+        // proves the precedence too — a parked, idle car with no active ride reads
+        // as `paused` only if `rideShareEnabled: false` is doing the work.
+        case .paused: status = .parked
         }
         return LiveFleetMemberMapping.fleetMember(from: VehicleSummary(
             vehicleId: "debug-busy",
@@ -1135,7 +1206,13 @@ enum DebugScene: String, CaseIterable {
             estimatedRange: 240,
             lastUpdated: "2026-07-26T12:00:00Z",
             role: .owner,
-            hasActiveRide: reason == .busy
+            hasActiveRide: reason == .busy,
+            // MYR-342 — the same "real wire input per state" discipline: the pause
+            // comes from the CONTRACT FIELD, so a capture that renders the Paused
+            // chip and the button-less CTA area proves the shipping predicate and
+            // the shipping gate, not a hand-set flag. Absent (nil) for every other
+            // reason, which is what keeps those three captures byte-identical.
+            rideShareEnabled: reason == .paused ? false : nil
         ))
     }
 
@@ -1366,6 +1443,7 @@ enum DebugScene: String, CaseIterable {
              .ownerFreshnessStale, .ownerFreshnessWaking,
              .ownerServiceWindow, .ownerServiceWindowEditor, .ownerServiceWindowManual,
              .ownerServiceWindowSaved,
+             .ownerRideShareOn, .ownerRideSharePaused, .ownerRideSharePending,
              .ownerCharging, .ownerChargeComplete,
              .ownerVehicleEnriched,
              .ownerConnecting, .ownerConnectingCold, .ownerDrivesLoading, .ownerSettingsLoading,

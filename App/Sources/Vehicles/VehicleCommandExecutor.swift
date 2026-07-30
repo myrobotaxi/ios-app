@@ -84,6 +84,14 @@ public enum VehicleControlKey: Sendable, Hashable {
     /// pending/notice UX. Distinct from `.plate` because the two can be in flight
     /// independently and their failures say different things.
     case serviceWindow
+    /// MYR-342 — the owner's ride-sharing switch. Third of the same family as
+    /// `.plate` and `.serviceWindow`: NOT a §7.9 Tesla command but a local
+    /// owner-scoped write (`PUT /api/tesla/vehicles/{id}/ride-share`, rest-api.md
+    /// §7.18), keyed here for the identical pending/notice UX. Its own key, not a
+    /// share of `.serviceWindow`'s, for the reason the other two are separate: the
+    /// writes can be in flight independently and their failures say different
+    /// things to an owner.
+    case rideShare
 
     /// The control's name in owner-facing copy (MYR-301). The notice row sits
     /// BELOW the tile row, so it has to say which control it is talking about —
@@ -102,6 +110,9 @@ public enum VehicleControlKey: Sendable, Hashable {
         // MYR-320 — tracks the row's own relabel, so a notice about this write
         // names the field the owner just edited.
         case .serviceWindow: "Service completion date"
+        // MYR-342 — the row's own label, so a notice about this write names the
+        // switch the owner just flipped.
+        case .rideShare: VehicleRideShare.rowLabel
         }
     }
 
@@ -116,9 +127,10 @@ public enum VehicleControlKey: Sendable, Hashable {
         case .chargePort: "bolt.fill"
         // The plate lives in a labelled details ROW, not a tile — its notice
         // renders in place, next to itself, so it needs no disc icon.
-        // The plate and the expected-back time both live in labelled details
-        // ROWS, not tiles — their notices render in place, next to themselves.
-        case .temp, .driverSeat, .passengerSeat, .media, .plate, .serviceWindow: nil
+        // The plate, the expected-back time and the ride-sharing switch all live
+        // in labelled details ROWS, not tiles — their notices render in place,
+        // next to themselves.
+        case .temp, .driverSeat, .passengerSeat, .media, .plate, .serviceWindow, .rideShare: nil
         }
     }
 }
@@ -181,6 +193,16 @@ public enum VehicleCommandNotice: Sendable, Equatable {
     // sheet left open, and the copy says exactly that rather than something vague.
     case serviceWindowPast     // 400 invalid_request — the instant is no longer future
     case serviceWindowNotSaved // transport / 404 / 5xx — the write didn't land
+    // MYR-342 — the ride-share switch has ONE failure notice, not a pair, and the
+    // asymmetry is the contract's rather than an omission. §7.16's 400 is a
+    // SEMANTIC refusal an owner can act on ("that time has passed"), which is why
+    // it earns its own line. §7.18 has no such case: `enabled` is a required
+    // boolean with no clear and no third state, so a 400 here means the CLIENT
+    // sent something malformed — a bug, not a thing the owner did wrong, and
+    // nothing they could fix by trying differently. It therefore folds in with
+    // auth / ownership / transport / 5xx onto the single honest fact the owner
+    // acts on the same way: the switch did not move.
+    case rideShareNotSaved     // 400 / 401 / 403 / 404 / transport / 5xx — the write didn't land
 
     public var message: String {
         switch self {
@@ -233,6 +255,14 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         // Reachability / store failure. Deliberately NOT "Couldn't reach the car":
         // no Tesla call is involved in this write at all.
         case .serviceWindowNotSaved: "Couldn\u{2019}t save the expected time"
+        // MYR-342 — the one thing the owner needs to know, and it is deliberately
+        // about the SWITCH rather than about "saving": what they care about is
+        // whether their car is currently being offered to riders, and the honest
+        // answer after a failed write is that it is still in whatever position it
+        // was. Not "Couldn't reach the car" — no Tesla call is involved in §7.18
+        // at any point — and not a reassurance, because the row has already
+        // snapped back to the server's position beside this line.
+        case .rideShareNotSaved: "Couldn\u{2019}t change ride sharing"
         }
     }
 
@@ -268,6 +298,10 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         // details row), but tokenized with the rest so the vocabulary stays uniform.
         case .serviceWindowPast: "Too soon"
         case .serviceWindowNotSaved: "Not saved"
+        // MYR-342 — likewise never tile-rendered (the switch is a details row),
+        // tokenized with the rest so the vocabulary stays uniform and the
+        // measuring test keeps covering every case.
+        case .rideShareNotSaved: "Not saved"
         }
     }
 
@@ -283,9 +317,12 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         // MYR-316 — same for the service window: a past instant is fixed by
         // re-opening the row and picking a later one; a failed save is retried
         // by saving again. Neither is a broken Tesla connection.
+        // MYR-342 — and the same for the ride-share switch: a failed flip is
+        // retried by flipping again, and the row is already the tap target.
         case .waking, .asleep, .pairKey, .cooldown, .rejected, .failed,
              .invalidPlate, .plateNotSaved,
-             .serviceWindowPast, .serviceWindowNotSaved: nil
+             .serviceWindowPast, .serviceWindowNotSaved,
+             .rideShareNotSaved: nil
         }
     }
 
@@ -382,6 +419,19 @@ public enum VehicleControlField: Sendable, Hashable, CaseIterable {
     /// Until then the row shows its "Set a time" affordance rather than a
     /// fabricated estimate.
     case serviceWindow
+    /// MYR-342 — the owner's ride-sharing switch. On the read contract
+    /// (`VehicleState.rideShareEnabled`, contracts 0.20.0), so it becomes known the
+    /// moment a snapshot carries it or the owner flips it.
+    ///
+    /// Its UNKNOWN state is unlike every sibling here, and the difference is the
+    /// contract's: an unconfirmed lock or plate renders "—" because there is no
+    /// honest default to show, whereas an unconfirmed ride-share position renders
+    /// ON — "absent MUST be read as ENABLED". So this key does not gate a "—"; it
+    /// only decides which of the two sources ``VehicleRideShare/resolvedEnabled``
+    /// reads. There is no dash state and no unknown position, because the server
+    /// column is `NOT NULL DEFAULT true` and a car whose owner has never touched
+    /// the toggle genuinely IS accepting rides.
+    case rideShare
 }
 
 /// One control's live command state: pending (a command is in flight — suppress
@@ -476,6 +526,26 @@ public struct VehicleControlsSnapshot: Sendable, Equatable {
     /// cold launch always holds) renders no source note at all. See
     /// ``ServiceWindowSource``.
     public var serviceWindowSource: ServiceWindowSource = .unknown
+    /// MYR-342 — the owner's ride-sharing switch (contracts 0.20.0
+    /// `rideShareEnabled`): `true` = riders can request this car, `false` = the
+    /// owner has PAUSED requests. This is the position the toggle row renders and
+    /// the value the write echoes back.
+    ///
+    /// Defaults to `true`, and that default is the contract's own rather than a
+    /// convenient choice: "TRUE is the ordinary state and the state every vehicle
+    /// starts in", the server column is `BOOLEAN NOT NULL DEFAULT true`, and an
+    /// absent wire value MUST read as enabled. It is therefore also what keeps the
+    /// simulated path and every drift-gate scene unchanged — the simulated executor
+    /// never writes it and the row is live-only, so nothing renders from it there.
+    ///
+    /// Note there is no optional here and no unknown state, unlike
+    /// `serviceEstimatedEndAt` beside it. That is deliberate: the honest-unknown
+    /// treatment the rest of this struct uses would produce a switch with no
+    /// position, and the contract is explicit that absence is not unknown — it is
+    /// enabled. The MYR-251 ledger still tracks whether the value was CONFIRMED
+    /// (`isKnown(.rideShare)`), which is what ``VehicleRideShare/resolvedEnabled``
+    /// consults; it just never produces a dash.
+    public var rideShareEnabled: Bool = true
 
     public init(
         locked: Bool,
@@ -543,6 +613,11 @@ public protocol VehicleCommandExecutor: AnyObject, Observable {
     /// `setPlate` this is NOT a Tesla command: it is an owner-scoped write whose
     /// response carries the server's RESOLVED window, which the executor adopts.
     func setServiceWindow(_ expectedEndAt: Date?) async throws
+    /// MYR-342 — pause (`false`) or resume (`true`) ride requests for this vehicle.
+    /// Like `setPlate`/`setServiceWindow` this is NOT a Tesla command: it is an
+    /// owner-scoped write (rest-api.md §7.18) whose response carries the server's
+    /// RESOLVED position, which the executor adopts instead of the bool it sent.
+    func setRideShareEnabled(_ enabled: Bool) async throws
 
     /// Continuous scrub drag — not a vehicle command (see header); synchronous
     /// so the slider tracks the finger with no await latency.
@@ -692,5 +767,15 @@ public final class SimulatedVehicleCommandExecutor: VehicleCommandExecutor {
 
     public func setPlate(_ plate: String) async throws {
         controls.plate = plate
+    }
+
+    /// MYR-342 — M1 has no backend, and the toggle row is LIVE-ONLY (it is gated
+    /// on `VehicleControls.isLive`, the same live-only gate MYR-315's freshness
+    /// stamp uses), so nothing in the simulated fleet ever calls this. It writes
+    /// locally like every other simulated setter purely to keep the seam total;
+    /// the simulated `rideShareEnabled` therefore stays at its `true` default and
+    /// every drift-gate scene renders exactly as it did before this issue.
+    public func setRideShareEnabled(_ enabled: Bool) async throws {
+        controls.rideShareEnabled = enabled
     }
 }

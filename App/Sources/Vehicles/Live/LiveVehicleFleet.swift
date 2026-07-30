@@ -412,6 +412,7 @@ final class LiveVehicleFleet: VehicleFleet {
                 sender: rest,
                 plateEndpoint: rest,
                 serviceWindowEndpoint: rest,
+                rideShareEndpoint: rest,
                 driving: summary.status == .driving,
                 // MYR-286 — the RAW owner-entered plate (empty when unset), NOT
                 // the `VIN ····xxxx` display string: `controls.plate` is what the
@@ -473,6 +474,20 @@ final class LiveVehicleFleet: VehicleFleet {
                       let row = self.summaries.firstIndex(where: { $0.vehicleId == vehicleID })
                 else { return }
                 self.summaries[row].serviceEstimatedEndAt = resolved.map(Self.rfc3339.string(from:))
+            }
+            // MYR-342 — identical reasoning again, and this is the one where a
+            // stale row is not merely cosmetic. §7.18 fires NO WebSocket push, so
+            // without this the summary would keep saying "bookable" after the owner
+            // paused the car — and that summary is precisely what the RIDER-facing
+            // `LiveFleetMemberMapping` reads. On a single-account device the rider
+            // side would go on offering a car its owner had just withdrawn, with a
+            // `409 vehicle_unavailable` waiting at the end of the request. Adopt the
+            // server's resolved echo straight into the row instead.
+            executor.onRideShareSaved = { [weak self] enabled in
+                guard let self,
+                      let row = self.summaries.firstIndex(where: { $0.vehicleId == vehicleID })
+                else { return }
+                self.summaries[row].rideShareEnabled = enabled
             }
         }
         if items.isEmpty {
