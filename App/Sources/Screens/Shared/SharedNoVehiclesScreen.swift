@@ -66,8 +66,75 @@ struct SharedNoVehiclesScreen: View {
     }
 }
 
+// MARK: - SharedVehiclesUnreachableScreen (MYR-343)
+//
+// The rider's vehicle list did not answer, and nothing about this account is
+// known yet. Deliberately NOT `SharedNoVehiclesScreen`: "no vehicles shared with
+// you yet" is a CLAIM about the account, and one failed fetch does not support
+// it — the same reasoning `LiveSharedVehicleCatalog.load` already applies when it
+// leaves the last-known grants standing rather than emptying the list.
+//
+// And deliberately not a skeleton either (MYR-326: loading ≠ unavailable). There
+// is nothing in flight behind this screen; a shimmering placeholder would promise
+// content that is not coming.
+//
+// NO RETRY BUTTON, by the same MYR-326 ruling that governs the owner's cold-read
+// timeout: recovery is the low-friction one the app already has — a resume
+// re-asks (`RootView`'s scenePhase handler), and a successful list clears this by
+// itself. The copy mirrors `ColdSnapshotLoad.unreachableMessage`'s grammar
+// ("Can't reach … right now"), pluralized because at this point the app does not
+// know which — or how many — vehicles it was reaching for.
+struct SharedVehiclesUnreachableScreen: View {
+    @Binding var sharedTab: String
+
+    var body: some View {
+        ZStack {
+            Color.mrtBg.ignoresSafeArea()
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+
+                ZStack {
+                    Circle().fill(Color.mrtElevated)
+                    Image(systemName: "antenna.radiowaves.left.and.right.slash")
+                        .font(.system(size: 22))
+                        .foregroundStyle(Color.mrtTextMuted)
+                }
+                .frame(width: 64, height: 64)
+                .padding(.bottom, 22)
+
+                Text("Can\u{2019}t reach your vehicles right now")
+                    .font(.system(size: 19, weight: .semibold))
+                    .tracking(-0.3)
+                    .foregroundStyle(Color.mrtText)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 268)
+                    .padding(.bottom, 8)
+
+                Text("We\u{2019}ll try again when you come back.")
+                    .font(.system(size: 14))
+                    .lineSpacing(14 * 0.45)
+                    .foregroundStyle(Color.mrtTextSec)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 268)
+
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, MRTMetrics.pageGutter)
+            .padding(.bottom, MRTMetrics.shareContentBottomPadding)
+        }
+        .mrtBottomNav(selection: $sharedTab, tabs: MRTTab.sharedTabs)
+    }
+}
+
 #Preview {
     SharedNoVehiclesScreen(sharedTab: .constant("shared"), onEnterCode: {})
+        .mrtSurfaceLook(.flat)
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Unreachable") {
+    SharedVehiclesUnreachableScreen(sharedTab: .constant("shared"))
         .mrtSurfaceLook(.flat)
         .preferredColorScheme(.dark)
 }

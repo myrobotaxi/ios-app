@@ -346,6 +346,31 @@ struct RootView: View {
         applyViewMode(next)
     }
 
+    // MARK: - MYR-343 — the rider shell's vehicle set
+
+    /// What the rider shell should present: the catalog's two partitions folded
+    /// through the ONE pure rule (`RiderVehicleSet.resolve`). Computed rather than
+    /// stored so it can never fall out of step with the catalog it reads, and so
+    /// the `.onChange` below tracks the DECISION rather than one input to it.
+    private var riderVehicleSet: RiderVehicleSet {
+        RiderVehicleSet.resolve(
+            hasLoaded: sharedVehicleCatalog.hasLoaded,
+            loadFailed: sharedVehicleCatalog.loadFailed,
+            grants: sharedVehicleCatalog.grants,
+            ownedVehicles: sharedVehicleCatalog.ownedVehicles
+        )
+    }
+
+    /// Push a resolved vehicle onto the viewer state. Only `.ridable` adopts
+    /// anything: `.resolving` deliberately leaves the viewer alone (adopting `nil`
+    /// mid-resolution would tear down a perfectly good telemetry source on every
+    /// re-ask), and `.empty`/`.unavailable` are surfaces with no map behind them.
+    @MainActor
+    private func adoptRiderVehicle(_ resolution: RiderVehicleSet) {
+        guard case .ridable(let adoption) = resolution else { return }
+        sharedViewerState.adopt(adoption)
+    }
+
     /// Clear the account's persisted view mode on sign-out — the choice is
     /// session-scoped (MYR-224 mode semantics: it does NOT survive sign-out, so
     /// the next sign-in re-presents the chooser). Read the id BEFORE `signOut`
@@ -805,38 +830,53 @@ struct RootView: View {
                     }
                 default:
                     // MYR-184 — a rider with NOTHING shared with them has no map
-                    // to show. Before this issue the screen rendered anyway, on
-                    // `VehicleFixtures.vehicles[0]` (MYR-228 fix (c)). Gated on
-                    // `hasLoaded` so the empty state never flashes over a catalog
-                    // that is one round trip away; the simulated catalog reports
-                    // loaded-with-grants from the first frame, so every DEBUG
-                    // rider scene is unchanged.
-                    if sharedVehicleCatalog.hasLoaded && sharedVehicleCatalog.grants.isEmpty {
+                    // to show. Before that issue the screen rendered anyway, on
+                    // `VehicleFixtures.vehicles[0]` (MYR-228 fix (c)).
+                    //
+                    // MYR-343 — but "nothing shared" was the WRONG question, and
+                    // asking it behind a two-way boolean produced the client's two
+                    // defects at once: an OWNER in rider mode (zero viewer rows,
+                    // one owned car) was routed to the invite-code prompt, and the
+                    // not-yet-loaded case fell through to the rider home first, so
+                    // he SAW that home for a frame before the swap. The shell now
+                    // switches on the whole vehicle-set resolution and presents
+                    // nothing until it resolves. See `RiderVehicleSet`.
+                    //
+                    // The simulated catalog reports loaded-with-grants from the
+                    // first frame and owns nothing, so it resolves to `.ridable`
+                    // on the same grant it always did — every DEBUG rider scene is
+                    // byte-identical.
+                    switch riderVehicleSet {
+                    case .resolving:
+                        RiderVehiclesLoadingSkeleton(sharedTab: $sharedTab)
+                    case .unavailable:
+                        SharedVehiclesUnreachableScreen(sharedTab: $sharedTab)
+                    case .empty:
                         SharedNoVehiclesScreen(sharedTab: $sharedTab) {
                             inviteOrigin = .sharedSettings
                             screen = .inviteCode
                         }
-                    } else {
-                    SharedViewerScreen(
-                        viewerState: sharedViewerState,
-                        sharedTab: $sharedTab,
-                        rideRequestService: rideRequestService,
-                        historyStore: rideHistoryStore,
-                        // MYR-224 — real rider identity for the greeting + summary
-                        // (nil in SIM → the fixture "Sam", pixel-identical).
-                        liveProfile: session.currentUser,
-                        // MYR-186 — the RIDER's permission moment: their request
-                        // just submitted, and the owner's answer is now the only
-                        // thing they are waiting on.
-                        onRideRequestSubmitted: {
-                            Task {
-                                await pushCoordinator.handleMeaningfulMoment(
-                                    .riderRideRequestSubmitted,
-                                    role: role
-                                )
+                    case .ridable:
+                        SharedViewerScreen(
+                            viewerState: sharedViewerState,
+                            sharedTab: $sharedTab,
+                            rideRequestService: rideRequestService,
+                            historyStore: rideHistoryStore,
+                            // MYR-224 — real rider identity for the greeting + summary
+                            // (nil in SIM → the fixture "Sam", pixel-identical).
+                            liveProfile: session.currentUser,
+                            // MYR-186 — the RIDER's permission moment: their request
+                            // just submitted, and the owner's answer is now the only
+                            // thing they are waiting on.
+                            onRideRequestSubmitted: {
+                                Task {
+                                    await pushCoordinator.handleMeaningfulMoment(
+                                        .riderRideRequestSubmitted,
+                                        role: role
+                                    )
+                                }
                             }
-                        }
-                    )
+                        )
                     }
                 }
             }
@@ -845,19 +885,20 @@ struct RootView: View {
         // MYR-186 — hand this view's state to the UIKit push delegate.
         .onAppear { configurePushBridge() }
         // MYR-184 — keep the rider's watched vehicle in step with the catalog.
-        // The FIRST grant is the one the Live Map watches (the shell's "first
-        // `role: viewer` row" rule), and its TIER is what gates the ride-request
-        // affordance. Runs on every catalog change, so redeeming a code lands a
-        // real car on the map without a relaunch.
-        .onChange(of: sharedVehicleCatalog.grants) { _, grants in
-            sharedViewerState.adoptSharedVehicle(grants.first)
+        // MYR-343 — off the whole RESOLUTION, not off `grants` alone: the vehicle
+        // the map watches is the owner's own car when they have one, and a change
+        // in the owned partition has to reach the map exactly as a change in the
+        // shared one does. Runs on every catalog change, so redeeming a code still
+        // lands a real car on the map without a relaunch.
+        .onChange(of: riderVehicleSet) { _, resolution in
+            adoptRiderVehicle(resolution)
         }
         // MYR-184 — load the rider's shared vehicles when the rider shell is on
         // screen. No-op in sim; idempotent, so the tab churn costs nothing.
         .task(id: screen == .sharedHome) {
             guard screen == .sharedHome else { return }
             await sharedVehicleCatalog.load()
-            sharedViewerState.adoptSharedVehicle(sharedVehicleCatalog.grants.first)
+            adoptRiderVehicle(riderVehicleSet)
         }
         // MYR-221 — returning-user silent resume. Runs once at launch when the
         // start screen is the resolving splash (a stored refresh token exists):
@@ -886,6 +927,17 @@ struct RootView: View {
                 // registration PUT that failed earlier. Inert unless the user has
                 // already authorized; never blocks anything on screen.
                 Task { await pushCoordinator.handleForeground() }
+                // MYR-343 — a rider whose vehicle list never answered is sitting on
+                // the honest "can't reach" line with nothing in flight behind it.
+                // Recovery is the low-friction one MYR-326 settled on (a resume
+                // re-asks), not a retry button. No-op in sim, and skipped entirely
+                // once a list has landed, so a healthy session costs nothing.
+                if screen == .sharedHome, sharedVehicleCatalog.loadFailed, !sharedVehicleCatalog.hasLoaded {
+                    Task {
+                        await sharedVehicleCatalog.load()
+                        adoptRiderVehicle(riderVehicleSet)
+                    }
+                }
             case .background:
                 ownerHomeState.handleBackground()
                 sharedViewerState.handleBackground()

@@ -113,6 +113,49 @@ A `-MRT_SCENE <name>` launch **argument** is accepted as a fallback for tooling 
   `ShareInviteMessageUITests` taps the sheet's own **Copy** and asserts the
   pasteboard, which is the only way to see the full delivered string.
 
+  **"What is shared with me" is not "what can I ride"** (MYR-343) — scenes
+  `riderOwnerSelfRide` / `riderVehiclesResolving` / `riderVehiclesUnreachable`.
+  MYR-184 gated the rider shell's empty state on `grants.isEmpty`, i.e. on
+  SHARES. An **owner** in rider mode has zero `role: viewer` rows by definition,
+  so an account that owns a Tesla outright was told it had none and sent to
+  redeem an invite code — the client's *"When I switched to rider mode as an
+  owner I briefly saw the rider home page and then it prompted me to enter a
+  code."* Self-rides are a supported flow (MYR-325 tested one live), and the ride
+  path never had the bug: `RiderLiveVehicleLocator` has always taken
+  `vehicles.first` regardless of role. Only the shell gate and the adopted map
+  vehicle regressed. `SharedVehicleCatalog` now publishes BOTH partitions of the
+  one §7.0 list it already fetches — `grants` (viewer rows) and `ownedVehicles`
+  (owner rows, which carry no `sharePermission` at all) — and
+  `RiderVehicleSet.resolve` is the ONE rule over them. **Owned wins**: an account
+  holding both self-rides its own car, because a share can sit on `live` and
+  would otherwise hide the "Where to?" CTA from someone who owns a Tesla, and
+  because the FleetMember the request is actually created against is
+  `vehicles.first` — adopting a shared car onto the map would put two different
+  vehicles on two halves of one flow. The empty state now means what its copy
+  says: no vehicles AT ALL.
+
+  **The flash was the two-way boolean.** `hasLoaded && grants.isEmpty` has no
+  arm for "not asked yet", so that case fell through to the rider home and then
+  swapped. Three genuinely different situations cannot be told apart by one flag,
+  so one of them always borrows another's surface for a frame. The shell now
+  switches on the whole resolution and presents NOTHING until it resolves —
+  `RiderVehiclesLoadingSkeleton`, shaped like the idle greeting sheet at its own
+  `sharedIdleSheetHeight` and wearing the same `RiderIdleSheetBackground` (that
+  surface was promoted out of `SharedViewerScreen` rather than copied, because a
+  second copy of its gradient is a second place to forget MYR-226's NaN guard).
+  The fourth arm is `.unavailable`: a list that did not answer is **not**
+  "nothing is shared with you" and **not** a skeleton either (MYR-326: loading ≠
+  unavailable, and nothing is in flight behind it) — it is the honest
+  "Can't reach your vehicles right now", recovered by a resume re-asking, with no
+  retry button, exactly as the owner's cold-read timeout is. All three scenes are
+  live-path-only by construction (`SimulatedSharedVehicleCatalog.hasLoaded` is
+  `true` from the first frame and it owns nothing, so it resolves to the same
+  first grant it always did), and every simulated + DEBUG rider capture is
+  byte-identical — `riderSharedEmpty` is the pair's BEFORE half and differs from
+  `riderOwnerSelfRide` by exactly one owned row on the injected list. Capture the
+  skeleton twice (once with Reduce Motion) to prove `MRTShimmerBand`'s fallback:
+  5 distinct block renderings across 6 frames with motion on, 1 of 6 with it off.
+
   **"{Owner}'s {Vehicle}" is conditional, not concatenated** — `VehicleSummary.name` is the owner's OWN nickname and owners name cars after themselves (the canonical server fixture is literally `"Alex's Model 3"`), so prefixing §7.5.5's `ownerFirstName` onto it produced **"Alex's Alex's Model 3"**, which the first `riderInviteJoined` capture showed verbatim. `SharedVehicleTitle.compose` prefixes the owner only when the nickname is not already about them. The §7.0 catalog rows carry **no owner name at all** — only the redeem response does, and only at join time — so "Shared with me" titles on the vehicle nickname alone rather than persisting a name that can go stale.
 
 - Loading states (MYR-326, all **live-path-only**): `ownerConnectingCold` (owner Home in the first moments of a live boot — the `GET /api/vehicles` list is still in flight, so NOTHING is known and even the switcher chip is a placeholder), `ownerConnecting` (**the client's state**: the list landed — his car's name is known and the REAL `MapHeader` renders it — and the cold `/snapshot` has not. MYR-319's 0/0.8/3/9s retry means this routinely lasts >10s on an asleep/in-service car, which is why he screenshotted it; before this issue both scenes were one black screen with a system `ProgressView` and "Connecting to your vehicles…"), `ownerDrivesLoading` (Drives tab, first page in flight — a day heading + three `DriveRow`-shaped placeholders where a spinner and "Loading drives…" used to be), `ownerSettingsLoading` (Settings ⇢ Tesla Account with the fleet list in flight — two row-shaped placeholders instead of "Connecting…"; forces the LIVE linked-vehicle branch via `DebugScene.rendersLiveLinkedVehicles`, the same stand-in-for-a-live-session precedent as `showsLiveSettings`, so `ownerSettings` itself stays byte-identical). All four inject `DebugLoadingFleet`, which parks the app in ONE loading branch and never resolves it — these states have no other capture route, since on a healthy account each lasts milliseconds and the client's needs a real asleep car behind a real auth session. **No simulated scene can reach a skeleton at all**: `SimulatedVehicleFleet.isConnecting` and `SimulatedDrivesFeed.isLoading`/`hasMore` are `false` by construction and Settings only consults the live list when `linkedVehicles` is wired, so the whole drift gate is untouched. Capture each one twice — once normally, once with `xcrun simctl ui <udid> reduce_motion enabled` — to prove the Reduce Motion fallback: the blocks stay, the sweep goes (`MRTShimmerBand` renders nothing).

@@ -72,8 +72,49 @@ struct RideRequestSheetChrome: ViewModifier {
     }
 }
 
+/// The rider IDLE sheet's surface: `backgroundColor:'#0A0A0A'` +
+/// `radial-gradient(130% 62% at 50% -14%, rgba(201,168,76,0.14) 0%,
+/// rgba(10,10,10,0) 58%)` (ride-request.jsx:1176-1177).
+///
+/// MYR-226 — the `EllipticalGradient` resolves its radius from the container's
+/// width (`endRadiusFraction` × size); on a real device's FIRST layout pass —
+/// which now happens at launch, because MYR-224 can route a stored-rider session
+/// straight to this sheet before geometry settles — that width is momentarily
+/// indeterminate, yielding a NaN radius and a hard `CALayerInvalidGeometry` crash
+/// ("CALayer bounds contains NaN [nan 286]"). Gate the gradient on a finite,
+/// positive size so only the solid `mrtBg` paints during the (single, invisible)
+/// unresolved frame. Never reproduced in the simulator/tests: the sheet there
+/// only laid out after navigation, once the width was already known.
+///
+/// MYR-343 — promoted out of `SharedViewerScreen` (verbatim) so the vehicle-set
+/// loading skeleton wears the identical surface. Extracted rather than copied
+/// precisely because of the paragraph above: a second copy of this gradient is a
+/// second place for that crash guard to be forgotten.
+struct RiderIdleSheetBackground: View {
+    var body: some View {
+        GeometryReader { proxy in
+            let size = proxy.size
+            ZStack {
+                Color.mrtBg
+                if size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 {
+                    EllipticalGradient(
+                        stops: [
+                            .init(color: Color.mrtGold.opacity(0.14), location: 0),
+                            .init(color: .clear, location: 0.58),
+                        ],
+                        center: UnitPoint(x: 0.5, y: -0.14),
+                        startRadiusFraction: 0,
+                        endRadiusFraction: 1.3
+                    )
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 /// `backgroundColor:'#0A0A0A'` + the same top gold wash
-/// `SharedViewerScreen.idleSheetBackground` uses (ride-request.jsx:1176-1177)
+/// `RiderIdleSheetBackground` uses (ride-request.jsx:1176-1177)
 /// — every request-flow phase shares it.
 struct RideRequestSheetBackground: View {
     var body: some View {
