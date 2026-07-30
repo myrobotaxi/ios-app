@@ -192,6 +192,45 @@ charge sub is the door state alone ("Open"/"Closed", "Port" is the label's job),
 and the per-tile "X ago" recency is gone — recency is stated once, by the
 MYR-315 freshness stamp in the hero, plus the "Not live" footer.
 
+**A blend mode over MapKit is not a blend mode** (MYR-339) — the 100%-FSD Drive
+Summary flooded the hero map with gold on the client's phone while his
+screenshots looked right: *"When I screenshot the page looks normal with the gold
+for 100% FSD, but on the actual app on my phone it's gold even overlaying the
+map."* The tint was the prototype's own `mix-blend-mode: soft-light` over gold at
+α 0.5→0.85 (screens.jsx:885), ported verbatim. **In CSS that alpha is safe
+because the blend is isolated**: the tint's parent (screens.jsx:873, `position:
+relative; z-index: 1; overflow: hidden`) creates a stacking context, so soft-light
+resolves against ordinary painted DOM. In SwiftUI the same layer sat in a plain
+`ZStack` directly above a `Map` — a UIKit-hosted `MKMapView` on its own
+compositing surface — where a blend mode resolves against whatever backdrop the
+compositor has, and with none it paints **source-over**: gold at 0.5→0.85, flat
+across the map. Measured over the real hero pixels: un-tinted RGB(27,37,53)
+lum 0.143 → soft-light RGB(44,48,43) lum 0.184 (contrast 0.11 preserved) →
+blend dropped RGB(145,127,70) lum 0.496 (contrast 0.060, **45% of the map's
+readability gone**). **A screenshot cannot catch this**: a still is taken by
+flattening the whole layer tree into ONE offscreen buffer, a pass in which the
+backdrop IS available and the blend DOES resolve — which is why the client had to
+photograph the phone, and why the simulator can't reproduce it either (both its
+framebuffer and `XCUIScreen.screenshot()` render soft-light correctly, matching
+the prediction to rmse 0.0225). The tint is now the same treatment
+**pre-resolved to normal compositing** (`MRTDriveCelebration`, DesignSystem): the
+gold opacity ramp that least-squares-reproduces soft-light's own output over this
+hero, 0.07→0.09. It asks nothing of the compositor, so it has no failure mode.
+The rule generalizes: **never let a blend mode, or any effect needing a backdrop
+read, be what stands between the user and a hosted `MKMapView`** — resolve it to
+normal compositing and put the number in a token a test can assert on
+(`heroTintBlendMode` must stay `.normal`).
+
+The capture route was its own trap: `MRT_SCENE=ownerDrives
+MRT_OPEN_FIRST_DRIVE=1` opens `DriveFixtures.drives[0]` — **97% FSD**, so
+`isFullFSD` is false and not one celebration layer is ever constructed. The
+celebration has no cold-scene route at all; the 100% drive is the SECOND row.
+`App/UITests/DriveSummaryGoldWashUITests.swift` reaches it by real taps on the
+real navigation path and emits the drift-gate captures (100% at t0/t3/t6 plus the
+97% control, which must stay byte-identical) — the same
+`ExpandedRouteUITests` precedent, and a live instance of the repo's own "cold
+scenes passing while real paths fail" lesson.
+
 **Expanded route viewer** (MYR-327) — tapping the map on the **Drive Summary**
 hero (owner Drives → a drive, and the rider's Ride History → a completed ride —
 one screen, `DriveSummaryScreen`) or on the **rider live tracking** map opens
