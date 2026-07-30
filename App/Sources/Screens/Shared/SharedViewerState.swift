@@ -45,6 +45,12 @@ public enum PinDropReturn: Equatable, Sendable {
 // `OwnerHomeState`'s reasoning (see that file's header comment) so the
 // watched vehicle's ticking telemetry (and, as of MYR-171, the rider's place
 // in the request flow) survives switching to Ride History/Settings and back.
+//
+// MYR-336: "live-map telemetry" is finally literal. The watched vehicle's
+// position and status come from a real `TelemetrySocket` subscription (held by
+// `RiderLiveVehicleLocator`) on the live path, and from the MYR-191 fixture
+// ticker in sim — one `AppMode` seam (`isLiveLocation`), the same one every
+// other live-only branch in this file reads.
 @Observable
 @MainActor
 public final class SharedViewerState {
@@ -64,15 +70,37 @@ public final class SharedViewerState {
     /// state instead of this screen. SIM still seeds `VehicleFixtures.vehicles[0]`,
     /// so every simulated + DEBUG capture is unchanged.
     public private(set) var sharedVehicle: Vehicle?
-    /// The rider's watched-vehicle telemetry. Still the MYR-191 SIMULATED source
-    /// even for a real shared car: a rider-side live subscription is the
-    /// shared-viewer live join (noted in `RiderLiveVehicleLocator`), not MYR-184's
-    /// scope. What MYR-184 fixes is the vehicle's IDENTITY — the name, model,
-    /// plate and status now come from the real `VehicleSummary` through the
-    /// production `VehicleContractMapping`, so the map is no longer captioned with
-    /// a fixture car. Re-created on adoption so the source's activity matches the
-    /// vehicle it belongs to.
-    public private(set) var telemetrySource: any VehicleTelemetrySource
+    /// The rider's watched-vehicle telemetry.
+    ///
+    /// MYR-184 fixed the vehicle's IDENTITY (name/model/plate off the real
+    /// `VehicleSummary` through the production `VehicleContractMapping`) and left
+    /// its DATA simulated — a real shared car on a fixture ticker. **MYR-336
+    /// closes that seam**: on the live path this resolves to the watched vehicle's
+    /// `LiveVehicleTelemetrySource` (`TelemetrySocket` cold snapshot + WS deltas,
+    /// owned by `RiderLiveVehicleLocator`), and on the simulated path it stays the
+    /// MYR-191 ticker below, byte-for-byte.
+    ///
+    /// Resolved rather than stored, so the flip from "no snapshot yet" to "live"
+    /// needs no re-assignment and no re-created object: `@Observable` tracking
+    /// reaches through the locator to the Kit bridge exactly as it does for the
+    /// owner sheet (see `LiveVehicleTelemetrySource`'s observation note).
+    public var telemetrySource: any VehicleTelemetrySource {
+        liveTelemetrySource ?? simulatedTelemetrySource
+    }
+
+    /// The live source for the watched vehicle, or `nil` in sim / before adoption.
+    /// The ONE `AppMode` gate for MYR-336 — `isLiveLocation` is the same resolved
+    /// seam every other live-only branch in this file reads.
+    var liveTelemetrySource: LiveVehicleTelemetrySource? {
+        guard isLiveLocation else { return nil }
+        return liveVehicleLocator?.telemetrySource
+    }
+
+    /// The MYR-191 fixture ticker. Re-created on adoption so its activity matches
+    /// the vehicle it belongs to; started only in sim (MYR-336 — a live rider has
+    /// no use for a fixture ticker, and running one under a live map is exactly
+    /// the class of thing MYR-228 exists to prevent).
+    private(set) var simulatedTelemetrySource: any VehicleTelemetrySource
 
     // MARK: MYR-211 — real place search + location seams
     //
@@ -135,7 +163,7 @@ public final class SharedViewerState {
         // (the vehicle arrives from the catalog); every other caller keeps the
         // fixture default, so sim is unchanged.
         sharedVehicle = vehicle
-        telemetrySource = SimulatedVehicleTelemetrySource(
+        simulatedTelemetrySource = SimulatedVehicleTelemetrySource(
             // No vehicle yet → an EMPTY parked activity carrying no fixture
             // geometry and no fixture label at all. It is never on screen (the
             // shell renders its empty state while `sharedVehicle` is nil), and it
@@ -192,7 +220,19 @@ public final class SharedViewerState {
 
     /// What the rider's map renders: the adopted shared vehicle, else the
     /// contentless placeholder above.
-    public var mapVehicle: Vehicle { sharedVehicle ?? Self.unknownVehicle }
+    ///
+    /// MYR-336 — on the live path the adopted row's POSITION and STATUS are folded
+    /// forward from the live snapshot (`RiderVehicleProjection`), so the car on
+    /// the map is where the car actually is. **Only those two facts**: identity
+    /// stays on the catalog row the server viewer-masks, and the projection is
+    /// what keeps a widened mask from ever reaching a rider's screen as a
+    /// stranger's VIN. With no fix yet the row is returned untouched — the
+    /// pre-fix "Locating…" placeholder, never a fabricated coordinate.
+    public var mapVehicle: Vehicle {
+        let adopted = sharedVehicle ?? Self.unknownVehicle
+        guard isLiveLocation else { return adopted }
+        return RiderVehicleProjection.apply(liveVehicleLocator?.state, to: adopted)
+    }
 
     /// MYR-184 §7.5.0 — the rider's client-side capability gate for the vehicle
     /// they are watching. `true` when the grant is on the top (`rides`) tier, or
@@ -239,12 +279,19 @@ public final class SharedViewerState {
     public func adoptSharedVehicle(_ vehicle: Vehicle?) {
         guard sharedVehicle?.id != vehicle?.id else { return }
         let wasRunning = telemetryStarted
-        telemetrySource.stop()
+        simulatedTelemetrySource.stop()
         sharedVehicle = vehicle
-        telemetrySource = SimulatedVehicleTelemetrySource(
+        simulatedTelemetrySource = SimulatedVehicleTelemetrySource(
             activity: vehicle?.activity ?? Self.unknownActivity
         )
-        if wasRunning, vehicle != nil { telemetrySource.start() }
+        if wasRunning, vehicle != nil, !isLiveLocation { simulatedTelemetrySource.start() }
+        // MYR-336 — point the LIVE stream at the car the shell just adopted, so
+        // the vehicle on the map and the vehicle on the socket are one vehicle.
+        // Owned or shared makes no difference here: MYR-343 resolved that upstream
+        // and the backend subscribes a viewer at tier `live`+ just as it does an
+        // owner. `watch` is idempotent by id, so a catalog re-resolve on an
+        // unchanged list re-fetches nothing.
+        if isLiveLocation { liveVehicleLocator?.watch(vehicleID: vehicle?.id) }
     }
 
     // MARK: MYR-177 — live ride tracking (route provider + leg-fit camera owner)
@@ -268,14 +315,17 @@ public final class SharedViewerState {
 
     public func startTelemetry() {
         telemetryStarted = true
-        telemetrySource.start()
+        // MYR-336 — the fixture ticker runs in SIM ONLY. On the live path the
+        // watched vehicle's stream is the locator's to own (it holds the socket),
+        // so `liveVehicleLocator?.start()` below is the whole live lifecycle.
+        if !isLiveLocation { simulatedTelemetrySource.start() }
         userLocation.start()
         liveVehicleLocator?.start()
     }
 
     public func stopTelemetry() {
         telemetryStarted = false
-        telemetrySource.stop()
+        simulatedTelemetrySource.stop()
         userLocation.stop()
         liveVehicleLocator?.stop()
     }
@@ -300,11 +350,19 @@ public final class SharedViewerState {
     public func handleBackground() {
         guard telemetryStarted else { return }
         userLocation.stop()
+        // MYR-336 — the watched vehicle's socket joins the same owned lifecycle
+        // (mirrors `LiveVehicleFleet.handleBackground`). No-op in sim.
+        liveVehicleLocator?.handleBackground()
     }
 
     public func handleForeground() {
         guard telemetryStarted else { return }
         userLocation.start()
+        // MYR-336 — nudge the socket and re-ask for the watched car's snapshot: a
+        // car that moved while the app was suspended must not be re-rendered from
+        // whatever was last in memory (`LiveVehicleFleet.handleForeground`'s
+        // lesson, same shape). No-op in sim.
+        liveVehicleLocator?.handleForeground()
     }
 
     // MARK: MYR-211 — region biasing + current-location pickup
@@ -976,11 +1034,16 @@ public final class SharedViewerState {
     }
 
     /// MYR-270 — the streamed nav ETA (minutes) of the ride's car for the rider's
-    /// tracking "Arriving" takeover. v1 has NO rider-side live vehicle ETA stream
-    /// yet (`RiderLiveVehicleLocator` carries the car's coordinate + identity only),
-    /// so this is `nil`: the rider sheet then never fabricates an "Arriving" state on
-    /// the live path (MYR-228 — no fake ETA). Exposed here so the real ETA source
-    /// (a future rider-side telemetry subscription) swaps in one place.
+    /// tracking "Arriving" takeover. Still `nil`, so the rider sheet never
+    /// fabricates an "Arriving" state on the live path (MYR-228 — no fake ETA).
+    ///
+    /// MYR-336 gives the rider a live stream, so the reason this stays nil has
+    /// CHANGED and is worth stating precisely: the snapshot's `etaMinutes` is the
+    /// car's own navigation ETA to whatever Tesla is routing it to, which is not
+    /// provably the rider's pickup. Quoting it as "arriving in N" would be a real
+    /// number about the wrong destination — a worse failure than silence. It
+    /// becomes safe once MYR-231's two-leg dispatch statuses identify the car's
+    /// current leg; this stays the one place it swaps in.
     public var riderNavMinutesToArrival: Int? { nil }
 
     /// The fleet member to render for a draft/record `id`: the live vehicle in
