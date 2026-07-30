@@ -34,9 +34,34 @@ struct IncomingRequestDisplay: Equatable {
     /// wire carries no per-request battery, so a live request never asserts one.
     let batteryAfter: Int?
 
-    /// The role a request comes from when no rider name is known — honest (that IS
-    /// the rider's real relationship to the vehicle), not a persona.
+    /// The ROLE a request comes from, used as a subtitle label REGARDLESS of
+    /// whether a name is known (`IncomingRequestSheet.headerSubtitle`, the
+    /// prototype's own "Shared viewer · just now"). It describes the requester's
+    /// relationship to the vehicle and is true of every incoming request.
+    ///
+    /// It is deliberately NO LONGER the name-absent stand-in — see `formerRider`.
     static let neutralRole = "Shared viewer"
+
+    /// What stands in for a MISSING NAME on the live path (MYR-355).
+    ///
+    /// The backend fact this rests on: `requesterName` is omitted from the wire
+    /// **if and only if** the rider has no identity row in ANY of the three
+    /// sources. A rider who exists but has no name or email on file resolves to
+    /// the literal `"Rider"` instead — so the server never sends `nil` for a
+    /// person who is still there. On the LIVE path, absent `requesterName` now
+    /// means exactly one thing: **that account was deleted.**
+    ///
+    /// It used to render `neutralRole` ("Shared viewer"), which asserts a role in
+    /// the PRESENT TENSE about someone who no longer holds it — the vehicle is not
+    /// shared with them any more, because they are gone. "Former rider" is the one
+    /// claim the wire actually supports, and it is still not a fabricated name and
+    /// still not an initial.
+    ///
+    /// Scoped to the two name-absent surfaces (`title` and `riderLabel`) and
+    /// nowhere else. It is UNREACHABLE from the simulated path by construction:
+    /// `resolve`'s sim arm always returns the fixture persona, so `riderName` is
+    /// never nil there and every simulated capture is byte-identical.
+    static let formerRider = "Former rider"
 
     /// The fixture persona name for the SIM path (design/app/ride-request.jsx's
     /// Tweaks "Rider name: Sam"). Only ever rendered on the simulated path.
@@ -68,15 +93,17 @@ struct IncomingRequestDisplay: Equatable {
     }
 
     /// The sheet header title. "<Name> wants a ride" / "<Name> requested a ride"
-    /// (for-someone-else), or the neutral role variant when there's no name.
+    /// (for-someone-else), or — with no name — the MYR-355 `formerRider` stand-in,
+    /// because on the live path an absent `requesterName` means the account is
+    /// gone.
     func title(hasPassenger: Bool) -> String {
-        let subject = riderName ?? Self.neutralRole
+        let subject = riderName ?? Self.formerRider
         return hasPassenger ? "\(subject) requested a ride" : "\(subject) wants a ride"
     }
 
     /// The rider label for the accept toast / reserved Upcoming ride — the real
-    /// name or the neutral role (never a persona).
-    var riderLabel: String { riderName ?? Self.neutralRole }
+    /// name, or the same MYR-355 stand-in (never a persona).
+    var riderLabel: String { riderName ?? Self.formerRider }
 
     /// MYR-312 — the requester name to stamp on a draft this device's OWN rider
     /// submits, so the owner card is honest from the first frame instead of

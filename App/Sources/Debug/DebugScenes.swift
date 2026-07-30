@@ -162,6 +162,32 @@ enum DebugScene: String, CaseIterable {
     case ownerSettings
     case riderSettings
 
+    // MYR-355 — account deletion (App Store Guideline 5.1.1(v)). All five are the
+    // settings screens with the SHIPPING `AccountDeletionFlow` driven to one of
+    // its states, because headless tooling can neither tap "Delete account" nor a
+    // dialog button. They carry the same DEBUG identity `ownerSettings` /
+    // `riderSettings` do (`showsLiveSettings`), so the Account section's name row
+    // reads the same persona in the capture as in the drift-gate pair.
+    /// The OWNER's FIRST dialog: "Delete your account?" with the owner-role
+    /// consequences (Tesla(s), everyone's access).
+    case ownerDeleteAccount
+    /// The RIDER's FIRST dialog: the same title with the rider-role consequences
+    /// (access to shared Teslas, requested rides). The two messages are the whole
+    /// reason the copy is role-split, so both need a capture.
+    case riderDeleteAccount
+    /// The SECOND dialog on the owner shell — "This can't be undone".
+    case ownerDeleteAccountConfirm
+    /// The SECOND dialog on the rider shell. Identical copy by design (permanence
+    /// is not role-specific); captured on both so the claim is verified rather
+    /// than asserted.
+    case riderDeleteAccountConfirm
+    /// The FAILURE: both dialogs confirmed, the `DELETE` refused with a scripted
+    /// `500`, the notice up and the user STILL SIGNED IN on Settings. Injects
+    /// `DebugAccountDeletionEndpoint` behind the production flow, so the notice in
+    /// the capture came from a real throw through the shipping catch. It has no
+    /// other capture route at all — see that file.
+    case deleteAccountFailed
+
     // Owner side (HomeScreen → IncomingRequestSheet)
     case ownerHome         // plain owner Live Map, nothing seeded (live-telemetry captures)
     case ownerDrives       // owner Drives tab, nothing seeded (live-drives captures)
@@ -1011,11 +1037,14 @@ enum DebugScene: String, CaseIterable {
 
     static var initialSharedTab: String {
         guard let current, !current.isOwner else { return "shared" }
-        // MYR-354 — the three vehicle-section scenes live on the same tab.
+        // MYR-354 — the three vehicle-section scenes live on the same tab;
+        // MYR-355 — so do the two rider deletion scenes.
         if current == .riderSettings
             || current == .riderSettingsOwned
             || current == .riderSettingsMixed
-            || current == .riderSettingsEmpty { return "sharedSettings" }
+            || current == .riderSettingsEmpty
+            || current == .riderDeleteAccount
+            || current == .riderDeleteAccountConfirm { return "sharedSettings" }
         return current.isScheduled ? "rideHistory" : "shared"
     }
 
@@ -1024,6 +1053,9 @@ enum DebugScene: String, CaseIterable {
         case .ownerDrives, .ownerDrivesLoading: return "drives"
         // MYR-354 adds `ownerSettingsTop`; MYR-347 adds the five Share scenes.
         case .ownerSettings, .ownerSettingsTop, .ownerSettingsLoading: return "settings"
+        // MYR-355 — the three owner-shell deletion scenes are the Settings tab.
+        case .ownerDeleteAccount, .ownerDeleteAccountConfirm, .deleteAccountFailed:
+            return "settings"
         case .ownerShare, .ownerShareLive, .ownerShareMessage, .ownerShareMessageNoName,
              .ownerShareEmpty, .ownerSharePendingOnly, .ownerShareAcceptedOnly,
              .ownerShareComposer, .ownerShareComposerAccess:
@@ -1048,6 +1080,36 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerSettingsTop
             || self == .riderSettingsOwned || self == .riderSettingsMixed
             || self == .riderSettingsEmpty
+            // MYR-355 — the deletion scenes are the same screens with a dialog up,
+            // so they carry the same identity: the Account section's name row reads
+            // `settingsDisplayName`, and a capture of it must show what the drift-gate
+            // pair shows.
+            || accountDeletionStage != nil
+    }
+
+    /// MYR-355 — how far the SHIPPING `AccountDeletionFlow` should be driven on
+    /// boot, or `nil` for every other scene (which therefore never constructs a
+    /// dialog and stays byte-identical).
+    ///
+    /// It is a stand-in for the TAPS and nothing else — see
+    /// `AccountDeletionFlow.debugDrive`.
+    var accountDeletionStage: AccountDeletionFlow.DebugStage? {
+        switch self {
+        case .ownerDeleteAccount, .riderDeleteAccount: return .first
+        case .ownerDeleteAccountConfirm, .riderDeleteAccountConfirm: return .second
+        case .deleteAccountFailed: return .deleted
+        default: return nil
+        }
+    }
+
+    /// MYR-355 — the scripted account-deletion wire, for the ONE scene that runs
+    /// the delete. `nil` everywhere else, including the four dialog scenes, which
+    /// never reach the endpoint at all: they stop at a dialog, so leaving the
+    /// composed (nil, in the simulator) endpoint in place is both correct and what
+    /// keeps them from wiping the session out from under a screenshot.
+    var accountDeletionEndpoint: (any AccountDeletionEndpoint)? {
+        guard self == .deleteAccountFailed else { return nil }
+        return DebugAccountDeletionEndpoint(failure: DebugAccountDeletionEndpoint.internalError)
     }
 
     /// MYR-340 — whether the SHARE MESSAGE should be composed with a real owner
@@ -1259,6 +1321,11 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerShareEmpty || self == .ownerSharePendingOnly
             || self == .ownerShareAcceptedOnly
             || self == .ownerShareComposer || self == .ownerShareComposerAccess
+            // MYR-355 — the owner-shell deletion scenes. `deleteAccountFailed` is
+            // captured on the OWNER shell because that is the longer settings list
+            // and therefore the harder layout for a notice to sit under.
+            || self == .ownerDeleteAccount || self == .ownerDeleteAccountConfirm
+            || self == .deleteAccountFailed
     }
 
     /// MYR-260 — a DEBUG fleet override for scenes that need a specific
@@ -1966,6 +2033,9 @@ enum DebugScene: String, CaseIterable {
             viewer.sheetPhase = .summary
         case .modeChooser, .ownerSettings, .ownerSettingsTop, .riderSettings,
              .riderSettingsOwned, .riderSettingsMixed, .riderSettingsEmpty,
+             // MYR-355 — settings scenes: nothing about the rider sheet is seeded.
+             .ownerDeleteAccount, .riderDeleteAccount,
+             .ownerDeleteAccountConfirm, .riderDeleteAccountConfirm, .deleteAccountFailed,
              .scheduledDetails, .scheduledReschedule, .scheduledRequested, .scheduledConfirmCancel,
              .ownerHome, .ownerDrives, .ownerIncoming, .ownerIncomingQueued,
              .ownerScheduled, .ownerScheduledLive,

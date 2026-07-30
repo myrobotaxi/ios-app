@@ -40,8 +40,17 @@ struct SharedSettingsScreen: View {
     var onSwitchMode: () -> Void = {}
     let onAddCode: () -> Void
     let onSignOut: () -> Void
+    /// MYR-355 — see `SettingsScreen.accountDeletion`.
+    var accountDeletion: (any AccountDeletionEndpoint)? = nil
+    /// MYR-355 — see `SettingsScreen.onAccountDeleted`.
+    var onAccountDeleted: () -> Void = {}
+
+    /// MYR-355 — scroll anchor for the DEBUG deletion capture scenes (see below).
+    private static let bottomAnchorID = "mrt-shared-settings-bottom"
 
     @State private var confirmSignOut = false
+    /// MYR-355 — the account-deletion interaction; see `AccountDeletionFlow`.
+    @State private var deletion = AccountDeletionFlow()
 
     /// shared-screens.jsx:452-454 `firstName`/`fullName`/`email`.
     private var defaultedName: String {
@@ -99,6 +108,7 @@ struct SharedSettingsScreen: View {
             Color.mrtBg.ignoresSafeArea()
             VStack(spacing: 0) {
                 header
+                ScrollViewReader { proxy in
                 ScrollView {
                     VStack(spacing: 0) {
                         profileCard
@@ -120,10 +130,28 @@ struct SharedSettingsScreen: View {
                         if liveProfile != nil {
                             switchModeCard
                         }
+                        // MYR-355 — appended at the END of the list, so Sign out
+                        // stays the terminal action.
+                        accountLabel
+                        accountCard
                         signOutButton
                         footer
+                            .id(Self.bottomAnchorID)
                     }
                     .padding(.bottom, MRTMetrics.shareContentBottomPadding)
+                }
+                #if DEBUG
+                // Capture-only, MYR-355: the Account section this issue appends is
+                // below this screen's fold, and headless simctl has no scroll
+                // gesture. Scoped to the deletion scenes ALONE — `riderSettings`
+                // itself is deliberately NOT included, so it stays framed exactly
+                // where the drift gate has always framed it (at the top).
+                .onAppear {
+                    if DebugScene.current?.accountDeletionStage != nil {
+                        proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+                    }
+                }
+                #endif
                 }
             }
             .ignoresSafeArea(.container, edges: .top)
@@ -133,11 +161,50 @@ struct SharedSettingsScreen: View {
             isPresented: $confirmSignOut,
             config: ShareDialogs.signOutGuest(action: onSignOut)
         )
+        // MYR-355 — the two-step account-deletion dialogs + its notice + its busy
+        // overlay, identical to the owner screen's (one flow, one copy factory).
+        .mrtConfirmDialog(
+            isPresented: $deletion.isPresentingFirstConfirm,
+            config: deletion.firstConfirmConfig
+        )
+        .mrtConfirmDialog(
+            isPresented: $deletion.isPresentingSecondConfirm,
+            config: deletion.secondConfirmConfig
+        )
+        // The SAME alert grammar the §7.12 teardown failure uses — Settings'
+        // existing destructive-failure surface. A calm, honest end state; never a
+        // fake success, and never a sign-out (the account may still exist).
+        .alert(
+            AccountDeletionDialog.failureNoticeTitle,
+            isPresented: $deletion.isPresentingErrorNotice
+        ) {
+            SwiftUI.Button("OK", role: .cancel) { deletion.errorNotice = nil }
+        } message: {
+            // The second half of the ONE locked notice string — see
+            // `AccountDeletionDialog.failureNoticeBody`. `deletion.errorNotice`
+            // carries that string whole and is what raises this alert.
+            Text(AccountDeletionDialog.failureNoticeBody)
+        }
+        .overlay { AccountDeletionBusyOverlay(isDeleting: deletion.isDeleting) }
         // MYR-184 — refresh on arrival so a grant revoked by its owner stops
         // being listed here. No-op in sim.
         .task { await catalog.load() }
         // MYR-349 — hydrate the notification rows from §7.19. No-op in sim.
         .task { await pushPrefs.load() }
+        .task { await prepareAccountDeletion() }
+    }
+
+    /// MYR-355 — hand the flow its seams once the screen is on; see
+    /// `SettingsScreen.prepareAccountDeletion`.
+    @MainActor
+    private func prepareAccountDeletion() async {
+        deletion.endpoint = accountDeletion
+        deletion.onDeleted = onAccountDeleted
+        #if DEBUG
+        if let stage = DebugScene.current?.accountDeletionStage {
+            await deletion.debugDrive(to: stage, role: .shared)
+        }
+        #endif
     }
 
     // MARK: Header (shared-screens.jsx:694-696 `'74px 24px 12px'`)
@@ -286,6 +353,59 @@ struct SharedSettingsScreen: View {
                 isFirst: true,
                 action: onSwitchMode
             )
+        }
+    }
+
+    // MARK: Account (MYR-355 — App Store Guideline 5.1.1(v))
+    //
+    // Self-contained and appended at the END of the list, assembled from the ONE
+    // shared grammar (MYR-354 / #139) exactly as the owner page's copy is — same
+    // `SettingsSectionLabel`, same `SettingsCard`, same two row types. This page
+    // had hand-rolled the card's own numbers (16 / 13 / 22 inline) because the
+    // grammar file did not exist when it was written; those literals ARE
+    // `MRTSettingsGrammar.rowHorizontalPadding` / `.rowVerticalPadding` /
+    // `.sectionSpacing`, so the pixels are the same and the fork is gone.
+    //
+    // Exactly two things: who is signed in, and the way out of the product.
+
+    private var accountLabel: some View {
+        SettingsSectionLabel(AccountDeletionDialog.sectionTitle)
+    }
+
+    private var accountCard: some View {
+        SettingsCard {
+            accountNameRow
+            deleteAccountRow
+        }
+    }
+
+    /// DISPLAY-ONLY, with no rename affordance — see
+    /// `SettingsScreen.accountNameRow` for why (there is no profile-update
+    /// endpoint to reach, and a `SettingsDetailRow` with no `action` is the
+    /// grammar's own spelling of display-only). Reads the same `displayFullName`
+    /// the profile card at the top does: the real identity on live, the fixture
+    /// persona in SIM.
+    private var accountNameRow: some View {
+        SettingsDetailRow(
+            glyph: SettingsRowGlyph(systemName: "person"),
+            title: displayFullName,
+            caption: AccountDeletionDialog.nameProvenanceCaption,
+            isFirst: true
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("mrt.accountNameRow")
+    }
+
+    /// The destructive row, in the shared danger grammar — see
+    /// `SettingsDestructiveRow`. Byte-identical to the owner page's, which is the
+    /// point of both pages taking it from one place.
+    private var deleteAccountRow: some View {
+        SettingsDestructiveRow(
+            icon: "trash",
+            title: AccountDeletionDialog.deleteRowLabel,
+            accessibilityID: "mrt.deleteAccountRow"
+        ) {
+            deletion.begin(role: .shared)
         }
     }
 

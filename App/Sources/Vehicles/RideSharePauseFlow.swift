@@ -101,6 +101,12 @@ enum RideSharePauseDialog {
     /// reads as jargon on a surface that is otherwise plain English. "A rider" is
     /// the honest fallback and keeps the no-fabricated-name rule intact: it is never
     /// an invented name and never an initial.
+    ///
+    /// MYR-355 — and NOT the new "Former rider" either. That stand-in is
+    /// load-bearing on the incoming card, where an absent live `requesterName`
+    /// means the account was deleted; here it would tell the owner this pickup no
+    /// longer has a passenger, which if true means the row should be gone rather
+    /// than relabelled. See `UpcomingReservations.reservation(from:)`.
     static let unnamedRider = "A rider"
 
     /// The recommended action, pluralised. It says both halves of what it does, in

@@ -17,7 +17,7 @@ public protocol SnapshotFetching: Sendable {
 ///
 /// Value type (`Sendable`): all dependencies are immutable, so it is free to
 /// share across tasks without a serialization bottleneck.
-public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleServiceWindowEndpoint, VehicleRideShareEndpoint, VehicleRefreshing, VehicleCommandSending, VehicleSharingEndpoint, PushDeviceEndpoint, PushPrefsEndpoint {
+public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleServiceWindowEndpoint, VehicleRideShareEndpoint, VehicleRefreshing, VehicleCommandSending, VehicleSharingEndpoint, PushDeviceEndpoint, PushPrefsEndpoint, AccountDeletionEndpoint {
     private let environment: BackendEnvironment
     private let tokenProvider: any TokenProvider
     private let http: any HTTPPerforming
@@ -559,6 +559,27 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
             ["users", "me", "push-prefs"],
             method: "PUT",
             body: body,
+            allowTokenRefresh: true
+        )
+    }
+
+    // MARK: - Account deletion (MYR-355)
+
+    /// `DELETE /api/users/me` (MYR-355) — delete the signed-in account. No request
+    /// body; success is `204 No Content`, so this runs `performDiscardingBody`:
+    /// `perform` would fail a zero-byte 204 with `RestError.decoding`.
+    ///
+    /// Note the neighbour above: §7.19's push-prefs sit under `users/me` too and
+    /// DECODE their response. This one must not — same resource prefix, opposite
+    /// body contract.
+    ///
+    /// Runs the standard authenticated pipeline (Bearer + single 401
+    /// refresh-retry). Re-runnable by contract — see ``AccountDeletionEndpoint``.
+    public func deleteAccount() async throws {
+        try await performDiscardingBody(
+            ["users", "me"],
+            method: "DELETE",
+            body: nil,
             allowTokenRefresh: true
         )
     }

@@ -163,21 +163,43 @@ extension View {
 ///   • `.neutral` — an ordinary object (a car shared with you, a linked Tesla).
 ///   • `.gold`    — an ACTION or the account's own car (the gold accent's two
 ///                  sanctioned uses on this page).
+///   • `.danger`  — the one DESTRUCTIVE action a section may hold (MYR-355).
+///                  `mrtDangerFillSoft` + `mrtDialogRed` is not a new colour
+///                  pair: it is the confirm dialog's own destructive icon-circle
+///                  (Tokens.swift:268), and `mrtGoldFillSoft` is documented
+///                  there as its gold TWIN — so the danger glyph and the gold
+///                  one are the same construction at the same two alphas.
 struct SettingsRowGlyph: View {
-    enum Tone { case neutral, gold }
+    enum Tone { case neutral, gold, danger }
 
     var tone: Tone = .neutral
     var systemName: String?
     var initial: String?
     var size: CGFloat = 15
 
+    private var fill: Color {
+        switch tone {
+        case .neutral: return .mrtElevated
+        case .gold: return .mrtGoldBadgeFill
+        case .danger: return .mrtDangerFillSoft
+        }
+    }
+
+    private var ink: Color {
+        switch tone {
+        case .neutral: return .mrtTextMuted
+        case .gold: return .mrtGold
+        case .danger: return .mrtDialogRed
+        }
+    }
+
     var body: some View {
         ZStack {
-            Circle().fill(tone == .gold ? Color.mrtGoldBadgeFill : Color.mrtElevated)
+            Circle().fill(fill)
             if let systemName {
                 Image(systemName: systemName)
-                    .font(.system(size: size, weight: tone == .gold ? .bold : .regular))
-                    .foregroundStyle(tone == .gold ? Color.mrtGold : Color.mrtTextMuted)
+                    .font(.system(size: size, weight: tone == .neutral ? .regular : .bold))
+                    .foregroundStyle(ink)
             } else if let initial {
                 Text(initial)
                     .font(.system(size: 13, weight: .semibold))
@@ -292,6 +314,50 @@ struct SettingsActionRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// The DESTRUCTIVE row that closes a section's card — today only MYR-355's
+/// "Delete account". It is `SettingsActionRow`'s exact shape (32pt glyph, 14pt
+/// semibold title, the shared row chrome and its 44pt floor) with the gold
+/// swapped for `mrtDialogRed`, because a destructive row is an ACTION row and
+/// the only thing that differs is what it means.
+///
+/// **It is a ROW and not a second `SettingsSignOutButton`.** The outlined
+/// full-width button is PAGE furniture — the one way out of the product, sitting
+/// on the page ground below every card (shared-screens.jsx:518-523). Repeating
+/// that treatment inside a card would put two identically-weighted red controls
+/// on one screen and say they are the same kind of thing; deleting the account
+/// belongs to the Account section, which is why it carries the section's row
+/// grammar and Sign out keeps the page's.
+///
+/// It also carries **no chevron**: `SettingsActionRow`'s chevron promises a
+/// destination, and this row raises a dialog in place.
+struct SettingsDestructiveRow: View {
+    let icon: String
+    let title: String
+    var isFirst: Bool = false
+    /// Applied to the `Button` ITSELF rather than at the call site, so the
+    /// identifier lands on the element XCUITest reports as the button (the
+    /// frame `AccountDeletionUITests` measures against the 44pt floor).
+    let accessibilityID: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: MRTSettingsGrammar.rowGlyphSpacing) {
+                SettingsRowGlyph(tone: .danger, systemName: icon)
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .tracking(-0.1)
+                    .foregroundStyle(Color.mrtDialogRed)
+                Spacer(minLength: 0)
+            }
+            .mrtSettingsRow(isFirst: isFirst)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(accessibilityID)
     }
 }
 

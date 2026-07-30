@@ -69,6 +69,14 @@ struct SettingsScreen: View {
     /// did not exist, so there was nothing local to migrate — it reads and writes
     /// the same account value every other row here does.
     var pushPrefs: any PushPrefsService = SimulatedPushPrefsService()
+    /// MYR-355 — the account-deletion seam (`DELETE /api/users/me`). Non-nil on the
+    /// live path; `nil` on sim / DEBUG, where there is no server account and the
+    /// confirmed delete resolves to the local wipe alone (see `AccountDeletionFlow`).
+    var accountDeletion: (any AccountDeletionEndpoint)? = nil
+    /// MYR-355 — run after a successful delete. `RootView` wires this to the SAME
+    /// local sign-out helper the Sign out row's closure calls, so a deleted account
+    /// and a signed-out one leave the app in exactly one state.
+    var onAccountDeleted: () -> Void = {}
 
     // MARK: Tesla Account — live-path display state (MYR-243)
 
@@ -124,6 +132,10 @@ struct SettingsScreen: View {
     /// Honest failure copy for a teardown that couldn't complete (rare — atomic,
     /// retryable server-side).
     @State private var teardownError: String?
+    /// MYR-355 — the account-deletion interaction (both dialogs, the in-flight
+    /// write, the failure notice). ONE object rather than three `@State` flags —
+    /// see `AccountDeletionFlow`.
+    @State private var deletion = AccountDeletionFlow()
 
     var body: some View {
         Group {
@@ -186,6 +198,12 @@ struct SettingsScreen: View {
                             if liveProfile != nil {
                                 switchModeCard
                             }
+                            // MYR-355 — appended at the END of the list, so Sign out
+                            // stays terminal. Post-#139 there is no divider to place:
+                            // the card IS the section boundary, and `SettingsCard`
+                            // already carries the section gap below itself.
+                            accountLabel
+                            accountCard
                             signOutRow
                             footer
                                 .id(Self.bottomAnchorID)
@@ -198,7 +216,12 @@ struct SettingsScreen: View {
                     // scene starts scrolled to it so it is captured full-frame
                     // (headless simctl has no scroll gesture). No effect otherwise.
                     .onAppear {
-                        if DebugScene.current == .ownerSettings {
+                        // MYR-355 — the deletion scenes are captured at the same
+                        // anchor: the Account section this issue appends is the
+                        // LAST thing above Sign out, so a top-of-list capture would
+                        // frame everything except the subject.
+                        if DebugScene.current == .ownerSettings
+                            || DebugScene.current?.accountDeletionStage != nil {
                             proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                         }
                     }
@@ -268,6 +291,50 @@ struct SettingsScreen: View {
         // sim. A failed read is an honest state, not a silent fall-through — see
         // `LivePushPrefsService.load()`.
         .task { await pushPrefs.load() }
+        // MYR-355 — the two-step account-deletion dialogs + its notice + its busy
+        // overlay. All four read ONE flow object (see `AccountDeletionFlow`).
+        .mrtConfirmDialog(
+            isPresented: $deletion.isPresentingFirstConfirm,
+            config: deletion.firstConfirmConfig
+        )
+        .mrtConfirmDialog(
+            isPresented: $deletion.isPresentingSecondConfirm,
+            config: deletion.secondConfirmConfig
+        )
+        // The SAME alert grammar the §7.12 teardown failure uses — Settings'
+        // existing destructive-failure surface. A calm, honest end state; never a
+        // fake success, and never a sign-out (the account may still exist).
+        .alert(
+            AccountDeletionDialog.failureNoticeTitle,
+            isPresented: $deletion.isPresentingErrorNotice
+        ) {
+            SwiftUI.Button("OK", role: .cancel) { deletion.errorNotice = nil }
+        } message: {
+            // The second half of the ONE locked notice string — see
+            // `AccountDeletionDialog.failureNoticeBody`. `deletion.errorNotice`
+            // carries that string whole and is what raises this alert.
+            Text(AccountDeletionDialog.failureNoticeBody)
+        }
+        .overlay { AccountDeletionBusyOverlay(isDeleting: deletion.isDeleting) }
+        .task { await prepareAccountDeletion() }
+    }
+
+    /// MYR-355 — hand the flow its seams once the screen is on. Kept out of `body`
+    /// (an `@Observable` must not be mutated during a render pass).
+    @MainActor
+    private func prepareAccountDeletion() async {
+        deletion.endpoint = accountDeletion
+        deletion.onDeleted = onAccountDeleted
+        #if DEBUG
+        // Capture-only: headless tooling cannot tap "Delete account" and then a
+        // dialog button, so the scene drives the SHIPPING flow to the state it
+        // wants — the same stand-in-for-a-tap precedent as `ownerFreshnessWaking`
+        // / `ownerServiceWindowEditor`. Everything downstream of the taps (the
+        // copy, the endpoint call, the failure notice) is the production path.
+        if let stage = DebugScene.current?.accountDeletionStage {
+            await deletion.debugDrive(to: stage, role: .owner)
+        }
+        #endif
     }
 
     // MARK: Header (screens.jsx:398-400)
@@ -553,6 +620,76 @@ struct SettingsScreen: View {
                 isFirst: true,
                 action: onSwitchMode
             )
+        }
+    }
+
+    // MARK: Account (MYR-355 — App Store Guideline 5.1.1(v))
+    //
+    // Self-contained and appended at the END of the list, and — since MYR-354
+    // (#139) — in the SHARED card grammar every other section on this page now
+    // wears: a `SettingsSectionLabel` over a `SettingsCard` holding two rows at
+    // the converged row style (32pt leading circle, 14pt title, the inter-row
+    // hairline, a 44pt floor). It was written against the pre-#139 owner page —
+    // a `.label()` header over bare rows on the page ground — which is exactly
+    // the divider-list idiom that issue converged AWAY from, so keeping it would
+    // have re-forked the page at its last section.
+    //
+    // Exactly two things: who is signed in, and the way out of the product.
+    // Sign out stays terminal BELOW it — that button is page furniture, not a
+    // section row (see `SettingsDestructiveRow`).
+
+    private var accountLabel: some View {
+        SettingsSectionLabel(AccountDeletionDialog.sectionTitle)
+    }
+
+    private var accountCard: some View {
+        SettingsCard {
+            accountNameRow
+            deleteAccountRow
+        }
+    }
+
+    /// The signed-in person's name, DISPLAY-ONLY.
+    ///
+    /// There is deliberately NO rename affordance and no edit chevron: the backend
+    /// has no profile-update endpoint at all (nothing in `RestClient` or the
+    /// contracts the Kit consumes writes to `/api/users`), and an affordance that
+    /// cannot reach a server is the MYR-342 gate lesson in miniature — it would
+    /// appear to change the owner's name and do nothing. The caption says where
+    /// the name came from instead, which is the honest answer to the question a
+    /// rename button would have been asked.
+    ///
+    /// A `SettingsDetailRow` with **no `action`** is the grammar's own way to say
+    /// display-only: it renders the content bare rather than in a `Button`, so the
+    /// row has no press state and no tap target of its own to promise anything.
+    ///
+    /// Reads the SAME `profileName` the Profile section at the top does — the real
+    /// `settingsDisplayName` on live, the fixture persona in SIM — so the two can
+    /// never disagree and the simulated capture is unchanged by this row's
+    /// existence.
+    private var accountNameRow: some View {
+        SettingsDetailRow(
+            glyph: SettingsRowGlyph(systemName: "person"),
+            title: profileName,
+            caption: AccountDeletionDialog.nameProvenanceCaption,
+            isFirst: true
+        )
+        // ONE combined element: a name and its provenance are one fact, not two
+        // stops for a screen reader (asserted in `AccountDeletionUITests`).
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("mrt.accountNameRow")
+    }
+
+    /// The destructive row, in the shared danger grammar — `SettingsActionRow`'s
+    /// shape with `mrtDialogRed` where the gold goes, and the confirm dialog's own
+    /// destructive icon-circle for the glyph.
+    private var deleteAccountRow: some View {
+        SettingsDestructiveRow(
+            icon: "trash",
+            title: AccountDeletionDialog.deleteRowLabel,
+            accessibilityID: "mrt.deleteAccountRow"
+        ) {
+            deletion.begin(role: .owner)
         }
     }
 

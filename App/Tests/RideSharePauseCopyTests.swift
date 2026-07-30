@@ -285,6 +285,14 @@ final class RideSharePauseCopyTests: XCTestCase {
             + [RideSharePauseDialog.overflowLabel(for: worstCaseReservations(count: 4, now: now)) ?? ""]
         for text in strings {
             XCTAssertFalse(text.contains("Shared viewer"), "\"\(text)\" carries the internal role term")
+            // MYR-355 — nor the incoming card's deleted-account stand-in. It is
+            // correct there and wrong here: a row saying the passenger is gone
+            // means the row should not be in the list at all, which is the
+            // server's call and not this dialog's.
+            XCTAssertFalse(
+                text.contains(IncomingRequestDisplay.formerRider),
+                "\"\(text)\" carries the deleted-account stand-in"
+            )
         }
     }
 

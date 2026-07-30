@@ -123,6 +123,11 @@ struct RootView: View {
     /// consent-revoke runner into a `VehicleTeardownSeam` where `SettingsScreen` is
     /// built (needs the live `ownerHomeState` for the drop).
     private let vehicleTeardownRemover: ((String) async throws -> VehicleTeardownResponse)?
+    /// MYR-355 — the live `DELETE /api/users/me` seam behind both settings
+    /// screens' "Delete account" row, or `nil` on the simulated path (where the
+    /// local session IS the whole account). Built once in `init` from the resolved
+    /// mode + session provider, mirroring `vehicleTeardownRemover`.
+    private let accountDeletionEndpoint: (any AccountDeletionEndpoint)?
     /// MYR-186 — push registration + the permission moments. Always present; on
     /// the simulated path it is INERT (never prompts, never registers, never calls
     /// the network), so the fixture demo and every DEBUG capture scene are
@@ -285,6 +290,18 @@ struct RootView: View {
             mode: mode,
             sessionTokenProvider: auth.sessionTokenProvider
         )
+        // MYR-355 — the live account-deletion endpoint (nil in sim / static-token
+        // dev). The two DEBUG dialog scenes leave it exactly as composed; only
+        // `deleteAccountFailed` overrides it, with a scripted 500 behind the
+        // PRODUCTION flow, so every other scene is byte-identical.
+        var deletionEndpoint = AccountDeletionComposition.makeEndpoint(
+            mode: mode,
+            sessionTokenProvider: auth.sessionTokenProvider
+        )
+        #if DEBUG
+        if let scripted = DebugScene.current?.accountDeletionEndpoint { deletionEndpoint = scripted }
+        #endif
+        accountDeletionEndpoint = deletionEndpoint
         // MYR-360 — the reservation seam behind the owner's ride-share pause
         // warning: the owner's upcoming ACCEPTED reservations for one vehicle, plus
         // the decline that withdraws one. `nil` in sim / static-token dev, where the
@@ -475,6 +492,27 @@ struct RootView: View {
         if let id = session.currentUser?.id {
             modeStore.clearMode(forUserID: id)
         }
+    }
+
+    /// The LOCAL end-of-session sequence, in the one order it has always run:
+    /// release the persisted view mode, hand the APNs token back while the Bearer
+    /// is still valid (MYR-186), release the live socket + streams on the owner
+    /// shell (MYR-201), drop the session, land on Sign In.
+    ///
+    /// MYR-355 lifted it out of the two sign-out closures so ACCOUNT DELETION can
+    /// call the identical thing. A deleted account and a signed-out one must leave
+    /// the app in exactly one state, and the surest way to guarantee that is for
+    /// there to be exactly one implementation of it.
+    ///
+    /// `stopsTelemetry` is the only difference between the two shells, and it is
+    /// the pre-existing one: the rider shell never started the owner fleet.
+    @MainActor
+    private func signOutLocally(stopsTelemetry: Bool) {
+        clearModeOnSignOut()
+        unregisterPushOnSignOut()
+        if stopsTelemetry { ownerHomeState.stopTelemetry() }
+        session.signOut()
+        screen = .signIn
     }
 
     /// The identity the chooser renders. The real signed-in user on the live
@@ -973,17 +1011,10 @@ struct RootView: View {
                         // real vehicles). `nil` in SIM / DEBUG keeps the fixture
                         // `OwnerVehiclesState` list pixel-identical (MYR-228).
                         linkedVehicles: showsLinkedVehicles ? ownerHomeState : nil,
-                        onSignOut: {
-                            // MYR-201 — release the live socket + streams before
-                            // dropping the session (no-op for the simulated fleet).
-                            clearModeOnSignOut()
-                            // MYR-186 — before the session drops, so the DELETE
-                            // still carries a valid Bearer.
-                            unregisterPushOnSignOut()
-                            ownerHomeState.stopTelemetry()
-                            session.signOut()
-                            screen = .signIn
-                        },
+                        // MYR-355 — the sign-out sequence lives in ONE place now
+                        // (`signOutLocally`), because account deletion ends by
+                        // running exactly it. Same order, same steps as before.
+                        onSignOut: { signOutLocally(stopsTelemetry: true) },
                         // MYR-246 — Settings' "Add another Tesla" runs the real
                         // browser-sheet link flow on the live path (nil in SIM
                         // keeps the fixture sheet); refresh the fleet on link.
@@ -1005,7 +1036,12 @@ struct RootView: View {
                         // against §7.19 on the live path; the simulated service
                         // (the prototype's own positions, zero network) otherwise,
                         // which is what keeps every DEBUG capture unchanged.
-                        pushPrefs: pushPrefsService
+                        pushPrefs: pushPrefsService,
+                        // MYR-355 — `DELETE /api/users/me` + the SAME local wipe
+                        // the Sign out row runs. nil endpoint in SIM, where there
+                        // is no server account to delete.
+                        accountDeletion: accountDeletionEndpoint,
+                        onAccountDeleted: { signOutLocally(stopsTelemetry: true) }
                     )
                 default:
                     HomeScreen(
@@ -1068,13 +1104,12 @@ struct RootView: View {
                             inviteOrigin = .sharedSettings
                             screen = .inviteCode
                         },
-                        onSignOut: {
-                            clearModeOnSignOut()
-                            // MYR-186 — same ordering as the owner shell above.
-                            unregisterPushOnSignOut()
-                            session.signOut()
-                            screen = .signIn
-                        }
+                        // MYR-355 — the same one implementation the owner shell
+                        // calls; the rider shell never started the owner fleet, so
+                        // it stops no telemetry (unchanged from before).
+                        onSignOut: { signOutLocally(stopsTelemetry: false) },
+                        accountDeletion: accountDeletionEndpoint,
+                        onAccountDeleted: { signOutLocally(stopsTelemetry: false) }
                     )
                 case "rideHistory":
                     // app.jsx:127-129 `screen==='rideSummary'` — an in-tab
