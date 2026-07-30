@@ -1,16 +1,24 @@
 import SwiftUI
 import DesignSystem
 
-// MARK: - InvitesScreen (MYR-170, design/app/screens.jsx 1246-1557, Handoff §5.7)
+// MARK: - InvitesScreen (MYR-170, design/app/screens.jsx 1246-1557, Handoff §5.7;
+// REDESIGNED by MYR-347 — client-directed, see `ShareRosterState`)
 //
-// Owner Share tab: email field + Send (invalid/empty → shake), a Viewers
-// list (Revoke → confirm → toast) and a Pending list (Resend → gold confirm
-// + toast, Cancel → red confirm). A valid email opens the send-invite sheet:
-// recipient → vehicle multi-select (≥1 enforced) → cumulative access tier →
-// live summary card → Send invite → sending spinner (1150ms) → gold check
-// "Invite sent" (950ms) → adds to Pending + toast. Renders its own
-// `BottomNav` like every other owner screen (see `HomeScreen`'s header
-// comment) — replaces the MYR-167 `PlaceholderScreen` for the "invites" tab.
+// Owner Share tab. The roster is ONE resolved `ShareRosterState`: an empty
+// account gets a hero (icon, fact, explainer, one gold CTA); an account with
+// content gets an "Invite someone" action row plus a grouped card per non-empty
+// section ("Shared with" / "Invited"), each with a count badge. A section with no
+// rows is not in the model, so the "VIEWERS · 0" header the client photographed
+// cannot render at all.
+//
+// The composer is a two-step flow inside the ONE `mrtConfigSheet`: recipient name
+// → vehicle multi-select (≥1 enforced) + cumulative access tier + live summary
+// card → Send invite → sending spinner (1150ms) → gold check "Invite sent"
+// (950ms, SIM) or straight to the system share sheet with the link (LIVE).
+// Row actions (Revoke / Resend / Cancel) hang off each row's overflow menu and
+// land in the EXISTING `ShareDialogs` + `ShareService` calls — MYR-347 changed no
+// service and no dialog. Renders its own `BottomNav` like every other owner
+// screen (see `HomeScreen`'s header comment).
 struct InvitesScreen: View {
     /// MYR-184 — the `ShareService` seam (was the concrete `OwnerShareState`).
     /// `let`, not `@Bindable`: this screen only READS the lists and CALLS the
@@ -42,8 +50,25 @@ struct InvitesScreen: View {
     /// owner someone lost access when they did not.
     @State private var failureToast: String?
 
-    private enum SendStep { case config, sending, done }
+    /// MYR-347 — the composer gained a `recipient` step in FRONT of the
+    /// configuration it always had.
+    ///
+    /// The recipient field used to live on the page, between the header and the
+    /// roster, which is a permanent compose affordance on a screen whose job is
+    /// mostly to be READ. Moving it into the flow is what lets the page resolve
+    /// to one clean state (Linear MYR-347: "composer as a proper flow").
+    ///
+    /// It is a step of its OWN, not a field added to `.config`, because of
+    /// MYR-344 and MYR-353: a text field inside the tall configuration sheet
+    /// would put a keyboard over the very "Send invite" CTA MYR-344 fixed. The
+    /// recipient step is short by construction (title, one field, one button), so
+    /// it fits above the keyboard with room to spare, and the transition to
+    /// `.config` pays the dismissal settle before the tall content lays out.
+    private enum SendStep { case recipient, config, sending, done }
     @State private var sendStep: SendStep?
+    /// Focus for the recipient step's field. Dropped alongside the force-resign
+    /// on the way to `.config`, so SwiftUI does not put the keyboard back.
+    @FocusState private var recipientFocused: Bool
     @State private var accessLevel: ShareAccessLevel = .live
     @State private var shareVehicleIDs: Set<String> = []
     /// MYR-184 — the minted code, held only long enough to present the system
@@ -59,9 +84,15 @@ struct InvitesScreen: View {
                 header
                 ScrollView {
                     VStack(spacing: 0) {
-                        emailRow
-                        viewersSection
-                        pendingSection
+                        switch rosterState {
+                        case .empty:
+                            ShareEmptyHero(sharesByCode: shareService.sharesByCode, action: openSend)
+                        case .populated(let sections):
+                            ShareRosterCard { ShareInviteActionRow(action: openSend) }
+                            ForEach(sections) { section in
+                                sectionView(section)
+                            }
+                        }
                     }
                     .padding(.bottom, MRTMetrics.shareContentBottomPadding)
                 }
@@ -79,9 +110,9 @@ struct InvitesScreen: View {
         .mrtConfigSheet(
             isPresented: Binding(
                 get: { sendStep != nil },
-                set: { if !$0 { sendStep = nil; MRTKeyboard.dismiss() } }
+                set: { if !$0 { sendStep = nil; recipientFocused = false; MRTKeyboard.dismiss() } }
             ),
-            showsCloseButton: sendStep == .config
+            showsCloseButton: sendStep == .recipient || sendStep == .config
         ) {
             sendSheetContent
         }
@@ -148,6 +179,21 @@ struct InvitesScreen: View {
                let first = shareService.pending.first {
                 handout = try? await shareService.resend(first)
             }
+            // MYR-347 — the composer capture scenes' stand-in for the tap (and,
+            // for `.access`, for the typing). `.access` goes through the SHIPPING
+            // `openConfig()`, so the capture is behind the real validation, the
+            // real keyboard dismissal and the real vehicle pre-selection.
+            switch DebugScene.current?.initialComposerEntry {
+            case .recipient:
+                sendStep = .recipient
+            case .access:
+                email = shareService.sharesByCode
+                    ? DebugScene.sampleComposerLabel
+                    : DebugScene.sampleComposerEmail
+                openConfig()
+            case nil:
+                break
+            }
             #endif
         }
     }
@@ -208,7 +254,13 @@ struct InvitesScreen: View {
         return shareService.sharesByCode ? trimmed : ShareFixtures.name(fromEmail: email)
     }
 
-    private var emailRow: some View {
+    /// MYR-347 — the ONE resolved state this screen renders. Pure, and pinned by
+    /// `ShareRosterStateTests` across the whole matrix.
+    private var rosterState: ShareRosterState {
+        ShareRosterState.resolve(viewers: shareService.viewers, pending: shareService.pending)
+    }
+
+    private var recipientField: some View {
         HStack(spacing: 10) {
             TextField("", text: $email)
                 .textFieldStyle(.plain)
@@ -245,15 +297,33 @@ struct InvitesScreen: View {
                         .strokeBorder(emailError ? Color.mrtDialogRed : Color.mrtBorder, lineWidth: MRTMetrics.hairline)
                 )
                 .modifier(InviteShake(trigger: emailShakeTrigger))
-                .onSubmit { openSend() }
-            MRTButton("Send", fullWidth: false, action: openSend)
-                .frame(width: 110)
+                .focused($recipientFocused)
+                .submitLabel(.next)
+                .onSubmit { openConfig() }
         }
-        .padding(.horizontal, MRTMetrics.pageGutter)
-        .padding(.bottom, 28)
     }
 
+    /// Open the composer. The ONE entry point — the hero CTA and the "Invite
+    /// someone" row both call it, so there is a single place the flow starts.
+    ///
+    /// It no longer validates: there is nothing typed yet. The recipient step's
+    /// "Continue" is where `validRecipient` and the shake live now.
     private func openSend() {
+        sendStep = .recipient
+    }
+
+    /// Recipient → configuration.
+    ///
+    /// MYR-344 (client, TestFlight Jul 29: "After I select send keyboard is still
+    /// open and bottom sheet is cut off with the share details") — the recipient
+    /// field is STILL first responder when this is tapped, so the tall
+    /// configuration content would lay out inside a keyboard-shrunk container and
+    /// put its "Send invite" CTA below the fold, on a sheet that does not scroll.
+    /// Drop the keyboard (MYR-239's force-resign, not a focus write alone) and pay
+    /// the dismissal settle BEFORE the step changes, so the configuration measures
+    /// the full screen — the same `presentHandout` / MYR-353 pattern, and the only
+    /// reason a text field can live in this sheet at all.
+    private func openConfig() {
         guard validRecipient, let firstVehicle = shareService.shareableVehicles.first else {
             emailError = true
             emailShakeTrigger += 1
@@ -263,64 +333,68 @@ struct InvitesScreen: View {
             }
             return
         }
-        // MYR-344 (client, TestFlight Jul 29: "After I select send keyboard is
-        // still open and bottom sheet is cut off with the share details") — the
-        // recipient field is STILL first responder when Send is tapped, so the
-        // composer opened into a container the keyboard had already shrunk by its
-        // own height: the "Send invite" CTA and the summary card's last rows laid
-        // out below the fold, behind the keyboard, and this sheet does not scroll,
-        // so there was no way to reach them (proven by the failing-first UI test —
-        // the tap that should send lands on the keyboard instead). Drop
-        // the keyboard BEFORE the sheet presents (MYR-239's force-resign, not a
-        // focus write alone) so the sheet measures the full screen.
-        MRTKeyboard.dismiss()
         accessLevel = .live
         // MYR-228 fix (a) — the FIRST REAL vehicle, from the seam. This was
         // `VehicleFixtures.vehicles[0].id` unconditionally, so a live owner's
         // invite was pre-selected against a car that is not on their account.
         shareVehicleIDs = [firstVehicle.id]
-        sendStep = .config
+        recipientFocused = false
+        Task { @MainActor in
+            if MRTKeyboard.dismiss() { try? await Task.sleep(for: MRTKeyboard.dismissalSettle) }
+            sendStep = .config
+        }
     }
 
-    // MARK: Viewers (screens.jsx:113-125)
+    // MARK: Roster sections (MYR-347)
 
-    private var viewersSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Viewers \u{00B7} \(shareService.viewers.count)")
-                .mrtTextStyle(.label())
-                .foregroundStyle(Color.mrtTextMuted)
-                .padding(.horizontal, MRTMetrics.pageGutter)
-                .padding(.bottom, 14)
-            if shareService.viewers.isEmpty {
-                Text("No one has access yet.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.mrtTextMuted)
-                    .padding(.horizontal, MRTMetrics.pageGutter)
-                    .padding(.bottom, 14)
+    @ViewBuilder
+    private func sectionView(_ section: ShareRosterSection) -> some View {
+        VStack(spacing: 0) {
+            ShareSectionHeader(title: section.title, count: section.count)
+            ShareRosterCard {
+                switch section {
+                case .accepted(let viewers):
+                    ForEach(Array(viewers.enumerated()), id: \.element.id) { index, viewer in
+                        if index > 0 { ShareRowSeparator() }
+                        acceptedRow(viewer)
+                    }
+                case .invited(let invites):
+                    ForEach(Array(invites.enumerated()), id: \.element.id) { index, invite in
+                        if index > 0 { ShareRowSeparator() }
+                        invitedRow(invite)
+                    }
+                }
             }
-            ForEach(shareService.viewers) { viewer in
-                ViewerRow(viewer: viewer) { confirmRevoke = viewer }
+        }
+        .padding(.top, MRTMetrics.shareSectionGap)
+    }
+
+    private func acceptedRow(_ viewer: Viewer) -> some View {
+        ShareRosterRow(
+            name: viewer.name,
+            online: viewer.online,
+            detail: viewer.perm,
+            // The accepted row has no second handle to show: LIVE carries no
+            // email (§7.5) and the code is spent the moment it is redeemed.
+            footnote: nil
+        ) {
+            Button("Revoke access", systemImage: "person.slash", role: .destructive) {
+                confirmRevoke = viewer
             }
         }
     }
 
-    // MARK: Pending (screens.jsx:127-138)
-
-    @ViewBuilder
-    private var pendingSection: some View {
-        if !shareService.pending.isEmpty {
-            Text("Pending")
-                .mrtTextStyle(.label())
-                .foregroundStyle(Color.mrtTextMuted)
-                .padding(.horizontal, MRTMetrics.pageGutter)
-                .padding(.top, 20)
-                .padding(.bottom, 14)
-            ForEach(shareService.pending) { invite in
-                PendingRow(
-                    invite: invite,
-                    onResend: { confirmResend = invite },
-                    onCancel: { confirmCancelInvite = invite }
-                )
+    private func invitedRow(_ invite: PendingInvite) -> some View {
+        ShareRosterRow(
+            name: invite.name,
+            detail: ShareInviteDetail.line(tier: invite.tier, sent: invite.sent),
+            // SIM shows the fixture address, LIVE the CODE — `captionLead` is
+            // already the ONE place that split lives (MYR-184).
+            footnote: invite.captionLead.isEmpty ? nil : invite.captionLead
+        ) {
+            Button("Resend invite", systemImage: "paperplane") { confirmResend = invite }
+            Button("Cancel invite", systemImage: "xmark.circle", role: .destructive) {
+                confirmCancelInvite = invite
             }
         }
     }
@@ -330,10 +404,51 @@ struct InvitesScreen: View {
     @ViewBuilder
     private var sendSheetContent: some View {
         switch sendStep {
+        case .recipient: sendRecipientContent
         case .config: sendConfigContent
         case .sending: sendingContent
         case .done: sentDoneContent
         case nil: EmptyView()
+        }
+    }
+
+    /// MYR-347 step one — who is this for.
+    ///
+    /// Short on purpose: a title, a sub-line, one field and one button. That is
+    /// what makes it safe to raise the keyboard here at all (MYR-344/353) — the
+    /// whole step measures well under the ~516pt a keyboard leaves on a 393×852
+    /// canvas, so nothing it holds can be pushed off the bottom.
+    private var sendRecipientContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Invite to your Tesla")
+                .font(.system(size: 21, weight: .semibold))
+                .tracking(-0.4)
+                .foregroundStyle(Color.mrtText)
+                .padding(.bottom, 4)
+            // LIVE names the artefact — §7.5 sends nothing, it mints a code the
+            // owner hands over — so the field is a label, not an address. SIM
+            // keeps the prototype's email fiction.
+            Text(shareService.sharesByCode
+                ? "Who is this for? You\u{2019}ll get a link to send them."
+                : "Where should we send the invite?")
+                .font(.system(size: 13))
+                .foregroundStyle(Color.mrtTextSec)
+                .padding(.bottom, 18)
+
+            recipientField
+                .padding(.bottom, 14)
+
+            MRTButton("Continue", action: openConfig)
+        }
+        .padding(.horizontal, 22)
+        .padding(.bottom, 14)
+        // The stand-in for the tap a thumb makes on the field. `Task.sleep` first
+        // so the focus lands AFTER the sheet's own 0.34s spring settles, the same
+        // shape as the rider sheet's `scheduleSearchFocus` (MYR-353).
+        .task {
+            try? await Task.sleep(for: .milliseconds(380))
+            guard sendStep == .recipient else { return }
+            recipientFocused = true
         }
     }
 

@@ -164,9 +164,17 @@ final class SimulatedShareService: ShareService {
     var isLoading: Bool { false }
     var statusMessage: String? { nil }
 
-    init() {
-        viewers = ShareFixtures.viewers
-        pending = ShareFixtures.pending
+    /// MYR-347 — the roster is now an INPUT, defaulted to the fixtures.
+    ///
+    /// Every production call site still constructs it with no arguments and gets
+    /// the identical fixture roster; the parameters exist so the DEBUG state-
+    /// matrix scenes (`ownerShareEmpty` / `ownerSharePendingOnly` /
+    /// `ownerShareAcceptedOnly`) can capture the arms of `ShareRosterState` that
+    /// a seeded-in-`init` roster made unreachable. Fixture data still reaches
+    /// only the simulated path, so MYR-228 is unaffected.
+    init(viewers: [Viewer] = ShareFixtures.viewers, pending: [PendingInvite] = ShareFixtures.pending) {
+        self.viewers = viewers
+        self.pending = pending
     }
 
     func load() async {}
