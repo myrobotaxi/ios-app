@@ -424,6 +424,20 @@ struct RootView: View {
         return nil
     }
 
+    /// MYR-340 — the identity the SHARE MESSAGE names. The live user, or — only
+    /// for the DEBUG `ownerShareLive` capture scene — the sample profile, so the
+    /// named opening line is captureable in a simulator that cannot authenticate.
+    /// Same stand-in-for-a-live-session precedent as `settingsLiveProfile`.
+    /// `nil` everywhere else, which is exactly the state a live account carrying
+    /// no name is in — the message falls back to first-person phrasing.
+    private var shareLiveProfile: UserProfile? {
+        if let user = session.currentUser { return user }
+        #if DEBUG
+        if DebugScene.current?.namesShareMessageOwner == true { return DebugScene.sampleProfile }
+        #endif
+        return nil
+    }
+
     /// MYR-258 — the live owner car-offboarding seam for `SettingsScreen`, or nil
     /// (sim / static-token dev → the local unlink stays pixel-identical). Bundles
     /// the teardown `DELETE` (`vehicleTeardownRemover`), the fleet drop (so the car
@@ -656,7 +670,14 @@ struct RootView: View {
                         )
                     }
                 case "invites":
-                    InvitesScreen(shareService: shareService, ownerTab: $ownerTab)
+                    // MYR-340 — the owner's identity reaches only the share
+                    // message (nil in SIM → first-person phrasing; the tab
+                    // itself renders nothing from it and stays byte-identical).
+                    InvitesScreen(
+                        shareService: shareService,
+                        ownerTab: $ownerTab,
+                        liveProfile: shareLiveProfile
+                    )
                 case "settings":
                     SettingsScreen(
                         shareService: shareService,

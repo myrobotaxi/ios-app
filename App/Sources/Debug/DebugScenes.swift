@@ -464,6 +464,32 @@ enum DebugScene: String, CaseIterable {
     ///     one code) — the §7.5.1 regrouping, running for real.
     case ownerShareLive
 
+    /// MYR-340 — the SYSTEM SHARE SHEET carrying the new mini-onboarding message,
+    /// which is what the client actually receives and the only artefact this issue
+    /// changes. It is unreachable from every other capture route: the sheet opens
+    /// only after a Resend → confirm → Resend tap sequence (or a full compose +
+    /// Send), and headless tooling can neither tap nor type. So the scene runs the
+    /// PRODUCTION `LiveShareService.resend` against `ownerShareLive`'s own
+    /// `DebugShareEndpoint` on appear — the same real-code-path/injected-wire
+    /// precedent as `ownerServiceWindowSaved`, and the same stand-in-for-a-tap
+    /// precedent as `autoSubmitsInviteCode`. The code in the capture is therefore
+    /// genuinely minted by the shipping resend path, not hand-set, and the message
+    /// is composed by the shipping `ShareInviteMessage`.
+    ///
+    /// This scene is the NAMED grammar ("Thomas shared their Tesla with you"),
+    /// via `namesShareMessageOwner`.
+    case ownerShareMessage
+
+    /// MYR-340 — the SAME share sheet for an account carrying NO name. Not a
+    /// defensive branch: Apple returns a human name only on the FIRST
+    /// authorization, and a row created before native sign-in may carry none at
+    /// all, so a real fraction of owners hit this. The message switches to first
+    /// person ("I shared my Tesla with you") rather than rendering a sentence with
+    /// an empty name in it. Everything below the opening line is byte-identical to
+    /// `ownerShareMessage`, so the pair is a clean before/after of exactly that one
+    /// line.
+    case ownerShareMessageNoName
+
     /// MYR-184 (MYR-228 fix (c)) — the rider Live Map with ZERO shared vehicles.
     /// A state that could not exist before this issue: `SharedViewerState.vehicle`
     /// defaulted to `VehicleFixtures.vehicles[0]` with no live gate, so a rider who
@@ -621,7 +647,8 @@ enum DebugScene: String, CaseIterable {
         switch current {
         case .ownerDrives, .ownerDrivesLoading: return "drives"
         case .ownerSettings, .ownerSettingsLoading: return "settings"
-        case .ownerShare, .ownerShareLive: return "invites"
+        case .ownerShare, .ownerShareLive, .ownerShareMessage, .ownerShareMessageNoName:
+            return "invites"
         default: return "home"
         }
     }
@@ -636,6 +663,16 @@ enum DebugScene: String, CaseIterable {
     /// Whether Settings should render with the DEBUG live identity + switch row.
     var showsLiveSettings: Bool {
         self == .ownerSettings || self == .riderSettings || self == .ownerSettingsLoading
+    }
+
+    /// MYR-340 — whether the SHARE MESSAGE should be composed with a real owner
+    /// first name. The opening line is live-only by construction: SIM mints no
+    /// code, so it never opens a share sheet at all, and the simulator carries no
+    /// authenticated account to take a name from. Same stand-in-for-a-live-session
+    /// precedent as `showsLiveSettings`. Scoped to `ownerShareLive`, so no other
+    /// scene gains an identity.
+    var namesShareMessageOwner: Bool {
+        self == .ownerShareLive || self == .ownerShareMessage
     }
 
     /// MYR-326 — whether Settings' Tesla Account section should read the LIVE
@@ -723,6 +760,7 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerConnecting || self == .ownerConnectingCold
             || self == .ownerDrivesLoading || self == .ownerSettingsLoading
             || self == .ownerShare || self == .ownerShareLive
+            || self == .ownerShareMessage || self == .ownerShareMessageNoName
     }
 
     /// MYR-260 — a DEBUG fleet override for scenes that need a specific
@@ -1228,7 +1266,8 @@ enum DebugScene: String, CaseIterable {
              .ownerCharging, .ownerChargeComplete,
              .ownerVehicleEnriched,
              .ownerConnecting, .ownerConnectingCold, .ownerDrivesLoading, .ownerSettingsLoading,
-             .ownerShare, .ownerShareLive, .riderSharedEmpty, .riderWatchOnly,
+             .ownerShare, .ownerShareLive, .ownerShareMessage, .ownerShareMessageNoName,
+             .riderSharedEmpty, .riderWatchOnly,
              .riderInviteRateLimited, .riderInviteJoined:
             break // chooser / settings / sharing / rider live-map / owner scenes don't drive the viewer sheet
         }
@@ -1327,7 +1366,11 @@ extension DebugScene {
     /// scene keeps the fixture list and stays byte-identical.
     @MainActor
     var shareServiceOverride: (any ShareService)? {
-        guard self == .ownerShareLive else { return nil }
+        // MYR-340 — the two share-sheet scenes reuse this endpoint verbatim, so
+        // the code their resend re-mints comes off the same §7.5 wire shape.
+        guard self == .ownerShareLive
+                || self == .ownerShareMessage
+                || self == .ownerShareMessageNoName else { return nil }
         let vehicles = VehicleFixtures.vehicles
         let created = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-2 * 86_400))
         let expires = ISO8601DateFormatter().string(from: Date().addingTimeInterval(5 * 86_400))
@@ -1391,6 +1434,23 @@ extension DebugScene {
     /// and `opensServiceWindowEditor`.
     var autoSubmitsInviteCode: Bool {
         self == .riderInviteRateLimited || self == .riderInviteJoined
+    }
+
+    /// MYR-340 — whether the Share tab should open the SYSTEM SHARE SHEET on
+    /// appear, by running the production resend against the first pending invite.
+    ///
+    /// The sheet is otherwise unreachable headlessly: it opens only behind a
+    /// Resend → confirm → Resend tap chain (or a full compose + Send), and capture
+    /// tooling can neither tap nor type. Seeding the TAP rather than the RESULT is
+    /// deliberate and follows `autoSubmitsInviteCode` — the code in the capture is
+    /// minted by `LiveShareService.resend` off the real §7.5.4 wire, and the text
+    /// is composed by the shipping `ShareInviteMessage`, so the screenshot is
+    /// evidence about the product rather than about a literal in this file.
+    ///
+    /// Scoped to the two MYR-340 scenes, so `ownerShareLive` keeps its untouched
+    /// tab render and stays byte-identical.
+    var opensShareSheetForFirstPending: Bool {
+        self == .ownerShareMessage || self == .ownerShareMessageNoName
     }
 }
 

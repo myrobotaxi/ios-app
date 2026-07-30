@@ -528,12 +528,144 @@ final class LiveShareServiceTests: XCTestCase {
         XCTAssertEqual(resends.count, 1, "§7.5.4 re-mints the siblings server-side")
     }
 
-    /// The handout copy: short, code last and alone, no link (there is no web
-    /// surface to deep-link to — inventing one would send recipients nowhere).
-    func testHandoutMessageIsShortAndEndsWithTheCode() {
+    /// MYR-340 — the handout delegates to the ONE composer, so a create and a
+    /// resend cannot hand out differently-worded onboardings.
+    func testHandoutMessageIsTheComposedOnboarding() {
         let handout = ShareHandout(code: "RBO246", label: "Mira", vehicleNames: ["Lunar"])
-        XCTAssertEqual(handout.message, "Join my Tesla on MyRoboTaxi — code RBO246")
-        XCTAssertFalse(handout.message.contains("http"), "no link — there is no web surface")
+        XCTAssertEqual(
+            handout.message(ownerFirstName: "Thomas"),
+            ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
+        )
+        XCTAssertEqual(
+            handout.message(ownerFirstName: nil),
+            ShareInviteMessage.compose(code: "RBO246", ownerFirstName: nil)
+        )
+    }
+}
+
+// MARK: - Share message composition (MYR-340)
+
+/// TestFlight, Jul 29: "Feels strange just sending a text message, where do they
+/// go." The MYR-184 message was the code and nothing else — a credential with no
+/// way to spend it. These pin the three things the client asked for (a way to get
+/// the app, a prominent code, and an honest expiry) plus the two grammars the
+/// opening line has to have.
+final class ShareInviteMessageTests: XCTestCase {
+
+    private func lines(_ message: String) -> [String] {
+        message.components(separatedBy: "\n")
+    }
+
+    /// The CODE stands alone on its own line — it is the one thing the recipient
+    /// transcribes by hand, and a code trailing a numbered step is a code lost in
+    /// the paragraph.
+    func testTheCodeIsAloneOnItsOwnLine() {
+        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
+        XCTAssertTrue(
+            lines(message).contains("RBO246"),
+            "the code must occupy a whole line by itself, not trail a step"
+        )
+        // And it is set off top and bottom, not merely first on its line.
+        let index = try? XCTUnwrap(lines(message).firstIndex(of: "RBO246"))
+        let all = lines(message)
+        if let index {
+            XCTAssertEqual(all[index - 1], "", "blank line above the code")
+            XCTAssertEqual(all[index + 1], "", "blank line below the code")
+        }
+    }
+
+    /// The TestFlight link is present, plain, and quoted from the ONE constant —
+    /// never re-typed inline, where a typo would send every recipient nowhere.
+    func testTheTestFlightLinkIsPresentAsAPlainURL() {
+        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
+        XCTAssertTrue(message.contains(AppDistribution.testFlightPublicJoinURL))
+        XCTAssertEqual(
+            AppDistribution.testFlightPublicJoinURL,
+            "https://testflight.apple.com/join/uarZRUbg",
+            "the live public link (Friends & Family external group, 2026-07-29)"
+        )
+        // Plain https, so Messages/Mail auto-detect it. No markdown, no angle
+        // brackets, no metadata wrapper — anything else renders as literal text.
+        XCTAssertFalse(message.contains("<https"), "no angle-bracket wrapping")
+        XCTAssertFalse(message.contains("](" ), "no markdown link syntax")
+        XCTAssertNotNil(URL(string: AppDistribution.testFlightPublicJoinURL))
+    }
+
+    /// The three steps are in the order the recipient performs them, and the
+    /// install step is FIRST — the client's "where do they go" is answered before
+    /// the code is mentioned at all.
+    func testTheStepsReadInTheOrderTheyArePerformed() {
+        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
+        let getApp = try? XCTUnwrap(message.range(of: "1. Get the app"))
+        let signIn = try? XCTUnwrap(message.range(of: "2. Sign in with Apple"))
+        let enter = try? XCTUnwrap(message.range(of: "3. Enter this invite code"))
+        guard let getApp, let signIn, let enter else { return XCTFail("all three steps present") }
+        XCTAssertTrue(getApp.lowerBound < signIn.lowerBound)
+        XCTAssertTrue(signIn.lowerBound < enter.lowerBound)
+        XCTAssertTrue(
+            getApp.lowerBound < (message.range(of: "RBO246")?.lowerBound ?? message.startIndex),
+            "the way to get the app comes before the code"
+        )
+    }
+
+    /// The EXPIRY is stated, and it matches the contract's own window (§7.5.4
+    /// resets `expiresAt` to a full 7 days). A code with no stated shelf life is
+    /// a code someone tries to redeem in three weeks.
+    func testTheExpiryIsStatedAndMatchesTheContractWindow() {
+        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
+        XCTAssertEqual(ShareInviteMessage.expiryDays, 7, "rest-api.md §7.5.1/§7.5.4")
+        XCTAssertTrue(message.contains("The code expires in 7 days."))
+        XCTAssertTrue(
+            message.hasSuffix("The code expires in 7 days."),
+            "the caveat lands last, after the steps — never above them"
+        )
+    }
+
+    /// With a name, the opening line NAMES the owner — this is the whole point of
+    /// the sentence: the recipient learns who this is from before anything else.
+    func testTheOpeningLineNamesTheOwnerWhenTheAccountCarriesAName() {
+        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
+        XCTAssertTrue(message.hasPrefix("Thomas shared their Tesla with you on MyRoboTaxi."))
+    }
+
+    /// Without one, it switches to FIRST PERSON rather than rendering a sentence
+    /// with an empty name in it. `nil` is a real state, not a defensive branch:
+    /// Apple returns a name only on the first authorization, and a pre-native
+    /// account may carry none (`UserProfile`).
+    func testTheOpeningLineFallsBackToFirstPersonWithNoName() {
+        for absent: String? in [nil, "", "   "] {
+            let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: absent)
+            XCTAssertTrue(
+                message.hasPrefix("I shared my Tesla with you on MyRoboTaxi."),
+                "no usable name → first person, never a hole in the sentence"
+            )
+            XCTAssertFalse(message.contains("  shared"), "no empty-name artifact")
+            // Everything else about the message is identical.
+            XCTAssertTrue(message.contains(AppDistribution.testFlightPublicJoinURL))
+            XCTAssertTrue(message.contains("RBO246"))
+        }
+    }
+
+    /// The name is trimmed, not pasted raw: `UserProfile` normalizes, but the
+    /// composer is the last line of defence and a stray newline here would break
+    /// the opening line in two.
+    func testAWhitespacePaddedNameIsTrimmed() {
+        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "  Thomas ")
+        XCTAssertTrue(message.hasPrefix("Thomas shared their Tesla"))
+    }
+
+    /// Both share paths — a fresh create and a §7.5.4 resend, which mints a NEW
+    /// code and kills the old one — carry the SAME onboarding. The resend handout
+    /// deliberately carries no vehicle names (`LiveShareService.resend`), which
+    /// must not change the message, since the message never quoted them.
+    func testCreateAndResendHandoutsComposeTheSameMessageShape() {
+        let created = ShareHandout(code: "RBO246", label: "Mira", vehicleNames: ["Lunar", "Cybercab"])
+        let resent = ShareHandout(code: "RBO246", label: "Mira", vehicleNames: [])
+        XCTAssertEqual(
+            created.message(ownerFirstName: "Thomas"),
+            resent.message(ownerFirstName: "Thomas"),
+            "the recipient of a resend gets the same onboarding as a first-time invite"
+        )
     }
 }
 
