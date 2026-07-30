@@ -335,9 +335,13 @@ struct SettingsToggleRow: View {
 // masks: flipping either one silenced both, and whichever the rider touched
 // second would appear to have moved on its own.
 //
-// MYR-349 (PR #137) owns the SERVICE behind these rows and lands
-// `SettingsNotificationRows`, a row→category table. When that merges, this enum
-// collapses into it as a table edit and these strings travel unchanged.
+// MYR-349 (PR #137) owns the SERVICE behind these rows and landed
+// `SettingsNotificationRows`, a row→category table. **That merge has happened**:
+// these strings travelled unchanged and are now READ BY the table
+// (`SettingsNotificationRows.owner[0].label`, `.rider[0].label` / `.caption`),
+// which is the only place either page's rows are declared. Nothing consumes this
+// enum at a call site any more — it stays as the one home for the reasoning
+// above, which a bare string literal in a table cannot carry.
 enum SettingsNotificationCopy {
     /// The rider's ONE ride-lifecycle row, replacing the prototype's two.
     /// The sub-line is not decoration: it is the receipt for the merge, naming

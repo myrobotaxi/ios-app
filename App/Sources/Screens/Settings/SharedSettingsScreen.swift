@@ -1,5 +1,6 @@
 import SwiftUI
 import DesignSystem
+import MyRoboTaxiKit
 
 // MARK: - SharedSettingsScreen (MYR-170, design/app/shared-screens.jsx
 // 444-557, Handoff §5.9)
@@ -30,21 +31,16 @@ struct SharedSettingsScreen: View {
     var catalog: any SharedVehicleCatalog = SimulatedSharedVehicleCatalog()
     /// MYR-186 — see `SettingsScreen.pushAuthorization`.
     var pushAuthorization: PushAuthorizationState = .notDetermined
+    /// MYR-349 — see `SettingsScreen.pushPrefs`. The rider's card is ONE row over
+    /// the ONE `ride_lifecycle` category (MYR-354 merged the prototype's pair);
+    /// see `notificationsCard`.
+    var pushPrefs: any PushPrefsService = SimulatedPushPrefsService()
     /// MYR-224 — flip to the owner shell. Only invoked from the switch row, which
     /// renders only when `liveProfile != nil`.
     var onSwitchMode: () -> Void = {}
     let onAddCode: () -> Void
     let onSignOut: () -> Void
 
-    private struct NotificationToggles {
-        /// MYR-354 (with MYR-349) — ONE value for the ONE `ride_lifecycle`
-        /// category, replacing the prototype's `requestUpdates` + `arrival` pair.
-        /// Both seeded `true`, so the merged row's rest position is unchanged.
-        var rideUpdates = true
-        var promos = false
-    }
-
-    @State private var toggles = NotificationToggles()
     @State private var confirmSignOut = false
 
     /// shared-screens.jsx:452-454 `firstName`/`fullName`/`email`.
@@ -111,10 +107,14 @@ struct SharedSettingsScreen: View {
                         notificationsLabel
                         notificationsCard
                         SettingsSectionNotices {
+                            // MYR-349 — a write that did not land, or a read that
+                            // did not answer. Never present on the simulated path
+                            // (`statusMessage` is always nil there), so no DEBUG
+                            // capture can reach it.
+                            PushPrefsNotice(message: pushPrefs.statusMessage)
                             // MYR-186 — renders only when the system authorization
                             // was DENIED; absent (and pixel-identical) in every
                             // other state, including the whole simulated path.
-                            // MYR-349's live-only `PushPrefsNotice` joins it here.
                             PushDeniedNotice(state: pushAuthorization)
                         }
                         if liveProfile != nil {
@@ -136,6 +136,8 @@ struct SharedSettingsScreen: View {
         // MYR-184 — refresh on arrival so a grant revoked by its owner stops
         // being listed here. No-op in sim.
         .task { await catalog.load() }
+        // MYR-349 — hydrate the notification rows from §7.19. No-op in sim.
+        .task { await pushPrefs.load() }
     }
 
     // MARK: Header (shared-screens.jsx:694-696 `'74px 24px 12px'`)
@@ -242,15 +244,32 @@ struct SharedSettingsScreen: View {
     /// move, and the one the rider did not touch appears to change by itself.
     /// A control that cannot deliver what it offers is worse than an absent one,
     /// so they are ONE row now, with a sub-line naming everything it governs.
+    /// That was MYR-349's own stated OPEN QUESTION (it shipped both rows over one
+    /// value and left the STRUCTURE to this issue); the merge is the answer, and
+    /// it lands in `SettingsNotificationRows.rider` so the table stays the one
+    /// place either page's rows are declared.
+    ///
+    /// The "Tips & product news" row is GONE (MYR-349, the client: "the tips
+    /// notification seems useless"). It was the one row with no send site behind
+    /// it at all, and §7.19 deliberately has no column for it — so the rider card
+    /// is exactly one row, and it is the merged one.
     private var notificationsCard: some View {
         SettingsCard {
-            SettingsToggleRow(
-                label: SettingsNotificationCopy.riderRideUpdates,
-                caption: SettingsNotificationCopy.riderRideUpdatesCaption,
-                isOn: $toggles.rideUpdates,
-                isFirst: true
-            )
-            SettingsToggleRow(label: "Tips & product news", isOn: $toggles.promos)
+            ForEach(Array(SettingsNotificationRows.rider.enumerated()), id: \.element.id) { index, row in
+                SettingsToggleRow(
+                    label: row.label,
+                    caption: row.caption,
+                    // MYR-349 — the row RENDERS the service's value and WRITES
+                    // through it; the optimistic / echo / rollback pattern lives
+                    // in `PushPrefsService` alone. See `SettingsScreen
+                    // .pushPrefsBinding` for why the setter is fire-and-forget.
+                    isOn: Binding(
+                        get: { pushPrefs.prefs[row.category] },
+                        set: { newValue in Task { await pushPrefs.setEnabled(row.category, newValue) } }
+                    ),
+                    isFirst: index == 0
+                )
+            }
         }
     }
 

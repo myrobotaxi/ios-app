@@ -56,19 +56,19 @@ struct SettingsScreen: View {
     /// `PushDeniedNotice` under the toggles and nothing else; `.notDetermined`
     /// (the default, and what the simulated path always reports) renders nothing.
     var pushAuthorization: PushAuthorizationState = .notDetermined
-
-    private struct NotificationToggles {
-        /// MYR-354 (with MYR-349) — the owner's `ride_lifecycle` switch. The
-        /// category already gated the owner's "X wants a ride" pushes; the row
-        /// simply did not exist. Seeded ON, which is both §7.19's default and
-        /// the only honest rest position for a notification the app is already
-        /// sending.
-        var rideRequests = true
-        var driveStarted = true
-        var driveCompleted = true
-        var chargingComplete = false
-        var viewerJoined = true
-    }
+    /// MYR-349 — the account's real per-category push preferences (rest-api.md
+    /// §7.19). This REPLACES the `@State private var toggles = NotificationToggles()`
+    /// struct these rows used to move: it persisted nowhere and gated nothing, so
+    /// a switch turned off came back on at the next launch and the notification
+    /// arrived either way. The default is the simulated service, which keeps the
+    /// prototype's own positions and touches no network, so every simulated and
+    /// DEBUG capture is unchanged.
+    ///
+    /// MYR-354 adds the owner's `ride_lifecycle` row on top of this seam. The
+    /// category already gated the owner's "X wants a ride" pushes; the ROW simply
+    /// did not exist, so there was nothing local to migrate — it reads and writes
+    /// the same account value every other row here does.
+    var pushPrefs: any PushPrefsService = SimulatedPushPrefsService()
 
     // MARK: Tesla Account — live-path display state (MYR-243)
 
@@ -106,7 +106,6 @@ struct SettingsScreen: View {
     /// Scroll anchor for the DEBUG `ownerSettings` capture scene (see below).
     private static let bottomAnchorID = "mrt-settings-bottom"
 
-    @State private var toggles = NotificationToggles()
     @State private var vehicleDetail: Vehicle?
     @State private var confirmUnlink: Vehicle?
     @State private var confirmSignOut = false
@@ -173,11 +172,15 @@ struct SettingsScreen: View {
                             notificationsLabel
                             notificationsCard
                             SettingsSectionNotices {
+                                // MYR-349 — a write that did not land, or a read
+                                // that did not answer. Never present on the
+                                // simulated path (`statusMessage` is always nil
+                                // there), so no DEBUG capture can reach it.
+                                PushPrefsNotice(message: pushPrefs.statusMessage)
                                 // MYR-186 — renders only when the system
                                 // authorization was DENIED; absent (and therefore
                                 // pixel-identical) in every other state, including
-                                // the whole simulated path. MYR-349's live-only
-                                // `PushPrefsNotice` joins it here.
+                                // the whole simulated path.
                                 PushDeniedNotice(state: pushAuthorization)
                             }
                             if liveProfile != nil {
@@ -260,6 +263,11 @@ struct SettingsScreen: View {
         }
         // MYR-258 — busy overlay while the teardown DELETE is in flight.
         .overlay { teardownBusyOverlay }
+        // MYR-349 — hydrate the notification rows from §7.19 on arrival, so they
+        // show what the ACCOUNT holds rather than a compiled-in default. No-op in
+        // sim. A failed read is an honest state, not a silent fall-through — see
+        // `LivePushPrefsService.load()`.
+        .task { await pushPrefs.load() }
     }
 
     // MARK: Header (screens.jsx:398-400)
@@ -499,18 +507,36 @@ struct SettingsScreen: View {
     /// MYR-349's prefs work): `ride_lifecycle` gates the owner's "X wants a
     /// ride" pushes — the one notification in this product that wakes a phone
     /// for money — and this page offered no switch for it at all.
+    ///
+    /// MYR-349 — the rows, their copy AND their §7.19 categories all come from
+    /// the ONE shared table (`SettingsNotificationRows.owner`), so the mapping a
+    /// test asserts is the mapping that renders and neither Settings page can
+    /// grow a row the other does not know about. Each row RENDERS the service's
+    /// value and WRITES through it, so this screen holds no notification state of
+    /// its own.
     private var notificationsCard: some View {
         SettingsCard {
-            SettingsToggleRow(
-                label: SettingsNotificationCopy.ownerRideRequests,
-                isOn: $toggles.rideRequests,
-                isFirst: true
-            )
-            SettingsToggleRow(label: "Drive started", isOn: $toggles.driveStarted)
-            SettingsToggleRow(label: "Drive completed", isOn: $toggles.driveCompleted)
-            SettingsToggleRow(label: "Charging complete", isOn: $toggles.chargingComplete)
-            SettingsToggleRow(label: "Viewer joined", isOn: $toggles.viewerJoined)
+            ForEach(Array(SettingsNotificationRows.owner.enumerated()), id: \.element.id) { index, row in
+                SettingsToggleRow(
+                    label: row.label,
+                    caption: row.caption,
+                    isOn: pushPrefsBinding(row.category),
+                    isFirst: index == 0
+                )
+            }
         }
+    }
+
+    /// The binding a row's switch drives. The setter is fire-and-forget on
+    /// purpose: `setEnabled` flips the value synchronously before it suspends, so
+    /// the switch moves under the finger, and there is nothing for this view to do
+    /// with a failure that the rolled-back row and its notice are not already
+    /// showing (the same reasoning as `HomeScreen.setRideShareEnabled`).
+    private func pushPrefsBinding(_ category: PushPrefCategory) -> Binding<Bool> {
+        Binding(
+            get: { pushPrefs.prefs[category] },
+            set: { newValue in Task { await pushPrefs.setEnabled(category, newValue) } }
+        )
     }
 
     // MARK: Switch view mode (MYR-224 — client-approved chooser companion)

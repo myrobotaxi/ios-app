@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 import UIKit
 import DesignSystem
 import MyRoboTaxiKit
@@ -304,7 +305,6 @@ final class SettingsGrammarTests: XCTestCase {
             SettingsNotificationCopy.ownerRideRequests,
             SettingsNotificationCopy.riderRideUpdates,
             "Drive started", "Drive completed", "Charging complete", "Viewer joined",
-            "Tips & product news",
         ]
         for label in labels {
             let width = (label as NSString).size(
@@ -312,5 +312,61 @@ final class SettingsGrammarTests: XCTestCase {
             ).width
             XCTAssertLessThan(width, available, "\"\(label)\" does not fit its row")
         }
+    }
+
+    // MARK: The notices slot (MYR-354 × MYR-349, asserted at the merge)
+
+    /// MYR-354 named `SettingsSectionNotices` as the slot under the notifications
+    /// card where MYR-186's `PushDeniedNotice` and MYR-349's live-only
+    /// `PushPrefsNotice` would BOTH land. MYR-349 shipped its notice loose in each
+    /// body instead, so the merge had to move it — and a view moved into a
+    /// container is exactly the kind of change that compiles while rendering
+    /// nothing.
+    ///
+    /// Measured through a `UIHostingController` (the `OwnerPeekBandTests`
+    /// precedent) rather than reasoned about: the slot must be ZERO-height with
+    /// nothing to say — which is what keeps every simulated and DEBUG capture
+    /// pixel-identical, since `SimulatedPushPrefsService.statusMessage` is always
+    /// nil — and must GROW for each notice that has something to say.
+    func testTheNoticesSlotRendersWhatItIsGiven() {
+        let width: CGFloat = 375
+
+        func height<V: View>(_ view: V) -> CGFloat {
+            let host = UIHostingController(rootView: view.frame(width: width))
+            host.view.backgroundColor = .clear
+            return host.sizeThatFits(
+                in: CGSize(width: width, height: .greatestFiniteMagnitude)
+            ).height
+        }
+
+        // The simulated path: nothing to say, so the slot reserves nothing.
+        let silent = height(
+            SettingsSectionNotices {
+                PushPrefsNotice(message: nil)
+                PushDeniedNotice(state: .notDetermined)
+            }
+        )
+        XCTAssertEqual(silent, 0, accuracy: 0.5,
+                       "an empty slot must not move a single row below it")
+
+        // The live path: a write that did not land. The notice RENDERS here now.
+        let withPrefsNotice = height(
+            SettingsSectionNotices {
+                PushPrefsNotice(message: "That didn\u{2019}t save. Try again.")
+                PushDeniedNotice(state: .notDetermined)
+            }
+        )
+        XCTAssertGreaterThan(withPrefsNotice, silent,
+                             "PushPrefsNotice must render inside the slot it was moved into")
+
+        // Both at once — the pair the slot exists for.
+        let both = height(
+            SettingsSectionNotices {
+                PushPrefsNotice(message: "That didn\u{2019}t save. Try again.")
+                PushDeniedNotice(state: .denied)
+            }
+        )
+        XCTAssertGreaterThan(both, withPrefsNotice,
+                             "the two notices stack; neither may swallow the other")
     }
 }
