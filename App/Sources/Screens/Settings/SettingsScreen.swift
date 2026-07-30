@@ -56,13 +56,14 @@ struct SettingsScreen: View {
     /// `PushDeniedNotice` under the toggles and nothing else; `.notDetermined`
     /// (the default, and what the simulated path always reports) renders nothing.
     var pushAuthorization: PushAuthorizationState = .notDetermined
-
-    private struct NotificationToggles {
-        var driveStarted = true
-        var driveCompleted = true
-        var chargingComplete = false
-        var viewerJoined = true
-    }
+    /// MYR-349 — the account's real per-category push preferences (rest-api.md
+    /// §7.19). This REPLACES the `@State private var toggles = NotificationToggles()`
+    /// struct these rows used to move: it persisted nowhere and gated nothing, so
+    /// a switch turned off came back on at the next launch and the notification
+    /// arrived either way. The default is the simulated service, which keeps the
+    /// prototype's own positions and touches no network, so every simulated and
+    /// DEBUG capture is unchanged.
+    var pushPrefs: any PushPrefsService = SimulatedPushPrefsService()
 
     // MARK: Tesla Account — live-path display state (MYR-243)
 
@@ -100,7 +101,6 @@ struct SettingsScreen: View {
     /// Scroll anchor for the DEBUG `ownerSettings` capture scene (see below).
     private static let bottomAnchorID = "mrt-settings-bottom"
 
-    @State private var toggles = NotificationToggles()
     @State private var vehicleDetail: Vehicle?
     @State private var confirmUnlink: Vehicle?
     @State private var confirmSignOut = false
@@ -252,6 +252,11 @@ struct SettingsScreen: View {
         }
         // MYR-258 — busy overlay while the teardown DELETE is in flight.
         .overlay { teardownBusyOverlay }
+        // MYR-349 — hydrate the notification rows from §7.19 on arrival, so they
+        // show what the ACCOUNT holds rather than a compiled-in default. No-op in
+        // sim. A failed read is an honest state, not a silent fall-through — see
+        // `LivePushPrefsService.load()`.
+        .task { await pushPrefs.load() }
     }
 
     // MARK: Header (screens.jsx:398-400)
@@ -599,10 +604,13 @@ struct SettingsScreen: View {
                 .mrtTextStyle(.label())
                 .foregroundStyle(Color.mrtTextMuted)
                 .padding(.bottom, 14)
-            notificationRow("Drive started", isOn: $toggles.driveStarted)
-            notificationRow("Drive completed", isOn: $toggles.driveCompleted)
-            notificationRow("Charging complete", isOn: $toggles.chargingComplete)
-            notificationRow("Viewer joined", isOn: $toggles.viewerJoined)
+            notificationRow("Drive started", category: .driveStarted)
+            notificationRow("Drive completed", category: .driveCompleted)
+            notificationRow("Charging complete", category: .chargingComplete)
+            notificationRow("Viewer joined", category: .viewerJoined)
+            // MYR-349 — a write that did not land, or a read that did not answer.
+            // Never present on the simulated path.
+            PushPrefsNotice(message: pushPrefs.statusMessage)
             // MYR-186 — renders only when the system authorization was DENIED;
             // absent (and therefore pixel-identical) in every other state,
             // including the whole simulated path.
@@ -612,15 +620,31 @@ struct SettingsScreen: View {
         .padding(.vertical, 20)
     }
 
-    private func notificationRow(_ label: String, isOn: Binding<Bool>) -> some View {
+    /// MYR-349 — one row, bound to one §7.19 category. The row RENDERS the
+    /// service's value and WRITES through the service, so the whole optimistic /
+    /// echo / rollback pattern lives in exactly one place and this screen holds no
+    /// notification state of its own. Layout is untouched.
+    private func notificationRow(_ label: String, category: PushPrefCategory) -> some View {
         HStack {
             Text(label)
                 .font(.system(size: 14))
                 .foregroundStyle(Color.mrtText)
             Spacer(minLength: 0)
-            MRTToggle(isOn: isOn)
+            MRTToggle(isOn: pushPrefsBinding(category))
         }
         .padding(.vertical, 12)
+    }
+
+    /// The binding a row's switch drives. The setter is fire-and-forget on
+    /// purpose: `setEnabled` flips the value synchronously before it suspends, so
+    /// the switch moves under the finger, and there is nothing for this view to do
+    /// with a failure that the rolled-back row and its notice are not already
+    /// showing (the same reasoning as `HomeScreen.setRideShareEnabled`).
+    private func pushPrefsBinding(_ category: PushPrefCategory) -> Binding<Bool> {
+        Binding(
+            get: { pushPrefs.prefs[category] },
+            set: { newValue in Task { await pushPrefs.setEnabled(category, newValue) } }
+        )
     }
 
     // MARK: Switch view mode (MYR-224 — client-approved chooser companion)
