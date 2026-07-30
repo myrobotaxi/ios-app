@@ -321,7 +321,7 @@ final class VehiclePlateTests: XCTestCase {
         XCTAssertEqual(exec.controls.plate, "")
         XCTAssertFalse(exec.isKnown(.plate))
 
-        exec.reconcile(from: Contracts.parkedState(licensePlate: "RBO 2046"))
+        exec.reconcile(from: Contracts.parkedState(licensePlate: "RBO 2046"), snapshotReadIssuedAt: Date())
 
         XCTAssertEqual(exec.controls.plate, "RBO 2046")
         XCTAssertTrue(exec.isKnown(.plate))
@@ -334,7 +334,7 @@ final class VehiclePlateTests: XCTestCase {
     func testReconcileAdoptsAnEmptyPlateAndNeverBakesInTheVinFallback() {
         let exec = makeLiveExecutor(plate: "RBO 2046")
 
-        exec.reconcile(from: Contracts.parkedState(licensePlate: ""))
+        exec.reconcile(from: Contracts.parkedState(licensePlate: ""), snapshotReadIssuedAt: Date())
 
         XCTAssertEqual(exec.controls.plate, "", "an empty plate is a real answer, not a skip")
         XCTAssertFalse(exec.controls.plate.contains("VIN"), "the VIN fallback belongs to display, not to the editable value")
@@ -344,7 +344,7 @@ final class VehiclePlateTests: XCTestCase {
     /// honestly unknown — never a fabricated one.
     func testReconcileLeavesAnAbsentPlateAlone() {
         let exec = makeLiveExecutor()
-        exec.reconcile(from: Contracts.parkedState(licensePlate: nil))
+        exec.reconcile(from: Contracts.parkedState(licensePlate: nil), snapshotReadIssuedAt: Date())
         XCTAssertEqual(exec.controls.plate, "")
         XCTAssertFalse(exec.isKnown(.plate), "absent on the wire stays honestly unknown")
     }
@@ -358,7 +358,7 @@ final class VehiclePlateTests: XCTestCase {
         let save = Task { try? await exec.setPlate("abc 1234") }
         await endpoint.waitUntilInFlight()
 
-        exec.reconcile(from: Contracts.parkedState(licensePlate: "STALE 1"))
+        exec.reconcile(from: Contracts.parkedState(licensePlate: "STALE 1"), snapshotReadIssuedAt: Date())
         XCTAssertEqual(exec.controls.plate, "OLD", "an in-flight save owns the value until it settles")
 
         endpoint.release()

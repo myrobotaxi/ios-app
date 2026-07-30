@@ -102,7 +102,10 @@ final class DebugCommandNoticeFleet: VehicleFleet {
             // state that used to lie with "Waking the car…"), so no retry here.
             maxWakeRetries: 0
         )
-        exec.reconcile(from: DebugClimateModeFleet.climateState(variant: .auto, lastUpdated: readAt))
+        exec.reconcile(
+            from: DebugClimateModeFleet.climateState(variant: .auto, lastUpdated: readAt),
+            snapshotReadIssuedAt: Date()
+        )
         executor = exec
 
         // Drive the real command; the scripted failure settles the real notice

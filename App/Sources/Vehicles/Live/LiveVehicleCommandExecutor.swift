@@ -77,6 +77,19 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// (see `VehicleControlField`), so nothing is confirmed until the owner acts.
     private var knownFields: Set<VehicleControlField> = []
 
+    /// MYR-351 — when each SNAPSHOT-ONLY field was last committed by an owner
+    /// write whose echo we adopted. Consulted by ``acceptsSnapshotRead(_:issuedAt:)``
+    /// and by nothing else.
+    ///
+    /// Only the three snapshot-only fields (`.plate`, `.serviceWindow`,
+    /// `.rideShare`) ever appear here, and the reason is the property they share:
+    /// none of them has a WebSocket delta, so a write echo is the ONLY way this
+    /// client can hold their current value between cold reads. A streamed control
+    /// needs no such ledger — the car re-states it on the next frame, and MYR-249's
+    /// rule that telemetry OVERRIDES an optimistic value is correct precisely
+    /// because that frame is a genuinely fresh observation.
+    private var committedAt: [VehicleControlField: Date] = [:]
+
     private let vehicleID: String
     private let sender: any VehicleCommandSending
     /// The §7.14 owner license-plate write (MYR-286). Deliberately a SEPARATE seam
@@ -333,7 +346,12 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     //
     // Called on every cold snapshot and every folded delta via the Kit's
     // `LiveVehicleState.onStateChanged` hook (wired in `LiveVehicleFleet`).
-    func reconcile(from state: VehicleState) {
+    //
+    // MYR-351 — `snapshotReadIssuedAt` is when the `/snapshot` GET behind this
+    // state's SNAPSHOT-ONLY fields was ISSUED. It is what the three arms at the
+    // bottom of this method consult before adopting, and the reason the whole
+    // parameter exists; every other arm ignores it (see `acceptsSnapshotRead`).
+    func reconcile(from state: VehicleState, snapshotReadIssuedAt: Date) {
         // Climate on/off — use the server-DERIVED `isClimateOn` ONLY. The backend
         // OMITS it (→ nil) when `hvacPower` is "Unknown", so an absent value stays
         // honestly unknown; the raw `hvacPower` "Unknown" must NEVER read as
@@ -431,7 +449,15 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         // fallback is applied at DISPLAY time by `VehicleContractMapping`, never
         // baked in here — baking it in is what would put an uneditable VIN into
         // the edit sheet.
-        if let plate = state.licensePlate {
+        //
+        // MYR-351 — and it does NOT only run on a cold read, which is the sentence
+        // above that was wrong and the defect this guard closes. `reconcile` is
+        // wired to `LiveVehicleState.onStateChanged`, which fires on every folded
+        // delta too, and `VehicleStateMerger.apply` opens with `var state = original`
+        // — so a delta carries the last snapshot's plate forward verbatim and used
+        // to re-apply it over a save the owner had just made.
+        if let plate = state.licensePlate,
+           acceptsSnapshotRead(.plate, issuedAt: snapshotReadIssuedAt) {
             reconcileField(.plate, key: .plate) {
                 self.controls.plate = VehicleContractMapping.editablePlate(licensePlate: plate)
             }
@@ -455,8 +481,18 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         // is only raised for an actual window — which reads correctly either way:
         // "known" here means "we hold a window", and holding none is the state the
         // nil already expresses.
+        //
+        // MYR-351 — the `isPending` gate below was the ONLY protection this arm
+        // had, and it covers only the milliseconds the write is in flight. The
+        // owner's report ("popped right back after a few seconds") is the frame
+        // that arrived AFTER the echo settled: a delta carrying the pre-clear
+        // snapshot's instant forward, walking straight through a pending flag that
+        // had already been lowered. `acceptsSnapshotRead` is the missing half —
+        // pending guards the write's OWN window, the read stamp guards everything
+        // that was already in the post.
         let resolvedWindow = state.serviceEstimatedEndAt.flatMap(VehicleContractMapping.parseTimestamp)
-        if uiState(for: .serviceWindow).isPending == false {
+        if uiState(for: .serviceWindow).isPending == false,
+           acceptsSnapshotRead(.serviceWindow, issuedAt: snapshotReadIssuedAt) {
             // MYR-320 — a read that MOVES the value invalidates whatever the last
             // write echo proved about its source: the instant on screen is no
             // longer the instant we classified, so the note that described it
@@ -490,10 +526,39 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         //
         // Skipped while a write is in flight, so a snapshot landing mid-flip cannot
         // clobber the optimistic position — the echo settles it a moment later.
-        if let wireRideShare = state.rideShareEnabled, uiState(for: .rideShare).isPending == false {
+        //
+        // MYR-351 — same missing half, and the report it produced was the loudest
+        // of the three: "whenever I turn off ride share it switches back on". A
+        // paused car's next telemetry frame carried the pre-pause snapshot's `true`
+        // forward and un-paused it, seconds after the owner walked away believing
+        // the switch had taken.
+        if let wireRideShare = state.rideShareEnabled,
+           uiState(for: .rideShare).isPending == false,
+           acceptsSnapshotRead(.rideShare, issuedAt: snapshotReadIssuedAt) {
             controls.rideShareEnabled = wireRideShare
             knownFields.insert(.rideShare)
         }
+    }
+
+    /// MYR-351 — whether a read ISSUED at `issuedAt` is allowed to overwrite this
+    /// SNAPSHOT-ONLY field, i.e. whether it can possibly have seen our last write
+    /// to it.
+    ///
+    /// Never written to → nothing to protect, adopt. Written to → adopt only a read
+    /// that went out AFTER the commit. Everything else is information we already
+    /// know to be superseded, whether it reaches us as a delta carrying the old
+    /// snapshot's value forward or as a `/snapshot` response that straddled the
+    /// write.
+    ///
+    /// THE GUARD MUST NOT LATCH, and this is why the comparison is against the READ
+    /// rather than a flag: the moment a genuinely newer read arrives it wins in
+    /// full, including a value that contradicts what we committed. A car that left
+    /// service, an owner who flipped the switch on another device, a plate edited on
+    /// the web — all of them reach this client on the next cold read exactly as they
+    /// did before. What can no longer happen is the PAST overwriting the present.
+    private func acceptsSnapshotRead(_ field: VehicleControlField, issuedAt: Date) -> Bool {
+        guard let committed = committedAt[field] else { return true }
+        return issuedAt > committed
     }
 
     /// Apply a wire value to a control and mark it KNOWN — unless a command for its
@@ -947,6 +1012,9 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             let response = try await plateEndpoint.setLicensePlate(plate, vehicleID: vehicleID)
             controls.plate = response.licensePlate
             knownFields.insert(.plate)
+            // MYR-351 — stamp the commit so a read ISSUED before this echo cannot
+            // put the old plate back (see `acceptsSnapshotRead`).
+            committedAt[.plate] = Date()
             uiStates[.plate] = .idle
             onPlateSaved?(response.licensePlate)
         } catch let error as RestError {
@@ -1002,6 +1070,10 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             // Tesla's estimate outranked the entry and is what is on screen.
             controls.serviceWindowSource = Self.provenance(submitted: expectedEndAt, resolved: resolved)
             knownFields.insert(.serviceWindow)
+            // MYR-351 — stamp the commit. A CLEAR needs this as much as a set does:
+            // `resolved` is nil, so there is no value to distinguish it by, and the
+            // stale read that resurrects it looks identical to a legitimate one.
+            committedAt[.serviceWindow] = Date()
             uiStates[.serviceWindow] = .idle
             onServiceWindowSaved?(resolved)
         } catch let error as RestError {
@@ -1050,6 +1122,9 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         do {
             let response = try await rideShareEndpoint.setRideShareEnabled(enabled, vehicleID: vehicleID)
             controls.rideShareEnabled = response.enabled // adopt the ECHO — see (3)
+            // MYR-351 — stamp the commit, so the next telemetry frame carrying the
+            // pre-flip snapshot's boolean forward cannot un-pause the car.
+            committedAt[.rideShare] = Date()
             uiStates[.rideShare] = .idle
             onRideShareSaved?(response.enabled)
         } catch {
