@@ -304,6 +304,46 @@ public enum MRTMetrics {
     /// (screens.jsx:101,401; shared-screens.jsx:698, all `paddingBottom: 104`).
     public static let shareContentBottomPadding: CGFloat = drivesContentBottomPadding
 
+    // MARK: Share roster (MYR-347 — the client-directed redesign of the owner
+    // Share tab's list into native iOS grouped-list grammar. These are OURS, not
+    // the prototype's: screens.jsx:113-138 renders two bare header+row stacks
+    // with no card, no separator and no empty state, which is the shape the
+    // client rejected. Every value is still a token so the screen holds no
+    // literals — CLAUDE.md "Tokens only".)
+
+    /// Corner radius of a roster section card.
+    public static let shareSectionRadius: CGFloat = 16
+    /// Gap above a section header (below the header block or the previous card).
+    public static let shareSectionGap: CGFloat = 22
+    /// Gap between a section header and its card.
+    public static let shareSectionHeaderGap: CGFloat = 9
+    /// Horizontal padding INSIDE a roster card.
+    public static let shareRowGutter: CGFloat = 14
+    /// Vertical padding of a roster row.
+    public static let shareRowVerticalPadding: CGFloat = 11
+    /// Avatar / leading-tile diameter on a roster row.
+    public static let shareRowAvatarSize: CGFloat = 38
+    /// Avatar → text column gap.
+    public static let shareRowContentGap: CGFloat = 12
+    /// Roster-row minimum height (comfortably over the 44pt hard rule; a
+    /// two-line row measures ~60 and a three-line one grows past it).
+    public static let shareRowMinHeight: CGFloat = 60
+    /// Separator inset — the text column's left edge, so a separator starts
+    /// where the label does, exactly as iOS insets one past a leading image.
+    public static let shareRowSeparatorInset: CGFloat = shareRowGutter
+        + shareRowAvatarSize + shareRowContentGap
+    /// Gap between the screen header and the empty-state hero.
+    public static let shareHeroTopGap: CGFloat = 44
+    /// Empty-state hero icon-disc diameter.
+    public static let shareHeroIconSize: CGFloat = 64
+    /// Empty-state explainer measure — narrow enough to stay a readable
+    /// three-line paragraph at 393pt rather than running the full gutter width.
+    public static let shareHeroTextWidth: CGFloat = 286
+    /// Empty-state CTA width. Not full-bleed: a hero CTA that spans the gutters
+    /// reads as a page-level action rather than the answer to the sentence
+    /// above it.
+    public static let shareHeroCTAWidth: CGFloat = 210
+
     // MARK: Rider shell (MYR-191, design/app/screens.jsx SharedViewerScreen
     // 1855-2242 + ride-request.jsx ExpandingRequestSheet, design/app/
     // shared-screens.jsx RideHistoryScreen/ScheduledRideSheet 1-436).

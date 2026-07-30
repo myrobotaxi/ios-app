@@ -1,0 +1,13 @@
+{
+  "_meta": {
+    "description": "200 response for PUT /api/users/me/push-prefs (MYR-349, rest-api.md §7.19) after a body of {\"chargingComplete\":false} — the ECHO. §7.19's response to a PUT is the SAME total five-key object GET answers, re-read from storage AFTER the write, which is why a partial request comes back total. Clients adopt this object wholesale and never re-derive the stored state from the bool they sent. Authored here from the locked endpoint contract; replace with the upstream file the moment one exists.",
+    "anchoredFRs": ["FR-9.3"],
+    "scenario": "charging-complete-off",
+    "addedBy": "MYR-349"
+  },
+  "rideLifecycle": true,
+  "driveStarted": true,
+  "driveCompleted": true,
+  "chargingComplete": false,
+  "viewerJoined": true
+}

@@ -3,10 +3,16 @@ import DesignSystem
 
 // MARK: - Shared viewer/pending rows (MYR-170)
 //
-// `ViewerRow` is byte-identical between `InvitesScreen` (screens.jsx:1264-1274)
+// `ViewerRow` shipped as the shared row of `InvitesScreen` (screens.jsx:1264-1274)
 // and `SettingsScreen` (screens.jsx:1601-1611) — factored once (CLAUDE.md
-// "Reuse, don't fork") rather than duplicated per screen. `PendingRow` is
-// InvitesScreen-only.
+// "Reuse, don't fork") rather than duplicated per screen.
+//
+// MYR-347 moved the SHARE TAB to `ShareRosterViews` (client-directed redesign
+// into iOS grouped-list grammar), so this file is now `SettingsScreen`'s alone
+// and is deliberately left untouched by that redesign — Settings is being
+// restyled separately (MYR-354) and must not inherit a half-migrated row.
+// `PendingRow` went with the move: it had exactly one consumer, the Share tab's
+// Pending list, which no longer exists in that shape.
 
 /// One row of the Viewers / "Shared with" list — avatar, name, permission
 /// label, and a pill "Revoke" button.
@@ -49,61 +55,6 @@ struct RevokePillButton: View {
                 .frame(minHeight: MRTMetrics.minTapTarget - 14)
                 .overlay(Capsule().strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline))
                 .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-/// One row of the Pending list — avatar, name, "email · sent" caption, plus
-/// gold "Resend" and muted "Cancel" text actions (screens.jsx:1276-1286).
-struct PendingRow: View {
-    let invite: PendingInvite
-    let onResend: () -> Void
-    let onCancel: () -> Void
-
-    var body: some View {
-        HStack(spacing: 14) {
-            Avatar(name: invite.name)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(invite.name)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Color.mrtText)
-                // `Text(verbatim:)` — a `Text("...\(invite.email)...")`
-                // string-interpolation literal gets Markdown-parsed and
-                // auto-links the email-shaped run in the accent color,
-                // ignoring `.foregroundStyle` (see InvitesScreen's
-                // `emailRow` comment).
-                Text(verbatim: "\(invite.captionLead) \u{00B7} \(invite.sent)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.mrtTextMuted)
-                // MYR-184 — the tier the owner chose, which the prototype
-                // DISCARDED on send (`doSend` dropped `accessLevel`), so a
-                // pending row could not say what it would grant. Rendered only on
-                // a code-based row: a fixture row carries an email in the line
-                // above and stays byte-identical to the prototype.
-                if invite.email == nil, let tier = invite.tier {
-                    Text(tier.info.perm)
-                        .font(.system(size: 11))
-                        .tracking(0.2)
-                        .foregroundStyle(Color.mrtTextMuted)
-                }
-            }
-            Spacer(minLength: 0)
-            textButton("Resend", color: .mrtGold, action: onResend)
-            textButton("Cancel", color: .mrtTextMuted, action: onCancel)
-        }
-        .padding(.horizontal, MRTMetrics.pageGutter)
-        .padding(.vertical, 12)
-    }
-
-    private func textButton(_ title: String, color: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 12))
-                .foregroundStyle(color)
-                .padding(6)
-                .frame(minWidth: MRTMetrics.minTapTarget - 14, minHeight: MRTMetrics.minTapTarget - 14)
-                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }

@@ -129,6 +129,17 @@ struct RootView: View {
     /// unchanged. Built in `init` from the resolved mode + session provider,
     /// mirroring `teslaAuthenticator` / `vehicleTeardownRemover`.
     @State private var pushCoordinator: PushRegistrationCoordinator
+    /// MYR-349 — the ACCOUNT's per-category notification preferences (rest-api.md
+    /// §7.19), read and written by BOTH Settings screens. Lifted here for the same
+    /// reason every other account-scoped seam is: the owner and the rider shells
+    /// are two views of one account, and a preference flipped in one must be the
+    /// same value the other renders a moment later after a mode switch.
+    ///
+    /// Composed off the ONE resolved `AppMode` like `shareService`: the LIVE
+    /// service on the live path, the simulated one (the prototype's positions,
+    /// zero network) everywhere else — which is what leaves every DEBUG capture
+    /// scene byte-identical.
+    @State private var pushPrefsService: any PushPrefsService
     /// MYR-169 — mirrors `ownerHomeState`'s reasoning: app.jsx keeps
     /// `ownerUpcoming` App-level, not local to `DrivesScreen`, so a
     /// cancelled reservation and an open drive summary both survive
@@ -294,6 +305,13 @@ struct RootView: View {
         upcomingReservations = reservations
         // MYR-186 — push device registration, bound to the same session.
         _pushCoordinator = State(initialValue: PushComposition.makeCoordinator(
+            mode: mode,
+            sessionTokenProvider: auth.sessionTokenProvider
+        ))
+        // MYR-349 — the account's notification preferences (§7.19), bound to the
+        // same session. Simulated off the live path, so no DEBUG scene reaches the
+        // network and the Settings captures are unchanged.
+        _pushPrefsService = State(initialValue: PushPrefsComposition.makeService(
             mode: mode,
             sessionTokenProvider: auth.sessionTokenProvider
         ))
@@ -982,7 +1000,12 @@ struct RootView: View {
                         teardown: teardownSeam,
                         // MYR-186 — drives the "notifications are off" notice
                         // under the toggles. `.notDetermined` in SIM → nothing.
-                        pushAuthorization: pushCoordinator.authorizationState
+                        pushAuthorization: pushCoordinator.authorizationState,
+                        // MYR-349 — the toggles themselves. `LivePushPrefsService`
+                        // against §7.19 on the live path; the simulated service
+                        // (the prototype's own positions, zero network) otherwise,
+                        // which is what keeps every DEBUG capture unchanged.
+                        pushPrefs: pushPrefsService
                     )
                 default:
                     HomeScreen(
@@ -1037,6 +1060,9 @@ struct RootView: View {
                         catalog: sharedVehicleCatalog,
                         // MYR-186 — see the owner Settings call above.
                         pushAuthorization: pushCoordinator.authorizationState,
+                        // MYR-349 — see the owner Settings call above. BOTH rider
+                        // rows read the one `rideLifecycle` category.
+                        pushPrefs: pushPrefsService,
                         onSwitchMode: switchViewMode,
                         onAddCode: {
                             inviteOrigin = .sharedSettings
