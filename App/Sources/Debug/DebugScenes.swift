@@ -123,6 +123,28 @@ enum DebugScene: String, CaseIterable {
     /// which still allow scheduling — so the second line is present here and the
     /// pair with `riderNoRides MRT_BUSY_REASON=paused` isolates exactly that line.
     case riderNoRidesFleet
+    /// MYR-356 — the SEARCH sheet's pre-typing region carrying the rider's own
+    /// RECENT DESTINATIONS.
+    ///
+    /// It needs its own scene because recents live in `UserDefaults` and every
+    /// other scene boots against an EMPTY in-memory store on purpose
+    /// (`RootView.recentDestinationsStore()`): a persistent list is exactly the kind
+    /// of state that would drift a byte-stable capture depending on whether anyone
+    /// had driven the flow on that simulator. So `search`, `searchFiltered` and
+    /// `searchSelected` stay byte-identical, and this one scene shows the feature.
+    ///
+    /// Nothing about the rendering is hand-set: the scene seeds SIX rows and the
+    /// shipping `RecentDestinationList.capped` shows five, most-recent-first — so
+    /// the capture is the cap and the ordering, proven rather than illustrated.
+    ///
+    /// It is `search` VERBATIM plus that one seeded store, so the pair is a clean
+    /// before/after of exactly the Recent section: `search` shows the four
+    /// prototype fixtures standing in for a history that did not exist, this shows
+    /// the five real rows that take their place the moment one does. No live seams
+    /// are forced — recents are device-local and therefore honest on BOTH paths,
+    /// which is the whole point of the feature (on the live path the same rows are
+    /// the entire pre-typing region, replacing "Type a destination to search").
+    case riderRecentDestinations
 
     // Rider scheduled-ride sheet (RideHistoryScreen → ScheduledRideSheet)
     case scheduledDetails
@@ -1384,6 +1406,42 @@ enum DebugScene: String, CaseIterable {
     /// for `.searchFiltered` (matches "Ferry Building" in RECENT_PLACES).
     var searchQuery: String? { self == .searchFiltered ? "fer" : nil }
 
+    /// MYR-356 — boot the search sheet with the keyboard DOWN. True for exactly one
+    /// scene, whose subject (the pre-typing Recent section) is otherwise behind it.
+    /// See `RideRequestSearchContent.scheduleSearchFocus`.
+    var suppressesSearchAutoFocus: Bool { self == .riderRecentDestinations }
+
+    /// MYR-356 — the recents this scene boots with. EMPTY for every scene but
+    /// `riderRecentDestinations`, which is what keeps every existing capture
+    /// byte-identical (see `RootView.recentDestinationsStore()`).
+    ///
+    /// SIX rows for a cap of five, oldest last, so the capture proves both the cap
+    /// and the ordering. Real-shaped: no measured distance (a live autocomplete row
+    /// carries none), and a `live-unresolved|` id on one of them — the shape MYR-237
+    /// stores when the rider chose a suggestion before its coordinate resolved,
+    /// which selecting the row re-resolves exactly as a fresh search row would.
+    var seededRecentDestinations: [RecentDestination] {
+        guard self == .riderRecentDestinations else { return [] }
+        let now = Date()
+        let rows: [(String, String, String, Double, Double)] = [
+            ("rec-ferry", "Ferry Building", "1 Ferry Building · Embarcadero", 37.7955, -122.3937),
+            ("rec-sfo", "SFO · Terminal 2", "San Francisco International", 37.6213, -122.3790),
+            ("live-unresolved|tartine", "Tartine Bakery", "600 Guerrero St · Mission", 37.7614, -122.4241),
+            ("rec-crissy", "Crissy Field", "1199 East Beach", 37.8039, -122.4644),
+            ("rec-sfmoma", "SFMOMA", "151 3rd St · SoMa", 37.7857, -122.4011),
+            ("rec-pier39", "Pier 39", "Beach St · Wharf", 37.8087, -122.4098),
+        ]
+        return rows.enumerated().map { index, row in
+            RecentDestination(
+                id: row.0, label: row.1, subtitle: row.2,
+                latitude: row.3, longitude: row.4,
+                // Descending, so the array order IS the recency order the shipping
+                // list rule produces.
+                chosenAt: now.addingTimeInterval(-Double(index) * 3600)
+            )
+        }
+    }
+
     /// Whether `RideRequestReviewContent` should open its fleet picker card.
     var opensFleetPicker: Bool { self == .reviewPicker }
 
@@ -1742,6 +1800,10 @@ enum DebugScene: String, CaseIterable {
             viewer.sheetPhase = .search
             viewer.showDeclinedNotice = true
         case .search, .searchFiltered:
+            viewer.sheetPhase = .search
+        case .riderRecentDestinations:
+            // MYR-356 — `search` verbatim. The ONLY difference is the store
+            // `RootView` handed the state at init (`seededRecentDestinations`).
             viewer.sheetPhase = .search
         case .riderScheduleDefault:
             // MYR-361 — `search` verbatim, plus ONE unavailable live-shaped

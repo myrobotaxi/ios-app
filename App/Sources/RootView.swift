@@ -307,7 +307,8 @@ struct RootView: View {
         // watch "Cybercab".
         let viewer = SharedViewerState(
             vehicle: seams.isLive ? nil : VehicleFixtures.vehicles[0],
-            seams: seams
+            seams: seams,
+            recentDestinationsStore: Self.recentDestinationsStore()
         )
         // MYR-214 — the Drive Summary place labeler drops the fixture saved
         // places in live mode (see the `placeLabeler` property comment): a live
@@ -356,6 +357,25 @@ struct RootView: View {
         _role = State(initialValue: startRole)
         _sharedTab = State(initialValue: startSharedTab)
         _ownerTab = State(initialValue: startOwnerTab)
+    }
+
+    /// MYR-356 — where the rider's recent destinations come from.
+    ///
+    /// The shipping store is `UserDefaults`. A DEBUG SCENE gets an in-memory one
+    /// instead, and that is the whole reason the drift gate survives this feature:
+    /// recents persist across launches, so a simulator someone had hand-driven the
+    /// flow on would otherwise put real rows into `search`'s pre-typing region and
+    /// silently drift a capture that has been byte-stable for a dozen issues. Every
+    /// scene but `riderRecentDestinations` seeds EMPTY, which is exactly the
+    /// pre-issue state.
+    @MainActor
+    private static func recentDestinationsStore() -> any RecentDestinationsStoring {
+        #if DEBUG
+        if let scene = DebugScene.current {
+            return InMemoryRecentDestinationsStore(scene.seededRecentDestinations)
+        }
+        #endif
+        return UserDefaultsRecentDestinationsStore()
     }
 
     // MARK: - Post-auth routing (MYR-224)
