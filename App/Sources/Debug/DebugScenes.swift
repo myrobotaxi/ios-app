@@ -559,30 +559,36 @@ enum DebugScene: String, CaseIterable {
     ///     one code) — the §7.5.1 regrouping, running for real.
     case ownerShareLive
 
-    /// MYR-340 — the SYSTEM SHARE SHEET carrying the new mini-onboarding message,
-    /// which is what the client actually receives and the only artefact this issue
-    /// changes. It is unreachable from every other capture route: the sheet opens
+    /// MYR-340 → MYR-359 — the SYSTEM SHARE SHEET carrying what the client
+    /// actually receives, which is the only artefact either issue changes. As of
+    /// MYR-359 that is ONE URL — `https://myrobotaxi.app/join/{CODE}?from={Name}`
+    /// — handed over as a `URL` activity item, because iMessage builds the
+    /// branded card only for a message that is nothing but a link. The sheet's
+    /// preview therefore shows a LINK row, not a truncated paragraph; that
+    /// difference IS the capture.
+    ///
+    /// It is unreachable from every other capture route: the sheet opens
     /// only after a Resend → confirm → Resend tap sequence (or a full compose +
     /// Send), and headless tooling can neither tap nor type. So the scene runs the
     /// PRODUCTION `LiveShareService.resend` against `ownerShareLive`'s own
     /// `DebugShareEndpoint` on appear — the same real-code-path/injected-wire
     /// precedent as `ownerServiceWindowSaved`, and the same stand-in-for-a-tap
     /// precedent as `autoSubmitsInviteCode`. The code in the capture is therefore
-    /// genuinely minted by the shipping resend path, not hand-set, and the message
-    /// is composed by the shipping `ShareInviteMessage`.
+    /// genuinely minted by the shipping resend path, not hand-set, and the link
+    /// is built by the shipping `ShareInviteMessage`.
     ///
-    /// This scene is the NAMED grammar ("Thomas shared their Tesla with you"),
-    /// via `namesShareMessageOwner`.
+    /// This scene is the NAMED case — the link carries `?from=Thomas`, via
+    /// `namesShareMessageOwner`.
     case ownerShareMessage
 
-    /// MYR-340 — the SAME share sheet for an account carrying NO name. Not a
-    /// defensive branch: Apple returns a human name only on the FIRST
+    /// MYR-340 → MYR-359 — the SAME share sheet for an account carrying NO name.
+    /// Not a defensive branch: Apple returns a human name only on the FIRST
     /// authorization, and a row created before native sign-in may carry none at
-    /// all, so a real fraction of owners hit this. The message switches to first
-    /// person ("I shared my Tesla with you") rather than rendering a sentence with
-    /// an empty name in it. Everything below the opening line is byte-identical to
-    /// `ownerShareMessage`, so the pair is a clean before/after of exactly that one
-    /// line.
+    /// all, so a real fraction of owners hit this. The link then carries NO
+    /// `?from=` parameter at all — never an empty one — and the landing page falls
+    /// back to its generic heading, which is where the two-grammar rule lives now
+    /// that the app sends no prose. The pair is a clean before/after of exactly
+    /// that one query parameter.
     case ownerShareMessageNoName
 
     /// MYR-184 (MYR-228 fix (c)) — the rider Live Map with ZERO shared vehicles.
@@ -1794,7 +1800,7 @@ extension DebugScene {
     /// tooling can neither tap nor type. Seeding the TAP rather than the RESULT is
     /// deliberate and follows `autoSubmitsInviteCode` — the code in the capture is
     /// minted by `LiveShareService.resend` off the real §7.5.4 wire, and the text
-    /// is composed by the shipping `ShareInviteMessage`, so the screenshot is
+    /// is built by the shipping `ShareInviteMessage`, so the screenshot is
     /// evidence about the product rather than about a literal in this file.
     ///
     /// Scoped to the two MYR-340 scenes, so `ownerShareLive` keeps its untouched

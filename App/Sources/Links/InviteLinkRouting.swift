@@ -52,7 +52,24 @@ enum InviteLink {
     /// §7.5.1 mints exactly six characters.
     static let codeLength = 6
 
-    /// Compose the shareable link for a minted code.
+    /// The query parameter carrying the SENDER's first name (MYR-359), so the
+    /// landing page can title itself "{Name} invited you to ride their Tesla".
+    /// The page is the only consumer; nothing in the app reads it back (see
+    /// ``code(from:)``).
+    static let inviterQueryItem = "from"
+
+    /// How much of a first name travels. Twenty letters is longer than any first
+    /// name the heading has room for and short enough that the URL stays a URL —
+    /// the cap exists so a pathological profile value cannot make the link
+    /// unshareable, not because names are expected to reach it.
+    static let inviterNameMaxLength = 20
+
+    /// The codeless landing page. The one literal URL in this file, and the
+    /// fallback for the (unreachable) case where a composed link will not parse.
+    static let landingURL = URL(string: "https://\(host)/\(pathComponent)")!
+
+    /// Compose the shareable link for a minted code, optionally naming the
+    /// sender.
     ///
     /// The code is a LIVE BEARER CREDENTIAL (§7.5, P1) and this puts it in a URL,
     /// which is a place credentials leak from — referrer headers, browser
@@ -62,8 +79,87 @@ enum InviteLink {
     /// its own. Redemption still requires a signed-in account POSTing to §7.5.5,
     /// so possession of the link is exactly as powerful as possession of the six
     /// characters was — no more.
-    static func url(code: String) -> String {
-        "https://\(host)/\(pathComponent)/\(code)"
+    ///
+    /// The NAME is a different kind of value and gets a different rule: it is
+    /// rendered by a web page into an OG title that anyone the link is forwarded
+    /// to can read, so it is filtered to letters here (``inviterName(_:)``) and
+    /// filtered AGAIN, independently, by the page. Neither side trusts the
+    /// other; the client's filter is what keeps a well-formed link from ever
+    /// carrying junk, and the server's is what keeps a hand-edited one from
+    /// rendering it.
+    ///
+    /// Built through `URLComponents` rather than by interpolation so the query
+    /// is percent-encoded by Foundation. With a `[A-Za-z]`-only value that is a
+    /// no-op today — which is the point: it stays correct if the rule ever
+    /// loosens.
+    static func url(code: String, from ownerFirstName: String? = nil) -> String {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = host
+        components.path = "/\(pathComponent)/\(code)"
+        if let name = inviterName(ownerFirstName) {
+            components.queryItems = [URLQueryItem(name: inviterQueryItem, value: name)]
+        }
+        return components.string ?? "https://\(host)/\(pathComponent)/\(code)"
+    }
+
+    /// The sender's first name as it may appear in a link, or `nil` when there
+    /// is nothing safe to say.
+    ///
+    /// Strict on purpose. The value ends up in a page title that is scraped,
+    /// cached by messaging apps and shown to people who were never sent the
+    /// invite, so the question it asks is "is this PLAINLY A NAME?" — never
+    /// "what can be salvaged from this":
+    ///
+    ///  • trimmed, and empty means absent (`UserProfile.firstName` is genuinely
+    ///    `nil` for anyone Apple did not hand a name for on the FIRST
+    ///    authorization — a real case, not a defensive branch);
+    ///  • the input may contain ONLY letters and the punctuation names are
+    ///    actually written with — space, hyphen, apostrophe, period. Anything
+    ///    else (a digit, an angle bracket, an ampersand, a slash) means this
+    ///    string is not a name, and the whole value is dropped rather than
+    ///    scrubbed: "Thomas3" is not evidence that the owner is called Thomas,
+    ///    and `<script>alert(1)</script>` scrubbed down to its letters would put
+    ///    "scriptalertscript invited you to ride their Tesla" in a page title;
+    ///  • the surviving punctuation is then removed, so "Mary-Jane" and
+    ///    "Mary Jane" travel as "MaryJane". The heading reads correctly and the
+    ///    URL carries one bare token;
+    ///  • a name carrying letters OUTSIDE `[A-Za-z]` — "José", "Ольга", "美咲" —
+    ///    is omitted ENTIRELY rather than reduced to the ASCII it happens to
+    ///    contain. "Jos invited you to ride their Tesla" misspells someone to a
+    ///    stranger; the generic heading merely declines to name them, which is
+    ///    the kinder failure. (`[A-Za-z]` is the WEB's accepted alphabet, so
+    ///    this is a limit of the feature, not of this function — widening it
+    ///    means widening both sides together.);
+    ///  • the survivor is capped at ``inviterNameMaxLength``.
+    ///
+    /// `nil` is returned rather than `""` so callers cannot accidentally emit
+    /// `?from=`, which the page would have to treat as absent anyway.
+    static func inviterName(_ raw: String?) -> String? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+
+        // Everything in it must be a letter or name punctuation. One character
+        // that is neither disqualifies the whole value.
+        let isNameCharacter: (Unicode.Scalar) -> Bool = { scalar in
+            isASCIILetter(scalar) || nameSeparators.contains(scalar)
+        }
+        guard trimmed.unicodeScalars.allSatisfy(isNameCharacter) else { return nil }
+
+        let letters = trimmed.unicodeScalars.filter(isASCIILetter).map(Character.init)
+        guard !letters.isEmpty else { return nil }
+        return String(letters.prefix(inviterNameMaxLength))
+    }
+
+    /// The punctuation a first name may legitimately contain. Tolerated on the
+    /// way in, dropped on the way out — both curly and straight apostrophes,
+    /// because iOS substitutes the curly one as you type.
+    private static let nameSeparators = CharacterSet(charactersIn: " -'\u{2019}.")
+
+    private static func isASCIILetter(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.isASCII
+            && (CharacterSet.uppercaseLetters.contains(scalar)
+                || CharacterSet.lowercaseLetters.contains(scalar))
     }
 
     /// Pull a well-formed invite code out of an incoming universal link, or
@@ -77,6 +173,14 @@ enum InviteLink {
     ///    redeeming anything;
     ///  • the path must be exactly `/join/{something}` — not `/join`, not
     ///    `/join/A/B`. A deeper path is a web surface we do not know about;
+    ///  • the QUERY IS IGNORED, whatever it holds. The code lives in the PATH,
+    ///    and everything after `?` belongs to the web page: `?from=` (MYR-359,
+    ///    which every link this app hands out now carries when the owner has a
+    ///    name on their account), and whatever tracking or campaign parameters a
+    ///    forwarded link picks up on its way through other people's apps. A
+    ///    parser that let the query decide anything would refuse the app's own
+    ///    links — this is the one branch where being strict about the envelope
+    ///    would break the feature rather than protect it;
     ///  • the code segment is percent-decoded, upper-cased and stripped to
     ///    `[A-Z0-9]` (so `rbo246`, `RBO-246` and `rbo%20246` all arrive as
     ///    `RBO246` — the same normalisation `RestClient.normalizedInviteCode`
