@@ -123,6 +123,28 @@ enum DebugScene: String, CaseIterable {
     /// which still allow scheduling — so the second line is present here and the
     /// pair with `riderNoRides MRT_BUSY_REASON=paused` isolates exactly that line.
     case riderNoRidesFleet
+    /// MYR-356 — the SEARCH sheet's pre-typing region carrying the rider's own
+    /// RECENT DESTINATIONS.
+    ///
+    /// It needs its own scene because recents live in `UserDefaults` and every
+    /// other scene boots against an EMPTY in-memory store on purpose
+    /// (`RootView.recentDestinationsStore()`): a persistent list is exactly the kind
+    /// of state that would drift a byte-stable capture depending on whether anyone
+    /// had driven the flow on that simulator. So `search`, `searchFiltered` and
+    /// `searchSelected` stay byte-identical, and this one scene shows the feature.
+    ///
+    /// Nothing about the rendering is hand-set: the scene seeds SIX rows and the
+    /// shipping `RecentDestinationList.capped` shows five, most-recent-first — so
+    /// the capture is the cap and the ordering, proven rather than illustrated.
+    ///
+    /// It is `search` VERBATIM plus that one seeded store, so the pair is a clean
+    /// before/after of exactly the Recent section: `search` shows the four
+    /// prototype fixtures standing in for a history that did not exist, this shows
+    /// the five real rows that take their place the moment one does. No live seams
+    /// are forced — recents are device-local and therefore honest on BOTH paths,
+    /// which is the whole point of the feature (on the live path the same rows are
+    /// the entire pre-typing region, replacing "Type a destination to search").
+    case riderRecentDestinations
 
     // Rider scheduled-ride sheet (RideHistoryScreen → ScheduledRideSheet)
     case scheduledDetails
@@ -815,6 +837,45 @@ enum DebugScene: String, CaseIterable {
     /// Motion — to prove `MRTShimmerBand`'s fallback.
     case riderVehiclesResolving
 
+    /// MYR-354 — owner Settings at the TOP of its scroll.
+    ///
+    /// `ownerSettings` boots scrolled to its own bottom anchor (MYR-224's
+    /// "Switch to Rider" row is below the fold and headless tooling cannot
+    /// scroll), which means the page's whole upper half — profile, Tesla Account,
+    /// the head of "Shared with" — has never had a full-frame capture route at
+    /// all. This issue changes exactly that half, so it needs one. Same scene,
+    /// same data, one anchor fewer: `ownerSettings` keeps its bottom anchor and
+    /// its role as the drift-gate pair's other end.
+    case ownerSettingsTop
+
+    /// MYR-354 — rider Settings for an account that OWNS a Tesla and has
+    /// redeemed NOTHING: the client's own account, on the tab where he asked
+    /// *"I own a vehicle so would it appear here or no?"*.
+    ///
+    /// The same one-owned-row / zero-viewer-rows `GET /api/vehicles` shape
+    /// `riderOwnerSelfRide` injects, so the two scenes are the one account seen
+    /// from its two tabs — and the pair is the proof that the map's "Where to?"
+    /// and this section now agree about whether a car exists.
+    ///
+    /// Live-path-only by construction: `SimulatedSharedVehicleCatalog
+    /// .ownedVehicles` is empty and its `grants` are the prototype's three
+    /// personas, so `riderSettings` itself is a pure-viewer account and keeps
+    /// the "Shared with me" label verbatim.
+    case riderSettingsOwned
+
+    /// MYR-354 — rider Settings for an account holding BOTH: one owned car and
+    /// two redeemed shares. The state that pins the ORDER (owned first, matching
+    /// `RiderVehicleSet`'s own adoption rule, because the ride is created against
+    /// the owned car) and the label switch to "Vehicles" over a card whose other
+    /// rows genuinely are shares.
+    case riderSettingsMixed
+
+    /// MYR-354 — rider Settings for an account with NOTHING: no owned car, no
+    /// share. The ONE state where "No vehicles shared with you yet" is true, and
+    /// the BEFORE half of the pair with `riderSettingsOwned` — before this issue
+    /// both accounts saw this row.
+    case riderSettingsEmpty
+
     /// MYR-343 — the rider Live Map when `GET /api/vehicles` FAILED and nothing
     /// about the account is known. Deliberately not the invite-code prompt ("no
     /// vehicles shared with you yet" is a claim one timed-out fetch cannot
@@ -976,8 +1037,12 @@ enum DebugScene: String, CaseIterable {
 
     static var initialSharedTab: String {
         guard let current, !current.isOwner else { return "shared" }
-        // MYR-355 — the two rider deletion scenes are the rider Settings tab.
+        // MYR-354 — the three vehicle-section scenes live on the same tab;
+        // MYR-355 — so do the two rider deletion scenes.
         if current == .riderSettings
+            || current == .riderSettingsOwned
+            || current == .riderSettingsMixed
+            || current == .riderSettingsEmpty
             || current == .riderDeleteAccount
             || current == .riderDeleteAccountConfirm { return "sharedSettings" }
         return current.isScheduled ? "rideHistory" : "shared"
@@ -986,7 +1051,8 @@ enum DebugScene: String, CaseIterable {
     static var initialOwnerTab: String {
         switch current {
         case .ownerDrives, .ownerDrivesLoading: return "drives"
-        case .ownerSettings, .ownerSettingsLoading: return "settings"
+        // MYR-354 adds `ownerSettingsTop`; MYR-347 adds the five Share scenes.
+        case .ownerSettings, .ownerSettingsTop, .ownerSettingsLoading: return "settings"
         // MYR-355 — the three owner-shell deletion scenes are the Settings tab.
         case .ownerDeleteAccount, .ownerDeleteAccountConfirm, .deleteAccountFailed:
             return "settings"
@@ -1008,6 +1074,12 @@ enum DebugScene: String, CaseIterable {
     /// Whether Settings should render with the DEBUG live identity + switch row.
     var showsLiveSettings: Bool {
         self == .ownerSettings || self == .riderSettings || self == .ownerSettingsLoading
+            // MYR-354 — the four new Settings capture scenes carry the same
+            // DEBUG identity their siblings do, so the profile card and the
+            // mode-switch row are in frame for the grammar comparison.
+            || self == .ownerSettingsTop
+            || self == .riderSettingsOwned || self == .riderSettingsMixed
+            || self == .riderSettingsEmpty
             // MYR-355 — the deletion scenes are the same screens with a dialog up,
             // so they carry the same identity: the Account section's name row reads
             // `settingsDisplayName`, and a capture of it must show what the drift-gate
@@ -1222,6 +1294,7 @@ enum DebugScene: String, CaseIterable {
         self == .ownerHome || self == .ownerDrives || self == .ownerIncoming
             || self == .ownerIncomingQueued
             || self == .ownerScheduled || self == .ownerScheduledLive || self == .ownerSettings
+            || self == .ownerSettingsTop
             || self == .ownerControlsUnavailable
             || self == .ownerVehicleDetails || self == .ownerVehicleTires || self == .ownerVehicleSeats
             || self == .ownerVehicleSeatsVented || self == .ownerVehicleSeatsHeatOnly
@@ -1495,6 +1568,42 @@ enum DebugScene: String, CaseIterable {
     /// Prefill for `RideRequestSearchContent`'s local `query` — non-nil only
     /// for `.searchFiltered` (matches "Ferry Building" in RECENT_PLACES).
     var searchQuery: String? { self == .searchFiltered ? "fer" : nil }
+
+    /// MYR-356 — boot the search sheet with the keyboard DOWN. True for exactly one
+    /// scene, whose subject (the pre-typing Recent section) is otherwise behind it.
+    /// See `RideRequestSearchContent.scheduleSearchFocus`.
+    var suppressesSearchAutoFocus: Bool { self == .riderRecentDestinations }
+
+    /// MYR-356 — the recents this scene boots with. EMPTY for every scene but
+    /// `riderRecentDestinations`, which is what keeps every existing capture
+    /// byte-identical (see `RootView.recentDestinationsStore()`).
+    ///
+    /// SIX rows for a cap of five, oldest last, so the capture proves both the cap
+    /// and the ordering. Real-shaped: no measured distance (a live autocomplete row
+    /// carries none), and a `live-unresolved|` id on one of them — the shape MYR-237
+    /// stores when the rider chose a suggestion before its coordinate resolved,
+    /// which selecting the row re-resolves exactly as a fresh search row would.
+    var seededRecentDestinations: [RecentDestination] {
+        guard self == .riderRecentDestinations else { return [] }
+        let now = Date()
+        let rows: [(String, String, String, Double, Double)] = [
+            ("rec-ferry", "Ferry Building", "1 Ferry Building · Embarcadero", 37.7955, -122.3937),
+            ("rec-sfo", "SFO · Terminal 2", "San Francisco International", 37.6213, -122.3790),
+            ("live-unresolved|tartine", "Tartine Bakery", "600 Guerrero St · Mission", 37.7614, -122.4241),
+            ("rec-crissy", "Crissy Field", "1199 East Beach", 37.8039, -122.4644),
+            ("rec-sfmoma", "SFMOMA", "151 3rd St · SoMa", 37.7857, -122.4011),
+            ("rec-pier39", "Pier 39", "Beach St · Wharf", 37.8087, -122.4098),
+        ]
+        return rows.enumerated().map { index, row in
+            RecentDestination(
+                id: row.0, label: row.1, subtitle: row.2,
+                latitude: row.3, longitude: row.4,
+                // Descending, so the array order IS the recency order the shipping
+                // list rule produces.
+                chosenAt: now.addingTimeInterval(-Double(index) * 3600)
+            )
+        }
+    }
 
     /// Whether `RideRequestReviewContent` should open its fleet picker card.
     var opensFleetPicker: Bool { self == .reviewPicker }
@@ -1855,6 +1964,10 @@ enum DebugScene: String, CaseIterable {
             viewer.showDeclinedNotice = true
         case .search, .searchFiltered:
             viewer.sheetPhase = .search
+        case .riderRecentDestinations:
+            // MYR-356 — `search` verbatim. The ONLY difference is the store
+            // `RootView` handed the state at init (`seededRecentDestinations`).
+            viewer.sheetPhase = .search
         case .riderScheduleDefault:
             // MYR-361 — `search` verbatim, plus ONE unavailable live-shaped
             // vehicle. Nothing about the segment is hand-set: the shipping
@@ -1918,7 +2031,8 @@ enum DebugScene: String, CaseIterable {
             viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
             viewer.sheetPhase = .summary
-        case .modeChooser, .ownerSettings, .riderSettings,
+        case .modeChooser, .ownerSettings, .ownerSettingsTop, .riderSettings,
+             .riderSettingsOwned, .riderSettingsMixed, .riderSettingsEmpty,
              // MYR-355 — settings scenes: nothing about the rider sheet is seeded.
              .ownerDeleteAccount, .riderDeleteAccount,
              .ownerDeleteAccountConfirm, .riderDeleteAccountConfirm, .deleteAccountFailed,
@@ -2145,12 +2259,27 @@ extension DebugScene {
                 Self.shareViewerRow(id: "shared-1", name: "Alex\u{2019}s Model 3", permission: "live_history"),
                 Self.shareViewerRow(id: "shared-2", name: "Alex\u{2019}s Cybercab", permission: "live_history"),
             ]
-        case .riderOwnerSelfRide:
+        case .riderOwnerSelfRide, .riderSettingsOwned:
             // MYR-343 — the client's account: ONE owned row, ZERO viewer rows.
             // `role: .owner` carries no `sharePermission` at all (§7.0 emits the
             // key iff the role is `viewer`), which is precisely why it produced no
             // grant and shunted him to the invite prompt.
+            //
+            // MYR-354 reuses the SAME injected list for the Settings tab, so the
+            // two scenes are one account seen from its two surfaces.
             endpoint.viewerRows = [Self.shareOwnerRow(id: "owned-1", name: "Lunar")]
+        case .riderSettingsMixed:
+            // MYR-354 — an account holding BOTH. Owned first is the rendered
+            // order regardless of the wire order, so the owner row is deliberately
+            // NOT first on the list the server hands back.
+            endpoint.viewerRows = [
+                Self.shareViewerRow(id: "shared-1", name: "Alex\u{2019}s Model 3", permission: "rides"),
+                Self.shareOwnerRow(id: "owned-1", name: "Lunar"),
+                Self.shareViewerRow(id: "shared-2", name: "Mom\u{2019}s Model Y", permission: "live"),
+            ]
+        case .riderSettingsEmpty:
+            // MYR-354 — the ONE account the empty state is true of.
+            endpoint.viewerRows = []
         case .riderVehiclesResolving:
             // MYR-343 — the list is parked in flight and never answers, so the
             // shell holds its `.resolving` skeleton for the whole capture. Same

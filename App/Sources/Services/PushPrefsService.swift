@@ -104,28 +104,47 @@ struct PushPrefs: Equatable, Sendable {
 enum SettingsNotificationRows {
     struct Row: Equatable, Identifiable {
         var label: String
+        /// MYR-354 — the optional sub-line under a row's label. Exactly one row
+        /// carries one today: the rider's merged "Ride updates", where the caption
+        /// is the RECEIPT for the merge, naming the four notifications the single
+        /// switch now governs. It rides on the table rather than the call site for
+        /// the same reason the label does — a row's copy and its category are one
+        /// fact, and splitting them is how they drift.
+        var caption: String? = nil
         var category: PushPrefCategory
         var id: String { label }
     }
 
-    /// screens.jsx:473-486 — the owner's four, in the prototype's order.
+    /// screens.jsx:473-486 — the owner's four, in the prototype's order, LED BY
+    /// the row the prototype was missing (MYR-354).
+    ///
+    /// `ride_lifecycle` gates the owner's "X wants a ride" pushes — the one
+    /// notification in this product that wakes a phone for money — and the page
+    /// offered no switch for it at all. It leads deliberately: the prototype's
+    /// four are all about the CAR (drives, charging, viewers); this one is about
+    /// the ride-hailing loop, and it is the row an owner comes here to find.
     static let owner: [Row] = [
+        Row(label: SettingsNotificationCopy.ownerRideRequests, category: .rideLifecycle),
         Row(label: "Drive started", category: .driveStarted),
         Row(label: "Drive completed", category: .driveCompleted),
         Row(label: "Charging complete", category: .chargingComplete),
         Row(label: "Viewer joined", category: .viewerJoined),
     ]
 
-    /// shared-screens.jsx:501-505 — the rider's, LESS "Tips & product news"
-    /// (MYR-349 deletes it; §7.19 has no column for it and no send site ever
-    /// produced it).
+    /// shared-screens.jsx:501-505 — the rider's, now ONE row.
     ///
-    /// BOTH remaining rows carry `rideLifecycle`. See `SharedSettingsScreen
-    /// .notificationsCard` for why that is the schema rather than a shortcut, and
-    /// for the open design question it leaves.
+    /// "Tips & product news" is GONE (MYR-349; §7.19 has no column for it and no
+    /// send site ever produced it), and MYR-354 MERGED the other two: they both
+    /// carried `rideLifecycle`, so they were one preference wearing two masks —
+    /// flip either and both moved. MYR-349 shipped them as two rows over one value
+    /// and named the merge as its own open question, deferring row STRUCTURE to
+    /// MYR-354; this is that answer. See `SharedSettingsScreen.notificationsCard`.
     static let rider: [Row] = [
-        Row(label: "Request accepted / declined", category: .rideLifecycle),
-        Row(label: "Pick-up & arrival alerts", category: .rideLifecycle),
+        Row(
+            label: SettingsNotificationCopy.riderRideUpdates,
+            caption: SettingsNotificationCopy.riderRideUpdatesCaption,
+            category: .rideLifecycle
+        ),
     ]
 }
 

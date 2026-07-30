@@ -71,15 +71,38 @@ final class RideRequestSchedulingSegmentTests: XCTestCase {
         }
     }
 
-    /// The caption is the IDLE BANNER'S OWN HEADLINE, verbatim — the same sentence
-    /// the rider read one tap earlier. Two copies of it would be two places for the
-    /// grammar to drift, which is the whole reason MYR-352 factored `riderClause`
-    /// out in the first place.
-    func testTheDisabledNowCaptionIsTheIdleBannersHeadlineVerbatim() {
+    /// MYR-363b, CLIENT-DIRECTED — the caption under a disabled "Now" is the
+    /// GENERIC line for a fleet of ANY size. MYR-361 took the idle banner's headline
+    /// verbatim, so a single-vehicle rider read their own car's name under a dimmed
+    /// chip; the vehicle-named sentence now lives ONLY on the idle banner.
+    func testTheDisabledNowCaptionIsAlwaysTheGenericLine() {
+        for (label, only) in [
+            ("inService", member(status: .inService)),
+            ("offline", member(status: .offline)),
+            ("busy", member(hasActiveRide: true)),
+        ] {
+            XCTAssertEqual(
+                segment([only]).nowCaption, RiderIdleAvailabilityBanner.genericHeadline,
+                "\(label): the SEGMENT caption is the generic class"
+            )
+            XCTAssertEqual(segment([only]).nowCaption, "No rides available right now")
+        }
+    }
+
+    /// …and the idle banner is UNCHANGED by that — the named sentence still exists,
+    /// it just is not this surface's. Both halves asserted together so neither can
+    /// drift onto the other.
+    func testTheIdleBannerKeepsTheVehicleNamedSentenceTheSegmentGaveUp() {
         let only = member(status: .inService)
-        let banner = try? XCTUnwrap(RiderIdleAvailabilityBanner.banner(members: [only]))
-        XCTAssertEqual(segment([only]).nowCaption, banner?.headline)
-        XCTAssertEqual(segment([only]).nowCaption, "Lunar is in service — no rides right now")
+        XCTAssertEqual(
+            RiderIdleAvailabilityBanner.banner(members: [only])?.headline,
+            "Lunar is in service — no rides right now"
+        )
+        XCTAssertNotEqual(
+            segment([only]).nowCaption,
+            RiderIdleAvailabilityBanner.banner(members: [only])?.headline,
+            "the two surfaces deliberately differ for a SINGLE vehicle"
+        )
     }
 
     /// The MULTI-vehicle set takes the banner's generic headline for the same
@@ -214,5 +237,80 @@ final class RideRequestSchedulingSegmentTests: XCTestCase {
         let members = [member()]
         XCTAssertEqual(segment(members, hasSchedule: true).selection, .schedule)
         XCTAssertEqual(segment(members, hasSchedule: false).selection, .now)
+    }
+
+    // MARK: 4 — MYR-363b, the prompt the default was missing
+
+    private func shouldPrompt(
+        _ members: [FleetMember],
+        hasSchedule: Bool = false,
+        cardOpen: Bool = false,
+        alreadyPrompted: Bool = false
+    ) -> Bool {
+        RideScheduleDefaultPrompt.shouldOpen(
+            availability: availability(members),
+            hasSchedule: hasSchedule, cardOpen: cardOpen, alreadyPrompted: alreadyPrompted
+        )
+    }
+
+    /// The state MYR-361 left half-finished: the segment reads Schedule, no time is
+    /// set, and picking a destination used to lead straight to a gated Review.
+    func testPickingADestinationOnADefaultedScheduleOpensThePicker() {
+        for (label, only) in [
+            ("inService", member(status: .inService)),
+            ("offline", member(status: .offline)),
+            ("busy", member(hasActiveRide: true)),
+        ] {
+            XCTAssertTrue(shouldPrompt([only]), "\(label)")
+        }
+    }
+
+    /// A rider who tapped "Schedule" themselves on an available fleet already
+    /// opened the card with that tap. Nothing here may press it a second time —
+    /// which is why the input is `defaultsToSchedule` and not `selection`.
+    func testAnAvailableFleetNeverPrompts() {
+        XCTAssertFalse(shouldPrompt([member()]))
+        XCTAssertFalse(shouldPrompt([]), "SIM and the pre-load list prompt nothing at all")
+    }
+
+    /// The paused carve-out reaches this too: §7.18 refuses reservations, so a
+    /// picker is not an escape from the dead end, just a longer walk to it.
+    func testAPausedOnlyFleetNeverPrompts() {
+        XCTAssertFalse(shouldPrompt([member(rideShareEnabled: false)]))
+    }
+
+    func testATimeAlreadyChosenPromptsNothing() {
+        XCTAssertFalse(shouldPrompt([member(status: .inService)], hasSchedule: true))
+    }
+
+    /// MYR-233's `opensScheduleOnSearch` route lands on this sheet with the card
+    /// ALREADY up. Opening it again would be a second presentation over the first.
+    func testAnOpenCardIsNotReOpened() {
+        XCTAssertFalse(shouldPrompt([member(status: .inService)], cardOpen: true))
+    }
+
+    /// ONE SHOT PER DRAFT — an explicit dismissal is final. The latch is set when
+    /// the card opens, so a rider who closed it and then picked a different
+    /// destination is not asked again.
+    func testAnExplicitDismissIsFinalForThisDraft() {
+        XCTAssertFalse(shouldPrompt([member(status: .inService)], alreadyPrompted: true))
+    }
+
+    /// The prompt and the default are the SAME fact, so they can never disagree —
+    /// every set that defaults must prompt, and no set that does not may.
+    func testThePromptFiresExactlyWhenTheSegmentDefaulted() {
+        let sets: [[FleetMember]] = [
+            [], [member()],
+            [member(status: .inService)], [member(status: .offline)], [member(hasActiveRide: true)],
+            [member(rideShareEnabled: false)],
+            [member(id: "a", status: .inService), member(id: "b", name: "Comet")],
+            [member(id: "a", status: .inService), member(id: "b", name: "Comet", status: .offline)],
+        ]
+        for members in sets {
+            XCTAssertEqual(
+                shouldPrompt(members), availability(members).defaultsToSchedule,
+                "the prompt must be the default's own fact"
+            )
+        }
     }
 }

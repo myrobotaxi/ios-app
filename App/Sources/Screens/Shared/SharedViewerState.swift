@@ -150,6 +150,23 @@ public final class SharedViewerState {
     /// One-shot — cleared by the consumer, and by `resetDraftToIdle()`.
     public var opensScheduleOnSearch = false
 
+    // MARK: MYR-356 — recent destinations
+    //
+    // Device-local and therefore honest on BOTH paths (see `RecentDestinations
+    // .swift`). Held here rather than read from the store per frame so the search
+    // sheet observes a change the instant one is recorded, and so the disk is
+    // touched exactly twice per app run per choice: once on load, once on write.
+
+    @ObservationIgnored private let recentDestinationsStore: any RecentDestinationsStoring
+
+    /// The rider's recently-CHOSEN destinations, most-recent-first, capped at
+    /// `RecentDestinationList.limit`. Empty on a cold install and in every DEBUG
+    /// scene but `riderRecentDestinations`, which is what keeps the drift gate whole.
+    public private(set) var recentDestinations: [RecentDestination] = []
+
+    /// The same list in the type every row in the search sheet speaks.
+    public var recentDestinationPlaces: [RidePlace] { recentDestinations.map(\.place) }
+
     /// Public convenience: the simulated seams (fixtures) — the default for
     /// previews / tests / the sim demo. Delegates to the designated init.
     public convenience init(vehicle: Vehicle = VehicleFixtures.vehicles[0]) {
@@ -158,7 +175,19 @@ public final class SharedViewerState {
 
     /// Designated init taking the composed seams (`PlaceSearchComposition.make()`
     /// wires live vs. sim in `RootView`). Internal — `Seams` is a module type.
-    init(vehicle: Vehicle? = VehicleFixtures.vehicles[0], seams: PlaceSearchComposition.Seams) {
+    ///
+    /// MYR-356 — `recentDestinationsStore` defaults to `UserDefaults`, so previews
+    /// and hand-rolled callers behave like the app. `RootView` swaps in an
+    /// `InMemoryRecentDestinationsStore` for every DEBUG scene, which is what stops
+    /// a capture picking up recents left behind by hand-driving the flow on the same
+    /// simulator.
+    init(
+        vehicle: Vehicle? = VehicleFixtures.vehicles[0],
+        seams: PlaceSearchComposition.Seams,
+        recentDestinationsStore: any RecentDestinationsStoring = UserDefaultsRecentDestinationsStore()
+    ) {
+        self.recentDestinationsStore = recentDestinationsStore
+        recentDestinations = recentDestinationsStore.load()
         // MYR-184/228 — the ONE gate. `RootView` passes `nil` on the live path
         // (the vehicle arrives from the catalog); every other caller keeps the
         // fixture default, so sim is unchanged.
@@ -515,6 +544,13 @@ public final class SharedViewerState {
         // a nearby search on tap instead; this is belt-and-suspenders.
         guard !RidePlaceMapper.isCategorySearch(place) else { return }
         draftDestination = place
+        // MYR-356 — THE one funnel. `proceedFromSearch()` (the Continue CTA)
+        // delegates here and the idle sheet's Home/Work chips call it directly, so
+        // every path that genuinely ADVANCES on a destination records it exactly
+        // once. Deliberately NOT `chooseDestination`, which only fills the field:
+        // a destination the rider backed out of with "Change trip" is not one they
+        // chose.
+        recordRecentDestination(place)
         capturePreviewPickupAnchor()
         resolveDraftDestinationIfNeeded()
         if draftPickup != nil {
@@ -597,6 +633,18 @@ public final class SharedViewerState {
                 self.draftDestination = resolved
             }
         }
+    }
+
+    /// MYR-356 — record a chosen destination, in memory and on disk.
+    ///
+    /// The list rule (dedupe, ordering, cap) is `RecentDestinationList.recording`, a
+    /// pure function, so the only thing here is the write. `nil` back from it means
+    /// "not a place" (a MYR-278 category row, a blank label) and nothing is touched
+    /// — not even the existing list's order.
+    private func recordRecentDestination(_ place: RidePlace) {
+        guard let updated = RecentDestinationList.recording(place, in: recentDestinations) else { return }
+        recentDestinations = updated
+        recentDestinationsStore.save(updated)
     }
 
     /// Clear a search-sheet destination choice (the field was edited or cleared),
