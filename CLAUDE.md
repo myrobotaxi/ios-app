@@ -225,6 +225,88 @@ A `-MRT_SCENE <name>` launch **argument** is accepted as a fallback for tooling 
   skeleton twice (once with Reduce Motion) to prove `MRTShimmerBand`'s fallback:
   5 distinct block renderings across 6 frames with motion on, 1 of 6 with it off.
 
+  **ONE Settings grammar, and rider Settings answers "do I have a car?"**
+  (MYR-354) — scenes `ownerSettingsTop` / `riderSettingsOwned` /
+  `riderSettingsMixed` / `riderSettingsEmpty`. Three TestFlight items, Jul 30:
+  owner and rider Settings are *"inconsistent in terms of UI/UX"* (reported from
+  BOTH directions), and *"Showing no vehicles shared with me… I own a vehicle so
+  would it appear here or no? Because technically I can request a ride from
+  it."*
+
+  **The split was the PROTOTYPE's, not the port's.** `screens.jsx`'s
+  `SettingsScreen` and `shared-screens.jsx`'s `SharedSettingsScreen` are two
+  different list idioms drawn by one design kit — plain rows on the page ground
+  separated by full-bleed `<Divider>`s, row content at the page gutter, a bare
+  "PROFILE" label, gold text links floating under each list, sign-out as bare
+  red text; versus inset CARDS, row content at 16, an avatar + role-badge
+  profile card, gold ACTION ROWS inside the card, sign-out as a full-width
+  outlined button. The port was faithful to both and inherited the split whole.
+  **The card grammar wins** — it is the inset-grouped list Settings.app itself
+  uses, it is already this app's dominant grammar everywhere else (Status &
+  location, vehicle details, drive-summary stats, every dialog and sheet), and a
+  full-bleed hairline on a near-black ground says "a new region starts here"
+  without saying which rows belong to it. `App/Sources/Screens/Settings/
+  SettingsGrammar.swift` is that grammar ONCE (`SettingsCard`,
+  `SettingsSectionLabel`, `SettingsDetailRow`, `SettingsActionRow`,
+  `SettingsToggleRow`, `SettingsProfileCard`, `SettingsSignOutButton`,
+  `SettingsFooter`) and both screens are assembled from it, so a future row
+  cannot re-fork them.
+
+  - **`ViewerRow` bakes the PAGE GUTTER**, because it was built for the
+    full-bleed owner list and is shared with the Share tab, which is still a
+    full-bleed page. MYR-347 owns `ShareRows.swift`, so owner Settings consumes
+    the row EXACTLY as it is and corrects the difference at the call site
+    (`MRTSettingsGrammar.viewerRowCardInset` = `pageGutter - 16` = 8, applied as
+    a negative inset; the row draws nothing in its padding band, so the 8pt that
+    lands outside the card clips harmlessly). **When that restyle lands the
+    constant goes to 0 and nothing else on either page changes** —
+    `SettingsGrammarTests` pins the arithmetic.
+  - **A real port defect fell out of the audit**: rider Settings' section labels
+    ("SHARED WITH ME", "NOTIFICATIONS") were CENTRED — a bare `Text` in a
+    `VStack` with no leading alignment — where both prototypes put them at the
+    gutter. The shared `SettingsSectionLabel` fixes it, and it is one of only
+    two changes to that page's pixels (the other is the mode-switch row growing
+    2px to the 44pt tap floor); every other ink band is byte-identical.
+  - **The vehicle section is built ON TOP of MYR-343's rule, not beside it.**
+    `RiderSettingsVehicleSection.resolve` takes the same four inputs
+    `RiderVehicleSet.resolve` does and DEFERS to it for the empty/unavailable
+    verdict, so the empty state renders **iff the shell would also resolve
+    `.empty`** — asserted across the whole matrix, which is what stops the tab
+    and the map ever again giving one account two different answers. Owned rows
+    lead (same precedence, same reason: the ride is created against
+    `vehicles.first`), the label switches to **"Vehicles"** the moment one is
+    owned because "Shared with me" is simply FALSE of the lead row, and the
+    owned row reads `{name}` / "Your car · Ride from it anytime" behind a gold
+    `car.fill`. A list still in flight claims NOTHING (a settings section
+    shimmering on its own would be motion about a list nobody is waiting for);
+    a list that FAILED gets the shell's own sentence verbatim.
+  - Every SIM + DEBUG rider capture keeps the prototype's three personas and its
+    "Shared with me" label, because `SimulatedSharedVehicleCatalog
+    .ownedVehicles` is empty. The three new rider scenes are live-path-only by
+    construction, the same `DebugShareEndpoint` route MYR-343's scenes take —
+    `riderSettingsOwned` injects the SAME one-owned-row list `riderOwnerSelfRide`
+    does, so the pair is one account seen from its two tabs.
+  - **TWO SWITCHES, ONE PREFERENCE** (added to MYR-354 from MYR-349's prefs
+    findings, PR #137). `ride_lifecycle` is ONE §7.19 category and no send site
+    distinguishes "accepted / declined" from "pick-up & arrival", so the rider's
+    two prototype rows were one preference wearing two masks — flip either and
+    both move, and the untouched one appears to change by itself. They are ONE
+    row now, **"Ride updates" / "Accepted, declined, pick-up and arrival"**; the
+    sub-line is the receipt for the merge, naming everything the single switch
+    governs. The same category gates the OWNER's "X wants a ride" pushes and the
+    owner page had no switch for them at all, so **"Ride requests"** now LEADS
+    that section — the prototype's four are all about the car, this one is about
+    the ride-hailing loop. Copy lives in `SettingsNotificationCopy` so #137's
+    `SettingsNotificationRows` table absorbs it as a table edit, and
+    `SettingsSectionNotices` is the named slot under the card where
+    `PushDeniedNotice` and #137's live-only `PushPrefsNotice` both land.
+
+  - **`ownerSettingsTop` exists because half the owner page had no capture route
+    at all**: `ownerSettings` boots scrolled to its bottom anchor (MYR-224's
+    switch row is below the fold and headless tooling cannot scroll), and this
+    issue changes the half above it. `ownerSettings` keeps its anchor and its
+    role as the pair's other end.
+
   **"{Owner}'s {Vehicle}" is conditional, not concatenated** — `VehicleSummary.name` is the owner's OWN nickname and owners name cars after themselves (the canonical server fixture is literally `"Alex's Model 3"`), so prefixing §7.5.5's `ownerFirstName` onto it produced **"Alex's Alex's Model 3"**, which the first `riderInviteJoined` capture showed verbatim. `SharedVehicleTitle.compose` prefixes the owner only when the nickname is not already about them. The §7.0 catalog rows carry **no owner name at all** — only the redeem response does, and only at join time — so "Shared with me" titles on the vehicle nickname alone rather than persisting a name that can go stale.
 
 - Loading states (MYR-326, all **live-path-only**): `ownerConnectingCold` (owner Home in the first moments of a live boot — the `GET /api/vehicles` list is still in flight, so NOTHING is known and even the switcher chip is a placeholder), `ownerConnecting` (**the client's state**: the list landed — his car's name is known and the REAL `MapHeader` renders it — and the cold `/snapshot` has not. MYR-319's 0/0.8/3/9s retry means this routinely lasts >10s on an asleep/in-service car, which is why he screenshotted it; before this issue both scenes were one black screen with a system `ProgressView` and "Connecting to your vehicles…"), `ownerDrivesLoading` (Drives tab, first page in flight — a day heading + three `DriveRow`-shaped placeholders where a spinner and "Loading drives…" used to be), `ownerSettingsLoading` (Settings ⇢ Tesla Account with the fleet list in flight — two row-shaped placeholders instead of "Connecting…"; forces the LIVE linked-vehicle branch via `DebugScene.rendersLiveLinkedVehicles`, the same stand-in-for-a-live-session precedent as `showsLiveSettings`, so `ownerSettings` itself stays byte-identical). All four inject `DebugLoadingFleet`, which parks the app in ONE loading branch and never resolves it — these states have no other capture route, since on a healthy account each lasts milliseconds and the client's needs a real asleep car behind a real auth session. **No simulated scene can reach a skeleton at all**: `SimulatedVehicleFleet.isConnecting` and `SimulatedDrivesFeed.isLoading`/`hasMore` are `false` by construction and Settings only consults the live list when `linkedVehicles` is wired, so the whole drift gate is untouched. Capture each one twice — once normally, once with `xcrun simctl ui <udid> reduce_motion enabled` — to prove the Reduce Motion fallback: the blocks stay, the sweep goes (`MRTShimmerBand` renders nothing).

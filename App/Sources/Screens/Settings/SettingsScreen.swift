@@ -58,6 +58,12 @@ struct SettingsScreen: View {
     var pushAuthorization: PushAuthorizationState = .notDetermined
 
     private struct NotificationToggles {
+        /// MYR-354 (with MYR-349) — the owner's `ride_lifecycle` switch. The
+        /// category already gated the owner's "X wants a ride" pushes; the row
+        /// simply did not exist. Seeded ON, which is both §7.19's default and
+        /// the only honest rest position for a notification the app is already
+        /// sending.
+        var rideRequests = true
         var driveStarted = true
         var driveCompleted = true
         var chargingComplete = false
@@ -160,20 +166,22 @@ struct SettingsScreen: View {
                     ScrollView {
                         VStack(spacing: 0) {
                             profileSection
-                            divider
                             teslaAccountHeader
-                            teslaVehiclesList
-                            addTeslaRow
-                            divider
+                            teslaAccountCard
                             sharedWithHeader
-                            viewersList
-                            inviteSomeoneRow
-                            divider
-                            notificationsSection
-                            divider
+                            sharedWithCard
+                            notificationsLabel
+                            notificationsCard
+                            SettingsSectionNotices {
+                                // MYR-186 — renders only when the system
+                                // authorization was DENIED; absent (and therefore
+                                // pixel-identical) in every other state, including
+                                // the whole simulated path. MYR-349's live-only
+                                // `PushPrefsNotice` joins it here.
+                                PushDeniedNotice(state: pushAuthorization)
+                            }
                             if liveProfile != nil {
-                                switchModeRow
-                                divider
+                                switchModeCard
                             }
                             signOutRow
                             footer
@@ -263,11 +271,9 @@ struct SettingsScreen: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, MRTMetrics.pageGutter)
             .padding(.top, MRTMetrics.shareHeaderTop)
-            .padding(.bottom, 18)
-    }
-
-    private var divider: some View {
-        Rectangle().fill(Color.mrtBorder).frame(height: MRTMetrics.hairline)
+            // MYR-354 — the two prototypes differ by 6pt here for no stated
+            // reason; the card grammar's own number is the rider page's 12.
+            .padding(.bottom, MRTSettingsGrammar.headerBottomPadding)
     }
 
     // MARK: Profile (screens.jsx:402-406)
@@ -286,45 +292,23 @@ struct SettingsScreen: View {
         return liveProfile?.email
     }
 
+    /// MYR-354 — the owner opens on the SAME account card the rider does. The
+    /// prototype gave this role a bare "PROFILE" label and two unadorned lines
+    /// (screens.jsx:402-406), which was the single biggest reason the two pages
+    /// did not read as one product.
     private var profileSection: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Profile")
-                .mrtTextStyle(.label())
-                .foregroundStyle(Color.mrtTextMuted)
-                .padding(.bottom, 10)
-            Text(profileName)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(Color.mrtText)
-            if let email = profileEmail {
-                // `Text(verbatim:)`, not a string literal — a literal here gets
-                // Markdown-parsed and auto-linked (email-shaped text renders in
-                // the accent color, ignoring `.foregroundStyle`) — see
-                // InvitesScreen's `emailRow` comment for the full story.
-                Text(verbatim: email)
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.mrtTextSec)
-                    .padding(.top, 2)
-            } else {
-                // Live account with no email on file — a calm absent state.
-                Text("Email not shared")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.mrtTextMuted)
-                    .padding(.top, 2)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, MRTMetrics.pageGutter)
-        .padding(.bottom, 24)
+        SettingsProfileCard(
+            initial: liveProfile?.avatarInitial ?? String(profileName.prefix(1)).uppercased(),
+            name: profileName,
+            email: profileEmail,
+            roleBadge: "Owner"
+        )
     }
 
     // MARK: Tesla Account (screens.jsx:409-444)
 
     private var teslaAccountHeader: some View {
-        HStack {
-            Text("Tesla Account")
-                .mrtTextStyle(.label())
-                .foregroundStyle(Color.mrtTextMuted)
-            Spacer(minLength: 0)
+        SettingsSectionLabel(title: "Tesla Account") {
             // MYR-228 — the "Linked · synced 14s ago" status is a fixture claim;
             // show it only when there ARE linked vehicles. In live mode with no
             // linked-vehicle backend the list is empty, so the honest header
@@ -339,83 +323,59 @@ struct SettingsScreen: View {
                 }
             }
         }
-        .padding(.horizontal, MRTMetrics.pageGutter)
-        .padding(.top, 20)
-        .padding(.bottom, 8)
+    }
+
+    /// The Tesla Account card: the linked-vehicle rows (fixture or live) with the
+    /// "Add another Tesla" ACTION ROW as their last row. The prototype floated
+    /// that affordance under the list as bare gold text, where it read as a
+    /// caption rather than a control (MYR-354).
+    private var teslaAccountCard: some View {
+        SettingsCard {
+            teslaVehiclesList
+            SettingsActionRow(icon: "plus", title: "Add another Tesla") {
+                isAddingTesla = true
+            }
+        }
     }
 
     @ViewBuilder
     private var vehiclesList: some View {
-        VStack(spacing: 0) {
-            if vehiclesState.vehicles.isEmpty {
-                // MYR-228 — honest empty state (live, no linked-vehicle backend):
-                // never the fixture Teslas. "Add a Tesla" row still follows.
-                Text("No Tesla linked yet.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.mrtTextMuted)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 12)
-            } else {
-                ForEach(Array(vehiclesState.vehicles.enumerated()), id: \.element.id) { index, vehicle in
-                    vehicleRow(vehicle, isFirst: index == 0)
-                }
+        if vehiclesState.vehicles.isEmpty {
+            // MYR-228 — honest empty state (live, no linked-vehicle backend):
+            // never the fixture Teslas. "Add a Tesla" row still follows.
+            SettingsNoticeRow(text: "No Tesla linked yet.")
+        } else {
+            ForEach(Array(vehiclesState.vehicles.enumerated()), id: \.element.id) { index, vehicle in
+                vehicleRow(vehicle, isFirst: index == 0)
             }
         }
-        .padding(.horizontal, MRTMetrics.pageGutter)
-        .padding(.bottom, 8)
     }
 
     private func vehicleRow(_ vehicle: Vehicle, isFirst: Bool) -> some View {
         let isPrimary = vehicle.id == vehiclesState.primaryID
-        return Button {
-            vehicleDetail = vehicle
-        } label: {
-            HStack(spacing: 13) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color.mrtSurface)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline)
-                        )
-                    Image(systemName: "car.fill")
-                        .font(.system(size: 19))
-                        .foregroundStyle(isPrimary ? Color.mrtGold : Color.mrtTextSec)
-                }
-                .frame(width: 40, height: 40)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 8) {
-                        Text(vehicle.name)
-                            .font(.system(size: 15, weight: .semibold))
-                            .tracking(-0.2)
-                            .foregroundStyle(Color.mrtText)
-                        if isPrimary { PrimaryBadge() }
-                    }
-                    Text("\(vehicle.model) \u{00B7} \(vehicle.plate)")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Color.mrtTextMuted)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.mrtTextMuted)
-            }
-            .padding(.vertical, 12)
-            .overlay(alignment: .top) {
-                if !isFirst {
-                    Rectangle().fill(Color.mrtBorder).frame(height: MRTMetrics.hairline)
-                }
-            }
-            .contentShape(Rectangle())
+        return SettingsDetailRow(
+            glyph: SettingsRowGlyph(
+                tone: isPrimary ? .gold : .neutral,
+                systemName: "car.fill"
+            ),
+            title: vehicle.name,
+            caption: "\(vehicle.model) \u{00B7} \(vehicle.plate)",
+            isFirst: isFirst,
+            action: { vehicleDetail = vehicle }
+        ) {
+            if isPrimary { PrimaryBadge() }
+        } trailing: {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 13))
+                .foregroundStyle(Color.mrtTextMuted)
         }
-        .buttonStyle(.plain)
     }
 
     // MARK: Tesla Account — live read-only list (MYR-243)
 
     /// Picks the source for the linked-vehicle rows: the live fleet (read-only)
     /// when `linkedVehicles` is wired, else the fixture `vehiclesState` list
-    /// (sim / DEBUG), which stays pixel-identical.
+    /// (sim / DEBUG).
     @ViewBuilder
     private var teslaVehiclesList: some View {
         if let linkedVehicles {
@@ -429,35 +389,37 @@ struct SettingsScreen: View {
         }
     }
 
-    /// The read-only live list. Honest states only — a calm connecting line while
-    /// the fleet loads, the fleet's honest notice (empty account / auth /
+    /// The read-only live list. Honest states only — row-shaped placeholders
+    /// while the fleet loads, the fleet's honest notice (empty account / auth /
     /// unreachable) otherwise, and read-only rows once vehicles arrive. No
     /// set-primary / unlink affordance (no backend contract, MYR-228); rows are
     /// non-interactive (no detail sheet, no Primary badge — the live path has no
     /// primary designation).
     @ViewBuilder
     private func liveVehiclesList(_ state: TeslaAccountLiveState) -> some View {
-        VStack(spacing: 0) {
-            switch state {
-            case .connecting:
-                // MYR-326 — the fleet list is genuinely in flight: two
-                // row-shaped placeholders instead of the "Connecting…" line, so
-                // the section holds the shape it is about to have. The
-                // `.notice` branch below stays as it is — it is the honest end
-                // state (empty account / auth / unreachable), never a skeleton.
-                ForEach(0..<Self.connectingRowCount, id: \.self) { index in
-                    TeslaAccountRowSkeleton(isFirst: index == 0)
-                }
-            case .notice(let message):
-                liveNoticeRow(message)
-            case .linked(let vehicles):
-                ForEach(Array(vehicles.enumerated()), id: \.element.id) { index, vehicle in
-                    liveVehicleRow(vehicle, isFirst: index == 0)
-                }
+        switch state {
+        case .connecting:
+            // MYR-326 — the fleet list is genuinely in flight: two row-shaped
+            // placeholders instead of a "Connecting…" line, so the section holds
+            // the shape it is about to have. The `.notice` branch below stays as
+            // it is — it is the honest end state (empty account / auth /
+            // unreachable), never a skeleton.
+            ForEach(0..<Self.connectingRowCount, id: \.self) { index in
+                // `isFirst: true` suppresses the skeleton's OWN hairline so the
+                // separator can be drawn outside the card inset — every other
+                // hairline on this page spans the card's full width, and an
+                // inset one would be the only exception.
+                TeslaAccountRowSkeleton(isFirst: true)
+                    .padding(.horizontal, MRTSettingsGrammar.rowHorizontalPadding)
+                    .mrtSettingsRowSeparator(isFirst: index == 0)
+            }
+        case .notice(let message):
+            SettingsNoticeRow(text: message)
+        case .linked(let vehicles):
+            ForEach(Array(vehicles.enumerated()), id: \.element.id) { index, vehicle in
+                liveVehicleRow(vehicle, isFirst: index == 0)
             }
         }
-        .padding(.horizontal, MRTMetrics.pageGutter)
-        .padding(.bottom, 8)
     }
 
     /// MYR-326 — how many placeholder rows the loading Tesla Account section
@@ -467,218 +429,115 @@ struct SettingsScreen: View {
     /// own small lie).
     private static let connectingRowCount = 2
 
-    private func liveNoticeRow(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 13))
-            .foregroundStyle(Color.mrtTextMuted)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 12)
-    }
-
-    /// A live linked-vehicle row: same icon tile + name + "model · plate" as the
+    /// A live linked-vehicle row: the same glyph + name + "model · plate" as the
     /// fixture row, with no Primary badge (the live path has no primary
     /// designation). On the live path the row taps through to the teardown detail
     /// sheet (MYR-258 — "Remove this car"); with no teardown seam it is a
     /// non-interactive read-only row (MYR-243).
-    @ViewBuilder
     private func liveVehicleRow(_ vehicle: Vehicle, isFirst: Bool) -> some View {
-        if teardown != nil {
-            Button {
-                vehicleDetail = vehicle
-            } label: {
-                liveVehicleRowLabel(vehicle, isFirst: isFirst, showsChevron: true)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        } else {
-            liveVehicleRowLabel(vehicle, isFirst: isFirst, showsChevron: false)
-        }
-    }
-
-    private func liveVehicleRowLabel(_ vehicle: Vehicle, isFirst: Bool, showsChevron: Bool) -> some View {
-        HStack(spacing: 13) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.mrtSurface)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline)
-                    )
-                Image(systemName: "car.fill")
-                    .font(.system(size: 19))
-                    .foregroundStyle(Color.mrtTextSec)
-            }
-            .frame(width: 40, height: 40)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(vehicle.name)
-                    .font(.system(size: 15, weight: .semibold))
-                    .tracking(-0.2)
-                    .foregroundStyle(Color.mrtText)
-                Text(vehicle.plate.isEmpty ? vehicle.model : "\(vehicle.model) \u{00B7} \(vehicle.plate)")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(Color.mrtTextMuted)
-            }
-            Spacer(minLength: 0)
-            if showsChevron {
+        SettingsDetailRow(
+            glyph: SettingsRowGlyph(systemName: "car.fill"),
+            title: vehicle.name,
+            caption: vehicle.plate.isEmpty ? vehicle.model : "\(vehicle.model) \u{00B7} \(vehicle.plate)",
+            isFirst: isFirst,
+            action: teardown != nil ? { vehicleDetail = vehicle } : nil
+        ) {
+            if teardown != nil {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 13))
                     .foregroundStyle(Color.mrtTextMuted)
             }
         }
-        .padding(.vertical, 12)
-        .overlay(alignment: .top) {
-            if !isFirst {
-                Rectangle().fill(Color.mrtBorder).frame(height: MRTMetrics.hairline)
-            }
-        }
-    }
-
-    private var addTeslaRow: some View {
-        plusRow("Add another Tesla") { isAddingTesla = true }
-            .padding(.bottom, 20)
-    }
-
-    private var inviteSomeoneRow: some View {
-        plusRow("Invite someone") { ownerTab = "invites" }
-            .padding(.bottom, 20)
-    }
-
-    private func plusRow(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: "plus")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(Color.mrtGold)
-                Text(title)
-                    .font(.system(size: 13.5, weight: .semibold))
-                    .foregroundStyle(Color.mrtGold)
-            }
-            .frame(minHeight: MRTMetrics.minTapTarget - 12)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, MRTMetrics.pageGutter)
     }
 
     // MARK: Shared with (screens.jsx:447-470)
 
     private var sharedWithHeader: some View {
-        HStack(alignment: .lastTextBaseline) {
-            Text("Shared with")
-                .mrtTextStyle(.label())
-                .foregroundStyle(Color.mrtTextMuted)
-            Spacer(minLength: 0)
+        SettingsSectionLabel(title: "Shared with") {
             Text("\(shareService.viewers.count) \(shareService.viewers.count == 1 ? "person" : "people")")
                 .font(.system(size: 11))
                 .foregroundStyle(Color.mrtTextMuted)
         }
-        .padding(.horizontal, MRTMetrics.pageGutter)
-        .padding(.top, 20)
-        .padding(.bottom, 10)
     }
 
-    @ViewBuilder
-    private var viewersList: some View {
-        if shareService.viewers.isEmpty {
-            Text("No one has access yet.")
-                .font(.system(size: 13))
-                .foregroundStyle(Color.mrtTextMuted)
-                .padding(.horizontal, MRTMetrics.pageGutter)
-                .padding(.bottom, 14)
-        }
-        ForEach(shareService.viewers) { viewer in
-            ViewerRow(viewer: viewer) { confirmRevoke = viewer }
+    /// The "Shared with" card: the viewer rows with "Invite someone" as their
+    /// last row.
+    ///
+    /// `ViewerRow` belongs to `ShareRows.swift`, which **MYR-347 owns**, so it is
+    /// consumed here EXACTLY as it is and its baked-in page gutter is corrected
+    /// at this call site — see `MRTSettingsGrammar.viewerRowCardInset` for the
+    /// arithmetic and the handoff note.
+    private var sharedWithCard: some View {
+        SettingsCard {
+            if shareService.viewers.isEmpty {
+                SettingsNoticeRow(text: "No one has access yet.")
+            } else {
+                ForEach(Array(shareService.viewers.enumerated()), id: \.element.id) { index, viewer in
+                    ViewerRow(viewer: viewer) { confirmRevoke = viewer }
+                        .padding(.horizontal, -MRTSettingsGrammar.viewerRowCardInset)
+                        .mrtSettingsRowSeparator(isFirst: index == 0)
+                }
+            }
+            SettingsActionRow(icon: "plus", title: "Invite someone") {
+                ownerTab = "invites"
+            }
         }
     }
 
     // MARK: Notifications (screens.jsx:473-486)
+    //
+    // `PushDeniedNotice` moved OUT of the section's own stack and into the
+    // shared `SettingsSectionNotices` slot directly under the card — a card
+    // cannot hold full-width wrapping copy — which is exactly where the rider
+    // page has always put it.
 
-    private var notificationsSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Notifications")
-                .mrtTextStyle(.label())
-                .foregroundStyle(Color.mrtTextMuted)
-                .padding(.bottom, 14)
-            notificationRow("Drive started", isOn: $toggles.driveStarted)
-            notificationRow("Drive completed", isOn: $toggles.driveCompleted)
-            notificationRow("Charging complete", isOn: $toggles.chargingComplete)
-            notificationRow("Viewer joined", isOn: $toggles.viewerJoined)
-            // MYR-186 — renders only when the system authorization was DENIED;
-            // absent (and therefore pixel-identical) in every other state,
-            // including the whole simulated path.
-            PushDeniedNotice(state: pushAuthorization)
-        }
-        .padding(.horizontal, MRTMetrics.pageGutter)
-        .padding(.vertical, 20)
+    private var notificationsLabel: some View {
+        SettingsSectionLabel("Notifications")
     }
 
-    private func notificationRow(_ label: String, isOn: Binding<Bool>) -> some View {
-        HStack {
-            Text(label)
-                .font(.system(size: 14))
-                .foregroundStyle(Color.mrtText)
-            Spacer(minLength: 0)
-            MRTToggle(isOn: isOn)
+    /// The prototype's four, LED BY the row it was missing (MYR-354, from
+    /// MYR-349's prefs work): `ride_lifecycle` gates the owner's "X wants a
+    /// ride" pushes — the one notification in this product that wakes a phone
+    /// for money — and this page offered no switch for it at all.
+    private var notificationsCard: some View {
+        SettingsCard {
+            SettingsToggleRow(
+                label: SettingsNotificationCopy.ownerRideRequests,
+                isOn: $toggles.rideRequests,
+                isFirst: true
+            )
+            SettingsToggleRow(label: "Drive started", isOn: $toggles.driveStarted)
+            SettingsToggleRow(label: "Drive completed", isOn: $toggles.driveCompleted)
+            SettingsToggleRow(label: "Charging complete", isOn: $toggles.chargingComplete)
+            SettingsToggleRow(label: "Viewer joined", isOn: $toggles.viewerJoined)
         }
-        .padding(.vertical, 12)
     }
 
     // MARK: Switch view mode (MYR-224 — client-approved chooser companion)
     //
-    // A Settings action row that flips the owner shell to the rider shell. Row
-    // anatomy mirrors the sign-out row (screens.jsx:488-493) + the `plusRow`
-    // (gold leading glyph + label) — an icon, a label, and a trailing chevron in
-    // the same gutter/tap-target as every other Settings row. Only present on the
-    // live signed-in path (the mode chooser's companion); absent in SIM.
-    private var switchModeRow: some View {
-        Button(action: onSwitchMode) {
-            HStack(spacing: 10) {
-                Image(systemName: "arrow.left.arrow.right")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.mrtGold)
-                Text("Switch to Rider")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Color.mrtText)
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.mrtTextMuted)
-            }
-            .frame(minHeight: MRTMetrics.minTapTarget)
-            .contentShape(Rectangle())
+    // Flips the owner shell to the rider shell. The shared `SettingsActionRow`
+    // in its own card, identical to the rider page's "Switch to Owner". Only
+    // present on the live signed-in path; absent in SIM.
+    private var switchModeCard: some View {
+        SettingsCard {
+            SettingsActionRow(
+                icon: "arrow.left.arrow.right",
+                title: "Switch to Rider",
+                emphasizesTitle: false,
+                isFirst: true,
+                action: onSwitchMode
+            )
         }
-        .buttonStyle(.plain)
-        .padding(.horizontal, MRTMetrics.pageGutter)
-        .padding(.vertical, 12)
     }
 
     // MARK: Sign out + footer (screens.jsx:488-493)
 
     private var signOutRow: some View {
-        HStack {
-            Button {
-                confirmSignOut = true
-            } label: {
-                Text("Sign out")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Color.mrtDialogRed)
-                    .frame(minHeight: MRTMetrics.minTapTarget)
-            }
-            .buttonStyle(.plain)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, MRTMetrics.pageGutter)
-        .padding(.vertical, 24)
+        SettingsSignOutButton { confirmSignOut = true }
     }
 
     private var footer: some View {
-        Text("MyRoboTaxi v1.0 (24)")
-            .font(.system(size: 11))
-            .tracking(0.4)
-            .foregroundStyle(Color.mrtTextMuted)
-            .frame(maxWidth: .infinity)
-            .padding(.top, 20)
-            .padding(.bottom, 40)
+        SettingsFooter(text: "MyRoboTaxi v1.0 (24)")
     }
 
     // MARK: Vehicle detail sheet (screens.jsx:1585-1642)

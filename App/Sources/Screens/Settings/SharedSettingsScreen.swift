@@ -37,8 +37,10 @@ struct SharedSettingsScreen: View {
     let onSignOut: () -> Void
 
     private struct NotificationToggles {
-        var requestUpdates = true
-        var arrival = true
+        /// MYR-354 (with MYR-349) — ONE value for the ONE `ride_lifecycle`
+        /// category, replacing the prototype's `requestUpdates` + `arrival` pair.
+        /// Both seeded `true`, so the merged row's rest position is unchanged.
+        var rideUpdates = true
         var promos = false
     }
 
@@ -84,6 +86,18 @@ struct SharedSettingsScreen: View {
     /// seam in both modes and the live rows arrive by the same path.
     private var sharedList: [SharedVehicleGrant] { catalog.grants }
 
+    /// MYR-354 — the whole vehicle section, resolved by the ONE rule that also
+    /// answers the shell (`RiderVehicleSet`), so the tab and the map can never
+    /// disagree about whether this account has a car.
+    private var vehicleSection: RiderSettingsVehicleSection {
+        RiderSettingsVehicleSection.resolve(
+            hasLoaded: catalog.hasLoaded,
+            loadFailed: catalog.loadFailed,
+            owned: catalog.ownedVehicles,
+            shared: sharedList
+        )
+    }
+
     var body: some View {
         ZStack {
             Color.mrtBg.ignoresSafeArea()
@@ -92,15 +106,17 @@ struct SharedSettingsScreen: View {
                 ScrollView {
                     VStack(spacing: 0) {
                         profileCard
-                        sharedWithLabel
-                        sharedWithCard
+                        vehicleSectionLabel
+                        vehicleSectionCard
                         notificationsLabel
                         notificationsCard
-                        // MYR-186 — renders only when the system authorization was
-                        // DENIED; absent (and pixel-identical) in every other
-                        // state, including the whole simulated path.
-                        PushDeniedNotice(state: pushAuthorization)
-                            .padding(.horizontal, MRTMetrics.pageGutter)
+                        SettingsSectionNotices {
+                            // MYR-186 — renders only when the system authorization
+                            // was DENIED; absent (and pixel-identical) in every
+                            // other state, including the whole simulated path.
+                            // MYR-349's live-only `PushPrefsNotice` joins it here.
+                            PushDeniedNotice(state: pushAuthorization)
+                        }
                         if liveProfile != nil {
                             switchModeCard
                         }
@@ -131,276 +147,137 @@ struct SharedSettingsScreen: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, MRTMetrics.pageGutter)
             .padding(.top, MRTMetrics.shareHeaderTop)
-            .padding(.bottom, 12)
+            .padding(.bottom, MRTSettingsGrammar.headerBottomPadding)
     }
 
-    // MARK: Profile (shared-screens.jsx:700-707)
+    // MARK: Profile (shared-screens.jsx:700-707 — now `SettingsProfileCard`,
+    // shared with the owner page, MYR-354)
 
     private var profileCard: some View {
-        HStack(spacing: 13) {
-            ZStack {
-                Circle().fill(
-                    RadialGradient(
-                        colors: [.mrtGold, .mrtRiderAvatarGradientEnd],
-                        center: UnitPoint(x: 0.3, y: 0.3),
-                        startRadius: 0,
-                        endRadius: 24
-                    )
-                )
-                Text(avatarInitial)
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundStyle(Color.mrtGoldButtonLabel)
+        SettingsProfileCard(
+            initial: avatarInitial,
+            name: displayFullName,
+            email: displayEmail,
+            roleBadge: "Guest"
+        )
+    }
+
+    // MARK: Vehicles / Shared with me (shared-screens.jsx:709-730)
+
+    private var vehicleSectionLabel: some View {
+        SettingsSectionLabel(vehicleSection.label)
+    }
+
+    private var vehicleSectionCard: some View {
+        SettingsCard {
+            ForEach(Array(vehicleSection.rows.enumerated()), id: \.offset) { index, row in
+                vehicleRow(row, isFirst: index == 0)
             }
-            .frame(width: 48, height: 48)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(displayFullName)
-                    .font(.system(size: 17, weight: .semibold))
-                    .tracking(-0.3)
-                    .foregroundStyle(Color.mrtText)
-                if let displayEmail {
-                    Text(displayEmail)
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(Color.mrtTextSec)
-                } else {
-                    Text("Email not shared")
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(Color.mrtTextMuted)
-                }
-            }
-            Spacer(minLength: 0)
-            Text("Guest")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.mrtGold)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(Color.mrtGoldBadgeFill, in: Capsule())
         }
-        .padding(16)
-        .mrtSurface(.card)
-        .padding(.horizontal, MRTMetrics.pageGutter)
-        .padding(.bottom, 22)
     }
 
-    // MARK: Shared with me (shared-screens.jsx:709-730)
-
-    private var sharedWithLabel: some View {
-        Text("Shared with me")
-            .mrtTextStyle(.label())
-            .foregroundStyle(Color.mrtTextMuted)
-            .padding(.horizontal, MRTMetrics.pageGutter)
-            .padding(.bottom, 8)
-    }
-
-    private var sharedWithCard: some View {
-        VStack(spacing: 0) {
-            if sharedList.isEmpty {
-                // Honest empty state on the live path — never fixture personas.
-                emptySharedRow
-            } else {
-                ForEach(Array(sharedList.enumerated()), id: \.element.id) { index, entry in
-                    sharedWithRow(entry, isFirst: index == 0)
-                }
-            }
-            addCodeRow
-        }
-        .mrtSurface(.card)
-        .padding(.horizontal, MRTMetrics.pageGutter)
-        .padding(.bottom, 22)
-    }
-
-    /// Live path, no shared vehicles yet — a calm, intentional empty state that
-    /// points the rider at the invite-code row below (MYR-255).
-    private var emptySharedRow: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle().fill(Color.mrtElevated)
+    @ViewBuilder
+    private func vehicleRow(_ row: RiderSettingsVehicleSection.Row, isFirst: Bool) -> some View {
+        switch row {
+        case .owned(_, let name):
+            // MYR-354 — the client's own question, answered in the one place he
+            // went looking for it. Gold `car.fill` rather than a name initial:
+            // the gold accent's job on this page is "yours / actionable", and
+            // this is the only vehicle row on the account that is both. No
+            // trailing glyph — a shared row's muted trailing `car.fill` says
+            // "this is a vehicle", which the leading glyph has already said here.
+            SettingsDetailRow(
+                glyph: SettingsRowGlyph(tone: .gold, systemName: "car.fill"),
+                title: name,
+                caption: RiderSettingsVehicleSection.ownedCaption,
+                isFirst: isFirst
+            )
+        case .shared(_, let title, let caption):
+            SettingsDetailRow(
+                glyph: SettingsRowGlyph(
+                    // The initial of whatever the row is titled — the persona's
+                    // name in SIM, the vehicle's nickname on live (which has no
+                    // owner name to take an initial from; see
+                    // `SharedVehicleGrant.ownerName`).
+                    initial: String(title.prefix(1))
+                ),
+                title: title,
+                caption: caption,
+                isFirst: isFirst
+            ) {
                 Image(systemName: "car.fill")
-                    .font(.system(size: 13))
+                    .font(.system(size: 15))
                     .foregroundStyle(Color.mrtTextMuted)
             }
-            .frame(width: 32, height: 32)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("No vehicles shared with you yet")
-                    .font(.system(size: 14, weight: .medium))
-                    .tracking(-0.1)
-                    .foregroundStyle(Color.mrtText)
-                Text("Enter an invite code to ride someone\u{2019}s Tesla.")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(Color.mrtTextSec)
-            }
-            Spacer(minLength: 0)
+        case .empty:
+            // The account has NOTHING — neither owned nor shared (MYR-354). A
+            // calm, intentional empty state that points at the invite-code row
+            // below (MYR-255); before this issue it also rendered for an OWNER,
+            // which is the confusion the client reported.
+            SettingsDetailRow(
+                glyph: SettingsRowGlyph(systemName: "car.fill", size: 13),
+                title: "No vehicles shared with you yet",
+                caption: "Enter an invite code to ride someone\u{2019}s Tesla.",
+                isFirst: isFirst
+            )
+        case .unavailable:
+            SettingsNoticeRow(text: RiderSettingsVehicleSection.unavailableText, isFirst: isFirst)
+        case .enterCode:
+            SettingsActionRow(icon: "plus", title: "Enter invite code", isFirst: isFirst, action: onAddCode)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 13)
-    }
-
-    private func sharedWithRow(_ entry: SharedVehicleGrant, isFirst: Bool) -> some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle().fill(Color.mrtElevated)
-                // The initial of whatever the row is titled — the persona's name
-                // in SIM, the vehicle's nickname on live (which has no owner name
-                // to take an initial from; see `SharedVehicleGrant.ownerName`).
-                Text(entry.title.prefix(1))
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.mrtText)
-            }
-            .frame(width: 32, height: 32)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(entry.title)
-                    .font(.system(size: 14, weight: .medium))
-                    .tracking(-0.1)
-                    .foregroundStyle(Color.mrtText)
-                Text(entry.caption)
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(Color.mrtTextSec)
-            }
-            Spacer(minLength: 0)
-            Image(systemName: "car.fill")
-                .font(.system(size: 15))
-                .foregroundStyle(Color.mrtTextMuted)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 13)
-        .overlay(alignment: .top) {
-            if !isFirst {
-                Rectangle().fill(Color.mrtBorder).frame(height: MRTMetrics.hairline)
-            }
-        }
-    }
-
-    private var addCodeRow: some View {
-        Button(action: onAddCode) {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle().fill(Color.mrtGoldBadgeFill)
-                    Image(systemName: "plus")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(Color.mrtGold)
-                }
-                .frame(width: 32, height: 32)
-                Text("Enter invite code")
-                    .font(.system(size: 14, weight: .semibold))
-                    .tracking(-0.1)
-                    .foregroundStyle(Color.mrtGold)
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.mrtTextMuted)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 13)
-            .overlay(alignment: .top) {
-                Rectangle().fill(Color.mrtBorder).frame(height: MRTMetrics.hairline)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 
     // MARK: Notifications (shared-screens.jsx:732-745)
 
     private var notificationsLabel: some View {
-        Text("Notifications")
-            .mrtTextStyle(.label())
-            .foregroundStyle(Color.mrtTextMuted)
-            .padding(.horizontal, MRTMetrics.pageGutter)
-            .padding(.bottom, 8)
+        SettingsSectionLabel("Notifications")
     }
 
+    /// TWO SWITCHES, ONE PREFERENCE (MYR-354, from MYR-349's prefs work).
+    ///
+    /// The prototype offered "Request accepted / declined" and "Pick-up &
+    /// arrival alerts" as separate rows. They are not separate: §7.19 has ONE
+    /// `ride_lifecycle` category and no send site distinguishes them, so the two
+    /// switches were one preference wearing two masks — flip either and both
+    /// move, and the one the rider did not touch appears to change by itself.
+    /// A control that cannot deliver what it offers is worse than an absent one,
+    /// so they are ONE row now, with a sub-line naming everything it governs.
     private var notificationsCard: some View {
-        VStack(spacing: 0) {
-            notificationRow("Request accepted / declined", isOn: $toggles.requestUpdates, isFirst: true)
-            notificationRow("Pick-up & arrival alerts", isOn: $toggles.arrival, isFirst: false)
-            notificationRow("Tips & product news", isOn: $toggles.promos, isFirst: false)
-        }
-        .mrtSurface(.card)
-        .padding(.horizontal, MRTMetrics.pageGutter)
-        .padding(.bottom, 22)
-    }
-
-    private func notificationRow(_ label: String, isOn: Binding<Bool>, isFirst: Bool) -> some View {
-        HStack(spacing: 12) {
-            Text(label)
-                .font(.system(size: 14))
-                .tracking(-0.1)
-                .foregroundStyle(Color.mrtText)
-            Spacer(minLength: 0)
-            MRTToggle(isOn: isOn)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 13)
-        .overlay(alignment: .top) {
-            if !isFirst {
-                Rectangle().fill(Color.mrtBorder).frame(height: MRTMetrics.hairline)
-            }
+        SettingsCard {
+            SettingsToggleRow(
+                label: SettingsNotificationCopy.riderRideUpdates,
+                caption: SettingsNotificationCopy.riderRideUpdatesCaption,
+                isOn: $toggles.rideUpdates,
+                isFirst: true
+            )
+            SettingsToggleRow(label: "Tips & product news", isOn: $toggles.promos)
         }
     }
 
     // MARK: Switch view mode (MYR-224 — client-approved chooser companion)
     //
-    // Flips the rider shell to the owner shell. Reuses the rider Settings card
-    // row anatomy verbatim (the `addCodeRow` / `sharedWithRow` shape,
-    // shared-screens.jsx:709-730): a gold badge-fill icon circle + label +
-    // trailing chevron inside a `mrtSurface(.card)`. Only present on the live
-    // signed-in path; absent in SIM.
+    // Flips the rider shell to the owner shell. The shared `SettingsActionRow`
+    // in its own card. Only present on the live signed-in path; absent in SIM.
     private var switchModeCard: some View {
-        Button(action: onSwitchMode) {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle().fill(Color.mrtGoldBadgeFill)
-                    Image(systemName: "arrow.left.arrow.right")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(Color.mrtGold)
-                }
-                .frame(width: 32, height: 32)
-                Text("Switch to Owner")
-                    .font(.system(size: 14, weight: .semibold))
-                    .tracking(-0.1)
-                    .foregroundStyle(Color.mrtText)
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.mrtTextMuted)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 13)
-            .contentShape(Rectangle())
+        SettingsCard {
+            SettingsActionRow(
+                icon: "arrow.left.arrow.right",
+                title: "Switch to Owner",
+                emphasizesTitle: false,
+                isFirst: true,
+                action: onSwitchMode
+            )
         }
-        .buttonStyle(.plain)
-        .mrtSurface(.card)
-        .padding(.horizontal, MRTMetrics.pageGutter)
-        .padding(.bottom, 22)
     }
 
     // MARK: Sign out + footer (shared-screens.jsx:748-756)
 
     private var signOutButton: some View {
-        Button {
-            confirmSignOut = true
-        } label: {
-            Text("Sign out")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(Color.mrtDialogRed)
-                .frame(maxWidth: .infinity)
-                .frame(height: MRTButtonSize.md.height)
-                .overlay(
-                    RoundedRectangle(cornerRadius: MRTMetrics.cardRadiusFlat, style: .continuous)
-                        .strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline)
-                )
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(MRTPressScaleButtonStyle())
-        .padding(.horizontal, MRTMetrics.pageGutter)
+        SettingsSignOutButton { confirmSignOut = true }
     }
 
     private var footer: some View {
-        Text("MyRoboTaxi \u{00B7} Guest access")
-            .font(.system(size: 11))
-            .foregroundStyle(Color.mrtTextMuted)
-            .frame(maxWidth: .infinity)
-            .padding(.top, 16)
-            .padding(.bottom, 4)
+        SettingsFooter(text: "MyRoboTaxi \u{00B7} Guest access")
     }
 }
 

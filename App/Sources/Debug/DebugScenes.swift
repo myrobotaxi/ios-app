@@ -749,6 +749,45 @@ enum DebugScene: String, CaseIterable {
     /// Motion — to prove `MRTShimmerBand`'s fallback.
     case riderVehiclesResolving
 
+    /// MYR-354 — owner Settings at the TOP of its scroll.
+    ///
+    /// `ownerSettings` boots scrolled to its own bottom anchor (MYR-224's
+    /// "Switch to Rider" row is below the fold and headless tooling cannot
+    /// scroll), which means the page's whole upper half — profile, Tesla Account,
+    /// the head of "Shared with" — has never had a full-frame capture route at
+    /// all. This issue changes exactly that half, so it needs one. Same scene,
+    /// same data, one anchor fewer: `ownerSettings` keeps its bottom anchor and
+    /// its role as the drift-gate pair's other end.
+    case ownerSettingsTop
+
+    /// MYR-354 — rider Settings for an account that OWNS a Tesla and has
+    /// redeemed NOTHING: the client's own account, on the tab where he asked
+    /// *"I own a vehicle so would it appear here or no?"*.
+    ///
+    /// The same one-owned-row / zero-viewer-rows `GET /api/vehicles` shape
+    /// `riderOwnerSelfRide` injects, so the two scenes are the one account seen
+    /// from its two tabs — and the pair is the proof that the map's "Where to?"
+    /// and this section now agree about whether a car exists.
+    ///
+    /// Live-path-only by construction: `SimulatedSharedVehicleCatalog
+    /// .ownedVehicles` is empty and its `grants` are the prototype's three
+    /// personas, so `riderSettings` itself is a pure-viewer account and keeps
+    /// the "Shared with me" label verbatim.
+    case riderSettingsOwned
+
+    /// MYR-354 — rider Settings for an account holding BOTH: one owned car and
+    /// two redeemed shares. The state that pins the ORDER (owned first, matching
+    /// `RiderVehicleSet`'s own adoption rule, because the ride is created against
+    /// the owned car) and the label switch to "Vehicles" over a card whose other
+    /// rows genuinely are shares.
+    case riderSettingsMixed
+
+    /// MYR-354 — rider Settings for an account with NOTHING: no owned car, no
+    /// share. The ONE state where "No vehicles shared with you yet" is true, and
+    /// the BEFORE half of the pair with `riderSettingsOwned` — before this issue
+    /// both accounts saw this row.
+    case riderSettingsEmpty
+
     /// MYR-343 — the rider Live Map when `GET /api/vehicles` FAILED and nothing
     /// about the account is known. Deliberately not the invite-code prompt ("no
     /// vehicles shared with you yet" is a claim one timed-out fetch cannot
@@ -910,14 +949,18 @@ enum DebugScene: String, CaseIterable {
 
     static var initialSharedTab: String {
         guard let current, !current.isOwner else { return "shared" }
-        if current == .riderSettings { return "sharedSettings" }
+        // MYR-354 — the three vehicle-section scenes live on the same tab.
+        if current == .riderSettings
+            || current == .riderSettingsOwned
+            || current == .riderSettingsMixed
+            || current == .riderSettingsEmpty { return "sharedSettings" }
         return current.isScheduled ? "rideHistory" : "shared"
     }
 
     static var initialOwnerTab: String {
         switch current {
         case .ownerDrives, .ownerDrivesLoading: return "drives"
-        case .ownerSettings, .ownerSettingsLoading: return "settings"
+        case .ownerSettings, .ownerSettingsTop, .ownerSettingsLoading: return "settings"
         case .ownerShare, .ownerShareLive, .ownerShareMessage, .ownerShareMessageNoName:
             return "invites"
         default: return "home"
@@ -934,6 +977,12 @@ enum DebugScene: String, CaseIterable {
     /// Whether Settings should render with the DEBUG live identity + switch row.
     var showsLiveSettings: Bool {
         self == .ownerSettings || self == .riderSettings || self == .ownerSettingsLoading
+            // MYR-354 — the four new Settings capture scenes carry the same
+            // DEBUG identity their siblings do, so the profile card and the
+            // mode-switch row are in frame for the grammar comparison.
+            || self == .ownerSettingsTop
+            || self == .riderSettingsOwned || self == .riderSettingsMixed
+            || self == .riderSettingsEmpty
     }
 
     /// MYR-340 — whether the SHARE MESSAGE should be composed with a real owner
@@ -1118,6 +1167,7 @@ enum DebugScene: String, CaseIterable {
         self == .ownerHome || self == .ownerDrives || self == .ownerIncoming
             || self == .ownerIncomingQueued
             || self == .ownerScheduled || self == .ownerScheduledLive || self == .ownerSettings
+            || self == .ownerSettingsTop
             || self == .ownerControlsUnavailable
             || self == .ownerVehicleDetails || self == .ownerVehicleTires || self == .ownerVehicleSeats
             || self == .ownerVehicleSeatsVented || self == .ownerVehicleSeatsHeatOnly
@@ -1806,7 +1856,8 @@ enum DebugScene: String, CaseIterable {
             viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
             viewer.sheetPhase = .summary
-        case .modeChooser, .ownerSettings, .riderSettings,
+        case .modeChooser, .ownerSettings, .ownerSettingsTop, .riderSettings,
+             .riderSettingsOwned, .riderSettingsMixed, .riderSettingsEmpty,
              .scheduledDetails, .scheduledReschedule, .scheduledRequested, .scheduledConfirmCancel,
              .ownerHome, .ownerDrives, .ownerIncoming, .ownerIncomingQueued,
              .ownerScheduled, .ownerScheduledLive,
@@ -2009,12 +2060,27 @@ extension DebugScene {
                 Self.shareViewerRow(id: "shared-1", name: "Alex\u{2019}s Model 3", permission: "live_history"),
                 Self.shareViewerRow(id: "shared-2", name: "Alex\u{2019}s Cybercab", permission: "live_history"),
             ]
-        case .riderOwnerSelfRide:
+        case .riderOwnerSelfRide, .riderSettingsOwned:
             // MYR-343 — the client's account: ONE owned row, ZERO viewer rows.
             // `role: .owner` carries no `sharePermission` at all (§7.0 emits the
             // key iff the role is `viewer`), which is precisely why it produced no
             // grant and shunted him to the invite prompt.
+            //
+            // MYR-354 reuses the SAME injected list for the Settings tab, so the
+            // two scenes are one account seen from its two surfaces.
             endpoint.viewerRows = [Self.shareOwnerRow(id: "owned-1", name: "Lunar")]
+        case .riderSettingsMixed:
+            // MYR-354 — an account holding BOTH. Owned first is the rendered
+            // order regardless of the wire order, so the owner row is deliberately
+            // NOT first on the list the server hands back.
+            endpoint.viewerRows = [
+                Self.shareViewerRow(id: "shared-1", name: "Alex\u{2019}s Model 3", permission: "rides"),
+                Self.shareOwnerRow(id: "owned-1", name: "Lunar"),
+                Self.shareViewerRow(id: "shared-2", name: "Mom\u{2019}s Model Y", permission: "live"),
+            ]
+        case .riderSettingsEmpty:
+            // MYR-354 — the ONE account the empty state is true of.
+            endpoint.viewerRows = []
         case .riderVehiclesResolving:
             // MYR-343 — the list is parked in flight and never answers, so the
             // shell holds its `.resolving` skeleton for the whole capture. Same
