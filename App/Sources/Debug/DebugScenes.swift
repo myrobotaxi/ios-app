@@ -98,6 +98,31 @@ enum DebugScene: String, CaseIterable {
     /// to?" and stops rotating. The pair is a clean before/after of exactly the
     /// availability gate.
     case riderIdleETABusy
+    /// MYR-352 — the rider IDLE sheet carrying the muted "no rides" banner above
+    /// the search bar, for a rider whose vehicle set is ONE unavailable car.
+    ///
+    /// Reuses `riderBusyVehicle`'s own `MRT_BUSY_REASON=busy|inService|offline|
+    /// paused` selector and its live-shaped `busyFleetMember`, so all four
+    /// headline variants AND both scheduling-line branches come out of ONE scene,
+    /// built from real wire inputs through the REAL `LiveFleetMemberMapping` —
+    /// the copy in the capture is what the shipping predicate produced, not a
+    /// literal. `paused` is the variant with NO second line (§7.18 refuses
+    /// scheduled rides too), and it is the pair's most load-bearing capture.
+    ///
+    /// Live-path-only by construction: every `FleetMember` fixture has
+    /// `unavailability == nil` and `SharedViewerState.liveFleetMembers` is empty in
+    /// SIM, so `idle` and every other rider scene are byte-identical.
+    case riderNoRides
+    /// MYR-352 — the same banner for a MULTI-vehicle set: two cars, out for two
+    /// different reasons, so no single reason is true of the fleet and the headline
+    /// is the client's generic "No rides available right now".
+    ///
+    /// It needs its own scene because a fleet is the one input
+    /// `debugFleetMemberOverride` cannot express, and the vehicle COUNT is what
+    /// selects the headline. One car is in service and one is offline — both of
+    /// which still allow scheduling — so the second line is present here and the
+    /// pair with `riderNoRides MRT_BUSY_REASON=paused` isolates exactly that line.
+    case riderNoRidesFleet
 
     // Rider scheduled-ride sheet (RideHistoryScreen → ScheduledRideSheet)
     case scheduledDetails
@@ -1315,6 +1340,48 @@ enum DebugScene: String, CaseIterable {
         ))
     }
 
+    /// MYR-352 — a live-SHAPED MULTI-vehicle set for `riderNoRidesFleet`: two
+    /// cars, both unavailable, for two DIFFERENT reasons. Built through the REAL
+    /// `LiveFleetMemberMapping.fleetMember(from:)` from real wire inputs (a
+    /// `status: .inService` row and a `status: .offline` row), so the capture
+    /// proves the shipping predicate answered `unavailability` on every row before
+    /// the banner generalized — the generic headline is only correct BECAUSE no row
+    /// came back requestable.
+    ///
+    /// Two different reasons deliberately: a fleet out for one shared reason is the
+    /// case where a specific headline would tempt, and this scene is the one that
+    /// shows why the generic line is the only true sentence about the set.
+    private static var noRidesFleetMembers: [FleetMember] {
+        [
+            LiveFleetMemberMapping.fleetMember(from: VehicleSummary(
+                vehicleId: "debug-fleet-1",
+                name: "Lunar",
+                model: "Model Y",
+                year: 2026,
+                color: "Quicksilver",
+                vinLast4: "2046",
+                status: .inService,
+                chargeLevel: 68,
+                estimatedRange: 240,
+                lastUpdated: "2026-07-26T12:00:00Z",
+                role: .owner
+            )),
+            LiveFleetMemberMapping.fleetMember(from: VehicleSummary(
+                vehicleId: "debug-fleet-2",
+                name: "Comet",
+                model: "Model 3",
+                year: 2025,
+                color: "Deep Blue Metallic",
+                vinLast4: "7731",
+                status: .offline,
+                chargeLevel: 41,
+                estimatedRange: 130,
+                lastUpdated: "2026-07-26T09:00:00Z",
+                role: .viewer
+            ))
+        ]
+    }
+
     /// MYR-286 — a live-SHAPED vehicle carrying a real owner-entered plate, for
     /// the `riderPlateChip` capture. Built through the REAL
     /// `LiveFleetMemberMapping.fleetMember(from:)` from a contracts
@@ -1465,6 +1532,20 @@ enum DebugScene: String, CaseIterable {
             viewer.debugVehicleCoordinateOverride = DebugScene.idleETAVehicleFix
             viewer.debugFleetMemberOverride = DebugScene.idleETAFleetMember(busy: self == .riderIdleETABusy)
             viewer.refreshPickupETAAnchors()
+            viewer.sheetPhase = .idle
+        case .riderNoRides:
+            // MYR-352 — the idle sheet plus ONE unavailable live-shaped vehicle,
+            // reusing `riderBusyVehicle`'s own reason selector so all four headline
+            // variants come out of this one scene. Nothing about the banner is
+            // hand-set: the shipping `LiveFleetMemberMapping` answers
+            // `unavailability` and the shipping `RiderIdleAvailabilityBanner`
+            // composes the copy.
+            viewer.debugFleetMemberOverride = DebugScene.busyFleetMember
+            viewer.sheetPhase = .idle
+        case .riderNoRidesFleet:
+            // MYR-352 — the MULTI-vehicle set, the input that selects the generic
+            // headline. The whole list travels the real mapping.
+            viewer.debugFleetMembersOverride = DebugScene.noRidesFleetMembers
             viewer.sheetPhase = .idle
         case .declined:
             viewer.sheetPhase = .search

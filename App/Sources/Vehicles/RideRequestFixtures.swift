@@ -91,6 +91,32 @@ public enum FleetUnavailability: String, Sendable, Equatable, CaseIterable {
         }
     }
 
+    /// MYR-352 — the rider-facing VERB CLAUSE for this reason: the middle of a
+    /// sentence whose subject is the vehicle's name.
+    ///
+    /// The word ("Busy") is a chip label; this is what the app says when it has a
+    /// whole line. It is factored out rather than written twice because MYR-233's
+    /// Review helper line and MYR-352's idle banner are the same sentence about the
+    /// same fact, and two copies of it are two places for the grammar to drift —
+    /// which matters here more than usual, since `paused` is the case whose
+    /// sentence is shaped differently from its three siblings ("has paused ride
+    /// requests", not "is …"). Composing from a shared clause is what keeps that
+    /// difference in ONE place.
+    ///
+    /// `RideRequestReviewContent.helperText` renders `"{owner} {clause} right now"`
+    /// (+ " — schedule a pickup instead" when ``offersScheduling``), which is
+    /// byte-identical to the four strings MYR-233/342 shipped —
+    /// `RiderIdleAvailabilityTests.testTheReviewHelperCopyIsUnchangedByTheSharedClause`
+    /// pins that.
+    public var riderClause: String {
+        switch self {
+        case .busy: return "is on another ride"
+        case .inService: return "is in service"
+        case .offline: return "is offline"
+        case .paused: return "has paused ride requests"
+        }
+    }
+
     /// MYR-342 — whether this reason leaves SCHEDULING open as an alternative.
     ///
     /// MYR-233's rule was "never a dead end": an unavailable car replaces the gold

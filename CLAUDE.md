@@ -95,6 +95,18 @@ A `-MRT_SCENE <name>` launch **argument** is accepted as a fallback for tooling 
   `RotatingPlaceholder` alternates on 2800ms. `idle` itself keeps the fixture "3
   min" line and stays byte-identical.
 
+`riderNoRides` / `riderNoRidesFleet` (MYR-352) — the rider idle sheet carrying the
+  muted **"no rides" banner** above the search bar. `riderNoRides` is the
+  SINGLE-vehicle set and reuses `riderBusyVehicle`'s own
+  `MRT_BUSY_REASON=busy|inService|offline|paused` selector plus its live-shaped
+  `busyFleetMember`, so all four reason-specific headlines AND both
+  scheduling-line branches come out of one scene, built from real wire inputs
+  through the REAL `LiveFleetMemberMapping`. `riderNoRidesFleet` is the
+  MULTI-vehicle set (one car in service, one offline) — the input that selects the
+  generic headline, and the one thing `debugFleetMemberOverride` cannot express.
+  Both are live-path-only by construction, so `idle` and every other rider scene
+  stay byte-identical.
+
 - Rider scheduled-ride sheet: `scheduledDetails`, `scheduledReschedule`, `scheduledRequested`, `scheduledConfirmCancel`.
 - Owner side: `ownerHome`, `ownerDrives` (Drives tab, `initialOwnerTab` "drives"), `ownerIncoming`, `ownerIncomingQueued` (MYR-317: the SAME incoming card with the queue badge up — a muted "+2 more waiting" chip trailing the "INCOMING RIDE REQUEST" kicker, the owner's only signal that resolving this card is not the end of the queue. The simulated service has no incoming FEED, so the count comes from its DEBUG-only `debugSeedWaitingIncoming`; the live service derives the identical number from the held incoming page. Everything else is `ownerIncoming` verbatim, so the pair is a clean before/after of exactly the chip — `ownerIncoming` itself stays pixel-identical), `ownerScheduled`, `ownerScheduledLive` (MYR-312/313: the SCHEDULED incoming card on the **live** branch, in the client's condition — Saturday 5:30 PM reservation, target car IN SERVICE now. The only scene that forces `HomeScreen`'s live rendering (`DebugScene.rendersLiveIncomingRequest`), because the real requester name and the scheduled accept-gate exemption are both live-only branches a sim capture can't reach; it injects an in-service `DebugVehicleDetailsFleet` the seeded record targets by id, so the real fleet join + the real `isAcceptGated` predicate both run. `ownerScheduled` stays simulated and pixel-identical), `ownerVehicleEnriched` (MYR-320: the vehicle-details section with every enrichment field populated off ONE live-shaped snapshot — Model "2026 Model Y Performance" composed from the display-ready `trimLabel` while the snapshot ALSO carries the raw `trim` badge "p74d" it must NOT substitute, Color "Quicksilver" flowing through the EXISTING `VehicleState.color` with no mapping change, and an "FSD" row reading "FSD (Supervised) v14.3.5" verbatim directly after Software. `ownerVehicleDetails` keeps the pre-enrichment shape — blank color, no FSD row — so the pair is a clean before/after. Pair with `MRT_OWNER_DETENT=half`), `ownerServiceWindowManual` (MYR-320: the same in-service car as `ownerServiceWindow`, with the renamed "Service completion date" row carrying its manual sub-caption "Set manually — Tesla hasn’t provided an estimate for this visit". That caption is only reachable after a save whose echo matched the owner’s submission — proof Tesla held no estimate — which headless tooling cannot perform, so the scene seeds the provenance THROUGH the shipping `LiveVehicleCommandExecutor.provenance` classifier. The wire carries NO source discriminator, so a cold read renders no caption at all), `ownerVehiclePlate` (MYR-286: the Vehicle details section with a real owner-entered plate on BOTH read surfaces — pair with `MRT_OWNER_DETENT=half`; the same scene without a plate is `ownerVehicleDetails`, which now shows the "Add plate" affordance rather than an uneditable VIN), `ownerServiceWindowSaved` (MYR-316, client defect: the owner saved a completion date, the server persisted it, and the sheet kept showing the old state. The same in-service car whose snapshot carries **NO** window — the state the sheet is in when the editor opens — with the production `LiveVehicleCommandExecutor.setServiceWindow` run against `DebugServiceWindowEndpoint` on boot and **nothing refetching the snapshot afterwards** (the field is snapshot-only by contract). Everything the capture shows about the window therefore came from the write ECHO, through the unified `VehicleServiceWindow.resolvedEndAt`; before the fix both read surfaces took the still-empty snapshot and this scene rendered no line and no time at all. Capture at PEEK for the hero line, pair with `MRT_OWNER_DETENT=half` for the row), `ownerNoticeRejected` (MYR-301, client defect: "The car didn’t accept that" stuck forever. A real 502 `command_failed` on `auto_conditioning_stop` settles the real `.rejected` notice, which now clears itself after `LiveVehicleCommandExecutor.defaultNoticeDisplayDuration` (6s) — so capture at t≈2s and t≈8s, the same two-shot pattern `ownerDispatchedCompleted` uses. **That bounded display applies to `ownerNoticeCharge`/`ownerNoticeAsleep`/`ownerNoticeSeat` too**: take their captures inside the window. Pair with `MRT_OWNER_DETENT=half`), `ownerNoticeRejectedInService` (MYR-329, client defect: the SAME rejection with the reason NAMED. Jul 28: "Any reason why car didn't accept climate, is it because low battery?" — the car was in service mode and the battery was fine, but `ownerNoticeRejected`'s generic "The car didn't accept that" left a wrong guess as the only guess available. Same 502 `command_failed` on `auto_conditioning_stop`, same real `LiveVehicleCommandExecutor`, same real `.rejected` settle — the ONE difference is that the wire error carries the server's canonical token in `message` (`"vehicle command failed: vehicle_in_service"`, rest-api.md §7.9), so the shipping `RestError.commandRejectionReason` parse runs and the row reads "Car is in service — commands are limited". Nothing about the notice is hand-set. The tile sub stays "Declined" for every reason — the reason lives on the full-width row, which has the space to say it properly. It needs its own scene because `ownerNoticeRejected` is MYR-301's lifecycle capture and stays byte-identical, and because this state has no other capture route at all: it takes a car genuinely sitting in service mode, behind a real auth session, refusing a real command. The pair is a clean before/after of exactly that one line. Same TWO-SHOT bounded display — t≈2s and t≈8s. Pair with `MRT_OWNER_DETENT=half`), `ownerVehicleSeatsHeatOnly` (MYR-308: the seat section for a car whose REST SPEC says it has NO cooled seats — `DebugVehicleDetailsFleet(ventedSeatReadBacks: true, seatCoolingCapable: false)` carries BOTH the cooler read-backs that make the MYR-299 presence heuristic fire AND the contracts-0.16.0 `seatCoolingCapable: false` that authoritatively overrules it, so the capture is the precedence proof: "SEAT HEATING", flame-only rows, and no Heat↔Cool toggle at all — not even a greyed-out one, which would imply hardware the car lacks. Pair with `MRT_OWNER_DETENT=half`), `ownerMediaNowPlaying` (MYR-303: the Media card with a REAL now-playing block off the wire — title/artist/album/source plus a real duration + sane elapsed, mapped by the production `VehicleContractMapping.nowPlaying` and reconciled by the real `LiveVehicleCommandExecutor`. Shows the shipping render: the prototype media card's title/artist grammar, a PASSIVE progress line (no thumb — §7.9 has no seek-to-position), no invented cover art (the wire carries no artwork), and a live transport row whose icon is the car's own `Playing`), `ownerMediaNoSession` (MYR-314: the same card with NO media session — the car cleared the title to `""` and reports no `mediaPlaybackStatus`. Both halves of one real situation: the honest idle line instead of the track that just ended, and the muted, non-interactive transport row with "Start media in the car first". Pair both media scenes with `MRT_OWNER_DETENT=half`), `ownerFreshnessStale` / `ownerFreshnessWaking` (MYR-315: the owner sheet's tappable **freshness stamp**, which is **LIVE-ONLY** — the prototype has no recency element in the sheet hero at all, and a simulated snapshot carries no `isStreaming`/`lastUpdated` to be honest with, so on the simulated path the stamp is never constructed and every other owner scene stays byte-identical. Both scenes inject `DebugFreshnessFleet` — a car OFFLINE for 7h whose live-shaped `VehicleState` travels the production `VehicleContractMapping`, so the stamp shown is the one the shipping resolver produced — and force `HomeScreen`'s live branch via `DebugScene.rendersLiveVehicleFreshness`. `ownerFreshnessStale` is the resting "Synced 7h ago"; `ownerFreshnessWaking` is the in-flight "Waking Lunar…", seeded as a phase (`initialRefreshPhase`) because headless capture tooling can't synthesize the tap. Capture at PEEK — where the stamp matters most, since the tile qualifiers + "Not live" footer only exist at half, below a scroll — or pair with `MRT_OWNER_DETENT=half`), `ownerFreshnessInService` / `ownerFreshnessRefused` (MYR-345, the client's own screenshot AKXUQLSW…: the SAME in-service fleet `ownerServiceWindow` injects — so that scene stays byte-identical — with the stamp's live rendering forced on, so the peek hero carries BOTH live-only qualifier lines at once. No scene reached that pair before, and it is the only variant where the flat 24pt reserve was visibly wrong. It is also the DEAD-TAP repro: a car read "just now" is already current, so the tap resolves to the acknowledgement — the branch that rendered NO copy at all until this issue. `ownerFreshnessRefused` is the same car read 7h ago, whose §7.15 call the server refuses BY NAME (`502 command_failed` + MYR-329's `vehicle_in_service` token, held 1.5s so the in-flight phase is a real state); capture at t≈1s for "Waking Model Y…" and t≈4s for the named settle. **A refusal the server explained must be explained to the owner** — silence is the bug even when the refusal is correct), `ownerServiceWindow` / `ownerServiceWindowEditor` (MYR-316: the owner's side of the service window, injected as `DebugVehicleDetailsFleet(status: .inService, serviceEstimatedEndAt: <next Sat 2 PM>)` — the instant rides BOTH read surfaces (live-shaped snapshot AND list row) exactly as a real server emits it and travels the production `VehicleContractMapping` folds. `ownerServiceWindow` is the READ: the In Service badge with a muted "Service Estimated Completion · Sat, Aug 1 · 2:00 PM" directly beneath it, best captured at PEEK where the line lives; pair with `MRT_OWNER_DETENT=half` to also see the Status & location card's matching In Service chip + the "Expected back" row. `ownerServiceWindowEditor` is the WRITE: the same car with the entry sheet already presented, seeded via `DebugScene.opensServiceWindowEditor` because the row lives inside a half-detent scroll that headless tooling cannot tap — the same stand-in-for-a-tap precedent as `ownerFreshnessWaking`. Its Save runs the production `LiveVehicleCommandExecutor.setServiceWindow` against `DebugServiceWindowEndpoint`, which reproduces the two server behaviours that shape the client: future-only validation, and **Tesla precedence** — the echo is Tesla's `service_etc` when one exists, NOT the owner's submission, which is why the executor adopts the echo. Both scenes leave every other owner scene byte-identical: a car that is not in service renders no line and no row), `ownerRideShareOn` / `ownerRideSharePaused` / `ownerRideSharePending` (MYR-342: the owner's **ride-sharing toggle**, the last row of the Status & location card — `MRTToggle` (gold-on) with a state caption beneath it, "Riders can request this car" / "Paused — ride requests are off". All three inject a live-shaped `rideShareEnabled` on BOTH read surfaces and force `HomeScreen`'s live branch via `DebugScene.rendersLiveRideShareToggle`, because the row is **gated on the live path on purpose**: a switch that cannot reach `PUT /api/tesla/vehicles/{id}/ride-share` (rest-api.md §7.18) would appear to withdraw the owner's car from ride-hailing and do nothing at all. That gate IS the feature, so a capture goes through it rather than around it — which is also why every other owner scene is byte-identical and the card grows its one new row only here. `ownerRideSharePending` is the write IN FLIGHT and has no other capture route: against a real backend it lasts milliseconds, so the scene parks the write inside a stub that never answers (`DebugHangingRideShareEndpoint`) and performs the flip on boot through the SHIPPING `setRideShareEnabled` — the spinner is the real `uiState(for: .rideShare).isPending`, and the caption already reads "Paused" because the flip is OPTIMISTIC. Pair all three with `MRT_OWNER_DETENT=half`), `ownerDispatchedCompleted` (MYR-292: owner Home holding a `completed` ride — boots with the "Dropped off ✓" banner UP; the 5s auto-dismiss then acknowledges the ride on `OwnerHomeState`, so capture at t≈2s and t≈8s to get both halves. The acknowledgement is owner-scoped state, NOT `HomeScreen` @State, so it survives the tab switch that used to bring the banner back).
 
@@ -444,6 +456,94 @@ prototype's fixture pair before any live machinery is consulted, pinned in
 `RiderPickupETATests`. What images CAN prove was proven: the settled glyph masks
 of both placeholder strings are byte-identical across base and branch, and
 Review's stat pair + Booking's whole itinerary band are pixel-identical.
+
+**The idle sheet says WHY the ETA went quiet** (MYR-352) — TestFlight, Jul 30:
+*"If no owner vehicles available with ride share enabled we need to display a
+banner saying no rides available right now. Kind of like the Tesla Robotaxi app.
+We can do it as a sleek banner above the search bar."* MYR-341 already SUPPRESSES
+"A ride is N min away" whenever the car is unavailable, on the honest reasoning
+that a car in a service bay is not N minutes away at any distance. Correct — and
+silent: the rider was left with a bare "Where to?" over a fleet that cannot take
+one request, and the first thing that said otherwise was a Review sheet two taps
+later. The banner is the WHY the placeholder deliberately does not say, and both
+are raised by the SAME `FleetUnavailability` non-nil, so the bar and the banner
+can never contradict each other (asserted across all four reasons).
+
+- **The predicate is over the SET, not the watched car.** `banner(members:)` is
+  `nil` unless the set is non-empty AND *no* member is requestable — one free car
+  cancels it outright, whatever the others are doing. Empty is `nil` too: "no
+  rides available" about NO vehicles is MYR-343's `.empty` shell answering a
+  different question.
+- **`RiderLiveVehicleLocator` now publishes the WHOLE `GET /api/vehicles` list**
+  (`fleetMembers`), not just `.first`. Same fetch, same endpoint, no new call —
+  MYR-212 discarded the tail only because the ride is created against the head.
+  `fleetMember` is `fleetMembers.first`, so every requesting/tracking/naming
+  surface is untouched, and this is **not** the multi-vehicle picker (still
+  MYR-91). `SharedViewerState.liveFleetMembers` puts the fully-resolved
+  `liveFleetMember` at the head so the own-ride exception and the pickup-ETA fill
+  still live in exactly one place.
+- **Copy**: one vehicle → `"{name} {clause} — no rides right now"`; more than one
+  → the client's generic `"No rides available right now"`, because with two cars
+  out for two reasons no single reason is true of the fleet. Two cars sharing a
+  reason is deliberately NOT special-cased — that is a coincidence, and specific
+  copy would assert it as a pattern. Second line `"You can still schedule a
+  pickup."` only when some unavailable member `offersScheduling`, i.e. MYR-313
+  for `inService`/`offline`/`busy` and **never** for `paused` (§7.18 refuses
+  reservations there on all three layers).
+- **`FleetUnavailability.riderClause`** is the shared verb clause ("is in
+  service" / "has paused ride requests"). MYR-233's four Review helper literals
+  are now composed from it — byte-identically, pinned — so the banner and the
+  helper line cannot drift, and `paused`'s differently-shaped sentence lives in
+  one place.
+- **The banner brings exactly its own room, and it has to be MEASURED to know how
+  much.** The idle card was a fixed 286 (`sharedIdleSheetHeight`) sized for
+  greeting + search bar + chips ≈ 259; the banner is the first element that can
+  exceed that band, because its headline wraps to two lines for the longer
+  reasons **even at 393pt**. Dropped into the flat frame it pushed the Home/Work
+  chips under the floating nav. So the card's height is `286 + measured banner +
+  riderIdleBannerGap (14)`, and the same value feeds the engine's idle detent and
+  MapKit's attribution inset (MYR-223's rule unchanged) — one number, three
+  consumers, so the card, the sheet and the map's clear band cannot disagree.
+  This is MYR-345's per-line-reserve rule where the room is only knowable by
+  asking the line.
+- **TWO traps, both cost a round.** (1) **Measuring the CARD is a layout loop** —
+  it ends in a greedy `Spacer(minLength: 0)`, so it reports back whatever the
+  engine proposed, the detent adopts it, and the pair ratchets upward every pass
+  (the sheet ran away and the screen went black). The BANNER is the only thing
+  here safe to measure: its height is a pure function of its copy and the width,
+  with no edge back to the sheet's size. (2) **`minHeight` is not a substitute for
+  a fixed frame** — a floor lets the same greedy `Spacer` absorb the proposal,
+  which stretched the sheet's gradient wash and drifted `riderWatchOnly` (a
+  byte-stable scene) by ~913k pixels at max delta 13. The frame stays FIXED and
+  the reserve is added to the number.
+
+**Never present over a live first responder** (MYR-353) — TestFlight, Jul 30:
+*"When I tap on schedule it pops up behind the keyboard. Needs to be fixed."*
+`RideSlideUpCard` is an in-hierarchy overlay, bottom-flush and
+`ignoresSafeArea(edges: .bottom)` — which by design includes the KEYBOARD region —
+so the card laid out against the physical screen edge and the keyboard window drew
+straight over its day/time chips and its "Set pickup" CTA. Nothing the app
+computed was wrong; the MYR-239/344 class exactly.
+
+All THREE entry points now funnel through one `openScheduleCard()` carrying
+MYR-344's `presentHandout` pattern verbatim — drop the `@FocusState` binding AND
+force-resign via `MRTKeyboard.dismiss()`, then pay `dismissalSettle` (0.25s) **only
+when a responder actually gave the keyboard up**, so a card opened with no keyboard
+present is byte-identical to before. The three are the Schedule chip, the
+"Pickup {day} · {time}" summary row's Edit, and Review's one-shot
+`opensScheduleOnSearch` route. The first two matter most because
+`scheduleSearchFocus()` **auto-focuses the destination field by design** 450ms
+after the sheet settles — keyboard-up is the DEFAULT state the chip is tapped in,
+not an edge case.
+
+The same auto-focus is the hazard pointing the other way: `consumeScheduleRouting()`
+opens the card from inside the very `onChange(of: sheetPhase)` that arms the focus,
+so `scheduleSearchFocus` now also guards on `!scheduleSheetOpen` (evaluated after
+its sleep) — a keyboard rising UNDER an open card is the same defect from the far
+side. Audited and RULED OUT for the two other `RideSlideUpCard` consumers
+(Review's fleet picker, Summary's tip quip) and for `ScheduledRideSheet`'s inline
+reschedule: the rider flow's only text fields are the Search sheet's destination
+and passenger name/phone, so no other card can be presented over a keyboard.
 
 **Expanded route viewer** (MYR-327) — tapping the map on the **Drive Summary**
 hero (owner Drives → a drive, and the rider's Ride History → a completed ride —

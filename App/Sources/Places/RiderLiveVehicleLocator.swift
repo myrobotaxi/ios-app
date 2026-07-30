@@ -27,9 +27,26 @@ import Observation
 @MainActor
 final class RiderLiveVehicleLocator {
     private(set) var coordinate: CLLocationCoordinate2D?
+
+    /// MYR-352 — the WHOLE §7.0 list as `FleetMember`s, in wire order.
+    ///
+    /// The single `GET /api/vehicles` this type already performs returns every
+    /// vehicle the account can see; MYR-212 kept only `.first` because that is the
+    /// one the ride is created against. The idle banner's question is different —
+    /// "can ANY of them take a request?" — and answering it from one row would
+    /// tell a rider with a second, free car that no rides are available. So the
+    /// rest of the rows are published rather than discarded: **no new fetch, no
+    /// new endpoint, the same list**.
+    ///
+    /// This is NOT the multi-vehicle picker (still MYR-91 scope) — nothing here
+    /// chooses a different car to ride. `fleetMember` remains `.first`, exactly as
+    /// before, so every surface that requests, tracks or names a vehicle is
+    /// untouched.
+    private(set) var fleetMembers: [FleetMember] = []
+
     /// The account's first owned vehicle as a `FleetMember` (identity + live
     /// battery/availability), or `nil` until the vehicle list has loaded.
-    private(set) var fleetMember: FleetMember?
+    var fleetMember: FleetMember? { fleetMembers.first }
 
     @ObservationIgnored private let rest: RestClient
     @ObservationIgnored private var loadTask: Task<Void, Never>?
@@ -48,9 +65,10 @@ final class RiderLiveVehicleLocator {
             defer { self?.loadTask = nil }
             guard let vehicles = try? await rest.vehicles(), let first = vehicles.first else { return }
             guard !Task.isCancelled else { return }
-            // Publish the live fleet identity from the list row (has nickname,
-            // color, charge, VIN, status) even before the full snapshot lands.
-            self?.fleetMember = LiveFleetMemberMapping.fleetMember(from: first)
+            // Publish the live fleet identity from the list rows (nickname, color,
+            // charge, VIN, status) even before the full snapshot lands. `first`
+            // stays the head of this list, so `fleetMember` is unchanged.
+            self?.fleetMembers = vehicles.map(LiveFleetMemberMapping.fleetMember(from:))
             guard let state = try? await rest.snapshot(vehicleId: first.vehicleId) else { return }
             guard !Task.isCancelled else { return }
             // Contract §2.3: (0,0) is "no fix", not a valid location.

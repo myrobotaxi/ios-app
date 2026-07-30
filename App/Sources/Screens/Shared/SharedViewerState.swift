@@ -892,6 +892,12 @@ public final class SharedViewerState {
     /// other scene and every shipping build, so the simulated experience is
     /// pixel-identical. Release builds never compile it.
     public var debugFleetMemberOverride: FleetMember?
+
+    /// MYR-352 drift-gate hook: a live-shaped MULTI-vehicle set for the
+    /// `riderNoRidesFleet` capture. A fleet is the one input the single-member
+    /// override cannot express, and it is the input that selects the banner's
+    /// generic headline. `nil` for every other scene and every shipping build.
+    public var debugFleetMembersOverride: [FleetMember]?
     #endif
 
     /// The live fleet member (nickname / real battery / availability / VIN
@@ -914,6 +920,40 @@ public final class SharedViewerState {
         #endif
         guard isLiveLocation, let member = liveVehicleLocator?.fleetMember else { return nil }
         return resolving(member)
+    }
+
+    /// MYR-352 — the rider's WHOLE resolved vehicle set, for the idle banner's
+    /// "can ANY of them take a request?" question.
+    ///
+    /// Built on the SAME seam as ``liveFleetMember`` rather than beside it, so the
+    /// two can never disagree about the vehicle they share:
+    ///
+    ///  • The HEAD is `liveFleetMember` itself — fully resolved, i.e. with the
+    ///    MYR-233 own-ride exception and the MYR-341 pickup-ETA fill already
+    ///    applied. A rider holding this car's open ride must not be told "no rides
+    ///    available" about the ride they are on, and that exception lives in
+    ///    exactly one place.
+    ///  • The TAIL is the remaining `GET /api/vehicles` rows as mapped. Neither of
+    ///    those two resolutions applies to them: the own-ride exception is about a
+    ///    ride against a specific car, and the pickup ETA is measured to the
+    ///    WATCHED vehicle. Applying either would be inventing a fact about a car
+    ///    this screen is not showing.
+    ///  • EMPTY in SIM and before the list lands, because `liveFleetMember` is
+    ///    `nil` there — which is what makes the banner live-path-only and every
+    ///    simulated capture byte-identical.
+    public var liveFleetMembers: [FleetMember] {
+        #if DEBUG
+        if let debugFleetMembersOverride { return debugFleetMembersOverride }
+        #endif
+        guard let head = liveFleetMember else { return [] }
+        let tail = liveVehicleLocator.map { Array($0.fleetMembers.dropFirst()) } ?? []
+        return [head] + tail
+    }
+
+    /// MYR-352 — the idle sheet's banner, or `nil` when there is nothing honest to
+    /// say. Composed here (not in the view) so the whole matrix is a pure value.
+    public var idleAvailabilityBanner: RiderIdleAvailability? {
+        RiderIdleAvailabilityBanner.banner(members: liveFleetMembers)
     }
 
     private func resolving(_ member: FleetMember) -> FleetMember {

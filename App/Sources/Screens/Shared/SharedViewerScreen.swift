@@ -70,6 +70,13 @@ struct SharedViewerScreen: View {
     /// it; this is where the rider can actually "zoom in and out to look at" the
     /// whole trip. Only reachable from the tracking phase.
     @State private var showsExpandedRoute = false
+    /// MYR-352 — the availability banner's own measured height, reported by
+    /// `RiderIdleAvailabilityBannerView` through `RiderIdleBannerHeightKey`. `0`
+    /// whenever no banner is up, which is every simulated boot and every
+    /// pre-existing DEBUG scene. The same precedent as `trackingSettledHeight`
+    /// directly above: a live-only element that reports what it measures so the
+    /// chrome around it can reserve exactly that much.
+    @State private var idleBannerHeight: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -397,10 +404,33 @@ struct SharedViewerScreen: View {
         }
     }
 
+    /// MYR-352 — the idle card's height: the prototype's `sharedIdleSheetHeight`
+    /// PLUS exactly what the availability banner measures, and the constant itself
+    /// whenever there is no banner.
+    ///
+    /// It stays a FIXED frame rather than becoming a `minHeight` floor, and that is
+    /// load-bearing rather than stylistic: the card ends in a greedy `Spacer`, so a
+    /// floor lets it absorb whatever the engine proposes — which stretched the
+    /// sheet's own gradient wash and drifted `riderWatchOnly`, a scene that had
+    /// been byte-stable across runs, by ~913k pixels. A fixed height computed from
+    /// the banner's measurement keeps every bannerless state at exactly 286 and
+    /// therefore byte-identical.
+    ///
+    /// The three consumers — the card's frame, the engine's idle detent, and
+    /// MapKit's attribution inset — all read THIS, so the card, the sheet the
+    /// engine draws and the band the map keeps clear can never disagree.
+    private var resolvedIdleSheetHeight: CGFloat {
+        guard idleBannerHeight > 0 else { return MRTMetrics.sharedIdleSheetHeight }
+        return MRTMetrics.sharedIdleSheetHeight + idleBannerHeight + MRTMetrics.riderIdleBannerGap
+    }
+
     private var riderIdleSearchSheet: some View {
         RiderIdleSearchSheet(
             viewerState: viewerState,
-            idleHeight: MRTMetrics.sharedIdleSheetHeight,
+            // MYR-352 — the detent follows the banner's own reserve, so the
+            // engine draws the sheet at exactly the height the card is. The
+            // constant verbatim whenever no banner is up.
+            idleHeight: resolvedIdleSheetHeight,
             idleContent: { idleGreetingCardHosted },
             searchContent: { RideRequestSearchContent(viewerState: viewerState, hosted: true) }
         )
@@ -669,10 +699,23 @@ struct SharedViewerScreen: View {
     /// without mounting the view — `PerPhaseMapInsetTests`). `isPendingPill`
     /// distinguishes the two idle states (tall greeting sheet vs. short pending
     /// pill). Summary is a full-screen takeover with no bottom sheet → 0.
-    static func mapBottomInset(phase: RiderSheetPhase, isPendingPill: Bool) -> CGFloat {
+    ///
+    /// MYR-352 — `idleSheetHeight` is the engine's RESOLVED idle detent, which
+    /// equals `sharedIdleSheetHeight` in every state that carries no availability
+    /// banner (i.e. every simulated boot and every pre-existing DEBUG scene, which
+    /// is why it defaults to exactly that and no existing caller or test changes).
+    /// A banner makes the card taller, and MapKit's legally-required attribution
+    /// has to clear the card that is actually on screen rather than the constant
+    /// one — the MYR-223 rule, unchanged: the inset tracks the ACTUAL bottom
+    /// chrome height per phase.
+    static func mapBottomInset(
+        phase: RiderSheetPhase,
+        isPendingPill: Bool,
+        idleSheetHeight: CGFloat = MRTMetrics.sharedIdleSheetHeight
+    ) -> CGFloat {
         switch phase {
         case .idle:
-            return isPendingPill ? MRTMetrics.sharedPendingPillSheetHeight : MRTMetrics.sharedIdleSheetHeight
+            return isPendingPill ? MRTMetrics.sharedPendingPillSheetHeight : idleSheetHeight
         case .search:
             return MRTMetrics.rideRequestSearchSheetHeight
         case .pinDrop:
@@ -689,7 +732,11 @@ struct SharedViewerScreen: View {
     }
 
     private var mapBottomInset: CGFloat {
-        Self.mapBottomInset(phase: viewerState.sheetPhase, isPendingPill: isPendingPill)
+        Self.mapBottomInset(
+            phase: viewerState.sheetPhase,
+            isPendingPill: isPendingPill,
+            idleSheetHeight: resolvedIdleSheetHeight // MYR-352
+        )
     }
 
     /// MYR-250 item 1 — the `VehicleMapView` (idle/search/pin-drop) camera inset.
@@ -706,7 +753,11 @@ struct SharedViewerScreen: View {
     /// (`routePreviewActive`, above), which intentionally refits to show the
     /// route, so this only governs the empty idle↔search framing.
     private var vehicleMapBottomInset: CGFloat {
-        Self.vehicleMapBottomInset(phase: viewerState.sheetPhase, isPendingPill: isPendingPill)
+        Self.vehicleMapBottomInset(
+            phase: viewerState.sheetPhase,
+            isPendingPill: isPendingPill,
+            idleSheetHeight: resolvedIdleSheetHeight // MYR-352
+        )
     }
 
     /// Pure (testable) — the idle/search/pin-drop `VehicleMapView` camera inset.
@@ -714,9 +765,15 @@ struct SharedViewerScreen: View {
     /// (item 1); every other phase keeps its own `mapBottomInset`. Extracted
     /// static so the "search shares idle framing" invariant is unit-testable
     /// without mounting the view (`PerPhaseMapInsetTests`).
-    static func vehicleMapBottomInset(phase: RiderSheetPhase, isPendingPill: Bool) -> CGFloat {
-        if case .search = phase { return mapBottomInset(phase: .idle, isPendingPill: false) }
-        return mapBottomInset(phase: phase, isPendingPill: isPendingPill)
+    static func vehicleMapBottomInset(
+        phase: RiderSheetPhase,
+        isPendingPill: Bool,
+        idleSheetHeight: CGFloat = MRTMetrics.sharedIdleSheetHeight
+    ) -> CGFloat {
+        if case .search = phase {
+            return mapBottomInset(phase: .idle, isPendingPill: false, idleSheetHeight: idleSheetHeight)
+        }
+        return mapBottomInset(phase: phase, isPendingPill: isPendingPill, idleSheetHeight: idleSheetHeight)
     }
 
     /// The map camera span for the shared idle/search/pin-drop map: pin-drop
@@ -1265,6 +1322,20 @@ struct SharedViewerScreen: View {
             // (`canRequestRides` is true when no tier applies), so the drift-gate
             // scenes are byte-identical.
             if viewerState.canRequestRides {
+                // MYR-352 — the client's "sleek banner above the search bar". It
+                // sits ABOVE, not in place of, the search bar on purpose: the
+                // rider can still search, and — for every reason except an owner's
+                // pause — still schedule (MYR-313). This is the WHY behind the
+                // MYR-341 ETA placeholder's deliberate silence in exactly these
+                // states, so the two can never contradict each other: the same
+                // `FleetUnavailability` non-nil that suppresses "A ride is N min
+                // away" is what raises this banner. `nil` on every simulated boot
+                // (no live fleet member ⇒ no vehicle set), so the idle sheet is
+                // byte-identical everywhere it was before.
+                if let availability = viewerState.idleAvailabilityBanner {
+                    RiderIdleAvailabilityBannerView(availability: availability)
+                        .padding(.bottom, MRTMetrics.riderIdleBannerGap)
+                }
                 searchBar
                 if !viewerState.isLiveLocation {
                     quickPlaces
@@ -1277,8 +1348,25 @@ struct SharedViewerScreen: View {
         .padding(.horizontal, 22)
         .padding(.top, 14)
         .padding(.bottom, 98)
-        .frame(height: MRTMetrics.sharedIdleSheetHeight)
+        // MYR-352 — still a FIXED height, now `sharedIdleSheetHeight` plus the
+        // banner's own measured room. The prototype's 286 was sized for greeting +
+        // search bar + chips (≈259, the rest absorbed by the trailing `Spacer`);
+        // the banner is the first element that can exceed that band, because its
+        // headline wraps to two lines for the longer reasons even at 393pt. Left
+        // at a flat 286 it pushed the Home/Work chips under the floating nav.
+        //
+        // MYR-345's rule — a live-only line brings exactly its own room — applied
+        // by MEASUREMENT rather than a constant, since this line's height depends
+        // on the reason, the vehicle's name and the device width. Bannerless
+        // states resolve to exactly 286 and are byte-identical.
+        .frame(height: resolvedIdleSheetHeight)
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        // Read the banner's height back out of the hosted subtree. Attached OUTSIDE
+        // the frame it feeds, so it observes the banner rather than the card.
+        .onPreferenceChange(RiderIdleBannerHeightKey.self) { height in
+            guard abs(height - idleBannerHeight) > 0.5 else { return }
+            idleBannerHeight = height
+        }
         .background(idleSheetBackground)
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: MRTMetrics.sheetRadius, topTrailingRadius: MRTMetrics.sheetRadius, style: .continuous))
         .overlay(alignment: .top) {
