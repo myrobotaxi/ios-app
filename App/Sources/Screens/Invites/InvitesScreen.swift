@@ -72,8 +72,15 @@ struct InvitesScreen: View {
             .ignoresSafeArea(.container, edges: .top)
         }
         .mrtBottomNav(selection: $ownerTab)
+        // MYR-344 — EVERY exit from the composer drops the keyboard, not just the
+        // one that opens it. The ✕, a scrim tap and a programmatic close all come
+        // through this binding, and any of them can be the last thing before the
+        // share sheet presents.
         .mrtConfigSheet(
-            isPresented: Binding(get: { sendStep != nil }, set: { if !$0 { sendStep = nil } }),
+            isPresented: Binding(
+                get: { sendStep != nil },
+                set: { if !$0 { sendStep = nil; MRTKeyboard.dismiss() } }
+            ),
             showsCloseButton: sendStep == .config
         ) {
             sendSheetContent
@@ -250,6 +257,17 @@ struct InvitesScreen: View {
             }
             return
         }
+        // MYR-344 (client, TestFlight Jul 29: "After I select send keyboard is
+        // still open and bottom sheet is cut off with the share details") — the
+        // recipient field is STILL first responder when Send is tapped, so the
+        // composer opened into a container the keyboard had already shrunk by its
+        // own height: the "Send invite" CTA and the summary card's last rows laid
+        // out below the fold, behind the keyboard, and this sheet does not scroll,
+        // so there was no way to reach them (proven by the failing-first UI test —
+        // the tap that should send lands on the keyboard instead). Drop
+        // the keyboard BEFORE the sheet presents (MYR-239's force-resign, not a
+        // focus write alone) so the sheet measures the full screen.
+        MRTKeyboard.dismiss()
         accessLevel = .live
         // MYR-228 fix (a) — the FIRST REAL vehicle, from the seam. This was
         // `VehicleFixtures.vehicles[0].id` unconditionally, so a live owner's
@@ -619,7 +637,7 @@ struct InvitesScreen: View {
                 if let minted {
                     // Live: straight to the share sheet with the code.
                     sendStep = nil
-                    handout = minted
+                    await presentHandout(minted)
                 } else {
                     // Sim: the prototype's gold-check celebration, unchanged.
                     sendStep = .done
@@ -632,6 +650,22 @@ struct InvitesScreen: View {
                 email = ""
             }
         }
+    }
+
+    /// MYR-344 — the ONE way this screen opens the system share sheet.
+    ///
+    /// `UIActivityViewController` is presented into the app's own window, so it
+    /// measures the same keyboard-shrunk container the composer did: presenting
+    /// while the keyboard is up (or is still animating out) is what left the
+    /// client's share sheet cut off with its actions unreachable. Resign first,
+    /// and only pay the 0.25s settle when a responder actually gave the keyboard
+    /// up — a sheet that never had one presents with no added latency.
+    @MainActor
+    private func presentHandout(_ minted: ShareHandout) async {
+        if MRTKeyboard.dismiss() {
+            try? await Task.sleep(for: MRTKeyboard.dismissalSettle)
+        }
+        handout = minted
     }
 
     // MARK: Dialogs (screens.jsx:1362-1422)
@@ -647,7 +681,12 @@ struct InvitesScreen: View {
                     // returns, so a resend that did not re-present the share sheet
                     // would leave both parties holding nothing that works.
                     if let minted = try await shareService.resend(invite) {
-                        handout = minted
+                        // MYR-344 — same rule as the create path: the system share
+                        // sheet never presents over a keyboard. The owner can be
+                        // mid-type in the recipient field when they tap Resend on
+                        // a pending row, which is that path's version of the
+                        // client's cut-off sheet.
+                        await presentHandout(minted)
                     }
                     resentToastName = invite.name
                 } catch {

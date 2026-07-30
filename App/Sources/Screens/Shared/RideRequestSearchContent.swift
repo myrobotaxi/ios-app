@@ -721,11 +721,13 @@ struct RideRequestSearchContent: View {
     /// — never left hanging over an empty sheet. On re-entering Search the field
     /// is not re-focused (no `.focused` write sets it true), so the keyboard only
     /// ever returns when the rider taps the field, after the transition settles.
+    ///
+    /// MYR-344 — the force-resign itself now lives in `MRTKeyboard.dismiss()`,
+    /// because the owner's invite composer needs the identical discipline before
+    /// presenting the share sheet. Behaviour here is unchanged.
     private func dismissKeyboardBeforeLeaving() {
         destinationFieldFocused = false
-        #if canImport(UIKit)
-        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-        #endif
+        MRTKeyboard.dismiss()
     }
 
     // MARK: Results
