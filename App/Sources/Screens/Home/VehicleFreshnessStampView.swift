@@ -80,7 +80,16 @@ struct VehicleFreshnessStampView: View {
             // ≥44pt hit area (CLAUDE.md hard rule) without a 44pt visual band: the
             // row is laid out at its text height and the touch region is grown
             // around it, the same trick `MapHeader`'s 40pt chip uses.
-            .contentShape(Rectangle().inset(by: -15))
+            //
+            // MYR-345 — 16, not MYR-315's 15. The row lays out at 13⅓pt (an 11pt
+            // line box), so −15 produced a 43⅓pt target: under the rule by ⅔ of a
+            // point, and invisible to every test that asserted the INSET instead of
+            // the delivered frame. `OwnerFreshnessStampUITests` now reads the frame
+            // UIKit actually hit-tests and taps below the ink to prove it is live.
+            // It costs the gap above the nav nothing: growing a `contentShape` does
+            // not move layout, and the region still stops ~23pt short of the nav's
+            // own top edge.
+            .contentShape(Rectangle().inset(by: -16))
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -90,6 +99,11 @@ struct VehicleFreshnessStampView: View {
         .accessibilityLabel(text)
         .accessibilityHint("Double-tap to refresh, waking the car if needed.")
         .accessibilityAddTraits(.isButton)
+        // MYR-345 — a STABLE handle for `OwnerFreshnessStampUITests`, which
+        // synthesizes the real tap the client made. The a11y LABEL is the rendered
+        // copy (it has to be — that copy is the whole message), so it is the thing
+        // under test and cannot also be the selector.
+        .accessibilityIdentifier("mrt.freshnessStamp")
     }
 }
 

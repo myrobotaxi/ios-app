@@ -1,0 +1,10 @@
+{
+  "_meta": {
+    "description": "200 response for PUT /api/tesla/vehicles/{vehicleId}/ride-share (MYR-342, rest-api.md §7.18) — the owner RESUMING ride requests. The mirror of vehicle_ride_share_paused.json: §7.18 is idempotent in BOTH directions and there is no clear and no third state, so resume is an ordinary write of the other value rather than a separate verb.",
+    "anchoredFRs": ["FR-9.3"],
+    "scenario": "resumed",
+    "addedBy": "MYR-342"
+  },
+  "vehicleId": "clxyz1234567890abcdef",
+  "enabled": true
+}

@@ -72,6 +72,32 @@ enum DebugScene: String, CaseIterable {
     /// simulated fixtures can't express it (`FleetMember.unavailability` is nil
     /// for every fixture, which is what keeps every other scene pixel-identical).
     case riderBusyVehicle
+    /// MYR-341 — the rider IDLE sheet with the ROTATING placeholder carrying a
+    /// REAL "A ride is N min away". Live-only by construction: the line needs a
+    /// device fix, a watched-vehicle coordinate and an available live fleet
+    /// member all at once, behind a real auth session, so a simulated boot can
+    /// never reach it (and the simulated path deliberately keeps the fixture "3
+    /// min" line, which is why `idle` stays byte-identical).
+    ///
+    /// Nothing about the number is hand-set: the scene seeds the two ENDPOINTS
+    /// (a device fix through the existing MYR-248 `simulatedUserFix` hook, and a
+    /// vehicle coordinate through `debugVehicleCoordinateOverride`) plus an
+    /// available live-shaped `FleetMember` built by the REAL
+    /// `LiveFleetMemberMapping`, then lets the shipping `RiderPickupETA`
+    /// quantize, estimate and gate. The endpoints are ~2.8 mi apart, so the
+    /// shipping closed form (× 1.3 detour ÷ 24 mph) renders "A ride is 9 min
+    /// away".
+    ///
+    /// `RotatingPlaceholder` alternates on a 2800ms cadence, so capture at
+    /// t≈1s for "Where to?" and t≈3.5s for the ETA line.
+    case riderIdleETA
+    /// MYR-341 — the SAME scene with the honesty gate tripped: identical rider
+    /// fix and vehicle coordinate, but the car is BUSY (`hasActiveRide` through
+    /// the real MYR-233 predicate). A perfectly computable straight line is
+    /// still not an offer, so the placeholder falls back to the static "Where
+    /// to?" and stops rotating. The pair is a clean before/after of exactly the
+    /// availability gate.
+    case riderIdleETABusy
 
     // Rider scheduled-ride sheet (RideHistoryScreen → ScheduledRideSheet)
     case scheduledDetails
@@ -254,6 +280,29 @@ enum DebugScene: String, CaseIterable {
     /// `MRT_OWNER_DETENT=half` to see it under the controls stack.
     case ownerFreshnessStale
     case ownerFreshnessWaking
+    /// MYR-345 — **the client's own screenshot** (AKXUQLSW…, Jul 29): a car IN
+    /// SERVICE whose snapshot was read moments ago, so the peek hero carries BOTH
+    /// live-only qualifier lines at once — the service-completion line under the
+    /// In Service badge, and "Synced just now" at the foot. No scene reached that
+    /// pair before: `ownerFreshnessStale` renders the stamp alone and
+    /// `ownerServiceWindow` the completion line alone, and the peek band's
+    /// per-line allowance only over-reserves when a line is actually drawn. It is
+    /// the SAME fleet `ownerServiceWindow` injects, with the freshness stamp's live
+    /// rendering forced on, so `ownerServiceWindow` itself stays byte-identical.
+    ///
+    /// It is also the DEAD-TAP repro: a car read "just now" is already current, so
+    /// `VehicleFreshnessStamp.wakes` is false and the tap resolves to the
+    /// acknowledgement — the branch that, before this issue, rendered NO copy at
+    /// all and read as a stamp that does nothing.
+    case ownerFreshnessInService
+    /// MYR-345 — the same in-service car, STALE, whose §7.15 refresh the server
+    /// legitimately REFUSES with the MYR-329 token (`502 command_failed`,
+    /// `"vehicle command failed: vehicle_in_service"`). The tap therefore spends a
+    /// real refresh, shows "Waking Model Y…", and settles on the NAMED reason
+    /// rather than the generic "Couldn't reach the car" — the same lesson MYR-329
+    /// taught on the command path, now on the refresh path. Capture at t≈1s
+    /// (waking) and t≈4s (settled).
+    case ownerFreshnessRefused
     /// MYR-316 — the owner sheet for a car that is IN SERVICE with a known
     /// estimated completion. Injects `DebugVehicleDetailsFleet(status:
     /// .inService, serviceEstimatedEndAt: <next Sat 2 PM>)`, so the instant rides
@@ -276,6 +325,37 @@ enum DebugScene: String, CaseIterable {
     /// `DebugServiceWindowEndpoint` (validate future → apply Tesla precedence →
     /// echo back).
     case ownerServiceWindowEditor
+    /// MYR-342 — the owner's RIDE-SHARING toggle, in the Status & location card,
+    /// in its three renderings. One row, three scenes, because each needs a
+    /// different WIRE outcome to reach it honestly rather than a view flag:
+    ///
+    ///   • `ownerRideShareOn` — the resting ON state. The car's snapshot carries an
+    ///     explicit `rideShareEnabled: true`, so the capture proves the row renders
+    ///     the SERVER's position rather than its own default.
+    ///   • `ownerRideSharePaused` — the resting PAUSED state, from an explicit
+    ///     `false` on both read surfaces. This is the whole feature in one frame: a
+    ///     car that is parked, charged and perfectly healthy, and still not
+    ///     bookable, because its owner said so.
+    ///   • `ownerRideSharePending` — the write IN FLIGHT. It has no other capture
+    ///     route at all: against a real backend the pending state lasts
+    ///     milliseconds and cannot be raced by a screenshot, so the scene parks the
+    ///     write inside a stub that never answers
+    ///     (`DebugHangingRideShareEndpoint`) and flips the switch on appear. The
+    ///     spinner in the capture is therefore the REAL
+    ///     `uiState(for: .rideShare).isPending`, raised by the shipping
+    ///     `beginPending` — the same park-in-one-branch precedent MYR-326's
+    ///     `DebugLoadingFleet` set, and the same standing-in-for-a-tap precedent as
+    ///     `ownerFreshnessWaking`.
+    ///
+    /// All three are LIVE-PATH-ONLY and unreachable from a simulated capture by
+    /// construction: the row is gated on `HomeScreen`'s `isLive`, because a switch
+    /// that cannot reach §7.18 would appear to withdraw the owner's car and do
+    /// nothing. So every existing scene renders the Status & location card exactly
+    /// as before — the card grows its one new row only here. Pair all three with
+    /// `MRT_OWNER_DETENT=half`.
+    case ownerRideShareOn
+    case ownerRideSharePaused
+    case ownerRideSharePending
     /// MYR-320 — the SAME in-service car, with the "Service completion date" row
     /// carrying its MANUAL sub-caption ("Set manually — Tesla hasn't provided an
     /// estimate for this visit"). That caption is only reachable AFTER a save
@@ -532,6 +612,39 @@ enum DebugScene: String, CaseIterable {
     /// capturing machine has on its clipboard.
     case riderInviteEntry
 
+    /// MYR-343 — the client's own account: an OWNER who switched to rider mode.
+    /// ZERO `role: viewer` rows and ONE `role: owner` row, which is exactly the
+    /// shape that used to resolve to `riderSharedEmpty`'s invite-code prompt. The
+    /// rider Live Map renders on the owner's OWN car, un-tier-gated, with the gold
+    /// "Where to?" CTA up — the self-ride flow MYR-325 verified live.
+    ///
+    /// It is the AFTER half of a pair with `riderSharedEmpty`, which keeps the
+    /// same catalog machinery and zero rows of BOTH roles and must stay
+    /// byte-identical: the only difference between the two scenes is one owned row
+    /// on the injected `GET /api/vehicles`, which is the whole issue.
+    case riderOwnerSelfRide
+
+    /// MYR-343 — the rider Live Map while the vehicle set is still RESOLVING: the
+    /// `GET /api/vehicles` that decides between "ride your car", "ride the car
+    /// shared with you" and "you have nothing" has not answered yet.
+    ///
+    /// This is the client's *"I briefly saw the rider home page"* frame, which
+    /// before this issue was the rider home rendered over an unresolved set. It is
+    /// now a skeleton shaped like the idle greeting sheet. The scene parks the
+    /// list in flight and never resolves it (the same `DebugLoadingFleet` device),
+    /// because on a healthy account the real state lasts milliseconds and has no
+    /// other capture route. Capture it twice — once normally, once with Reduce
+    /// Motion — to prove `MRTShimmerBand`'s fallback.
+    case riderVehiclesResolving
+
+    /// MYR-343 — the rider Live Map when `GET /api/vehicles` FAILED and nothing
+    /// about the account is known. Deliberately not the invite-code prompt ("no
+    /// vehicles shared with you yet" is a claim one timed-out fetch cannot
+    /// support) and deliberately not a skeleton (MYR-326: loading ≠ unavailable —
+    /// nothing is in flight behind this screen). The honest line, and the same
+    /// low-friction recovery the owner's cold-read timeout uses: a resume re-asks.
+    case riderVehiclesUnreachable
+
     /// The active scene for this launch, or `nil` for a normal boot. Read
     /// from `MRT_SCENE` (env, the documented `SIMCTL_CHILD_MRT_SCENE=` path);
     /// also accepts `-MRT_SCENE <name>` launch arguments as a fallback for
@@ -570,6 +683,40 @@ enum DebugScene: String, CaseIterable {
         let args = ProcessInfo.processInfo.arguments
         if let i = args.firstIndex(of: "-MRT_EXPAND_ROUTE"), i + 1 < args.count { return args[i + 1] == "1" }
         return false
+    }
+
+    /// MYR-346 — simulate an INCOMING universal link, orthogonal to the scene.
+    ///
+    /// `MRT_JOIN_LINK` (or `-MRT_JOIN_LINK <value>`) takes either a full URL
+    /// (`https://myrobotaxi.app/join/RBO246`) or a bare code (`RBO246`, composed
+    /// into the same URL) and feeds it to `InviteLinkBridge` from `RootView.init`
+    /// — i.e. BEFORE the view appears, which is exactly the cold-launch window
+    /// the mailbox exists for, so the hook exercises the held-then-drained path
+    /// rather than a shortcut around it.
+    ///
+    /// This exists because the real thing cannot be run yet: a universal link
+    /// only reaches the app once `https://myrobotaxi.app/.well-known/apple-app-
+    /// site-association` is DEPLOYED and iOS has fetched it for an installed
+    /// build. Until then `xcrun simctl openurl` opens Safari, not the app. The
+    /// routing decisions themselves are pinned by `InviteLinkRoutingTests`; this
+    /// hook is for driving the real screens.
+    ///
+    ///     MRT_SCENE=ownerHome MRT_JOIN_LINK=RBO246          # signed-in, owner
+    ///     MRT_JOIN_LINK=https://myrobotaxi.app/join/RBO246  # cold, signed-out
+    ///
+    /// Unset — which it is for every scene and every capture — nothing reads it
+    /// and no scene changes by a pixel.
+    static var incomingJoinLink: URL? {
+        func parse(_ raw: String?) -> URL? {
+            guard let raw, !raw.isEmpty else { return nil }
+            if raw.contains("://") { return URL(string: raw) }
+            guard let code = InviteLink.sanitize(raw) else { return nil }
+            return URL(string: InviteLink.url(code: code))
+        }
+        if let value = parse(ProcessInfo.processInfo.environment["MRT_JOIN_LINK"]) { return value }
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-MRT_JOIN_LINK"), i + 1 < args.count { return parse(args[i + 1]) }
+        return nil
     }
 
     /// Drift-gate flag for the `ownerHome` scene (MYR-236 r5.3): when
@@ -715,6 +862,23 @@ enum DebugScene: String, CaseIterable {
     /// simulated, byte-identical rendering (CLAUDE.md drift gate).
     var rendersLiveVehicleFreshness: Bool {
         self == .ownerFreshnessStale || self == .ownerFreshnessWaking
+            // MYR-345 — the client's two-qualifier-line variant + the refusal
+            // settle. Both are the freshness stamp on an in-service car, so they
+            // need the same live rendering the two MYR-315 scenes force.
+            || self == .ownerFreshnessInService || self == .ownerFreshnessRefused
+    }
+
+    /// MYR-342 — whether owner Home should render its LIVE surfaces so the
+    /// ride-sharing toggle row exists at all. Exactly the same precedent as
+    /// `rendersLiveVehicleFreshness` above, and for a stronger reason: the row is
+    /// deliberately gated on the live path because a switch that cannot reach
+    /// `PUT …/ride-share` would appear to withdraw the owner's car from
+    /// ride-hailing and do nothing. That gate is the feature, so a capture has to
+    /// go through it rather than around it. Scoped to the three ride-share scenes,
+    /// so every other scene keeps its simulated, byte-identical rendering (CLAUDE.md
+    /// drift gate) — the Status & location card grows its row only here.
+    var rendersLiveRideShareToggle: Bool {
+        self == .ownerRideShareOn || self == .ownerRideSharePaused || self == .ownerRideSharePending
     }
 
     /// MYR-316 — whether `HomeScreen` should boot with the "Expected back" entry
@@ -764,8 +928,11 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerDispatched || self == .ownerDispatchedArrived
             || self == .ownerDispatchedEnroute || self == .ownerDispatchedCompleted
             || self == .ownerFreshnessStale || self == .ownerFreshnessWaking
+            || self == .ownerFreshnessInService || self == .ownerFreshnessRefused
             || self == .ownerServiceWindow || self == .ownerServiceWindowEditor
             || self == .ownerServiceWindowManual || self == .ownerServiceWindowSaved
+            || self == .ownerRideShareOn || self == .ownerRideSharePaused
+            || self == .ownerRideSharePending
             || self == .ownerCharging || self == .ownerChargeComplete
             || self == .ownerNoticeRejected || self == .ownerNoticeRejectedInService
             || self == .ownerVehicleEnriched
@@ -817,6 +984,31 @@ enum DebugScene: String, CaseIterable {
         // MYR-315 — a car offline for 7h, so the stamp resolves its stale branch
         // through the real mapping (see `DebugFreshnessFleet`).
         case .ownerFreshnessStale, .ownerFreshnessWaking: return DebugFreshnessFleet()
+        // MYR-345 — the client's own condition: the SAME in-service fleet
+        // `ownerServiceWindow` injects (so that scene stays byte-identical), read
+        // moments ago, with the stamp's live rendering forced on. Both live-only
+        // qualifier lines are therefore drawn at once — the pair the peek band's
+        // per-line allowance is measured against.
+        case .ownerFreshnessInService:
+            return DebugVehicleDetailsFleet(
+                status: .inService,
+                serviceEstimatedEndAt: DebugScene.sampleServiceEnd()
+            )
+        // MYR-345 — the same car read HOURS ago, so the tap spends a real §7.15
+        // call, and a server that refuses it by NAME (§7.9's `command_failed`
+        // carrying MYR-329's `vehicle_in_service` token).
+        case .ownerFreshnessRefused:
+            return DebugVehicleDetailsFleet(
+                status: .inService,
+                serviceEstimatedEndAt: DebugScene.sampleServiceEnd(),
+                lastReadAt: Date().addingTimeInterval(-7 * 3600),
+                refreshFailure: .http(
+                    status: 502,
+                    code: ErrorPayload.Code(rawValue: "command_failed"),
+                    message: "vehicle command failed: vehicle_in_service",
+                    subCode: nil
+                )
+            )
         // MYR-316 — an IN SERVICE car with a known estimated completion, on both
         // read surfaces, exactly as a real server emits it.
         case .ownerServiceWindow, .ownerServiceWindowEditor:
@@ -860,6 +1052,19 @@ enum DebugScene: String, CaseIterable {
                 chargeState: .complete,
                 chargeLevel: 100
             )
+        // MYR-342 — the ride-sharing switch in its three renderings. All three are
+        // a PARKED, healthy car on purpose: the pause is owner intent, and a
+        // capture that paired it with an in-service or offline car would let the
+        // reader attribute the unavailability to the vehicle instead.
+        case .ownerRideShareOn:
+            return DebugVehicleDetailsFleet(rideShareEnabled: true)
+        case .ownerRideSharePaused:
+            return DebugVehicleDetailsFleet(rideShareEnabled: false)
+        // The write is parked in flight by an endpoint that never answers, and the
+        // flip is performed on boot by `RootView` — so the spinner is the shipping
+        // pending state, not a seeded one.
+        case .ownerRideSharePending:
+            return DebugVehicleDetailsFleet(rideShareEnabled: true, rideShareWriteOutcome: .hangs)
         // MYR-320 — every enrichment field at once: a real color off the wire, the
         // display-ready trim label composing the Model row (alongside the raw badge
         // it must NOT substitute), and the FSD designation in its own row.
@@ -894,6 +1099,12 @@ enum DebugScene: String, CaseIterable {
         case .ownerServiceWindow, .ownerServiceWindowEditor, .ownerServiceWindowManual,
              .ownerServiceWindowSaved:
             return .fraction(0.62)
+        // MYR-342 — the ride-sharing row is the LAST row of the same Status &
+        // location card, so it sits just below the service-window anchor. A little
+        // further down frames it (plus its notice line, when there is one) at the
+        // half detent.
+        case .ownerRideShareOn, .ownerRideSharePaused, .ownerRideSharePending:
+            return .fraction(0.68)
         // The Tire pressure section sits a little above the vertical middle of the
         // dense content; anchoring the content's ~55% point to the viewport brings
         // its honest state in-frame at the half detent.
@@ -974,7 +1185,42 @@ enum DebugScene: String, CaseIterable {
     /// stays pixel-identical. Financial District — same SF region as the sim map /
     /// sample pickup, so the SF→SFO preview frames sensibly.
     var simulatedUserFix: CLLocationCoordinate2D? {
-        self == .pinDropBackRealPath ? DriveFixtures.financialDistrict : nil
+        switch self {
+        case .pinDropBackRealPath: return DriveFixtures.financialDistrict
+        // MYR-341 — the rider's own location, the endpoint the pickup ETA is
+        // measured TO. Financial District, the same SF region the sim map uses.
+        case .riderIdleETA, .riderIdleETABusy: return DriveFixtures.financialDistrict
+        default: return nil
+        }
+    }
+
+    /// MYR-341 — the watched vehicle's coordinate for the idle-ETA captures: the
+    /// endpoint the pickup ETA is measured FROM. ~2.8 mi north-west of the rider
+    /// (Marina-ish), so the shipping closed form lands on a plausible single-digit
+    /// number well clear of the ≥1 min clamp.
+    static let idleETAVehicleFix = CLLocationCoordinate2D(latitude: 37.8010, longitude: -122.4460)
+
+    /// MYR-341 — an AVAILABLE live-shaped vehicle for the `riderIdleETA` capture,
+    /// built through the REAL `LiveFleetMemberMapping.fleetMember(from:)` so the
+    /// scene exercises the shipping availability predicate (and the shipping
+    /// `etaMin: 0` sentinel the ETA seam then fills) rather than a hand-set flag.
+    /// `riderIdleETABusy` reuses it with `hasActiveRide: true`, which is the only
+    /// difference between the two captures.
+    private static func idleETAFleetMember(busy: Bool) -> FleetMember {
+        LiveFleetMemberMapping.fleetMember(from: VehicleSummary(
+            vehicleId: "debug-idle-eta",
+            name: "Lunar",
+            model: "Model Y",
+            year: 2026,
+            color: "Quicksilver",
+            vinLast4: "2046",
+            status: .parked,
+            chargeLevel: 68,
+            estimatedRange: 240,
+            lastUpdated: "2026-07-26T12:00:00Z",
+            role: .owner,
+            hasActiveRide: busy
+        ))
     }
 
     /// The destination the real-path replay chooses on the search sheet before
@@ -1040,6 +1286,12 @@ enum DebugScene: String, CaseIterable {
         case .busy: status = .parked
         case .inService: status = .inService
         case .offline: status = .offline
+        // MYR-342 — a PARKED car, deliberately: the whole point of the pause is
+        // that the vehicle itself is perfectly healthy and available and the OWNER
+        // has withdrawn it. Driving the wire input this way means the capture
+        // proves the precedence too — a parked, idle car with no active ride reads
+        // as `paused` only if `rideShareEnabled: false` is doing the work.
+        case .paused: status = .parked
         }
         return LiveFleetMemberMapping.fleetMember(from: VehicleSummary(
             vehicleId: "debug-busy",
@@ -1053,7 +1305,13 @@ enum DebugScene: String, CaseIterable {
             estimatedRange: 240,
             lastUpdated: "2026-07-26T12:00:00Z",
             role: .owner,
-            hasActiveRide: reason == .busy
+            hasActiveRide: reason == .busy,
+            // MYR-342 — the same "real wire input per state" discipline: the pause
+            // comes from the CONTRACT FIELD, so a capture that renders the Paused
+            // chip and the button-less CTA area proves the shipping predicate and
+            // the shipping gate, not a hand-set flag. Absent (nil) for every other
+            // reason, which is what keeps those three captures byte-identical.
+            rideShareEnabled: reason == .paused ? false : nil
         ))
     }
 
@@ -1199,6 +1457,15 @@ enum DebugScene: String, CaseIterable {
             // beyond idle — the replay driver walks the real transitions after
             // boot (MYR-217 / MYR-248).
             viewer.sheetPhase = .idle
+        case .riderIdleETA, .riderIdleETABusy:
+            // MYR-341 — the idle sheet, plus the three live-shaped inputs the
+            // placeholder's real ETA needs. Everything downstream (quantization,
+            // the estimator, the gates, the copy) is the shipping code.
+            viewer.debugResolvesLivePickupETA = true
+            viewer.debugVehicleCoordinateOverride = DebugScene.idleETAVehicleFix
+            viewer.debugFleetMemberOverride = DebugScene.idleETAFleetMember(busy: self == .riderIdleETABusy)
+            viewer.refreshPickupETAAnchors()
+            viewer.sheetPhase = .idle
         case .declined:
             viewer.sheetPhase = .search
             viewer.showDeclinedNotice = true
@@ -1273,13 +1540,16 @@ enum DebugScene: String, CaseIterable {
              .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute,
              .ownerDispatchedCompleted,
              .ownerFreshnessStale, .ownerFreshnessWaking,
+             .ownerFreshnessInService, .ownerFreshnessRefused,
              .ownerServiceWindow, .ownerServiceWindowEditor, .ownerServiceWindowManual,
              .ownerServiceWindowSaved,
+             .ownerRideShareOn, .ownerRideSharePaused, .ownerRideSharePending,
              .ownerCharging, .ownerChargeComplete,
              .ownerVehicleEnriched,
              .ownerConnecting, .ownerConnectingCold, .ownerDrivesLoading, .ownerSettingsLoading,
              .ownerShare, .ownerShareLive, .ownerShareMessage, .ownerShareMessageNoName,
              .riderSharedEmpty, .riderWatchOnly,
+             .riderOwnerSelfRide, .riderVehiclesResolving, .riderVehiclesUnreachable,
              .riderInviteRateLimited, .riderInviteJoined, .riderInviteEntry:
             break // chooser / settings / sharing / rider live-map / owner scenes don't drive the viewer sheet
         }
@@ -1373,6 +1643,30 @@ extension DebugScene {
         )
     }
 
+    /// MYR-343 — an OWNED `GET /api/vehicles` row: `role: .owner` and, by §7.0,
+    /// NO `sharePermission` at all (the key is emitted iff the role is `viewer`).
+    /// That absence is not incidental — it is exactly why an owner produced zero
+    /// grants and got routed to the invite-code prompt.
+    static func shareOwnerRow(id: String, name: String) -> VehicleSummary {
+        VehicleSummary(
+            vehicleId: id,
+            name: name,
+            model: "Model Y",
+            year: 2026,
+            color: "Quicksilver",
+            vinLast4: "7421",
+            status: .parked,
+            chargeLevel: 64,
+            estimatedRange: 232,
+            lastUpdated: ISO8601DateFormatter().string(from: Date()),
+            role: .owner,
+            hasActiveRide: false,
+            licensePlate: "8ABC123",
+            serviceEstimatedEndAt: nil,
+            sharePermission: nil
+        )
+    }
+
     /// The OWNER's sharing service for this scene, or `nil` to leave the composed
     /// (simulated) one in place. Scoped to `ownerShareLive`, so every other owner
     /// scene keeps the fixture list and stays byte-identical.
@@ -1433,6 +1727,27 @@ extension DebugScene {
                 Self.shareViewerRow(id: "shared-1", name: "Alex\u{2019}s Model 3", permission: "live_history"),
                 Self.shareViewerRow(id: "shared-2", name: "Alex\u{2019}s Cybercab", permission: "live_history"),
             ]
+        case .riderOwnerSelfRide:
+            // MYR-343 — the client's account: ONE owned row, ZERO viewer rows.
+            // `role: .owner` carries no `sharePermission` at all (§7.0 emits the
+            // key iff the role is `viewer`), which is precisely why it produced no
+            // grant and shunted him to the invite prompt.
+            endpoint.viewerRows = [Self.shareOwnerRow(id: "owned-1", name: "Lunar")]
+        case .riderVehiclesResolving:
+            // MYR-343 — the list is parked in flight and never answers, so the
+            // shell holds its `.resolving` skeleton for the whole capture. Same
+            // "never resolve it" device as `DebugLoadingFleet`.
+            return LiveSharedVehicleCatalog(api: endpoint, listVehicles: {
+                try await Task.sleep(for: .seconds(86_400))
+                return []
+            })
+        case .riderVehiclesUnreachable:
+            // MYR-343 — the list throws, so the production `load()` records the
+            // failure WITHOUT claiming the account is empty. Nothing is hand-set:
+            // the screen is whatever the shipping `RiderVehicleSet.resolve` makes
+            // of `hasLoaded == false, loadFailed == true`.
+            struct ListUnreachable: Error {}
+            return LiveSharedVehicleCatalog(api: endpoint, listVehicles: { throw ListUnreachable() })
         default:
             return nil
         }

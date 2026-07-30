@@ -17,7 +17,7 @@ public protocol SnapshotFetching: Sendable {
 ///
 /// Value type (`Sendable`): all dependencies are immutable, so it is free to
 /// share across tasks without a serialization bottleneck.
-public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleServiceWindowEndpoint, VehicleRefreshing, VehicleCommandSending, VehicleSharingEndpoint, PushDeviceEndpoint {
+public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleServiceWindowEndpoint, VehicleRideShareEndpoint, VehicleRefreshing, VehicleCommandSending, VehicleSharingEndpoint, PushDeviceEndpoint {
     private let environment: BackendEnvironment
     private let tokenProvider: any TokenProvider
     private let http: any HTTPPerforming
@@ -334,6 +334,35 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
         let body = try JSONEncoder().encode(VehicleServiceWindowUpdateRequest(expectedEndAt: expectedEndAt))
         return try await perform(
             ["tesla", "vehicles", vehicleID, "service-window"],
+            method: "PUT",
+            body: body,
+            allowTokenRefresh: true
+        )
+    }
+
+    // MARK: - Owner ride-share pause toggle (rest-api.md §7.18, MYR-342)
+
+    /// `PUT /api/tesla/vehicles/{vehicleId}/ride-share` (§7.18) — pause or resume
+    /// ride requests for one owned vehicle. Owner-authenticated via the standard
+    /// `perform` pipeline (Bearer + single 401 refresh-retry); `{vehicleId}` is the
+    /// Prisma cuid (NOT a VIN), the same key as §7.12/§7.14/§7.16.
+    ///
+    /// The body key is `enabled` (the owner's INPUT) and so is the response key —
+    /// NOT the read shapes' `rideShareEnabled`. The caller adopts the ECHO rather
+    /// than the bool it submitted: this server writes exactly what was asked, so
+    /// today they always agree, and the contract echoes anyway so a future server
+    /// can refuse or coerce without breaking clients.
+    ///
+    /// `enabled` is REQUIRED — the one place §7.18 diverges from its §7.16
+    /// template. There is no clear and no third state; absent/null/non-boolean are
+    /// all `400 invalid_request`. No Tesla call is involved at any point, so the
+    /// route is ALWAYS mounted — which is also the fail-safe direction: a gated
+    /// route with the gate off would leave an owner unable to pause a car the
+    /// rider-facing catalog still shows as available.
+    public func setRideShareEnabled(_ enabled: Bool, vehicleID: String) async throws -> VehicleRideShareResponse {
+        let body = try JSONEncoder().encode(VehicleRideShareUpdateRequest(enabled: enabled))
+        return try await perform(
+            ["tesla", "vehicles", vehicleID, "ride-share"],
             method: "PUT",
             body: body,
             allowTokenRefresh: true

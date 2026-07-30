@@ -204,6 +204,82 @@ struct DrivesListSkeleton: View {
     }
 }
 
+// MARK: - Rider Live Map (MYR-343)
+
+/// The rider Live Map while the account's VEHICLE SET is still being resolved —
+/// i.e. `GET /api/vehicles` is in flight and the shell does not yet know whether
+/// this rider owns a car, holds a share, or has neither.
+///
+/// It exists because the shell cannot answer that question with a boolean. Before
+/// MYR-343 the gate was `hasLoaded && grants.isEmpty`, so the not-yet-loaded case
+/// fell through to the rider HOME and then swapped — the client's *"I briefly saw
+/// the rider home page and then it prompted me to enter a code."* Any two-way
+/// split has to render one of the three real situations in another's clothes for
+/// a frame; this surface is the third one having its own.
+///
+/// Shaped like the idle greeting sheet it is waiting for, at that sheet's own
+/// `sharedIdleSheetHeight` with its own gold wash, top corners, hairline and
+/// shadow — so when the vehicle lands, the sheet does not move and only the ink
+/// inside it appears. The map behind it is the plain background, for the same
+/// reason `OwnerHomeLoadingSkeleton` leaves it plain: a placeholder map would be
+/// a fabricated map.
+///
+/// LIVE-PATH ONLY, structurally: `SimulatedSharedVehicleCatalog.hasLoaded` is
+/// `true` from the first frame, so no simulated or drift-gate scene can reach
+/// this branch (the `riderVehiclesResolving` DEBUG scene exists to capture it).
+struct RiderVehiclesLoadingSkeleton: View {
+    /// The rider keeps their tabs while the map loads — same reasoning as
+    /// `SharedNoVehiclesScreen`, and it stops the nav popping in when the vehicle
+    /// lands. Live Map is the selected tab by construction (this is that tab).
+    @Binding var sharedTab: String
+
+    /// The real search bar's own height: a 16pt line (≈19pt) inside 15pt vertical
+    /// padding, floored by the 44pt tap target — `SharedViewerScreen.searchBar`.
+    /// Stated here rather than in `MRTMetrics` because it is a measurement OF an
+    /// existing element, not a shared design token.
+    private static let searchBarHeight: CGFloat = 49
+
+    var body: some View {
+        ZStack {
+            Color.mrtBg.ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 0) {
+                // `GreetingHero`'s own line — 21pt medium, with the 16pt gap the
+                // real hero carries below it.
+                MRTSkeletonBar(width: 196, height: 21, radius: 7, emphasis: .strong)
+                    .padding(.bottom, 16)
+                // The "Where to?" search bar: 16pt text at 15pt vertical padding
+                // inside a `controlRadius` field, and the same 14pt gap under it.
+                MRTSkeletonBar(height: Self.searchBarHeight, radius: MRTMetrics.controlRadius)
+                    .padding(.bottom, 14)
+                Spacer(minLength: 0)
+            }
+            // The idle sheet's own padding (SharedViewerScreen.idleSheet).
+            .padding(.horizontal, 22)
+            .padding(.top, 14)
+            .padding(.bottom, 98)
+            .frame(height: MRTMetrics.sharedIdleSheetHeight)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            // The SAME surface the loaded sheet wears — wash included — so the
+            // only thing that changes when the vehicle lands is the ink.
+            .background(RiderIdleSheetBackground())
+            .clipShape(UnevenRoundedRectangle(
+                topLeadingRadius: MRTMetrics.sheetRadius,
+                topTrailingRadius: MRTMetrics.sheetRadius,
+                style: .continuous
+            ))
+            .overlay(alignment: .top) {
+                Rectangle().fill(Color.mrtGoldSheetHairline).frame(height: MRTMetrics.hairline)
+            }
+            .shadow(color: .black.opacity(0.5), radius: 20, y: -8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .ignoresSafeArea(edges: .bottom)
+            .mrtSkeletonAccessibility("Loading your vehicles")
+        }
+        .mrtBottomNav(selection: $sharedTab, tabs: MRTTab.sharedTabs)
+    }
+}
+
 // MARK: - Settings ⇢ Tesla Account
 
 /// A placeholder for one linked-vehicle row in the read-only live Tesla Account

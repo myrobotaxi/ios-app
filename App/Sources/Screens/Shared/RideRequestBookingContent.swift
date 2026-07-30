@@ -159,7 +159,10 @@ struct RideRequestBookingContent: View {
                 HStack(alignment: .firstTextBaseline) {
                     RideEyebrowText(text: "Pickup", color: .mrtGold, size: 10)
                     Spacer(minLength: 8)
-                    Text(RideRequestClock.fromNow(minutes: pickupEtaMinutes))
+                    // MYR-341: `etaMin == 0` is the live "no estimate" sentinel —
+                    // the clock reads the calm dash rather than "now". Fixture
+                    // members are all non-zero, so sim is unchanged.
+                    Text(RidePickupETADisplay.clock(etaMin: pickupEtaMinutes))
                         .font(.system(size: 13, weight: .medium))
                         .monospacedDigit()
                         .foregroundStyle(Color.mrtTextSec)
@@ -171,7 +174,10 @@ struct RideRequestBookingContent: View {
                     Text(pickupLabel).font(.system(size: 15, weight: .semibold)).foregroundStyle(Color.mrtText)
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
-                    Text("\(pickupEtaMinutes) min away").font(.system(size: 12)).foregroundStyle(Color.mrtTextMuted).lineLimit(1)
+                    // MYR-341: no estimate → no note at all (never "0 min away").
+                    if let awayNote = RidePickupETADisplay.awayNote(etaMin: pickupEtaMinutes) {
+                        Text(awayNote).font(.system(size: 12)).foregroundStyle(Color.mrtTextMuted).lineLimit(1)
+                    }
                 }
             }
             .padding(.leading, 25) // 12pt dot + 13pt gap
@@ -190,7 +196,8 @@ struct RideRequestBookingContent: View {
                     HStack(alignment: .firstTextBaseline) {
                         RideEyebrowText(text: "Drop-off", color: .mrtGold, size: 10)
                         Spacer(minLength: 8)
-                        Text(RideRequestClock.fromNow(minutes: pickupEtaMinutes + tripMinutes))
+                        // MYR-341: an unknown pickup makes the drop-off unknown.
+                        Text(RidePickupETADisplay.clock(etaMin: pickupEtaMinutes, plus: tripMinutes))
                             .font(.system(size: 13, weight: .medium))
                             .monospacedDigit()
                             .foregroundStyle(Color.mrtTextSec)

@@ -410,6 +410,12 @@ struct ParkedHeroContent: View {
     /// and does not carry a just-saved value, so the row (and the hero line, which
     /// had the same bug) kept showing the pre-save state.
     var serviceEstimatedEndAt: Date? = nil
+    /// MYR-342 — the RESOLVED ride-share position, threaded from `HomeScreen`'s
+    /// single resolution for the same reason `serviceEstimatedEndAt` is. `nil` off
+    /// the live path → no row.
+    var rideShareEnabled: Bool? = nil
+    /// MYR-342 — commits a ride-share flip through the executor. `nil` in previews.
+    var onSetRideShareEnabled: ((Bool) -> Void)? = nil
 
     var body: some View {
         // Outer gap 14 (screens.jsx:585 `gap: 14`) between the summary and the
@@ -452,7 +458,11 @@ struct ParkedHeroContent: View {
                 serviceEstimatedEndAt: serviceEstimatedEndAt,
                 // MYR-333 — read off the SAME snapshot the hero's bar and caption
                 // use, so the tile sub can never disagree with the bar above it.
-                chargingState: snapshot.chargingState
+                chargingState: snapshot.chargingState,
+                // MYR-342 — the owner's ride-sharing switch. Both nil on the
+                // simulated path, so the Status & location card is unchanged there.
+                rideShareEnabled: rideShareEnabled,
+                onSetRideShareEnabled: onSetRideShareEnabled
             )
         }
     }

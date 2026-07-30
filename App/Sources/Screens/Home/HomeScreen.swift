@@ -375,7 +375,7 @@ struct HomeScreen: View {
             base: snapshot.status == .driving
                 ? MRTMetrics.homePeekHeightDriving
                 : MRTMetrics.homePeekHeightParked,
-            qualifierLines: peekQualifierLines(snapshot: snapshot)
+            qualifiers: peekQualifiers(snapshot: snapshot)
         )
 
         VehicleMapView(
@@ -528,16 +528,30 @@ struct HomeScreen: View {
     ///
     /// Both inputs are nil on the simulated path — the stamp is live-only by two
     /// gates (`freshnessStamp`) and nothing simulated is ever in service — so this
-    /// returns 0 there and the drift-gate scenes keep the prototype's exact bands.
-    private func peekQualifierLines(snapshot: VehicleTelemetrySnapshot) -> Int {
-        var lines = 0
-        // Rendered by BOTH heroes (`mrtFreshnessStamp`).
-        if freshnessStamp(snapshot: snapshot) != nil { lines += 1 }
+    /// returns an EMPTY list there and the drift-gate scenes keep the prototype's
+    /// exact bands.
+    ///
+    /// MYR-345 (client defect) — the lines are now reported BY IDENTITY, not
+    /// counted. MYR-315 counted them and multiplied by one flat 24, which
+    /// over-reserved for the completion line by ~8pt; because the hero is
+    /// top-aligned, every point of surplus lands in the gap above the floating nav
+    /// and nowhere else — *"Weird gap between menu and synced just now"*. Each
+    /// qualifier now brings exactly its own measured room
+    /// (`MRTHomePeekQualifier.reservedHeight`), so the clearance under the hero is
+    /// the prototype's in every variant. `OwnerPeekBandTests` measures the real
+    /// views against that rule.
+    private func peekQualifiers(snapshot: VehicleTelemetrySnapshot) -> [MRTHomePeekQualifier] {
+        var qualifiers: [MRTHomePeekQualifier] = []
         // Rendered by the PARKED hero only (`ParkedSummary.serviceCompletion`);
         // a driving car is never `in_service`, but the gate is stated rather than
-        // assumed so the band can never grow for a line that isn't drawn.
-        if snapshot.status != .driving, serviceCompletionLine(snapshot: snapshot) != nil { lines += 1 }
-        return lines
+        // assumed so the band can never grow for a line that isn't drawn. Listed
+        // first because it renders first — it is the header's own second line.
+        if snapshot.status != .driving, serviceCompletionLine(snapshot: snapshot) != nil {
+            qualifiers.append(.serviceCompletion)
+        }
+        // Rendered by BOTH heroes (`mrtFreshnessStamp`), at the foot.
+        if freshnessStamp(snapshot: snapshot) != nil { qualifiers.append(.freshnessStamp) }
+        return qualifiers
     }
 
     /// The expanded-layer scroll view. Normally a plain `ScrollView`; the
@@ -691,6 +705,37 @@ struct HomeScreen: View {
         return VehicleServiceWindow.resolvedEndAt(executor: executor, snapshot: snapshot)
     }
 
+    /// MYR-342 — the ONE resolution of the ride-share position for this sheet, and
+    /// the LIVE gate on the whole row in a single place.
+    ///
+    /// `nil` means "do not render the row at all", and it is returned for exactly
+    /// two situations, both of which are "this switch could not reach a server":
+    /// the simulated path (`!isLive` — which is why every drift-gate scene is
+    /// byte-identical), and the theoretical no-executor case the selection invariant
+    /// does not actually produce. A switch that cannot be committed is worse than a
+    /// missing one: flipping it would appear to withdraw the owner's car from
+    /// ride-hailing and would do nothing at all.
+    ///
+    /// Resolved through `VehicleRideShare` rather than read off the snapshot,
+    /// because the field carries no WS delta (rest-api.md §7.18 — the edit fires no
+    /// push): the snapshot cannot hold the value the owner just committed, and a
+    /// surface reading it directly would snap the switch back under their finger.
+    /// This is the MYR-316 stale-window defect, avoided in advance on the sibling
+    /// field with the same delivery property.
+    private func resolvedRideShare(snapshot: VehicleTelemetrySnapshot) -> Bool? {
+        guard isLive, let executor = homeState.selectedCommandExecutor else { return nil }
+        return VehicleRideShare.resolvedEnabled(executor: executor, snapshot: snapshot)
+    }
+
+    /// MYR-342 — commit a ride-share flip through the executor seam. Fire-and-forget
+    /// on purpose: the executor owns the optimistic flip, the echo adoption, the
+    /// rollback and the notice, so there is nothing for the view to await and
+    /// nothing for it to do with a failure that the row is not already showing.
+    private func setRideShareEnabled(_ enabled: Bool) {
+        guard let executor = homeState.selectedCommandExecutor else { return }
+        Task { try? await executor.setRideShareEnabled(enabled) }
+    }
+
     /// The LOW crossfade layer — the summary hero only (peek). Identical pixels
     /// to the top of `sheetDense` so the crossfade reads as a stationary summary.
     @ViewBuilder
@@ -757,7 +802,12 @@ struct HomeScreen: View {
                 onEditServiceWindow: { isEditingServiceWindow = true },
                 // The SAME resolution the line above was built from, so the hero
                 // and the details row can never disagree about what is saved.
-                serviceEstimatedEndAt: resolvedServiceWindow(snapshot: snapshot)
+                serviceEstimatedEndAt: resolvedServiceWindow(snapshot: snapshot),
+                // MYR-342 — the owner's ride-sharing switch. `nil` off the live
+                // path, which is the whole gate: the Status & location card grows
+                // its one new row only where the toggle can actually reach §7.18.
+                rideShareEnabled: resolvedRideShare(snapshot: snapshot),
+                onSetRideShareEnabled: setRideShareEnabled
             )
         }
     }

@@ -6,7 +6,8 @@ the App Store Connect steps that only the account holder (Thomas) can do.
 - **App:** MyRoboTaxi (SwiftUI)
 - **Bundle id:** `app.myrobotaxi.ios`
 - **Team:** `NFKX777598`
-- **Signing:** Automatic (managed distribution profile carries the Sign In with Apple entitlement)
+- **Signing:** Automatic by default; **full-manual is supported and verified** —
+  see [Manual signing](#3b-archive-release-full-manual-signing) below
 - **Project:** generated from `project.yml` via XcodeGen — the `.xcodeproj` is **not** committed
 
 Requires full Xcode (not just Command Line Tools). Verified against Xcode 26.6.
@@ -74,6 +75,78 @@ showcases) automatically.
 
 ---
 
+## 3b. Archive (Release, FULL-MANUAL signing)
+
+Use this when automatic signing cannot resolve a profile — an Xcode signed out of
+the team account, or an App Store Connect API key without cloud-signing rights.
+It produces the same archive; it just names the profile instead of asking Xcode
+to fetch one.
+
+```sh
+xcodebuild \
+  -project MyRoboTaxi.xcodeproj \
+  -scheme MyRoboTaxi \
+  -configuration Release \
+  -destination 'generic/platform=iOS' \
+  -archivePath build/MyRoboTaxi.xcarchive \
+  DEVELOPMENT_TEAM=NFKX777598 \
+  CODE_SIGN_STYLE=Manual \
+  PROVISIONING_PROFILE_SPECIFIER="MyRoboTaxi App Store" \
+  CODE_SIGN_IDENTITY="Apple Distribution" \
+  CURRENT_PROJECT_VERSION=$BUILD_NUMBER \
+  archive
+```
+
+No `-allowProvisioningUpdates`: manual signing must find an already-installed
+profile in `~/Library/MobileDevice/Provisioning Profiles/`, and failing loudly
+when it cannot is the point.
+
+### The two-profiles-with-one-name trap (MYR-346)
+
+Enabling a capability on the App ID does **not** update profiles that already
+exist — the profile must be REGENERATED, and Apple happily mints the new one
+under the **same name**. After the Associated Domains capability was added on
+2026-07-29 there were two profiles both named `MyRoboTaxi App Store`:
+
+| UUID | Created | Carries `associated-domains` |
+|---|---|---|
+| `747ad8bd-bc0d-4ceb-a62f-b5361324a990` | 2026-07-29 | **no** |
+| `f466e22b-6d46-427e-8415-4dabaed9a7de` | 2026-07-30 | yes |
+
+`PROVISIONING_PROFILE_SPECIFIER` matched **by name** is therefore ambiguous.
+Xcode resolves it to the newest creation date, which currently picks the right
+one — but that is a tiebreak, not a guarantee, and it silently inverts the day
+someone regenerates the *other* lineage. A build signed with the stale profile
+fails the entitlement check with `"MyRoboTaxi.app" requires a provisioning
+profile with the Associated Domains feature`.
+
+Two ways to make it deterministic, either is fine:
+
+- delete the stale profile from `~/Library/MobileDevice/Provisioning Profiles/`, or
+- pass the **UUID** instead of the name:
+  `PROVISIONING_PROFILE_SPECIFIER=f466e22b-6d46-427e-8415-4dabaed9a7de`.
+
+The committed `ExportOptions-Manual.plist` (used in step 4 below) already names
+the profile by UUID for exactly this reason.
+
+**Always verify what actually got signed in** rather than trusting the archive
+succeeded — the entitlements are resolved from the profile at sign time, so this
+is the only place the truth shows up:
+
+```sh
+codesign -d --entitlements - --xml build/MyRoboTaxi.xcarchive/Products/Applications/MyRoboTaxi.app \
+  | plutil -convert xml1 -o - -
+security cms -D -i build/MyRoboTaxi.xcarchive/Products/Applications/MyRoboTaxi.app/embedded.mobileprovision \
+  | plutil -p - | grep -E '"(Name|UUID)"'
+```
+
+A correct archive shows `com.apple.developer.associated-domains =
+[applinks:myrobotaxi.app]`, `aps-environment = production` (the profile's value
+wins over the committed `development` — see `project.yml`), and the `f466e22b…`
+profile embedded.
+
+---
+
 ## 4. Export the .ipa
 
 Uses the committed `ExportOptions.plist` (`method: app-store-connect`,
@@ -88,6 +161,25 @@ xcodebuild -exportArchive \
 ```
 
 Produces `build/export/MyRoboTaxi.ipa`.
+
+If the archive came from **§3b (full-manual)**, export it with the manual
+options instead — same command, different plist, and no
+`-allowProvisioningUpdates`:
+
+```sh
+xcodebuild -exportArchive \
+  -archivePath build/MyRoboTaxi.xcarchive \
+  -exportOptionsPlist ExportOptions-Manual.plist \
+  -exportPath build/export
+```
+
+Export **re-signs**, so this is where the entitlements are finally resolved from
+the profile. Verify the exported payload, not just the archive:
+
+```sh
+cd build/export && unzip -q MyRoboTaxi.ipa && \
+  codesign -d --entitlements - --xml Payload/MyRoboTaxi.app | plutil -convert xml1 -o - -
+```
 
 ---
 
