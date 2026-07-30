@@ -20,12 +20,24 @@ import Foundation
 //
 // FOUR rules, and every one of them is about not over-claiming:
 //
-//  • **The predicate is the idle banner's, not a second one.** `nowCaption` IS
-//    `RiderIdleAvailabilityBanner.banner(members:)`'s headline, verbatim — the
-//    rider reads the same sentence on the idle sheet and under the disabled Now
-//    chip, so the two surfaces cannot contradict each other. Re-deriving the copy
-//    here would be a second place for the grammar to drift, which is exactly what
-//    MYR-352 factored `FleetUnavailability.riderClause` out to prevent.
+//  • **The predicate is the idle banner's, not a second one.** The segment is
+//    raised by exactly `RiderIdleAvailabilityBanner.banner(members:)` being
+//    non-nil, so the bar, the banner and the segment can never contradict each
+//    other. Re-deriving the predicate here would be a second place for it to
+//    drift, which is what MYR-352 factored `FleetUnavailability.riderClause` out
+//    to prevent.
+//
+//    **MYR-363b — the COPY is where the two surfaces deliberately part.** MYR-361
+//    took the banner's headline verbatim, so a single-vehicle fleet put the car's
+//    own name under a dimmed chip: "Lunar is in service — no rides right now".
+//    CLIENT-DIRECTED: the segment caption is now the GENERIC
+//    `RiderIdleAvailabilityBanner.genericHeadline` in every case, and **the
+//    vehicle-named reason lives only on the idle banner**. The two surfaces are
+//    answering different questions — the banner explains a fleet the rider is
+//    looking at, while this caption explains why one chip of two is not offered —
+//    and a car's name is an answer to the first, not the second. The generic line
+//    is also the one sentence that stays true as the set changes underneath a
+//    LATCHED value (below), which the named one does not.
 //  • **A PAUSED-only fleet changes nothing.** `paused` gates the instant CTA and
 //    offers no scheduling either (MYR-342, rest-api.md §7.18 refuses reservations
 //    on all three enforcement layers). Defaulting the segment to Schedule there
@@ -56,8 +68,10 @@ struct RideSchedulingAvailability: Equatable {
     /// True only when NOTHING in the rider's set can take an instant request AND
     /// scheduling is genuinely open. The one condition that moves the default.
     let defaultsToSchedule: Bool
-    /// The honest line under a disabled "Now" — the idle banner's own headline.
-    /// `nil` whenever "Now" is offered.
+    /// The honest line under a disabled "Now". MYR-363b (client-directed): always
+    /// the GENERIC `RiderIdleAvailabilityBanner.genericHeadline`, never the
+    /// vehicle-named single-car sentence — that one belongs to the idle banner
+    /// alone. `nil` whenever "Now" is offered.
     let nowCaption: String?
 
     /// Nothing known against instant rides: the segment behaves exactly as it did
@@ -71,7 +85,7 @@ struct RideSchedulingAvailability: Equatable {
     static func resolve(members: [FleetMember]) -> RideSchedulingAvailability {
         // The SET predicate, borrowed whole: non-empty, and no member requestable.
         // One free car cancels it outright, an empty set says nothing at all.
-        guard let banner = RiderIdleAvailabilityBanner.banner(members: members) else {
+        guard RiderIdleAvailabilityBanner.banner(members: members) != nil else {
             return .unconstrained
         }
         // …and scheduling has to actually be open, or there is no better default to
@@ -79,7 +93,11 @@ struct RideSchedulingAvailability: Equatable {
         guard members.compactMap(\.unavailability).contains(where: \.offersScheduling) else {
             return .unconstrained
         }
-        return RideSchedulingAvailability(defaultsToSchedule: true, nowCaption: banner.headline)
+        // MYR-363b — the GENERIC line, for a fleet of any size. See the header.
+        return RideSchedulingAvailability(
+            defaultsToSchedule: true,
+            nowCaption: RiderIdleAvailabilityBanner.genericHeadline
+        )
     }
 }
 
@@ -123,5 +141,55 @@ struct RideRequestSchedulingSegment: Equatable {
             nowEnabled: nowEnabled,
             nowCaption: nowEnabled ? nil : availability.nowCaption
         )
+    }
+}
+
+// MARK: - MYR-363b — the prompt the default was missing
+//
+// MYR-361 moved the SELECTION to Schedule when nothing can take an instant
+// request, and stopped there. So the rider arrived on a sheet reading **Schedule**
+// with no time behind it, picked a destination, and got a "Continue" that walks
+// them to a Review whose CTA is gated — the dead end MYR-233 exists to prevent,
+// reached by a different road. The segment said what would happen and nothing ever
+// asked for the one input that makes it possible.
+//
+// So: when the segment DEFAULTED to Schedule (nobody chose it) and the rider picks
+// a destination with no time set, the schedule card opens ITSELF, once.
+//
+// FIVE conditions, and each one is a way of not nagging:
+//
+//  • **`defaultsToSchedule`** — the DEFAULT, not the selection. A rider who tapped
+//    Schedule on an available fleet already opened the card with that tap; opening
+//    it again on their next action would be the app pressing a button twice.
+//  • **No committed schedule.** A time already chosen is the answer this prompt
+//    exists to collect.
+//  • **The card is not already up** (the MYR-233 `opensScheduleOnSearch` route
+//    lands exactly here, and MYR-353's auto-focus hazard points the same way).
+//  • **ONE SHOT PER DRAFT.** `alreadyPrompted` latches the moment the card opens,
+//    so an explicit dismissal is FINAL: the rider said no, and re-opening on their
+//    next destination would be the same modal twice for the same reason. It resets
+//    only when the draft does (`resetDraftToIdle`), i.e. a genuinely new request.
+//  • It presents through `openScheduleCard()` like every other entry, so MYR-353's
+//    keyboard rule and MYR-316's floor reconciliation are the SHIPPING ones rather
+//    than a second copy — a prompt that raised itself over a live first responder
+//    would recreate the exact defect MYR-353 fixed, and this is the one entry point
+//    the rider did not ask for.
+enum RideScheduleDefaultPrompt {
+
+    /// Whether picking a destination should open the schedule card by itself.
+    ///
+    /// - Parameters:
+    ///   - availability: the LATCHED entry-time fact — `defaultsToSchedule` is the
+    ///     "nobody chose this" signal, and the ONLY one there is.
+    ///   - hasSchedule: `viewerState.draftSchedule != nil`.
+    ///   - cardOpen: the picker is already presented.
+    ///   - alreadyPrompted: this draft has already had its one shot.
+    static func shouldOpen(
+        availability: RideSchedulingAvailability,
+        hasSchedule: Bool,
+        cardOpen: Bool,
+        alreadyPrompted: Bool
+    ) -> Bool {
+        availability.defaultsToSchedule && !hasSchedule && !cardOpen && !alreadyPrompted
     }
 }

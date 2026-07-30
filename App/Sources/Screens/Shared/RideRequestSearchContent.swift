@@ -45,6 +45,12 @@ struct RideRequestSearchContent: View {
     /// which is also its permanent value on the simulated path.
     @State private var schedulingAvailability: RideSchedulingAvailability = .unconstrained
 
+    /// MYR-363b — this draft has already had its ONE automatic schedule prompt.
+    /// Latched the moment the card opens itself, so an explicit dismissal is final;
+    /// cleared only when the draft resets to idle, i.e. a genuinely new request.
+    /// See `RideScheduleDefaultPrompt`.
+    @State private var scheduleAutoPrompted = false
+
     // MYR-215 deliverable 3: the destination chosen on this sheet, pending an
     // explicit "Continue". Non-nil ⇒ the field is filled, the results list gives
     // way to the CTA, and the flow has NOT advanced. Editing the field clears it
@@ -137,9 +143,19 @@ struct RideRequestSearchContent: View {
     /// not yet chosen by the rider (that's Review's fleet picker), so this
     /// mirrors the jsx's `requesterName` default: the first shared Tesla
     /// (ride-request.jsx:150 `requesterName = 'Alex'`).
+    ///
+    /// MYR-357 — **THE MYR-228 LEAK THE "SOMEONE ELSE" AUDIT FOUND**, and exactly
+    /// the shape CLAUDE.md warns has no grep signature: a FIXTURE DEFAULT. This
+    /// read `RideRequestFixtures.fleet` directly, so on the LIVE path — where
+    /// `draftFleetMemberID` is a real vehicle id that matches no fixture row — the
+    /// `??` fell through to `fleet[0].owner`, and the passenger notify note told a
+    /// live rider "…as soon as **Alex** accepts", naming a persona on nobody's
+    /// account. It resolves through `fleetMember(forID:)` now, the same accessor
+    /// `targetVehicle` (MYR-316) already uses, which prefers the live join and only
+    /// then falls back to fixtures. SIM is byte-identical: `liveFleetMember` is nil
+    /// there, so the expression reduces to the one this replaced.
     private var requesterName: String {
-        RideRequestFixtures.fleet.first { $0.id == viewerState.draftFleetMemberID }?.owner
-            ?? RideRequestFixtures.fleet[0].owner
+        viewerState.fleetMember(forID: viewerState.draftFleetMemberID).owner
     }
 
     // MYR-211: results now come from the `PlaceSearching` seam
@@ -148,6 +164,12 @@ struct RideRequestSearchContent: View {
     // region-biased MapKit autocomplete. Same tri-state contract: `nil` → show
     // Saved/Recent/Nearby, `[]` → "No results", `[…]` → the Results list.
     private var searchResults: [RidePlace]? { viewerState.placeSearch.results }
+
+    /// MYR-356 — the rider's own recently-chosen destinations, most-recent-first and
+    /// already capped at 5. EMPTY is the whole drift-gate guarantee: with nothing
+    /// stored, both pre-typing branches below render exactly what they rendered
+    /// before this issue.
+    private var recentRows: [RidePlace] { viewerState.recentDestinationPlaces }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -356,6 +378,11 @@ struct RideRequestSearchContent: View {
             }
             guard newPhase == .idle, viewerState.draftDestination == nil else { return }
             pickedDestination = nil
+            // MYR-363b — the prompt's latch is PER DRAFT, and this is where the
+            // draft ends (`RiderIdleSearchSheet.commitSettle` → `closeToIdle` →
+            // `resetDraftToIdle`). The next request gets its own one shot; the
+            // current one never gets a second.
+            scheduleAutoPrompted = false
             if !query.isEmpty { query = "" }
         }
         .onDisappear { focusTask?.cancel(); focusTask = nil }
@@ -421,6 +448,19 @@ struct RideRequestSearchContent: View {
             // sees the card whether it opened synchronously or across the
             // dismissal settle.
             guard !scheduleSheetOpen else { return }
+            #if DEBUG
+            // MYR-356 — `riderRecentDestinations` is the ONE scene whose subject
+            // lives below the keyboard fold: the pre-typing list's Recent section
+            // sits under three Saved rows, and the auto-focused keyboard covers it
+            // in a full-frame capture and puts it out of reach of a UI test's tap.
+            // A real rider scrolls to it; headless tooling cannot, and a swipe
+            // inside this sheet is the PanSheet engine's drag, not the list's
+            // scroll. So this scene alone boots with the keyboard down — the same
+            // stand-in-for-a-gesture precedent as `ownerFreshnessWaking`'s seeded
+            // phase. Every other scene, `search` included, keeps MYR-250's
+            // auto-focus and is byte-identical.
+            if DebugScene.current?.suppressesSearchAutoFocus == true { return }
+            #endif
             destinationFieldFocused = true
         }
     }
@@ -652,6 +692,9 @@ struct RideRequestSearchContent: View {
             VStack(spacing: 8) {
                 TextField("Passenger name", text: passengerNameBinding)
                     .font(.system(size: 14, weight: .medium))
+                    // MYR-363a — audited in the same pass, and unset for the same
+                    // reason the destination field was.
+                    .textContentType(RideRequestFieldContentType.passengerName)
                     .foregroundStyle(Color.mrtText)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 11)
@@ -661,6 +704,9 @@ struct RideRequestSearchContent: View {
                     .font(.system(size: 14, weight: .medium))
                     .monospacedDigit()
                     .keyboardType(.phonePad)
+                    // MYR-363a — `.phonePad` sets the KEYS; only the content type
+                    // gets the field its autofill row.
+                    .textContentType(RideRequestFieldContentType.passengerPhone)
                     .foregroundStyle(Color.mrtText)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 11)
@@ -749,6 +795,10 @@ struct RideRequestSearchContent: View {
                     TextField("Where to?", text: $query)
                         .font(.system(size: 14.5, weight: .medium))
                         .foregroundStyle(Color.mrtText)
+                        // MYR-363a — the client's "From Messages" code suggestion.
+                        // The field never declared what it holds, so iOS guessed;
+                        // see `RideRequestFieldContentTypes.swift`.
+                        .textContentType(RideRequestFieldContentType.destination)
                         .focused($destinationFieldFocused)
                 }
                 if !query.isEmpty {
@@ -756,6 +806,10 @@ struct RideRequestSearchContent: View {
                         Image(systemName: "xmark").font(.system(size: 13)).foregroundStyle(Color.mrtTextMuted)
                     }
                     .buttonStyle(.plain)
+                    // Identifier only, no pixels — the one control that returns the
+                    // sheet to its PRE-TYPING list, which is where both the recents
+                    // and the fixture sections live.
+                    .accessibilityIdentifier("mrt.search.clearDestination")
                 }
             }
             .padding(.vertical, 11)
@@ -877,6 +931,32 @@ struct RideRequestSearchContent: View {
         viewerState.chooseDestination(place)
         query = place.label // programmatic fill; onChange keeps the pick (label matches)
         destinationFieldFocused = false
+        promptForScheduleIfDefaulted() // MYR-363b
+    }
+
+    /// MYR-363b — the schedule card opens ITSELF, once, when the segment DEFAULTED
+    /// to Schedule and the rider has just picked a destination with no time behind
+    /// it. Without this the default MYR-361 shipped is a statement with no way to
+    /// act on it: "Continue" walks straight to a Review whose CTA is gated.
+    ///
+    /// Every guard lives in `RideScheduleDefaultPrompt` (pure, so the whole matrix
+    /// is pinned without mounting SwiftUI), and the presentation is
+    /// `openScheduleCard()` — the SHIPPING entry point, so MYR-353's keyboard rule
+    /// applies unchanged. That matters more here than at the other three entries:
+    /// this one fires immediately after a result tap, and `choose(_:)` has only just
+    /// dropped the `@FocusState` binding, so the keyboard is genuinely still up and
+    /// the settle beat is genuinely paid.
+    @MainActor
+    private func promptForScheduleIfDefaulted() {
+        guard RideScheduleDefaultPrompt.shouldOpen(
+            availability: schedulingAvailability,
+            hasSchedule: viewerState.draftSchedule != nil,
+            cardOpen: scheduleSheetOpen,
+            alreadyPrompted: scheduleAutoPrompted
+        ) else { return }
+        scheduleAutoPrompted = true
+        reconcileScheduleSelectionToFloor() // MYR-316 — never OPEN on a blocked slot
+        openScheduleCard() // MYR-353 — never OPEN under the keyboard
     }
 
     /// MYR-239 defect 2 — FOCUS DISCIPLINE on leaving Search. The client hit a
@@ -912,6 +992,18 @@ struct RideRequestSearchContent: View {
                     ForEach(filteredResults) { destRow($0) }
                 }
             }
+        } else if !recentRows.isEmpty, viewerState.isLiveLocation {
+            // MYR-356 — the live pre-typing region, when the rider HAS history.
+            // Device-local, so it is honest here in a way the fixture Saved/Nearby
+            // lists are not (MYR-214 removed those from live precisely because they
+            // were somebody else's places). The section is the prototype's own
+            // "RECENT" heading at its own 6pt top rhythm, and the rows are the same
+            // `destRow` every other list on this sheet uses — a recent is a
+            // destination, not a new kind of thing.
+            VStack(alignment: .leading, spacing: 0) {
+                sectionLabel("Recent").padding(.top, 6)
+                ForEach(recentRows) { destRow($0) }
+            }
         } else if viewerState.isLiveLocation {
             // MYR-214: live mode must not surface the SF fixture Saved / Recent /
             // Nearby places pre-typing (same cross-country poisoning as a live
@@ -931,8 +1023,18 @@ struct RideRequestSearchContent: View {
                 sectionLabel("Saved").padding(.top, 6)
                 ForEach(RideRequestFixtures.savedPlaces) { destRow($0) }
 
+                // MYR-356 — the SIM pre-typing list keeps the prototype's Saved and
+                // Nearby fixtures, but its "Recent" section is the one place a real
+                // history belongs, so real recents TAKE that slot the moment there
+                // are any. The fixture list is what stands there until then, which
+                // is why every simulated scene is byte-identical: a DEBUG scene
+                // boots against an empty store by construction (`RootView`), so this
+                // resolves to `RideRequestFixtures.recentPlaces.prefix(4)` exactly
+                // as it always did.
                 sectionLabel("Recent").padding(.top, 18)
-                ForEach(RideRequestFixtures.recentPlaces.prefix(4)) { destRow($0) }
+                ForEach(recentRows.isEmpty ? Array(RideRequestFixtures.recentPlaces.prefix(4)) : recentRows) {
+                    destRow($0)
+                }
 
                 sectionLabel("Nearby").padding(.top, 18).padding(.bottom, 8)
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -1018,6 +1120,12 @@ struct RideRequestSearchContent: View {
         }
         .buttonStyle(.plain)
         .frame(minHeight: MRTMetrics.minTapTarget)
+        // MYR-356 — a queryable handle per row. The recents list is below the
+        // keyboard fold on a sheet whose destination field auto-focuses by design
+        // (MYR-250), so a UI test is the only way to reach it, and a SwiftUI Button
+        // built from an icon + two Texts + a distance stack composes an
+        // accessibility label a query cannot rely on. Identifiers only — no pixels.
+        .accessibilityIdentifier("mrt.search.dest.\(place.id)")
     }
 
     private func nearbyCard(_ place: RidePlace) -> some View {
