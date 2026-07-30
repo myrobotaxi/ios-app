@@ -169,13 +169,13 @@ final class RideSharePauseWarningTests: XCTestCase {
 
         let warning = try? XCTUnwrap(flow.warning)
         XCTAssertEqual(warning?.reservations.map(\.id), ["r1"])
-        XCTAssertEqual(warning?.reservations.first?.riderLabel, "Alex")
+        XCTAssertEqual(warning?.reservations.first?.riderFirstName, "Alex")
         let submitted = await endpoint.submitted()
         XCTAssertTrue(submitted.isEmpty, "nothing is committed while the owner is being asked")
         XCTAssertTrue(executor.controls.rideShareEnabled, "and the switch has not moved")
 
         let config = RideSharePauseDialog.warning(
-            reservations: warning?.reservations ?? [],
+            count: warning?.reservations.count ?? 0,
             onDeclineAndPause: {},
             onPauseAnyway: {}
         )
@@ -183,13 +183,15 @@ final class RideSharePauseWarningTests: XCTestCase {
         XCTAssertEqual(config.actionLabel, "Decline it and pause")
         XCTAssertEqual(config.secondaryLabel, "Pause anyway")
         XCTAssertEqual(config.dismissLabel, "Keep sharing")
-        XCTAssertTrue(
-            config.message.hasSuffix(
-                "If you pause and leave it paused, this ride won\u{2019}t be dispatched. It expires 30 minutes after the pickup time."
-            ),
-            "the singular consequence, verbatim — got: \(config.message)"
+        XCTAssertEqual(
+            config.message,
+            "Paused rides won\u{2019}t be dispatched \u{2014} they expire 30 minutes after pickup time.",
+            "the consequence sentence, verbatim"
         )
-        XCTAssertFalse(config.message.contains("+"), "one reservation never rolls anything up")
+        // The reservations are ROWS in the dialog's content slot, never prose in the
+        // body — the client's own correction on the first build.
+        XCTAssertFalse(config.message.contains("Alex"), "the message names nobody")
+        XCTAssertFalse(config.message.contains("Pickup"), "and states no pickup time")
     }
 
     /// MANY reservations: soonest first, the cap applied, the remainder rolled up,
@@ -211,18 +213,26 @@ final class RideSharePauseWarningTests: XCTestCase {
         let reservations = flow.warning?.reservations ?? []
         XCTAssertEqual(reservations.map(\.id), ["r1", "r2", "r3", "r4"], "the server's soonest-first order is preserved")
 
-        let message = RideSharePauseDialog.message(for: reservations, now: now, calendar: calendar)
-        let lines = message.components(separatedBy: "\n")
-        XCTAssertEqual(RideSharePauseDialog.displayCap, 2)
-        XCTAssertTrue(lines[0].hasSuffix("\u{2014} Alex"), "the soonest reservation leads — got \(lines[0])")
-        XCTAssertTrue(lines[1].hasSuffix("\u{2014} Priya"))
-        XCTAssertEqual(lines[2], "+2 more", "everything past the cap is counted, never dropped")
-        XCTAssertFalse(message.contains("Sam"), "a reservation past the cap is not named")
-        XCTAssertTrue(
-            message.hasSuffix(
-                "If you pause and leave it paused, these rides won\u{2019}t be dispatched. They expire 30 minutes after the pickup time."
-            ),
-            "the plural consequence, verbatim — got: \(message)"
+        XCTAssertEqual(RideSharePauseDialog.displayCap, 3)
+        XCTAssertEqual(
+            reservations.prefix(RideSharePauseDialog.displayCap).map {
+                RideSharePauseDialog.rowTime(for: $0, now: now, calendar: calendar)
+            },
+            reservations.prefix(3).map { VehicleServiceWindow.completionLabel(for: $0.scheduledFor, now: now, calendar: calendar)! },
+            "each visible row leads with the shared day-and-time stamp"
+        )
+        XCTAssertEqual(
+            reservations.prefix(RideSharePauseDialog.displayCap).map(RideSharePauseDialog.rowRider),
+            ["Alex", "Priya", "Sam"],
+            "…over the rider's first name, soonest first"
+        )
+        XCTAssertEqual(
+            RideSharePauseDialog.overflowLabel(for: reservations), "+1 more",
+            "everything past the cap is counted, never dropped"
+        )
+        XCTAssertNil(
+            RideSharePauseDialog.overflowLabel(for: Array(reservations.prefix(3))),
+            "and nothing rolls up when nothing is hidden"
         )
         XCTAssertEqual(RideSharePauseDialog.actionLabel(count: reservations.count), "Decline them and pause")
     }
@@ -371,7 +381,7 @@ final class RideSharePauseWarningTests: XCTestCase {
     /// The pure rule behind both, stated once.
     func testTheDecisionRuleIsThreeWay() {
         XCTAssertEqual(RideSharePause.decide(.success([])), .pause)
-        let one = UpcomingReservation(id: "r1", riderLabel: "Alex", scheduledFor: Date())
+        let one = UpcomingReservation(id: "r1", riderFirstName: "Alex", scheduledFor: Date())
         XCTAssertEqual(RideSharePause.decide(.success([one])), .warn([one]))
         XCTAssertEqual(
             RideSharePause.decide(.failure(RestError.http(status: 500, code: nil, message: nil, subCode: nil))),
@@ -432,14 +442,21 @@ final class RideSharePauseWarningTests: XCTestCase {
         let flow = makeFlow(api)
         await flow.setEnabled(false, vehicleID: "veh-1", executor: makeExecutor(ScriptedRideShareEndpoint()))
 
-        let labels = flow.warning?.reservations.map(\.riderLabel) ?? []
-        XCTAssertEqual(labels, [IncomingRequestDisplay.neutralRole, IncomingRequestDisplay.neutralRole])
-        XCTAssertEqual(IncomingRequestDisplay.neutralRole, "Shared viewer")
-
-        let message = RideSharePauseDialog.message(for: flow.warning?.reservations ?? [])
-        XCTAssertFalse(message.contains("Sam"), "no fixture persona ever reaches this surface")
-        XCTAssertFalse(message.contains("Alex"))
-        XCTAssertTrue(message.contains("Shared viewer"))
+        let reservations = flow.warning?.reservations ?? []
+        XCTAssertEqual(reservations.map(\.riderFirstName), [nil, nil], "an absent or blank name stays absent")
+        XCTAssertEqual(
+            reservations.map(RideSharePauseDialog.rowRider), ["A rider", "A rider"],
+            "the honest fallback — never an invented name and never an initial"
+        )
+        XCTAssertEqual(RideSharePauseDialog.unnamedRider, "A rider")
+        // "Shared viewer" is an INTERNAL role term. It is the right answer on the
+        // incoming card (which is about a person's relationship to the vehicle) and
+        // the wrong one in a list of pickups, where it reads as jargon.
+        XCTAssertNotEqual(RideSharePauseDialog.unnamedRider, IncomingRequestDisplay.neutralRole)
+        for text in reservations.map(RideSharePauseDialog.rowRider) + [RideSharePauseDialog.message] {
+            XCTAssertFalse(text.contains("Shared viewer"), "\"Shared viewer\" must never reach this dialog")
+            XCTAssertFalse(text.contains("Sam"), "no fixture persona ever reaches this surface")
+        }
     }
 
     /// "Decline it and pause" means ALL of them, so the read follows the cursor —

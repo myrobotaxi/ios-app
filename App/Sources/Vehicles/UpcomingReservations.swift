@@ -19,16 +19,17 @@ import MyRobotaxiContracts
 /// ONE upcoming reservation, reduced to the three facts the warning states: which
 /// ride to decline, when it was booked for, and who booked it.
 ///
-/// `riderLabel` is deliberately a RESOLVED label rather than the wire's raw
+/// `riderFirstName` is deliberately a CLEANED optional rather than the wire's raw
 /// `requesterName`, so the MYR-228 no-fabricated-name rule is enforced at the point
 /// the value is built instead of at each place it is read — see
 /// ``LiveUpcomingReservations/reservation(from:)``.
 struct UpcomingReservation: Identifiable, Equatable, Sendable {
     /// The SERVER's ride id — the id `POST /api/ride-requests/{id}/decline` takes.
     let id: String
-    /// The rider's display name, or `IncomingRequestDisplay.neutralRole` when the
-    /// wire carried none. Never a persona, never a fabricated initial.
-    let riderLabel: String
+    /// The rider's server-resolved FIRST name, or `nil` when the wire genuinely
+    /// carried none. Never a persona, never a fabricated initial — the caller
+    /// renders the honest `RideSharePauseDialog.unnamedRider` fallback for `nil`.
+    let riderFirstName: String?
     /// The pickup instant (`scheduledFor`). A reservation with no parseable one is
     /// not represented at all — see the mapping.
     let scheduledFor: Date
@@ -99,21 +100,26 @@ struct LiveUpcomingReservations: UpcomingReservationSource {
     ///  • a record the mapping refuses (a terminal/cancelled status) is not a
     ///    reservation this pause can strand;
     ///  • a row with no parseable `scheduledFor` cannot be stated as a pickup TIME,
-    ///    and the whole line is "Pickup {when} — {who}". A line with a blank when is
-    ///    worse than one fewer line, and the server's own predicate is
-    ///    `scheduled_for` being non-null and future, so this is a shape it does not
-    ///    emit.
+    ///    and the day-and-time stamp is the row's whole primary line. A row with a
+    ///    blank stamp over a name is worse than one fewer row, and the server's own
+    ///    predicate is `scheduled_for` being non-null and future, so this is a shape
+    ///    it does not emit.
     static func reservation(from wire: MyRobotaxiContracts.RideRequest) -> UpcomingReservation? {
         guard let record = RideRequestContractMapping.record(from: wire),
               let scheduledFor = wire.scheduledFor.flatMap(RideRequestContractMapping.parseISO)
         else { return nil }
         // `isLive: true` unconditionally, and that is correct rather than a shortcut:
-        // this type only ever holds WIRE records. It routes the name through
-        // `IncomingRequestDisplay` instead of reading `requesterName` directly so
-        // the trim/empty rule and the "Shared viewer" fallback stay in ONE place
-        // (MYR-228 / MYR-264) — a nameless reservation renders honestly here for the
-        // same reason the incoming card does.
+        // this type only ever holds WIRE records. The name is taken through
+        // `IncomingRequestDisplay.riderName` — the OPTIONAL, cleaned form — so the
+        // trim/empty rule lives in ONE place (MYR-228 / MYR-264) and a nameless
+        // reservation stays honestly nameless here.
+        //
+        // Deliberately NOT `.riderLabel`, whose fallback is the internal role term
+        // "Shared viewer". That is the right answer on the incoming card, which is
+        // about a person's relationship to the vehicle; it is the wrong answer in a
+        // list of pickups, where it reads as jargon. The dialog supplies its own
+        // plain-English fallback.
         let display = IncomingRequestDisplay.resolve(request: record, isLive: true, liveVehicle: nil)
-        return UpcomingReservation(id: wire.id, riderLabel: display.riderLabel, scheduledFor: scheduledFor)
+        return UpcomingReservation(id: wire.id, riderFirstName: display.riderName, scheduledFor: scheduledFor)
     }
 }

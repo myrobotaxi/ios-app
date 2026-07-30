@@ -409,12 +409,14 @@ enum DebugScene: String, CaseIterable {
     ///   • `ownerRideSharePauseWarning` — ONE reservation. The singular copy, the
     ///     singular confirm label ("Decline it and pause"), and the three-button
     ///     card in the shape everything else in this dialog family has.
-    ///   • `ownerRideSharePauseWarningMulti` — THREE reservations, which is also
-    ///     the cap capture: the message lists two, rolls the rest up as "+1 more",
-    ///     and pluralises both the consequence sentence and the confirm label
-    ///     ("Decline them and pause"). The middle reservation carries NO
-    ///     `requesterName` on the wire, so the honest "Shared viewer" fallback is
-    ///     in frame beside two named ones rather than being asserted only in tests.
+    ///   • `ownerRideSharePauseWarningMulti` — FOUR reservations, which is also the
+    ///     cap capture: the list names three and rolls the fourth up as a muted
+    ///     "+1 more" row, and the confirm label pluralises to "Decline them and
+    ///     pause". The SECOND reservation carries NO `requesterName` on the wire, so
+    ///     the honest "A rider" fallback is in frame beside three named ones rather
+    ///     than being asserted only in tests. The rolled-up fourth is still
+    ///     declined by the confirm button — the display cap is a display cap and
+    ///     nothing else.
     ///
     /// NOTHING in either capture is hand-set. Both inject the SAME live-shaped,
     /// ride-share-ON `DebugVehicleDetailsFleet` the MYR-342 scenes use, force
@@ -1014,11 +1016,13 @@ enum DebugScene: String, CaseIterable {
                 )
             ]))
         case .ownerRideSharePauseWarningMulti:
-            // Soonest first, exactly as the server orders them. The MIDDLE row
-            // carries no `requesterName`, so the honest "Shared viewer" fallback
-            // renders beside two named riders — a nameless reservation is a real
-            // wire shape (§7.8 omits the key when the identity lookup resolved
-            // nothing) and the client must never fill it in.
+            // Soonest first, exactly as the server orders them. The SECOND row
+            // carries no `requesterName`, so the honest "A rider" fallback renders
+            // beside three named riders — a nameless reservation is a real wire
+            // shape (§7.8 omits the key when the identity lookup resolved nothing)
+            // and the client must never fill it in. Deliberately NOT the internal
+            // role term "Shared viewer", which is the incoming card's answer to a
+            // different question.
             return LiveUpcomingReservations(api: DebugRideRequestEndpoint(reservations: [
                 DebugRideRequestEndpoint.reservation(
                     id: "clride0000000000000031",
@@ -1040,6 +1044,18 @@ enum DebugScene: String, CaseIterable {
                     requesterName: "Priya",
                     scheduledFor: DebugRideRequestEndpoint.sampleReservationDate(
                         daysAhead: 4, hour: 19, minute: 0
+                    )
+                ),
+                // The FOURTH is what puts the rollup row in frame: the list caps at
+                // three named rows, so this one is only ever seen as "+1 more" — and
+                // it is still declined by "Decline them and pause", which is the
+                // property the capture is really evidence of.
+                DebugRideRequestEndpoint.reservation(
+                    id: "clride0000000000000034",
+                    vehicleID: vehicleID,
+                    requesterName: "Sam",
+                    scheduledFor: DebugRideRequestEndpoint.sampleReservationDate(
+                        daysAhead: 6, hour: 8, minute: 45
                     )
                 )
             ]))

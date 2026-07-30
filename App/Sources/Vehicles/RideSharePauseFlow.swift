@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import DesignSystem
 
 // MARK: - Pausing ride sharing over a reservation (MYR-360)
@@ -64,19 +65,19 @@ enum RideSharePause {
 // lives in a fixtures file, and MYR-228 keeps live-path copy out of fixture files.
 
 enum RideSharePauseDialog {
-    /// How many reservations are LISTED before the message rolls up into a count.
+    /// How many reservations get a ROW of their own before the list rolls up into a
+    /// count.
     ///
-    /// TWO, measured rather than guessed (`RideSharePauseCopyTests`). The message is
-    /// a `Text` inside a 300pt card with 20pt padding, so every line lays out against
-    /// 260pt — and the longest honest line, a nameless reservation on a
-    /// two-digit-date weekday ("Pickup Wed, Sep 24 · 11:45 AM — Shared viewer"),
-    /// WRAPS at that width. So a listed reservation is worth up to two rendered
-    /// lines, not one, and the card also has to carry a 46pt icon, a title, a
-    /// consequence sentence and now THREE buttons on the shortest supported screen.
-    /// Two named reservations plus a rollup is what fits with real headroom; the
-    /// third name is not the difference between an informed decision and an
-    /// uninformed one, and a confirm dialog that scrolls is one nobody finishes.
-    static let displayCap = 2
+    /// THREE, measured rather than guessed (`RideSharePauseCopyTests`). Each row is
+    /// a two-line block — "Sat, Aug 1 · 5:30 PM" over the rider's first name — laid
+    /// out against the 260pt the 300pt card leaves inside its 20pt padding, and
+    /// neither line wraps at that width for any date, time or first name the server
+    /// emits. Three rows plus a rollup still leaves the card comfortably inside the
+    /// shortest supported screen with a 46pt icon, a title, the consequence
+    /// sentence and THREE buttons under it. A fourth name is not the difference
+    /// between an informed decision and an uninformed one, and a confirm dialog
+    /// that scrolls is one nobody finishes.
+    static let displayCap = 3
 
     static let title = "Pause ride sharing?"
     /// The same SF Symbol family the other dialog factories draw from
@@ -92,26 +93,37 @@ enum RideSharePauseDialog {
     /// entitled to, and the warning has already said what it costs.
     static let secondaryLabel = "Pause anyway"
 
+    /// What a reservation the server could not name is called.
+    ///
+    /// NOT `IncomingRequestDisplay.neutralRole` ("Shared viewer"), which is an
+    /// INTERNAL role term — it names the person's relationship to the vehicle, which
+    /// is not what an owner reading a list of pickups is trying to learn, and it
+    /// reads as jargon on a surface that is otherwise plain English. "A rider" is
+    /// the honest fallback and keeps the no-fabricated-name rule intact: it is never
+    /// an invented name and never an initial.
+    static let unnamedRider = "A rider"
+
     /// The recommended action, pluralised. It says both halves of what it does, in
     /// the order it does them.
     static func actionLabel(count: Int) -> String {
         count > 1 ? "Decline them and pause" : "Decline it and pause"
     }
 
-    /// One reservation's line: "Pickup Sat, Aug 2 · 5:30 PM — Alex".
+    /// A row's PRIMARY line: "Sat, Aug 1 · 5:30 PM".
     ///
-    /// The date/time is `VehicleServiceWindow.completionLabel`, the app's ONE
-    /// producer of the "EEE, MMM d · h:mm a" stamp (already pinned to
-    /// `en_US_POSIX`). A second formatter for a second surface is how two owner
-    /// surfaces start disagreeing about the same instant.
+    /// The stamp is `VehicleServiceWindow.completionLabel`, the app's ONE producer
+    /// of the "EEE, MMM d · h:mm a" form (already pinned to `en_US_POSIX`). A second
+    /// formatter for a second surface is how two owner surfaces start disagreeing
+    /// about the same instant.
     ///
     /// Its same-calendar-day branch returns the TIME ALONE ("5:30 PM"), which is
     /// correct where it ships (a line already captioned "Service Estimated
-    /// Completion") and ambiguous here, where a bare clock reads as a duration.
-    /// A reservation later TODAY is a real and likely case — an owner pausing this
-    /// afternoon over a ride booked this evening is the sharpest version of this
-    /// whole defect — so the day word is supplied instead of a second formatter.
-    static func line(
+    /// Completion") and ambiguous here, where a bare clock in a list of dates reads
+    /// as an omission. A reservation later TODAY is a real and likely case — an
+    /// owner pausing this afternoon over a ride booked this evening is the sharpest
+    /// version of this whole defect — so the day word is supplied around the shared
+    /// stamp instead of forking the formatter.
+    static func rowTime(
         for reservation: UpcomingReservation,
         now: Date = Date(),
         calendar: Calendar = .current
@@ -121,45 +133,43 @@ enum RideSharePauseDialog {
             now: now,
             calendar: calendar
         ) ?? ""
-        let when = calendar.isDate(reservation.scheduledFor, inSameDayAs: now)
-            ? "today \u{00B7} \(stamp)"
+        return calendar.isDate(reservation.scheduledFor, inSameDayAs: now)
+            ? "Today \u{00B7} \(stamp)"
             : stamp
-        return "Pickup \(when) \u{2014} \(reservation.riderLabel)"
     }
 
-    /// The consequence sentence, in plural agreement with what was listed. It
-    /// states the server's ACTUAL behaviour — hold, then expire 30 minutes after
-    /// the pickup — rather than "the ride will be cancelled", which is not what
-    /// happens and would make "Pause anyway" look harmless.
-    ///
-    /// "If you pause and leave it paused" is load-bearing: an owner who resumes
-    /// before the pickup strands nobody, and the sentence must not claim otherwise.
-    static func consequence(count: Int) -> String {
-        count > 1
-            ? "If you pause and leave it paused, these rides won\u{2019}t be dispatched. They expire 30 minutes after the pickup time."
-            : "If you pause and leave it paused, this ride won\u{2019}t be dispatched. It expires 30 minutes after the pickup time."
+    /// A row's SECONDARY line: the rider's first name, or the honest fallback.
+    static func rowRider(for reservation: UpcomingReservation) -> String {
+        reservation.riderFirstName ?? unnamedRider
     }
 
-    /// The full message: the reservations, soonest first, capped, then the
-    /// consequence. Beyond the cap a "+N more" line stands for the remainder — the
-    /// owner is told the size of what they are deciding about even where the dialog
-    /// has no room to name it.
-    static func message(
-        for reservations: [UpcomingReservation],
-        now: Date = Date(),
-        calendar: Calendar = .current
-    ) -> String {
-        var lines = reservations.prefix(displayCap).map { line(for: $0, now: now, calendar: calendar) }
+    /// The rollup row for everything past the cap, or `nil` when nothing is hidden.
+    /// The owner is told the SIZE of what they are deciding about even where the
+    /// dialog has no room to name it.
+    static func overflowLabel(for reservations: [UpcomingReservation]) -> String? {
         let hidden = reservations.count - min(reservations.count, displayCap)
-        if hidden > 0 { lines.append("+\(hidden) more") }
-        return lines.joined(separator: "\n") + "\n\n" + consequence(count: reservations.count)
+        return hidden > 0 ? "+\(hidden) more" : nil
     }
+
+    /// The message body — one sentence now that the reservations have their own
+    /// rows.
+    ///
+    /// It states the server's ACTUAL behaviour (hold, then expire 30 minutes after
+    /// the pickup) rather than "the ride will be cancelled", which is not what
+    /// happens and would make "Pause anyway" look harmless. "Paused rides" is what
+    /// keeps it true in both directions: an owner who resumes before the pickup
+    /// strands nobody, and the sentence does not claim otherwise.
+    static let message = "Paused rides won\u{2019}t be dispatched \u{2014} they expire 30 minutes after pickup time."
 
     /// The whole dialog. Destructive: the confirm button declines somebody's ride.
+    ///
+    /// The reservations do NOT appear here — they are rows in the dialog's content
+    /// slot (`RideSharePauseReservationList`), because a list flattened into a
+    /// centred body sentence stops being a list. The count still reaches this
+    /// factory, for the one thing the copy needs it for: pluralising the confirm
+    /// label.
     static func warning(
-        reservations: [UpcomingReservation],
-        now: Date = Date(),
-        calendar: Calendar = .current,
+        count: Int,
         onDeclineAndPause: @escaping () -> Void,
         onPauseAnyway: @escaping () -> Void
     ) -> MRTConfirmDialogConfig {
@@ -167,13 +177,91 @@ enum RideSharePauseDialog {
             kind: .destructive,
             icon: icon,
             title: title,
-            message: message(for: reservations, now: now, calendar: calendar),
-            actionLabel: actionLabel(count: reservations.count),
+            message: message,
+            actionLabel: actionLabel(count: count),
             secondaryLabel: secondaryLabel,
             secondaryAction: onPauseAnyway,
             dismissLabel: dismissLabel,
             action: onDeclineAndPause
         )
+    }
+}
+
+// MARK: - The reservation rows
+//
+// The client's verdict on the first build, which listed the reservations as
+// centred prose lines inside the dialog's message: *"list in plain text is not
+// helpful."* He is right — a list is a list because its parts line up, and centred
+// sentences do not.
+//
+// So the reservations render as ROWS in the dialog's content slot, in the app's
+// EXISTING row grammar rather than a new one invented for this surface: the
+// `ViewerRow`/`PendingRow` shape (a leading glyph, a 14/medium primary line over an
+// 11pt muted secondary, `Spacer` to the trailing edge) separated by the standard
+// `Color.mrtBorder` hairline. Only the horizontal padding differs, because these
+// sit inside a 300pt dialog card rather than against the 24pt page gutter.
+
+struct RideSharePauseReservationList: View {
+    let reservations: [UpcomingReservation]
+    var now: Date = Date()
+    var calendar: Calendar = .current
+
+    private var visible: [UpcomingReservation] {
+        Array(reservations.prefix(RideSharePauseDialog.displayCap))
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(visible.enumerated()), id: \.element.id) { index, reservation in
+                if index > 0 { hairline }
+                row(
+                    glyph: "calendar",
+                    primary: RideSharePauseDialog.rowTime(for: reservation, now: now, calendar: calendar),
+                    secondary: RideSharePauseDialog.rowRider(for: reservation)
+                )
+            }
+            if let overflow = RideSharePauseDialog.overflowLabel(for: reservations) {
+                hairline
+                // The rollup is a ROW too, not a caption: it is one more thing in the
+                // list, and giving it a different shape would read as a footnote
+                // about the list rather than a part of it. Muted throughout, because
+                // it names a quantity rather than a pickup.
+                HStack(spacing: 12) {
+                    Text(overflow)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.mrtTextMuted)
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 10)
+            }
+        }
+    }
+
+    private var hairline: some View {
+        Rectangle()
+            .fill(Color.mrtBorder)
+            .frame(height: MRTMetrics.hairline)
+    }
+
+    private func row(glyph: String, primary: String, secondary: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: glyph)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.mrtTextMuted)
+                .frame(width: 16)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(primary)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Color.mrtText)
+                Text(secondary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.mrtTextMuted)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 10)
+        .accessibilityElement(children: .combine)
     }
 }
 

@@ -35,8 +35,13 @@ final class ConfirmDialogTests: XCTestCase {
     /// Returns the raw RGBA bytes plus the geometry needed to slice rows.
     @MainActor
     private func render(_ config: MRTConfirmDialogConfig) -> (bytes: [UInt8], width: Int, height: Int, stride: Int) {
+        render(MRTConfirmDialogCard(config: config, dismiss: {}))
+    }
+
+    @MainActor
+    private func render<V: View>(_ card: V) -> (bytes: [UInt8], width: Int, height: Int, stride: Int) {
         let renderer = ImageRenderer(
-            content: MRTConfirmDialogCard(config: config, dismiss: {})
+            content: card
                 .frame(width: 393)
                 .background(Color.black)
         )
@@ -190,6 +195,65 @@ final class ConfirmDialogTests: XCTestCase {
             Array(rows(three, three.height - lastBand, three.height)),
             "the dismiss button is still the last thing on the card — byte for byte"
         )
+    }
+
+    // MARK: The content slot (MYR-360)
+
+    /// THE SLOT'S BYTE-IDENTICAL PROOF. A card whose content slot is `EmptyView`
+    /// rasterizes to the same bytes as one built with no slot at all.
+    ///
+    /// This is the trap the check in the card exists for: a bare `EmptyView`
+    /// contributes no layout child, but `EmptyView().padding(.top, 14)` is a
+    /// zero-sized view WITH 14pt of padding — which would silently move the action
+    /// stack of every dialog in the app.
+    @MainActor
+    func testAnEmptyContentSlotRendersByteIdenticalPixels() {
+        let plain = render(twoActionConfig())
+        let slotted = render(
+            MRTConfirmDialogCard(config: twoActionConfig(), dismiss: {}, dialogContent: { EmptyView() })
+        )
+
+        XCTAssertGreaterThan(plain.height, 0, "the card must actually rasterize")
+        XCTAssertEqual(plain.height, slotted.height)
+        XCTAssertEqual(plain.bytes, slotted.bytes, "an unused content slot must not change one pixel")
+    }
+
+    /// A slot that IS used sits between the message and the action stack, and costs
+    /// exactly its own height plus the 14pt that separates it from the message.
+    /// Proven geometrically: everything above the message is untouched, and the
+    /// whole action stack (three buttons + the card's 20pt bottom padding) is
+    /// byte-exact.
+    @MainActor
+    func testAUsedContentSlotSitsBetweenTheMessageAndTheActions() {
+        let plain = render(threeActionConfig())
+        let slotHeight = 40
+        let slotted = render(
+            MRTConfirmDialogCard(config: threeActionConfig(), dismiss: {}) {
+                Color.red.frame(height: CGFloat(slotHeight))
+            }
+        )
+        let actionBand = Int(MRTButtonSize.md.height) * 3 + 8 * 2 + 20
+
+        XCTAssertEqual(slotted.height, plain.height + slotHeight + 14, "the slot plus its 14pt lead-in, and nothing else")
+        XCTAssertEqual(
+            Array(rows(plain, 0, plain.height - actionBand - 18)),
+            Array(rows(slotted, 0, plain.height - actionBand - 18)),
+            "icon, title and message are untouched by the slot"
+        )
+        var changedRows = 0
+        var maxDelta = 0
+        for row in 0..<actionBand {
+            let a = Array(rows(plain, plain.height - actionBand + row, plain.height - actionBand + row + 1))
+            let b = Array(rows(slotted, slotted.height - actionBand + row, slotted.height - actionBand + row + 1))
+            if a != b { changedRows += 1 }
+            for index in a.indices { maxDelta = max(maxDelta, abs(Int(a[index]) - Int(b[index]))) }
+        }
+        // Compared with a ±1 tolerance and a pinned row count, for the same reason
+        // the third-action test is: `ImageRenderer` antialiases a rounded edge one
+        // level differently across two canvas heights (measured: 3 rows of 174,
+        // max delta 1 of 255). Every glyph, fill and radius is identical.
+        XCTAssertLessThanOrEqual(maxDelta, 1, "and the three-button stack is still the last thing on the card")
+        XCTAssertLessThanOrEqual(changedRows, 3, "…with only antialiasing between them")
     }
 
     /// The card is still capped at the dialog's documented anatomy (radius 22,

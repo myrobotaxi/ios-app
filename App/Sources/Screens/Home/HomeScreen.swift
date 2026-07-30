@@ -355,7 +355,13 @@ struct HomeScreen: View {
         // which is only reachable on the live path with a real reservation on the
         // wire — so every simulated and DEBUG capture renders this as nothing at
         // all, exactly as before.
-        .mrtConfirmDialog(isPresented: isShowingPauseWarning, config: pauseWarningConfig)
+        .mrtConfirmDialog(isPresented: isShowingPauseWarning, config: pauseWarningConfig) {
+            // MYR-360 — the reservations as ROWS in the dialog's content slot, not
+            // as prose in the message. A list flattened into a centred sentence
+            // stops being a list (the client, on the first build: "list in plain
+            // text is not helpful").
+            RideSharePauseReservationList(reservations: pauseFlow.warning?.reservations ?? [])
+        }
         .task { await flipRideShareForCaptureSceneIfRequested() }
     }
 
@@ -801,10 +807,10 @@ struct HomeScreen: View {
     }
 
     /// The dialog itself. Built from the reservations the flow is holding, so the
-    /// copy names exactly the rides the confirm button will decline.
+    /// rows name exactly the rides the confirm button will decline.
     private var pauseWarningConfig: MRTConfirmDialogConfig {
         RideSharePauseDialog.warning(
-            reservations: pauseFlow.warning?.reservations ?? [],
+            count: pauseFlow.warning?.reservations.count ?? 0,
             onDeclineAndPause: { Task { await pauseFlow.confirmDeclineAndPause() } },
             onPauseAnyway: { Task { await pauseFlow.pauseAnyway() } }
         )

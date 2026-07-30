@@ -83,15 +83,42 @@ public extension View {
         isPresented: Binding<Bool>,
         config: MRTConfirmDialogConfig
     ) -> some View {
-        modifier(MRTConfirmDialogModifier(isPresented: isPresented, config: config))
+        modifier(MRTConfirmDialogModifier(isPresented: isPresented, config: config) { EmptyView() })
+    }
+
+    /// MYR-360 — the same dialog with a CONTENT SLOT between the message and the
+    /// action stack.
+    ///
+    /// It exists because some confirmations are about a LIST, and a list flattened
+    /// into the centred body sentence stops being a list: MYR-360's pause warning
+    /// names the reservations an owner is about to strand, and the client's verdict
+    /// on the prose version was "list in plain text is not helpful". The slot lets a
+    /// caller supply the app's own left-aligned row grammar while the title, the
+    /// message and the actions stay exactly the dialog's.
+    ///
+    /// The slot is a MODIFIER OVERLOAD rather than a field on `MRTConfirmDialogConfig`
+    /// on purpose: the config is a plain value type that screens build, pass around
+    /// and compare, and hanging a `ViewBuilder` off it would make it neither.
+    ///
+    /// Unused, it is a provable no-op — the existing signature below routes to
+    /// `EmptyView`, and the card skips the slot entirely for that type, so no
+    /// padding and no layout child are spent (asserted byte-for-byte in
+    /// `ConfirmDialogTests`).
+    func mrtConfirmDialog<DialogContent: View>(
+        isPresented: Binding<Bool>,
+        config: MRTConfirmDialogConfig,
+        @ViewBuilder content: @escaping () -> DialogContent
+    ) -> some View {
+        modifier(MRTConfirmDialogModifier(isPresented: isPresented, config: config, dialogContent: content))
     }
 }
 
 // MARK: - Presentation
 
-private struct MRTConfirmDialogModifier: ViewModifier {
+private struct MRTConfirmDialogModifier<DialogContent: View>: ViewModifier {
     @Binding var isPresented: Bool
     let config: MRTConfirmDialogConfig
+    @ViewBuilder let dialogContent: () -> DialogContent
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
@@ -102,7 +129,7 @@ private struct MRTConfirmDialogModifier: ViewModifier {
                         .ignoresSafeArea()
                         .transition(.opacity)
                         .accessibilityHidden(true)
-                    MRTConfirmDialogCard(config: config) { isPresented = false }
+                    MRTConfirmDialogCard(config: config, dismiss: { isPresented = false }, dialogContent: dialogContent)
                         .transition(
                             reduceMotion
                                 ? AnyTransition.opacity
@@ -126,9 +153,10 @@ private struct MRTConfirmDialogModifier: ViewModifier {
 // directly and MEASURE it (MYR-360's byte-identical proof is a measurement, not a
 // promise). Nothing outside this package can see it, and nothing about its
 // rendering changes with the visibility.
-struct MRTConfirmDialogCard: View {
+struct MRTConfirmDialogCard<DialogContent: View>: View {
     let config: MRTConfirmDialogConfig
     let dismiss: () -> Void
+    @ViewBuilder let dialogContent: () -> DialogContent
 
     var body: some View {
         VStack(spacing: 0) {
@@ -143,6 +171,15 @@ struct MRTConfirmDialogCard: View {
                 .foregroundStyle(Color.mrtTextSec)
                 .multilineTextAlignment(.center)
                 .padding(.top, 6)
+            // MYR-360 — the optional content slot. The `EmptyView` check is what
+            // makes an unused slot cost NOTHING: a bare `EmptyView` contributes no
+            // layout child, but `EmptyView().padding(.top, 14)` is a zero-sized view
+            // WITH 14pt of padding, which would silently move every existing dialog.
+            if DialogContent.self != EmptyView.self {
+                dialogContent()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 14)
+            }
             VStack(spacing: 8) {
                 actionButton
                 // MYR-360 — the optional third action. `nil` renders NOTHING (an
@@ -212,5 +249,12 @@ struct MRTConfirmDialogCard: View {
             }
             .buttonStyle(MRTPressScaleButtonStyle())
         }
+    }
+}
+
+extension MRTConfirmDialogCard where DialogContent == EmptyView {
+    /// The two-part card every pre-MYR-360 caller builds — no content slot.
+    init(config: MRTConfirmDialogConfig, dismiss: @escaping () -> Void) {
+        self.init(config: config, dismiss: dismiss, dialogContent: { EmptyView() })
     }
 }
