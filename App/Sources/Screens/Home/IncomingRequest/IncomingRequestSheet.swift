@@ -234,6 +234,12 @@ struct IncomingRequestSheet: View {
         // honest relative time from the request's real `requestedAt` (no hardcoded
         // "just now").
         let when = isLive ? relativeRequestedTime(request.requestedAt) : "just now"
+        // MYR-355 — `neutralRole` and NOT `formerRider`, deliberately: this line is
+        // the prototype's own ROLE subtitle (ride-request.jsx:1313, "Shared viewer ·
+        // just now") and it renders UNCONDITIONALLY, name or no name. It describes
+        // the requester's relationship to the vehicle, which is true of every
+        // incoming request; the name-absent stand-in belongs only where a name
+        // would otherwise be.
         return "\(IncomingRequestDisplay.neutralRole) \u{00B7} \(when)"
     }
 

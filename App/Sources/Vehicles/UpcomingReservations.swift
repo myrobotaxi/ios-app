@@ -114,11 +114,15 @@ struct LiveUpcomingReservations: UpcomingReservationSource {
         // trim/empty rule lives in ONE place (MYR-228 / MYR-264) and a nameless
         // reservation stays honestly nameless here.
         //
-        // Deliberately NOT `.riderLabel`, whose fallback is the internal role term
-        // "Shared viewer". That is the right answer on the incoming card, which is
-        // about a person's relationship to the vehicle; it is the wrong answer in a
-        // list of pickups, where it reads as jargon. The dialog supplies its own
-        // plain-English fallback.
+        // Deliberately NOT `.riderLabel`, whose fallback is now MYR-355's
+        // "Former rider". That is the right answer on the incoming card — an
+        // absent live `requesterName` means the account was deleted — but it is
+        // the wrong answer in a list of pickups the owner is deciding whether to
+        // DECLINE. A row saying "Former rider" would tell the owner this
+        // reservation no longer has a passenger, which if true means the row
+        // should not be in the list at all; the client cannot make that call (the
+        // deletion sweep is the server's), so it keeps the dialog's neutral
+        // plain-English fallback and lets the server's own list stand.
         let display = IncomingRequestDisplay.resolve(request: record, isLive: true, liveVehicle: nil)
         return UpcomingReservation(id: wire.id, riderFirstName: display.riderName, scheduledFor: scheduledFor)
     }

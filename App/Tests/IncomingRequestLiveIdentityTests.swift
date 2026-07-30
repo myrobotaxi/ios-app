@@ -91,15 +91,24 @@ final class IncomingRequestLiveIdentityTests: XCTestCase {
         XCTAssertFalse(display.showsReadyStatus)
     }
 
-    func testLiveDisplayFallsBackToNeutralWhenNameAbsent() throws {
+    /// MYR-355 — an absent live `requesterName` means the account was DELETED (the
+    /// server resolves a rider who exists but is nameless to the literal "Rider"),
+    /// so the stand-in names that rather than asserting a role the person no longer
+    /// holds.
+    func testLiveDisplayNamesADeletedAccountFormerRiderWhenNameAbsent() throws {
         for absent in [nil, "", "   "] as [String?] {
             let record = try XCTUnwrap(RideRequestContractMapping.record(from: wireRide(requesterName: absent)))
             let display = IncomingRequestDisplay.resolve(request: record, isLive: true, liveVehicle: liveVehicle())
 
             XCTAssertNil(display.riderName, "requesterName \(String(describing: absent)) should be treated as absent")
             XCTAssertNil(display.avatarInitial) // neutral person glyph, no fabricated initial
-            XCTAssertEqual(display.title(hasPassenger: false), "Shared viewer wants a ride")
-            XCTAssertEqual(display.riderLabel, "Shared viewer")
+            XCTAssertEqual(display.title(hasPassenger: false), "Former rider wants a ride")
+            XCTAssertEqual(display.title(hasPassenger: true), "Former rider requested a ride")
+            XCTAssertEqual(display.riderLabel, "Former rider")
+            XCTAssertFalse(
+                display.title(hasPassenger: false).contains(IncomingRequestDisplay.neutralRole),
+                "the present-tense role must not stand in for a person who is gone"
+            )
         }
     }
 
@@ -151,7 +160,7 @@ final class IncomingRequestLiveIdentityTests: XCTestCase {
         XCTAssertEqual(display.riderName, "Thomas")
         XCTAssertEqual(display.avatarInitial, "T")
         XCTAssertEqual(display.title(hasPassenger: false), "Thomas wants a ride")
-        XCTAssertNotEqual(display.title(hasPassenger: false), "Shared viewer wants a ride")
+        XCTAssertNotEqual(display.title(hasPassenger: false), "Former rider wants a ride")
     }
 
     /// The honest fallback is unchanged: an account with no usable name still
@@ -163,7 +172,7 @@ final class IncomingRequestLiveIdentityTests: XCTestCase {
             let display = IncomingRequestDisplay.resolve(request: record, isLive: true, liveVehicle: liveVehicle())
 
             XCTAssertNil(display.riderName, "name \(String(describing: nameless)) must be treated as absent")
-            XCTAssertEqual(display.title(hasPassenger: false), "Shared viewer wants a ride")
+            XCTAssertEqual(display.title(hasPassenger: false), "Former rider wants a ride")
         }
     }
 
@@ -189,6 +198,67 @@ final class IncomingRequestLiveIdentityTests: XCTestCase {
 
     /// The draft the rider's Review CTA submits (`RideRequestReviewContent.confirm`),
     /// built through the SAME resolver so the test can't drift from the shipping call.
+    // MARK: - MYR-355: nil requesterName means DELETED, and only on the live path
+
+    /// The backend fact the copy rests on: `requesterName` is omitted **iff** the
+    /// rider has no identity row in any of the three sources. A rider who exists
+    /// but is nameless resolves to the literal "Rider", so a nil is never a
+    /// still-present person — which is what makes "Former rider" a statement of
+    /// fact rather than a guess. A server-sent "Rider" must therefore render
+    /// VERBATIM and never be reinterpreted.
+    func testAServerResolvedNamelessRiderRendersRiderAndNotFormerRider() throws {
+        let record = try XCTUnwrap(RideRequestContractMapping.record(from: wireRide(requesterName: "Rider")))
+        let display = IncomingRequestDisplay.resolve(request: record, isLive: true, liveVehicle: liveVehicle())
+
+        XCTAssertEqual(display.riderName, "Rider")
+        XCTAssertEqual(display.riderLabel, "Rider")
+        XCTAssertEqual(display.title(hasPassenger: false), "Rider wants a ride")
+        XCTAssertNotEqual(display.riderLabel, IncomingRequestDisplay.formerRider)
+    }
+
+    /// A PRESENT name is untouched by this change — the stand-in only ever fills
+    /// an absence.
+    func testAPresentNameIsUnchangedByTheDeletedAccountStandIn() throws {
+        let record = try XCTUnwrap(RideRequestContractMapping.record(from: wireRide(requesterName: "Jamie Rivera")))
+        let display = IncomingRequestDisplay.resolve(request: record, isLive: true, liveVehicle: liveVehicle())
+
+        XCTAssertEqual(display.riderName, "Jamie Rivera")
+        XCTAssertEqual(display.riderLabel, "Jamie Rivera")
+        XCTAssertEqual(display.title(hasPassenger: false), "Jamie Rivera wants a ride")
+    }
+
+    /// The SIM path cannot reach the stand-in by construction: `resolve`'s
+    /// simulated arm always returns the fixture persona, so `riderName` is never
+    /// nil there. This is what keeps every simulated capture byte-identical.
+    func testTheSimulatedPathCanNeverRenderTheDeletedAccountStandIn() {
+        let input = RideRequestInput(
+            pickup: RideRequestFixtures.savedPlaces[0],
+            destination: RideRequestFixtures.recentPlaces[1],
+            fleetMemberID: RideRequestFixtures.fleet[0].id,
+            requesterName: nil
+        )
+        let display = IncomingRequestDisplay.resolve(
+            request: RideRequestRecord(input: input, status: .pending),
+            isLive: false,
+            liveVehicle: nil
+        )
+
+        XCTAssertEqual(display.riderName, IncomingRequestDisplay.simRiderName)
+        XCTAssertEqual(display.riderLabel, "Sam")
+        XCTAssertNotEqual(display.riderLabel, IncomingRequestDisplay.formerRider)
+        XCTAssertFalse(display.title(hasPassenger: false).contains(IncomingRequestDisplay.formerRider))
+    }
+
+    /// `neutralRole` survives, unchanged, for the ONE surface that renders it
+    /// unconditionally as a ROLE subtitle even when a name IS present
+    /// (`IncomingRequestSheet.headerSubtitle`, ride-request.jsx:1313). Repurposing
+    /// it would have put "Former rider · 3 min ago" under a named requester.
+    func testTheRoleSubtitleTermIsUnchangedAndDistinctFromTheStandIn() {
+        XCTAssertEqual(IncomingRequestDisplay.neutralRole, "Shared viewer")
+        XCTAssertEqual(IncomingRequestDisplay.formerRider, "Former rider")
+        XCTAssertNotEqual(IncomingRequestDisplay.neutralRole, IncomingRequestDisplay.formerRider)
+    }
+
     private func localDraft(schedule: RideSchedule?, profile: UserProfile?) -> RideRequestRecord {
         let input = RideRequestInput(
             pickup: RideRequestFixtures.savedPlaces[0],
