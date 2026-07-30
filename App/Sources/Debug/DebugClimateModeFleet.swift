@@ -64,7 +64,11 @@ final class DebugClimateModeFleet: VehicleFleet {
             driving: false,
             plate: vehicle.plate
         )
-        exec.reconcile(from: Self.climateState(variant: variant, lastUpdated: readAt))
+        exec.reconcile(
+            from: Self.climateState(variant: variant, lastUpdated: readAt),
+            // MYR-351 — a scene's seed IS its cold read, so it is issued now.
+            snapshotReadIssuedAt: Date()
+        )
         executor = exec
     }
 

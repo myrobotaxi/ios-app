@@ -114,20 +114,24 @@ struct ShareHandout: Equatable, Sendable, Identifiable {
     /// Which vehicles it grants — for the confirmation copy, not for the message.
     let vehicleNames: [String]
 
-    /// The share-sheet body — a MINI-ONBOARDING (MYR-340), composed by
+    /// The share-sheet payload — ONE URL and nothing else (MYR-359), built by
     /// `ShareInviteMessage` so the create and resend paths cannot drift.
     ///
-    /// This used to be a one-liner carrying the code and nothing else, on the
-    /// then-true reasoning that there was no web surface to point anyone at. The
-    /// public TestFlight link changed that fact, and the client's "where do they
-    /// go" was the missing half showing.
+    /// This was a one-liner carrying the code (MYR-184), then a mini-onboarding
+    /// paragraph (MYR-340) with the join link at its head (MYR-346). The
+    /// paragraph is gone: iMessage renders the branded card only for a message
+    /// that is nothing but a link, so the surrounding prose was what suppressed
+    /// the card it was written to introduce. The link is self-sufficient — it
+    /// autofills the code on a phone that has the app and lands on a page
+    /// carrying the code, the steps and the TestFlight button on one that
+    /// doesn't.
     ///
     /// A METHOD, not a stored property: the owner's name belongs to the SESSION,
     /// not to the invite, and `LiveShareService` (which mints the handout) has no
     /// business reading the signed-in profile. The screen that presents the sheet
     /// supplies it — see `InvitesScreen.liveProfile`.
-    func message(ownerFirstName: String?) -> String {
-        ShareInviteMessage.compose(code: code, ownerFirstName: ownerFirstName)
+    func shareURL(ownerFirstName: String?) -> URL {
+        ShareInviteMessage.shareURL(code: code, ownerFirstName: ownerFirstName)
     }
 }
 

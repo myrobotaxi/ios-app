@@ -395,10 +395,16 @@ public actor TelemetrySocket {
 
     /// One cold-read attempt. `true` when the snapshot was emitted.
     private func attemptSnapshot(vehicleId: String, generation gen: Int) async -> Bool {
+        // MYR-351 — stamped BEFORE the await, deliberately. This is the instant the
+        // read was ISSUED, which is the only instant that says what the response
+        // can possibly have seen. Stamping after the await would record when it
+        // ARRIVED and would call a response that was served before a write "newer
+        // than" that write.
+        let issuedAt = Date()
         do {
             let snapshot = try await snapshotSource.snapshot(vehicleId: vehicleId)
             guard gen == generation, subscribers[vehicleId] != nil else { return true }
-            emit(.snapshot(snapshot), to: vehicleId)
+            emit(.snapshot(snapshot, readIssuedAt: issuedAt), to: vehicleId)
             setDataState(vehicleId: vehicleId, groups: AtomicGroup.allCases, to: .ready)
             return true
         } catch {

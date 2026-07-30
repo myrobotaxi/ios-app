@@ -113,6 +113,71 @@ public enum VehicleRideShare {
             ? "Riders can request this car"
             : "Paused \u{2014} ride requests are off"
     }
+
+    /// The caption for a car that is IN SERVICE (MYR-358).
+    ///
+    /// It says the two things the owner needs and nothing else: why the switch is
+    /// off, and that they do not have to come back and undo it. That second half is
+    /// the whole reason this state is DERIVED rather than written — see
+    /// ``display(storedEnabled:isInService:)``. It deliberately avoids the word
+    /// "Paused", which this app has already spent on the owner's own decision: a car
+    /// in a service bay was not withdrawn by anybody.
+    public static let inServiceCaption = "Off while in service \u{2014} resumes automatically"
+
+    // MARK: - 3. The row's rendering (MYR-358)
+
+    /// Everything the owner's toggle row renders, resolved in one place.
+    public struct Display: Equatable {
+        /// The switch position.
+        public var isOn: Bool
+        /// Whether the switch may be moved. `false` renders it inert AND must
+        /// prevent a write — a disabled control that still fires is worse than an
+        /// enabled one, because nothing on screen predicts what it did.
+        public var isInteractive: Bool
+        /// The muted line beneath the label.
+        public var caption: String
+    }
+
+    /// The toggle's rendering for a car whose owner has stored `storedEnabled` and
+    /// which is currently `isInService` (MYR-358, client direction).
+    ///
+    /// A car in a service bay cannot serve a ride, so a switch sitting ON is a
+    /// promise the system will not keep — the server refuses ride creates and
+    /// accepts against an `in_service` vehicle on its own (rest-api.md §7.8), and
+    /// the owner's row should not be the last surface still claiming otherwise.
+    ///
+    /// THE LOAD-BEARING PROPERTY: THIS IS DERIVED DISPLAY, NOT A WRITE. `storedEnabled`
+    /// is untouched for the whole visit, no PUT is fired on any service transition,
+    /// and when the car leaves service the row simply renders the stored value
+    /// again. Two reasons, and the second is why it is written out here rather than
+    /// left as an implementation detail:
+    ///
+    ///  1. An owner who paused their car before a service visit, or who never
+    ///     paused it at all, should not have to discover after every visit that the
+    ///     app changed their setting for them. The stored value is their standing
+    ///     instruction; a service visit is a temporary fact about the car.
+    ///  2. A write on a service transition would be a NEW write on a path nobody
+    ///     is looking at — fired by a status change rather than by a finger, racing
+    ///     the same reads MYR-351 had to fix. Deriving costs nothing and adds no
+    ///     revert-class hazard at all.
+    ///
+    /// Note the composition with MYR-351: `storedEnabled` still comes from
+    /// ``resolvedEnabled(committed:isCommitted:snapshot:)``, so the executor's
+    /// committed value still outranks a stale snapshot underneath this. The
+    /// in-service state sits ON TOP of that resolution and never replaces it — if it
+    /// substituted its own value the owner's flip would be invisible for the whole
+    /// visit and would then reappear, which is the very shape of the bug this
+    /// shipped alongside.
+    public static func display(storedEnabled: Bool, isInService: Bool) -> Display {
+        guard isInService else {
+            return Display(
+                isOn: storedEnabled,
+                isInteractive: true,
+                caption: rowCaption(isEnabled: storedEnabled)
+            )
+        }
+        return Display(isOn: false, isInteractive: false, caption: inServiceCaption)
+    }
 }
 
 // MARK: - The resolver, bound to the two objects the owner sheet actually holds

@@ -163,7 +163,7 @@ final class VehicleRefreshEndpointTests: XCTestCase {
 
         var iterator = events.makeAsyncIterator()
         let event = await iterator.next()
-        guard case .snapshot(let state)? = event else {
+        guard case .snapshot(let state, _)? = event else {
             return XCTFail("expected a .snapshot event, got \(String(describing: event))")
         }
         XCTAssertEqual(state.vehicleId, "clxyz1234567890abcdef")

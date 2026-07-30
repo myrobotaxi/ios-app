@@ -528,216 +528,219 @@ final class LiveShareServiceTests: XCTestCase {
         XCTAssertEqual(resends.count, 1, "§7.5.4 re-mints the siblings server-side")
     }
 
-    /// MYR-340 — the handout delegates to the ONE composer, so a create and a
-    /// resend cannot hand out differently-worded onboardings.
-    func testHandoutMessageIsTheComposedOnboarding() {
+    /// MYR-340/MYR-359 — the handout delegates to the ONE builder, so a create
+    /// and a resend cannot hand out differently-shaped payloads.
+    func testHandoutShareURLIsTheComposedInviteLink() {
         let handout = ShareHandout(code: "RBO246", label: "Mira", vehicleNames: ["Lunar"])
         XCTAssertEqual(
-            handout.message(ownerFirstName: "Thomas"),
-            ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
+            handout.shareURL(ownerFirstName: "Thomas"),
+            ShareInviteMessage.shareURL(code: "RBO246", ownerFirstName: "Thomas")
         )
         XCTAssertEqual(
-            handout.message(ownerFirstName: nil),
-            ShareInviteMessage.compose(code: "RBO246", ownerFirstName: nil)
+            handout.shareURL(ownerFirstName: nil),
+            ShareInviteMessage.shareURL(code: "RBO246", ownerFirstName: nil)
         )
     }
 }
 
-// MARK: - Share message composition (MYR-340, MYR-346)
+// MARK: - Share payload (MYR-340 → MYR-346 → MYR-359)
 
-/// TestFlight, Jul 29: "Feels strange just sending a text message, where do they
-/// go." The MYR-184 message was the code and nothing else — a credential with no
-/// way to spend it. These pin the three things the client asked for (a way to get
-/// the app, a prominent code, and an honest expiry) plus the two grammars the
-/// opening line has to have.
+/// TestFlight, Jul 30 (client): the branded invite card never shows in the
+/// thread.
 ///
-/// MYR-346 moves the INVITE'S OWN LINK to the front of that message. MYR-340's
-/// shape survives intact underneath — the steps, the bare code line, the expiry
-/// last — because the link changes who has to read the steps, not what they say.
+/// MYR-340 turned the handout into a mini-onboarding and MYR-346 put the invite
+/// link at the head of it, on the reading that platforms preview the FIRST link
+/// in a body. iMessage's actual rule is narrower — a message becomes a rich link
+/// only when it is NOTHING BUT a link — so the steps, the bare code line and the
+/// expiry sentence were what suppressed the card the link was added to produce.
+///
+/// These pin the new contract, which is small enough to state in one sentence:
+/// **the payload is the URL and nothing else**, carrying the sender's name only
+/// when there is a real one to carry.
 final class ShareInviteMessageTests: XCTestCase {
 
-    private func lines(_ message: String) -> [String] {
-        message.components(separatedBy: "\n")
+    private let code = "RBO246"
+
+    // MARK: The payload is a link, not a message
+
+    /// The whole thing. Written out as a literal rather than composed from the
+    /// same helpers the implementation uses — a test that rebuilds the value it
+    /// is checking cannot fail when the value changes.
+    func testThePayloadIsExactlyTheJoinURLAndNothingElse() {
+        XCTAssertEqual(
+            ShareInviteMessage.shareURL(code: code, ownerFirstName: "Thomas").absoluteString,
+            "https://myrobotaxi.app/join/RBO246?from=Thomas"
+        )
+        XCTAssertEqual(
+            ShareInviteMessage.shareURL(code: code, ownerFirstName: nil).absoluteString,
+            "https://myrobotaxi.app/join/RBO246"
+        )
     }
 
-    /// The CODE stands alone on its own line — it is the one thing the recipient
-    /// transcribes by hand, and a code trailing a numbered step is a code lost in
-    /// the paragraph.
-    func testTheCodeIsAloneOnItsOwnLine() {
-        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
-        XCTAssertTrue(
-            lines(message).contains("RBO246"),
-            "the code must occupy a whole line by itself, not trail a step"
-        )
-        // And it is set off top and bottom, not merely first on its line.
-        let index = try? XCTUnwrap(lines(message).firstIndex(of: "RBO246"))
-        let all = lines(message)
-        if let index {
-            XCTAssertEqual(all[index - 1], "", "blank line above the code")
-            XCTAssertEqual(all[index + 1], "", "blank line below the code")
+    /// No PROSE survives anywhere in the payload. This is the actual defect: any
+    /// one of these strings reappearing in the item turns the message back into
+    /// text with a link in it, and the card silently stops rendering — a
+    /// regression with no crash, no failing request and no visible symptom
+    /// except a client screenshot a day later.
+    func testNoProseSurvivesInThePayload() {
+        for name: String? in ["Thomas", nil] {
+            let payload = ShareInviteMessage.shareURL(code: code, ownerFirstName: name).absoluteString
+            for prose in [
+                "shared their Tesla", "shared my Tesla", "MyRoboTaxi",
+                "Open the link", "No app yet", "Sign in with Apple",
+                "Enter this invite code", "expires in",
+            ] {
+                XCTAssertFalse(
+                    payload.contains(prose),
+                    "the payload must be a bare link — found \(prose.debugDescription)"
+                )
+            }
+            XCTAssertFalse(payload.contains(" "), "one token, no spaces")
+            XCTAssertFalse(payload.contains("\n"), "one line, no newlines")
         }
     }
 
-    /// The TestFlight link is present, plain, and quoted from the ONE constant —
-    /// never re-typed inline, where a typo would send every recipient nowhere.
-    func testTheTestFlightLinkIsPresentAsAPlainURL() {
-        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
-        XCTAssertTrue(message.contains(AppDistribution.testFlightPublicJoinURL))
+    /// The TestFlight link is DEMOTED, not deleted: it is the landing page's
+    /// button now (the page a recipient without the app lands on anyway), and it
+    /// still lives in exactly one constant on this side. Quoting it in the
+    /// payload is what made the payload more than a link.
+    func testTheTestFlightLinkIsNoLongerInThePayloadButStillHasOneHome() {
+        let payload = ShareInviteMessage.shareURL(code: code, ownerFirstName: "Thomas").absoluteString
+        XCTAssertFalse(payload.contains("testflight.apple.com"))
         XCTAssertEqual(
             AppDistribution.testFlightPublicJoinURL,
             "https://testflight.apple.com/join/uarZRUbg",
             "the live public link (Friends & Family external group, 2026-07-29)"
         )
-        // Plain https, so Messages/Mail auto-detect it. No markdown, no angle
-        // brackets, no metadata wrapper — anything else renders as literal text.
-        XCTAssertFalse(message.contains("<https"), "no angle-bracket wrapping")
-        XCTAssertFalse(message.contains("](" ), "no markdown link syntax")
-        XCTAssertNotNil(URL(string: AppDistribution.testFlightPublicJoinURL))
     }
 
-    /// The steps are in the order the recipient performs them, and a way IN
-    /// comes before the code is mentioned at all — the client's "where do they
-    /// go", still answered first.
-    func testTheStepsReadInTheOrderTheyArePerformed() {
-        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
-        let openLink = try? XCTUnwrap(message.range(of: "1. Open the link above"))
-        let getApp = try? XCTUnwrap(message.range(of: "2. No app yet? Get it here:"))
-        let signIn = try? XCTUnwrap(message.range(of: "3. Sign in with Apple"))
-        let enter = try? XCTUnwrap(message.range(of: "4. Enter this invite code"))
-        guard let openLink, let getApp, let signIn, let enter else {
-            return XCTFail("all four steps present")
-        }
-        XCTAssertTrue(openLink.lowerBound < getApp.lowerBound)
-        XCTAssertTrue(getApp.lowerBound < signIn.lowerBound)
-        XCTAssertTrue(signIn.lowerBound < enter.lowerBound)
-        XCTAssertTrue(
-            openLink.lowerBound < (message.range(of: "\nRBO246")?.lowerBound ?? message.startIndex),
-            "the way in comes before the code"
-        )
+    /// The bare CODE line is gone with the rest of the prose — but the code
+    /// itself is still in the link, which is what the landing page prints and
+    /// what the app autofills. Nothing about manual entry regressed; the code
+    /// simply travels in the URL now.
+    func testTheCodeTravelsInThePathRatherThanOnItsOwnLine() {
+        let url = ShareInviteMessage.shareURL(code: code, ownerFirstName: "Thomas")
+        XCTAssertEqual(url.pathComponents, ["/", "join", "RBO246"])
     }
 
-    // MARK: MYR-346 — the invite's own link
-
-    /// THE PREVIEW CARD. Messages, Mail, WhatsApp and Slack all build a preview
-    /// from a link in the body, and with more than one they take the FIRST. The
-    /// join link must therefore lead — before the TestFlight link, which is what
-    /// used to produce a generic "join the beta" tile that named neither the
-    /// sender, the car, nor this app.
-    func testTheJoinLinkIsTheFirstUrlInTheMessage() {
-        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
-        let join = try? XCTUnwrap(message.range(of: InviteLink.url(code: "RBO246")))
-        let testFlight = try? XCTUnwrap(message.range(of: AppDistribution.testFlightPublicJoinURL))
-        guard let join, let testFlight else { return XCTFail("both links present") }
-        XCTAssertTrue(
-            join.lowerBound < testFlight.lowerBound,
-            "platforms preview the FIRST link; the invite's own page has to be it"
-        )
-    }
-
-    /// And it stands ALONE on its own line. A URL sharing a line with prose is a
-    /// URL some clients fold into the sentence rather than treating as the
-    /// message's subject.
-    func testTheJoinLinkIsAloneOnItsOwnLineDirectlyUnderTheOpening() {
-        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
-        let all = lines(message)
-        XCTAssertEqual(all.first, "Thomas shared their Tesla with you on MyRoboTaxi.")
-        XCTAssertEqual(all.count > 1 ? all[1] : "x", "", "blank line under the opening")
-        XCTAssertEqual(
-            all.count > 2 ? all[2] : "x",
-            "https://myrobotaxi.app/join/RBO246",
-            "the join link occupies a whole line by itself"
-        )
-    }
-
-    /// It is composed from the SAME type that parses an incoming link, so the
-    /// URL this app hands out and the URL this app accepts are one definition.
-    /// A literal here would be a second definition, free to drift.
-    func testTheJoinLinkIsQuotedFromTheOneDefinitionAndParsesBack() {
-        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
-        let quoted = try? XCTUnwrap(lines(message).first { $0.hasPrefix("https://myrobotaxi.app/") })
-        let line = try? XCTUnwrap(quoted)
-        XCTAssertEqual(line, AppDistribution.inviteJoinURL(code: "RBO246"))
-        XCTAssertEqual(
-            InviteLink.code(from: URL(string: line ?? "")!), "RBO246",
-            "the link we hand out must round-trip through the parser that receives it"
-        )
-    }
-
-    /// The TestFlight step SURVIVES, demoted rather than deleted. It is still
-    /// the only way to get the build, so a recipient without the app would be
-    /// stranded on a link their phone opens in Safari and nothing else.
-    func testTheTestFlightStepSurvivesForTheRecipientWithNoApp() {
-        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
-        XCTAssertTrue(message.contains("2. No app yet? Get it here: \(AppDistribution.testFlightPublicJoinURL)"))
-    }
-
-    /// The BARE CODE line survives too. The link makes it unnecessary in the
-    /// common case, not obsolete: a recipient reading this on a laptop, or
-    /// forwarding it, or arriving with the app already installed and signed in,
-    /// types it by hand.
-    func testTheBareCodeLineSurvivesForManualEntry() {
-        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
-        XCTAssertTrue(lines(message).contains("RBO246"))
-    }
-
-    /// The EXPIRY is stated, and it matches the contract's own window (§7.5.4
-    /// resets `expiresAt` to a full 7 days). A code with no stated shelf life is
-    /// a code someone tries to redeem in three weeks.
-    func testTheExpiryIsStatedAndMatchesTheContractWindow() {
-        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
-        XCTAssertEqual(ShareInviteMessage.expiryDays, 7, "rest-api.md §7.5.1/§7.5.4")
-        XCTAssertTrue(message.contains("The code expires in 7 days."))
-        XCTAssertTrue(
-            message.hasSuffix("The code expires in 7 days."),
-            "the caveat lands last, after the steps — never above them"
-        )
-    }
-
-    /// With a name, the opening line NAMES the owner — this is the whole point of
-    /// the sentence: the recipient learns who this is from before anything else.
-    func testTheOpeningLineNamesTheOwnerWhenTheAccountCarriesAName() {
-        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
-        XCTAssertTrue(message.hasPrefix("Thomas shared their Tesla with you on MyRoboTaxi."))
-    }
-
-    /// Without one, it switches to FIRST PERSON rather than rendering a sentence
-    /// with an empty name in it. `nil` is a real state, not a defensive branch:
-    /// Apple returns a name only on the first authorization, and a pre-native
-    /// account may carry none (`UserProfile`).
-    func testTheOpeningLineFallsBackToFirstPersonWithNoName() {
-        for absent: String? in [nil, "", "   "] {
-            let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: absent)
-            XCTAssertTrue(
-                message.hasPrefix("I shared my Tesla with you on MyRoboTaxi."),
-                "no usable name → first person, never a hole in the sentence"
+    /// It is composed from the SAME type that PARSES an incoming link, and it
+    /// round-trips through it. A literal in the composer would be a second
+    /// definition of the URL shape, free to drift from the one the AASA hands
+    /// back to us.
+    func testTheLinkIsQuotedFromTheOneDefinitionAndParsesBack() {
+        for name: String? in ["Thomas", nil, "!!!"] {
+            let url = ShareInviteMessage.shareURL(code: code, ownerFirstName: name)
+            XCTAssertEqual(url.absoluteString, AppDistribution.inviteJoinURL(code: code, from: name))
+            XCTAssertEqual(
+                InviteLink.code(from: url), code,
+                "every link we hand out must survive the parser that receives it"
             )
-            XCTAssertFalse(message.contains("  shared"), "no empty-name artifact")
-            // Everything else about the message is identical.
-            XCTAssertTrue(message.contains(AppDistribution.testFlightPublicJoinURL))
-            XCTAssertTrue(message.contains("RBO246"))
         }
     }
 
-    /// The name is trimmed, not pasted raw: `UserProfile` normalizes, but the
-    /// composer is the last line of defence and a stray newline here would break
-    /// the opening line in two.
-    func testAWhitespacePaddedNameIsTrimmed() {
-        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "  Thomas ")
-        XCTAssertTrue(message.hasPrefix("Thomas shared their Tesla"))
+    // MARK: The `from` parameter
+
+    /// With a name, the parameter is present — this is what makes the recipient's
+    /// card say "Thomas invited you to ride their Tesla" instead of the generic
+    /// line. The name is trimmed on the way in.
+    func testANameTravelsAsTheFromParameter() {
+        XCTAssertEqual(fromValue(ownerFirstName: "Thomas"), "Thomas")
+        XCTAssertEqual(fromValue(ownerFirstName: "  Thomas "), "Thomas")
+        XCTAssertEqual(fromValue(ownerFirstName: "thomas"), "thomas", "case is the page's business")
     }
 
-    /// Both share paths — a fresh create and a §7.5.4 resend, which mints a NEW
-    /// code and kills the old one — carry the SAME onboarding. The resend handout
-    /// deliberately carries no vehicle names (`LiveShareService.resend`), which
-    /// must not change the message, since the message never quoted them.
-    func testCreateAndResendHandoutsComposeTheSameMessageShape() {
-        let created = ShareHandout(code: "RBO246", label: "Mira", vehicleNames: ["Lunar", "Cybercab"])
-        let resent = ShareHandout(code: "RBO246", label: "Mira", vehicleNames: [])
+    /// With no usable name the parameter is OMITTED ENTIRELY — never `?from=`,
+    /// never a placeholder. `nil` is a real state, not a defensive branch: Apple
+    /// returns a human name only on the FIRST authorization, and a row created
+    /// before native sign-in carries none (`UserProfile`). The page then renders
+    /// its generic heading, which is the same two-grammar rule the old paragraph
+    /// implemented in Swift — moved to where the recipient reads it.
+    func testNoNameOmitsTheParameterEntirely() {
+        for absent: String? in [nil, "", "   ", "\n"] {
+            let payload = ShareInviteMessage.shareURL(code: code, ownerFirstName: absent).absoluteString
+            XCTAssertEqual(payload, "https://myrobotaxi.app/join/RBO246")
+            XCTAssertFalse(payload.contains("from"), "no empty parameter, no placeholder")
+        }
+    }
+
+    /// JUNK. The name reaches a scraped, cached, forwarded page title, so the
+    /// client filters before sending and the page filters again on arrival —
+    /// neither side trusting the other. Separators and punctuation are dropped;
+    /// anything with no letters left is omitted.
+    func testJunkNamesAreFilteredOrOmitted() {
+        XCTAssertEqual(fromValue(ownerFirstName: "Mary-Jane"), "MaryJane")
+        XCTAssertEqual(fromValue(ownerFirstName: "Mary Jane"), "MaryJane")
+        XCTAssertEqual(fromValue(ownerFirstName: "O'Neill"), "ONeill")
+        XCTAssertNil(fromValue(ownerFirstName: "Thomas3"),
+                     "a digit means this is not a name — never guess which part of it was")
+
+        for junk in ["<script>alert(1)</script>", "\"><img src=x onerror=1>", "%00", "…",
+                     "123", "!!!", "https://evil.example", "&from=x"] {
+            XCTAssertNil(
+                fromValue(ownerFirstName: junk),
+                "\(junk.debugDescription) must not reach a page title"
+            )
+        }
+    }
+
+    /// A name we cannot SPELL in `[A-Za-z]` is omitted whole rather than reduced
+    /// to the ASCII it happens to contain. "Jos invited you to ride their Tesla"
+    /// misspells a person to a stranger; the generic heading merely declines to
+    /// name them, which is the kinder failure — and the only reason this is not
+    /// a plain "keep the letters" filter.
+    func testANameThatCannotBeSpelledInASCIIIsOmittedRatherThanStripped() {
+        for name in ["José", "Ольга", "美咲", "Zoë"] {
+            XCTAssertNil(fromValue(ownerFirstName: name), "\(name) must not be abbreviated")
+        }
+    }
+
+    /// The cap exists so a pathological profile value cannot make the link
+    /// unshareable. It truncates rather than rejecting: a 30-letter first name is
+    /// a real name, and the page has room for the first twenty of it.
+    func testALongNameIsCappedRatherThanDropped() {
+        let long = String(repeating: "a", count: 40)
+        XCTAssertEqual(fromValue(ownerFirstName: long), String(repeating: "a", count: 20))
+        XCTAssertEqual(InviteLink.inviterNameMaxLength, 20)
+    }
+
+    /// Whatever survives is URL-safe by construction, and the link still parses
+    /// back to the code with the parameter attached — the property that matters
+    /// on the receiving end, where `InviteLinkRouting` must ignore the query
+    /// completely.
+    func testTheComposedLinkIsAlwaysAWellFormedURL() {
+        for name in ["Thomas", "Mary-Jane", "José", "", "<script>", String(repeating: "z", count: 99)] {
+            let url = ShareInviteMessage.shareURL(code: code, ownerFirstName: name)
+            XCTAssertEqual(url.scheme, "https")
+            XCTAssertEqual(url.host(), "myrobotaxi.app")
+            XCTAssertEqual(InviteLink.code(from: url), code)
+        }
+    }
+
+    // MARK: Both share paths
+
+    /// A fresh create and a §7.5.4 resend (which mints a NEW code and kills the
+    /// old one) hand over the same shape. The resend handout deliberately carries
+    /// no vehicle names (`LiveShareService.resend`), which must not change the
+    /// payload — the payload never quoted them.
+    func testCreateAndResendHandoutsShareTheSameLink() {
+        let created = ShareHandout(code: code, label: "Mira", vehicleNames: ["Lunar", "Cybercab"])
+        let resent = ShareHandout(code: code, label: "Mira", vehicleNames: [])
         XCTAssertEqual(
-            created.message(ownerFirstName: "Thomas"),
-            resent.message(ownerFirstName: "Thomas"),
-            "the recipient of a resend gets the same onboarding as a first-time invite"
+            created.shareURL(ownerFirstName: "Thomas"),
+            resent.shareURL(ownerFirstName: "Thomas"),
+            "the recipient of a resend gets the same card as a first-time invite"
         )
+    }
+
+    // MARK: -
+
+    /// The `from` value actually carried by the composed link, or `nil` when the
+    /// parameter was omitted. Read off the URL rather than from
+    /// `InviteLink.inviterName` so these assertions describe what SHIPS.
+    private func fromValue(ownerFirstName: String?) -> String? {
+        let url = ShareInviteMessage.shareURL(code: code, ownerFirstName: ownerFirstName)
+        return URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first { $0.name == "from" }?.value
     }
 }
 

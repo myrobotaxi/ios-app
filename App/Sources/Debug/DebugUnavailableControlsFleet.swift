@@ -60,7 +60,10 @@ final class DebugUnavailableControlsFleet: VehicleFleet {
             driving: false,
             plate: vehicle.plate
         )
-        exec.reconcile(from: DebugStaticTelemetrySource.knownLockTrunkState(lastUpdated: readAt))
+        exec.reconcile(
+            from: DebugStaticTelemetrySource.knownLockTrunkState(lastUpdated: readAt),
+            snapshotReadIssuedAt: Date()
+        )
         executor = exec
     }
 

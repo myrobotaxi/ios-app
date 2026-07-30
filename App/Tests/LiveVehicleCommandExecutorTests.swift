@@ -122,7 +122,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         let executor = makeExecutor(ScriptedCommandSender())
 
         var inService = Self.serviceState(serviceEstimatedEndAt: "2026-08-01T21:00:00.000Z")
-        executor.reconcile(from: inService)
+        executor.reconcile(from: inService, snapshotReadIssuedAt: Date())
         XCTAssertEqual(
             executor.controls.serviceEstimatedEndAt,
             ISO8601DateFormatter().date(from: "2026-08-01T21:00:00Z")
@@ -130,7 +130,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
 
         inService.status = .parked
         inService.serviceEstimatedEndAt = nil
-        executor.reconcile(from: inService)
+        executor.reconcile(from: inService, snapshotReadIssuedAt: Date())
         XCTAssertNil(
             executor.controls.serviceEstimatedEndAt,
             "a car out of service must not keep its old window — the floor would outlive the visit"
@@ -182,7 +182,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         // NO FLICKER BACK: the next cold snapshot carries the server's value, and
         // the resolver holds the same instant across the hand-off.
         let refetchedState = Self.serviceState(serviceEstimatedEndAt: resolvedISO)
-        executor.reconcile(from: refetchedState)
+        executor.reconcile(from: refetchedState, snapshotReadIssuedAt: Date())
         XCTAssertEqual(
             VehicleServiceWindow.resolvedEndAt(
                 executor: executor, snapshot: VehicleContractMapping.snapshot(from: refetchedState)
@@ -259,7 +259,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         var state = Self.serviceState(serviceEstimatedEndAt: nil)
         state.status = .parked
         state.isClimateOn = true
-        executor.reconcile(from: state)
+        executor.reconcile(from: state, snapshotReadIssuedAt: Date())
 
         XCTAssertEqual(
             executor.uiState(for: .climate), .idle,
@@ -594,24 +594,24 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         // On → Auto
         let onExec = makeExecutor(ScriptedCommandSender())
         var on = Contracts.parkedState(); on.hvacAutoMode = .on
-        onExec.reconcile(from: on)
+        onExec.reconcile(from: on, snapshotReadIssuedAt: Date())
         XCTAssertTrue(onExec.isKnown(.climateMode)); XCTAssertEqual(onExec.controls.climateMode, .auto)
 
         // Override + AC on → Cool
         let coolExec = makeExecutor(ScriptedCommandSender())
         var cool = Contracts.parkedState(); cool.hvacAutoMode = .override; cool.hvacAcEnabled = true
-        coolExec.reconcile(from: cool)
+        coolExec.reconcile(from: cool, snapshotReadIssuedAt: Date())
         XCTAssertTrue(coolExec.isKnown(.climateMode)); XCTAssertEqual(coolExec.controls.climateMode, .cool)
 
         // Override + AC off → Heat
         let heatExec = makeExecutor(ScriptedCommandSender())
         var heat = Contracts.parkedState(); heat.hvacAutoMode = .override; heat.hvacAcEnabled = false
-        heatExec.reconcile(from: heat)
+        heatExec.reconcile(from: heat, snapshotReadIssuedAt: Date())
         XCTAssertTrue(heatExec.isKnown(.climateMode)); XCTAssertEqual(heatExec.controls.climateMode, .heat)
 
         // Absent → stays unknown (never fabricated)
         let absentExec = makeExecutor(ScriptedCommandSender())
-        absentExec.reconcile(from: Contracts.parkedState())
+        absentExec.reconcile(from: Contracts.parkedState(), snapshotReadIssuedAt: Date())
         XCTAssertFalse(absentExec.isKnown(.climateMode), "absent mode stays honestly unknown")
     }
 
@@ -625,16 +625,16 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
 
         // The car keeps streaming a manual Override right after the ack.
         var stale = Contracts.parkedState(); stale.hvacAutoMode = .override; stale.hvacAcEnabled = true
-        exec.reconcile(from: stale)
+        exec.reconcile(from: stale, snapshotReadIssuedAt: Date())
         XCTAssertEqual(exec.controls.climateMode, .auto, "stale Override ignored within the settle window")
 
         // The car finally reflects On — confirmation clears the hold.
         var confirm = Contracts.parkedState(); confirm.hvacAutoMode = .on
-        exec.reconcile(from: confirm)
+        exec.reconcile(from: confirm, snapshotReadIssuedAt: Date())
         XCTAssertEqual(exec.controls.climateMode, .auto)
 
         // Hold cleared → a later GENUINE external switch to manual is honored.
-        exec.reconcile(from: stale)
+        exec.reconcile(from: stale, snapshotReadIssuedAt: Date())
         XCTAssertEqual(exec.controls.climateMode, .cool, "after confirmation the live stream drives the segment")
     }
 
@@ -646,11 +646,11 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         XCTAssertEqual(exec.controls.climateMode, .auto)
 
         var override = Contracts.parkedState(); override.hvacAutoMode = .override; override.hvacAcEnabled = false
-        exec.reconcile(from: override)
+        exec.reconcile(from: override, snapshotReadIssuedAt: Date())
         XCTAssertEqual(exec.controls.climateMode, .auto, "held within the window")
 
         try? await Task.sleep(for: .milliseconds(80))
-        exec.reconcile(from: override)
+        exec.reconcile(from: override, snapshotReadIssuedAt: Date())
         XCTAssertEqual(exec.controls.climateMode, .heat, "after the window, the car's reported mode wins (honest)")
     }
 
@@ -728,7 +728,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         state.mediaPlaybackStatus = .playing
         state.mediaVolume = 5.5 // wire 0–11 → UI 50
 
-        exec.reconcile(from: state)
+        exec.reconcile(from: state, snapshotReadIssuedAt: Date())
 
         XCTAssertTrue(exec.isKnown(.locked)); XCTAssertTrue(exec.controls.locked)
         XCTAssertTrue(exec.isKnown(.climateOn)); XCTAssertTrue(exec.controls.climateOn)
@@ -754,16 +754,16 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
 
         // The car (in service) keeps streaming ON right after the ack.
         var stale = Contracts.parkedState(); stale.isClimateOn = true
-        exec.reconcile(from: stale)
+        exec.reconcile(from: stale, snapshotReadIssuedAt: Date())
         XCTAssertFalse(exec.controls.climateOn, "stale on-frame ignored within the settle window")
 
         // The car finally reflects the off — confirmation clears the hold.
         var confirm = Contracts.parkedState(); confirm.isClimateOn = false
-        exec.reconcile(from: confirm)
+        exec.reconcile(from: confirm, snapshotReadIssuedAt: Date())
         XCTAssertFalse(exec.controls.climateOn)
 
         // Hold cleared → a later GENUINE external ON is honored again.
-        exec.reconcile(from: stale)
+        exec.reconcile(from: stale, snapshotReadIssuedAt: Date())
         XCTAssertTrue(exec.controls.climateOn, "after confirmation the live stream drives the tile")
     }
 
@@ -777,12 +777,12 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
 
         // Stale on-frame within the (tiny) window is still held.
         var on = Contracts.parkedState(); on.isClimateOn = true
-        exec.reconcile(from: on)
+        exec.reconcile(from: on, snapshotReadIssuedAt: Date())
         XCTAssertFalse(exec.controls.climateOn, "held within the window")
 
         // Let the window lapse; the next contradicting frame is now authoritative.
         try? await Task.sleep(for: .milliseconds(80))
-        exec.reconcile(from: on)
+        exec.reconcile(from: on, snapshotReadIssuedAt: Date())
         XCTAssertTrue(exec.controls.climateOn, "after the window, the car's reported reality wins (honest)")
     }
 
@@ -791,7 +791,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         let exec = makeExecutor(ScriptedCommandSender())
         var state = Contracts.parkedState() // every cabin field nil…
         state.locked = true                 // …except lock
-        exec.reconcile(from: state)
+        exec.reconcile(from: state, snapshotReadIssuedAt: Date())
 
         XCTAssertTrue(exec.isKnown(.locked))
         for field in VehicleControlField.allCases where field != .locked {
@@ -807,7 +807,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         var state = Contracts.parkedState()
         state.hvacPower = .unknown
         state.isClimateOn = nil // omitted by the server
-        exec.reconcile(from: state)
+        exec.reconcile(from: state, snapshotReadIssuedAt: Date())
 
         XCTAssertFalse(exec.isKnown(.climateOn), "hvacPower Unknown → climate honest-unknown, not on")
     }
@@ -819,13 +819,13 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         let exec = makeExecutor(ScriptedCommandSender())
         var state = Contracts.parkedState()
         state.locked = false // the car reports unlocked; the user never commanded lock
-        exec.reconcile(from: state)
+        exec.reconcile(from: state, snapshotReadIssuedAt: Date())
         XCTAssertTrue(exec.isKnown(.locked))
         XCTAssertFalse(exec.controls.locked, "telemetry drives an uncommanded control")
 
         var relock = Contracts.parkedState()
         relock.locked = true
-        exec.reconcile(from: relock)
+        exec.reconcile(from: relock, snapshotReadIssuedAt: Date())
         XCTAssertTrue(exec.controls.locked, "a later live frame updates it again")
     }
 
@@ -839,7 +839,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
 
         var state = Contracts.parkedState()
         state.locked = false
-        exec.reconcile(from: state)
+        exec.reconcile(from: state, snapshotReadIssuedAt: Date())
         XCTAssertFalse(exec.isKnown(.locked), "reconcile skipped while the lock command is in flight")
 
         sender.release()
@@ -861,17 +861,17 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
 
         // The car keeps streaming the OLD level 2 right after the ack.
         var stale = Contracts.parkedState(); stale.seatHeaterLeft = 2; stale.seatCoolerLeft = 0
-        exec.reconcile(from: stale)
+        exec.reconcile(from: stale, snapshotReadIssuedAt: Date())
         XCTAssertEqual(exec.controls.driverSeatHeatLevel, 3, "stale seat frame ignored within the settle window")
         XCTAssertEqual(exec.controls.driverSeatMode, .heat)
 
         // The car finally reflects level 3 — confirmation clears the hold.
         var confirm = Contracts.parkedState(); confirm.seatHeaterLeft = 3; confirm.seatCoolerLeft = 0
-        exec.reconcile(from: confirm)
+        exec.reconcile(from: confirm, snapshotReadIssuedAt: Date())
         XCTAssertEqual(exec.controls.driverSeatHeatLevel, 3)
 
         // Hold cleared → a later GENUINE external change is honored again.
-        exec.reconcile(from: stale)
+        exec.reconcile(from: stale, snapshotReadIssuedAt: Date())
         XCTAssertEqual(exec.controls.driverSeatHeatLevel, 2, "after confirmation the live stream drives the seat")
     }
 
@@ -890,7 +890,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
 
         // A stale frame still reporting the old heater level 2 must not flip it back.
         var stale = Contracts.parkedState(); stale.seatHeaterLeft = 2; stale.seatCoolerLeft = 0
-        exec.reconcile(from: stale)
+        exec.reconcile(from: stale, snapshotReadIssuedAt: Date())
         XCTAssertEqual(exec.controls.driverSeatMode, .cool, "stale heater frame ignored — seat stays armed cool")
         XCTAssertEqual(exec.controls.driverSeatHeatLevel, 0)
 
@@ -898,13 +898,13 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         // armed (.cool, 0) state (the wire can't say heat-off vs cool-off), clearing
         // the hold without reverting the mode.
         var off = Contracts.parkedState(); off.seatHeaterLeft = 0; off.seatCoolerLeft = 0
-        exec.reconcile(from: off)
+        exec.reconcile(from: off, snapshotReadIssuedAt: Date())
         XCTAssertEqual(exec.controls.driverSeatMode, .cool, "all-zero frame confirms the cool arm, not a heat revert")
 
         // And AFTER the settle window lapses, a further off frame must STILL keep the
         // owner's Cool selection — the pre-fix bug flipped this to .heat here.
         try? await Task.sleep(for: .milliseconds(80))
-        exec.reconcile(from: off)
+        exec.reconcile(from: off, snapshotReadIssuedAt: Date())
         XCTAssertEqual(exec.controls.driverSeatMode, .cool, "cool arm preserved past the settle window (no heat revert)")
         XCTAssertEqual(exec.controls.driverSeatHeatLevel, 0)
     }
@@ -914,7 +914,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
     func testUntouchedOffSeatReconcilesToHeatOff() {
         let exec = makeExecutor(ScriptedCommandSender())
         var off = Contracts.parkedState(); off.seatHeaterRight = 0; off.seatCoolerRight = 0
-        exec.reconcile(from: off)
+        exec.reconcile(from: off, snapshotReadIssuedAt: Date())
         XCTAssertTrue(exec.isKnown(.passengerSeat))
         XCTAssertEqual(exec.controls.passengerSeatMode, .heat, "off + never armed cool → default heat/off")
         XCTAssertEqual(exec.controls.passengerSeatHeatLevel, 0)
@@ -928,11 +928,11 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         XCTAssertEqual(exec.controls.driverSeatHeatLevel, 3)
 
         var contradicting = Contracts.parkedState(); contradicting.seatHeaterLeft = 1; contradicting.seatCoolerLeft = 0
-        exec.reconcile(from: contradicting)
+        exec.reconcile(from: contradicting, snapshotReadIssuedAt: Date())
         XCTAssertEqual(exec.controls.driverSeatHeatLevel, 3, "held within the window")
 
         try? await Task.sleep(for: .milliseconds(80))
-        exec.reconcile(from: contradicting)
+        exec.reconcile(from: contradicting, snapshotReadIssuedAt: Date())
         XCTAssertEqual(exec.controls.driverSeatHeatLevel, 1, "after the window, the car's reality wins (honest)")
     }
 
@@ -942,7 +942,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         var state = Contracts.parkedState()
         state.seatHeaterRight = 0
         state.seatCoolerRight = 3
-        exec.reconcile(from: state)
+        exec.reconcile(from: state, snapshotReadIssuedAt: Date())
 
         XCTAssertTrue(exec.isKnown(.passengerSeat))
         XCTAssertEqual(exec.controls.passengerSeatMode, .cool)
@@ -955,7 +955,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         var state = Contracts.parkedState()
         state.mediaPlaybackStatus = .unknown
         state.mediaVolume = 11 // → UI 100
-        exec.reconcile(from: state)
+        exec.reconcile(from: state, snapshotReadIssuedAt: Date())
 
         XCTAssertFalse(exec.isKnown(.mediaPlaying), "media Unknown → honest unknown")
         XCTAssertTrue(exec.isKnown(.volume))
@@ -975,7 +975,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         XCTAssertFalse(exec.isKnown(.mediaPlaying), "a local tap must not assert a media session")
 
         var playing = Contracts.parkedState(); playing.mediaPlaybackStatus = .playing
-        exec.reconcile(from: playing)
+        exec.reconcile(from: playing, snapshotReadIssuedAt: Date())
         XCTAssertTrue(exec.isKnown(.mediaPlaying), "the wire is what opens the gate")
     }
 
@@ -986,23 +986,23 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
     func testMyr314MediaSessionUnKnowsWhenTheWireStopsReportingAStatus() {
         let exec = makeExecutor(ScriptedCommandSender())
         var playing = Contracts.parkedState(); playing.mediaPlaybackStatus = .playing
-        exec.reconcile(from: playing)
+        exec.reconcile(from: playing, snapshotReadIssuedAt: Date())
         XCTAssertTrue(exec.isKnown(.mediaPlaying))
 
         var ended = Contracts.parkedState(); ended.mediaPlaybackStatus = nil
-        exec.reconcile(from: ended)
+        exec.reconcile(from: ended, snapshotReadIssuedAt: Date())
         XCTAssertFalse(exec.isKnown(.mediaPlaying), "no status on the wire → no session → gated")
 
-        exec.reconcile(from: playing)
+        exec.reconcile(from: playing, snapshotReadIssuedAt: Date())
         XCTAssertTrue(exec.isKnown(.mediaPlaying), "and it re-opens when a session comes back")
 
         var unknown = Contracts.parkedState(); unknown.mediaPlaybackStatus = .unknown
-        exec.reconcile(from: unknown)
+        exec.reconcile(from: unknown, snapshotReadIssuedAt: Date())
         XCTAssertFalse(exec.isKnown(.mediaPlaying), "an explicit Unknown is not a session")
 
-        exec.reconcile(from: playing)
+        exec.reconcile(from: playing, snapshotReadIssuedAt: Date())
         var future = Contracts.parkedState(); future.mediaPlaybackStatus = .unrecognized("Buffering")
-        exec.reconcile(from: future)
+        exec.reconcile(from: future, snapshotReadIssuedAt: Date())
         XCTAssertFalse(exec.isKnown(.mediaPlaying), "an unreadable forward-compat value is not a session either")
     }
 
@@ -1015,7 +1015,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         for (status, playing) in cases {
             let exec = makeExecutor(ScriptedCommandSender())
             var state = Contracts.parkedState(); state.mediaPlaybackStatus = status
-            exec.reconcile(from: state)
+            exec.reconcile(from: state, snapshotReadIssuedAt: Date())
             XCTAssertTrue(exec.isKnown(.mediaPlaying), "\(status.rawValue) is a session")
             XCTAssertEqual(exec.controls.mediaPlaying, playing, "\(status.rawValue) icon state")
         }
@@ -1026,19 +1026,19 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
     func testMyr314PlayPauseSurvivesAStaleFrameThenConfirms() async {
         let exec = makeExecutor(ScriptedCommandSender())
         var playing = Contracts.parkedState(); playing.mediaPlaybackStatus = .playing
-        exec.reconcile(from: playing)
+        exec.reconcile(from: playing, snapshotReadIssuedAt: Date())
 
         try? await exec.setMediaPlaying(false)
         XCTAssertFalse(exec.controls.mediaPlaying, "optimistic pause applied on ack")
 
-        exec.reconcile(from: playing)
+        exec.reconcile(from: playing, snapshotReadIssuedAt: Date())
         XCTAssertFalse(exec.controls.mediaPlaying, "stale Playing frame ignored inside the settle window")
 
         var paused = Contracts.parkedState(); paused.mediaPlaybackStatus = .paused
-        exec.reconcile(from: paused)
+        exec.reconcile(from: paused, snapshotReadIssuedAt: Date())
         XCTAssertFalse(exec.controls.mediaPlaying)
 
-        exec.reconcile(from: playing)
+        exec.reconcile(from: playing, snapshotReadIssuedAt: Date())
         XCTAssertTrue(exec.controls.mediaPlaying, "after confirmation the car drives the icon again")
     }
 
@@ -1049,14 +1049,14 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         var state = Contracts.parkedState()
         state.mediaVolume = 5
         state.mediaVolumeMax = 10      // this car's ceiling is NOT 11
-        exec.reconcile(from: state)
+        exec.reconcile(from: state, snapshotReadIssuedAt: Date())
         XCTAssertEqual(exec.controls.volume, 50, accuracy: 0.001, "5 of 10 is half, not 45%")
 
         var full = Contracts.parkedState()
         full.mediaVolume = 10
         full.mediaVolumeMax = 10
         let exec2 = makeExecutor(ScriptedCommandSender())
-        exec2.reconcile(from: full)
+        exec2.reconcile(from: full, snapshotReadIssuedAt: Date())
         XCTAssertEqual(exec2.controls.volume, 100, accuracy: 0.001, "a maxed-out car must read 100%, not 91%")
     }
 
@@ -1064,7 +1064,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         let exec = makeExecutor(ScriptedCommandSender())
         var state = Contracts.parkedState()
         state.mediaVolume = 11        // no mediaVolumeMax on the wire
-        exec.reconcile(from: state)
+        exec.reconcile(from: state, snapshotReadIssuedAt: Date())
         XCTAssertEqual(exec.controls.volume, 100, accuracy: 0.001)
     }
 
@@ -1083,7 +1083,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         var state = Contracts.parkedState()
         state.mediaVolume = 5
         state.mediaVolumeMax = 10
-        exec.reconcile(from: state)
+        exec.reconcile(from: state, snapshotReadIssuedAt: Date())
 
         try? await exec.setVolume(100)
         await eventually { sender.calls.contains(.adjustVolume(volume: 10)) }
@@ -1251,7 +1251,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
     /// A snapshot carrying the field adopts it and marks it known...
     func testSnapshotAdoptsAnExplicitRideSharePosition() {
         let executor = makeExecutor(ScriptedCommandSender())
-        executor.reconcile(from: Self.rideShareState(false))
+        executor.reconcile(from: Self.rideShareState(false), snapshotReadIssuedAt: Date())
         XCTAssertFalse(executor.controls.rideShareEnabled)
         XCTAssertTrue(executor.isKnown(.rideShare))
     }
@@ -1266,7 +1266,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         try? await executor.setRideShareEnabled(false)
         XCTAssertFalse(executor.controls.rideShareEnabled)
 
-        executor.reconcile(from: Self.rideShareState(nil))
+        executor.reconcile(from: Self.rideShareState(nil), snapshotReadIssuedAt: Date())
 
         XCTAssertFalse(
             executor.controls.rideShareEnabled,

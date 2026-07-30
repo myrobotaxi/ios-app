@@ -381,6 +381,21 @@ enum DebugScene: String, CaseIterable {
     case ownerRideShareOn
     case ownerRideSharePaused
     case ownerRideSharePending
+    /// MYR-358 — the SAME toggle on a car that is IN SERVICE: forced OFF, inert,
+    /// and captioned "Off while in service — resumes automatically".
+    ///
+    /// It is the fourth rendering of one row and it needs its own scene because it
+    /// is the only one whose position is DERIVED rather than read. The scene stores
+    /// `rideShareEnabled: TRUE` deliberately — the capture is only proof of anything
+    /// if the switch it shows OFF is a switch the server says is ON. A scene that
+    /// seeded `false` would render an identical frame for the wrong reason and would
+    /// still pass if the derivation were deleted.
+    ///
+    /// Nothing is written on the transition: the stored `true` is untouched for the
+    /// whole visit and renders again the moment the car leaves service, which is the
+    /// property that keeps this state out of MYR-351's revert class entirely. Pair
+    /// with `MRT_OWNER_DETENT=half`.
+    case ownerRideShareInService
     /// MYR-320 — the SAME in-service car, with the "Service completion date" row
     /// carrying its MANUAL sub-caption ("Set manually — Tesla hasn't provided an
     /// estimate for this visit"). That caption is only reachable AFTER a save
@@ -569,30 +584,36 @@ enum DebugScene: String, CaseIterable {
     ///     one code) — the §7.5.1 regrouping, running for real.
     case ownerShareLive
 
-    /// MYR-340 — the SYSTEM SHARE SHEET carrying the new mini-onboarding message,
-    /// which is what the client actually receives and the only artefact this issue
-    /// changes. It is unreachable from every other capture route: the sheet opens
+    /// MYR-340 → MYR-359 — the SYSTEM SHARE SHEET carrying what the client
+    /// actually receives, which is the only artefact either issue changes. As of
+    /// MYR-359 that is ONE URL — `https://myrobotaxi.app/join/{CODE}?from={Name}`
+    /// — handed over as a `URL` activity item, because iMessage builds the
+    /// branded card only for a message that is nothing but a link. The sheet's
+    /// preview therefore shows a LINK row, not a truncated paragraph; that
+    /// difference IS the capture.
+    ///
+    /// It is unreachable from every other capture route: the sheet opens
     /// only after a Resend → confirm → Resend tap sequence (or a full compose +
     /// Send), and headless tooling can neither tap nor type. So the scene runs the
     /// PRODUCTION `LiveShareService.resend` against `ownerShareLive`'s own
     /// `DebugShareEndpoint` on appear — the same real-code-path/injected-wire
     /// precedent as `ownerServiceWindowSaved`, and the same stand-in-for-a-tap
     /// precedent as `autoSubmitsInviteCode`. The code in the capture is therefore
-    /// genuinely minted by the shipping resend path, not hand-set, and the message
-    /// is composed by the shipping `ShareInviteMessage`.
+    /// genuinely minted by the shipping resend path, not hand-set, and the link
+    /// is built by the shipping `ShareInviteMessage`.
     ///
-    /// This scene is the NAMED grammar ("Thomas shared their Tesla with you"),
-    /// via `namesShareMessageOwner`.
+    /// This scene is the NAMED case — the link carries `?from=Thomas`, via
+    /// `namesShareMessageOwner`.
     case ownerShareMessage
 
-    /// MYR-340 — the SAME share sheet for an account carrying NO name. Not a
-    /// defensive branch: Apple returns a human name only on the FIRST
+    /// MYR-340 → MYR-359 — the SAME share sheet for an account carrying NO name.
+    /// Not a defensive branch: Apple returns a human name only on the FIRST
     /// authorization, and a row created before native sign-in may carry none at
-    /// all, so a real fraction of owners hit this. The message switches to first
-    /// person ("I shared my Tesla with you") rather than rendering a sentence with
-    /// an empty name in it. Everything below the opening line is byte-identical to
-    /// `ownerShareMessage`, so the pair is a clean before/after of exactly that one
-    /// line.
+    /// all, so a real fraction of owners hit this. The link then carries NO
+    /// `?from=` parameter at all — never an empty one — and the landing page falls
+    /// back to its generic heading, which is where the two-grammar rule lives now
+    /// that the app sends no prose. The pair is a clean before/after of exactly
+    /// that one query parameter.
     case ownerShareMessageNoName
 
     /// MYR-184 (MYR-228 fix (c)) — the rider Live Map with ZERO shared vehicles.
@@ -903,7 +924,8 @@ enum DebugScene: String, CaseIterable {
     /// so every other scene keeps its simulated, byte-identical rendering (CLAUDE.md
     /// drift gate) — the Status & location card grows its row only here.
     var rendersLiveRideShareToggle: Bool {
-        self == .ownerRideShareOn || self == .ownerRideSharePaused || self == .ownerRideSharePending
+        self == .ownerRideShareOn || self == .ownerRideSharePaused
+            || self == .ownerRideSharePending || self == .ownerRideShareInService
     }
 
     /// MYR-316 — whether `HomeScreen` should boot with the "Expected back" entry
@@ -957,7 +979,7 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerServiceWindow || self == .ownerServiceWindowEditor
             || self == .ownerServiceWindowManual || self == .ownerServiceWindowSaved
             || self == .ownerRideShareOn || self == .ownerRideSharePaused
-            || self == .ownerRideSharePending
+            || self == .ownerRideSharePending || self == .ownerRideShareInService
             || self == .ownerCharging || self == .ownerChargeComplete
             || self == .ownerNoticeRejected || self == .ownerNoticeRejectedInService
             || self == .ownerVehicleEnriched
@@ -1090,6 +1112,11 @@ enum DebugScene: String, CaseIterable {
         // pending state, not a seeded one.
         case .ownerRideSharePending:
             return DebugVehicleDetailsFleet(rideShareEnabled: true, rideShareWriteOutcome: .hangs)
+        // MYR-358 — in service, with the stored switch explicitly ON. The row must
+        // render OFF anyway; that disagreement between the wire and the row IS the
+        // capture.
+        case .ownerRideShareInService:
+            return DebugVehicleDetailsFleet(status: .inService, rideShareEnabled: true)
         // MYR-320 — every enrichment field at once: a real color off the wire, the
         // display-ready trim label composing the Model row (alongside the raw badge
         // it must NOT substitute), and the FSD designation in its own row.
@@ -1128,7 +1155,8 @@ enum DebugScene: String, CaseIterable {
         // location card, so it sits just below the service-window anchor. A little
         // further down frames it (plus its notice line, when there is one) at the
         // half detent.
-        case .ownerRideShareOn, .ownerRideSharePaused, .ownerRideSharePending:
+        case .ownerRideShareOn, .ownerRideSharePaused, .ownerRideSharePending,
+             .ownerRideShareInService:
             return .fraction(0.68)
         // The Tire pressure section sits a little above the vertical middle of the
         // dense content; anchoring the content's ~55% point to the viewport brings
@@ -1625,6 +1653,7 @@ enum DebugScene: String, CaseIterable {
              .ownerServiceWindow, .ownerServiceWindowEditor, .ownerServiceWindowManual,
              .ownerServiceWindowSaved,
              .ownerRideShareOn, .ownerRideSharePaused, .ownerRideSharePending,
+             .ownerRideShareInService,
              .ownerCharging, .ownerChargeComplete,
              .ownerVehicleEnriched,
              .ownerConnecting, .ownerConnectingCold, .ownerDrivesLoading, .ownerSettingsLoading,
@@ -1852,7 +1881,7 @@ extension DebugScene {
     /// tooling can neither tap nor type. Seeding the TAP rather than the RESULT is
     /// deliberate and follows `autoSubmitsInviteCode` — the code in the capture is
     /// minted by `LiveShareService.resend` off the real §7.5.4 wire, and the text
-    /// is composed by the shipping `ShareInviteMessage`, so the screenshot is
+    /// is built by the shipping `ShareInviteMessage`, so the screenshot is
     /// evidence about the product rather than about a literal in this file.
     ///
     /// Scoped to the two MYR-340 scenes, so `ownerShareLive` keeps its untouched

@@ -119,14 +119,20 @@ struct InvitesScreen: View {
         // whatever the owner already uses.
         //
         // MYR-340 — ONE presentation serves BOTH the create and the resend path
-        // (`doSend` and `resendDialogConfig` both just set `handout`), which is
-        // why the richer message reaches both for free. The message goes in as a
-        // plain `String` activity item, URL and all: Messages and Mail both
-        // auto-detect the bare https link and render it tappable, so no
-        // `NSItemProvider`/`LPLinkMetadata` preview infrastructure is involved.
+        // (`doSend` and `resendDialogConfig` both just set `handout`), so
+        // whatever the payload is, both paths hand over the same thing.
+        //
+        // MYR-359 — that payload is now a single `URL` activity item. The item
+        // TYPE is the fix, not just its contents: iMessage builds the branded
+        // rich card only for a message whose whole body is a link, and a `String`
+        // item is a body of text no matter what it says. A URL item arrives in
+        // the composer as the message's subject, which is what makes the card
+        // render. Still no `NSItemProvider`/`LPLinkMetadata` here — the sheet's
+        // own preview is the system's business, and interposing an item source
+        // is exactly how a pure-URL payload stops being one.
         .sheet(item: $handout) { handout in
             ActivityShareSheet(
-                activityItems: [handout.message(ownerFirstName: liveProfile?.firstName)]
+                activityItems: [handout.shareURL(ownerFirstName: liveProfile?.firstName)]
             )
         }
         // MYR-184 — read the owner's real grants on arrival. No-op in sim, so

@@ -1,36 +1,29 @@
 import XCTest
 import UIKit
 
-// MARK: - MYR-340 — what the recipient actually receives
+// MARK: - MYR-340 → MYR-359 — what the recipient actually receives
 //
 // THE CLIENT'S ASK (TestFlight, Jul 29): "Feels strange just sending a text
-// message, where do they go. I feel like we need to include TestFlight link or
-// something. Or can we send an invite via email?"
+// message, where do they go." → MYR-340's mini-onboarding paragraph.
+// THE CLIENT AGAIN (Jul 30): the branded card never shows in the thread. →
+// MYR-359: the payload is the invite LINK and nothing else, because iMessage
+// renders the card only for a message that is nothing but a link.
 //
-// The unit tests (`ShareInviteMessageTests`) pin the composer. This pins the
-// DELIVERY: that the composed text is what actually leaves the app through the
-// real `UIActivityViewController`, byte for byte, on both share paths.
+// The unit tests (`ShareInviteMessageTests`) pin the payload byte for byte. This
+// pins the DELIVERY — that the share sheet genuinely presents over the real
+// `UIActivityViewController` on both share paths, with the real activity item
+// behind it — which is the one thing no unit test can see.
 //
-// It has to be a UI test because the share sheet's own preview TRUNCATES to one
-// line ("Thomas shared their Tesla with yo…"), so a screenshot can prove the
-// opening grammar and nothing below it. Tapping the sheet's own **Copy** action
-// and reading the pasteboard is the only way to see the full string as the
-// system hands it on — and it exercises the activity item plumbing rather than
-// re-reading the composer we already tested.
-//
-// The expected copy is written out VERBATIM here rather than imported: a UI test
-// target cannot link app code, and restating the shipped message independently
-// is exactly what makes this a guard. If someone edits the copy, this fails and
-// they have to mean it.
+// It stops there deliberately. The sheet's own preview is system-composed
+// (`LPLinkMetadata` fetched by the OS for a URL item), so what it draws is not
+// this app's contract and asserting on it would be asserting on iOS. The bytes
+// that leave the app are the URL, and they are covered where they can be read
+// exactly.
 final class ShareInviteMessageUITests: XCTestCase {
 
     override func setUp() {
         continueAfterFailure = false
     }
-
-    /// The message the owner hands over, named grammar. Note the code alone on
-    /// its own line and the plain (unwrapped, unmarked-up) https URL — the two
-    /// things iMessage and Mail need to render this usefully.
 
     private func launch(scene: String) -> XCUIApplication {
         let app = XCUIApplication()
@@ -77,30 +70,32 @@ final class ShareInviteMessageUITests: XCTestCase {
     // level; here we assert what only a UI test can — the share sheet actually
     // presents over the real activity-item plumbing, and Copy is offered.
 
-    /// The whole point of the issue: the recipient is handed a way to GET the
-    /// app, not just a code. Asserted on the exact bytes the system copied.
-    func testTheSharedMessageIsTheFullOnboardingWithTheTestFlightLink() {
+    /// The named-owner path: the sheet presents, over a genuinely minted code,
+    /// carrying a URL activity item. The link's `?from=` name is what turns the
+    /// recipient's card into "Thomas invited you to ride their Tesla".
+    func testTheShareSheetPresentsTheInviteLinkForANamedOwner() {
         let app = launch(scene: "ownerShareMessage")
         waitForShareSheet(app)
-        attach(app, named: "MYR-340 share sheet — named owner")
+        attach(app, named: "MYR-359 share sheet — named owner (link-only payload)")
 
-        // Byte-exact message content is covered by ShareInviteMessageTests
+        // Byte-exact payload content is covered by ShareInviteMessageTests
         // (MYR-350) — the UI layer's job ends at a presented sheet with Copy.
         XCTAssertTrue(copyAction(in: app).waitForExistence(timeout: 5),
-                      "the share sheet should offer Copy for the composed invite")
+                      "the share sheet should offer Copy for the invite link")
     }
 
     /// The no-name account — a real fraction of owners, since Apple returns a
-    /// human name only on the first authorization. First person, never a sentence
-    /// with an empty name in it, and everything below the opening line identical.
-    func testAnAccountWithNoNameSharesTheSameOnboardingInFirstPerson() {
+    /// human name only on the first authorization. The link then carries NO
+    /// `?from=` at all and the landing page falls back to its generic heading;
+    /// the sheet itself is otherwise identical.
+    func testTheShareSheetPresentsTheInviteLinkForAnAccountWithNoName() {
         let app = launch(scene: "ownerShareMessageNoName")
         waitForShareSheet(app)
-        attach(app, named: "MYR-340 share sheet — no name on the account")
+        attach(app, named: "MYR-359 share sheet — no name on the account")
 
-        // Grammar variants are unit-tested byte-exactly (ShareInviteMessageTests);
+        // The from-matrix is unit-tested exactly (ShareInviteMessageTests);
         // see MYR-350 for why no pasteboard read happens here.
         XCTAssertTrue(copyAction(in: app).waitForExistence(timeout: 5),
-                      "the share sheet should offer Copy for the no-name composition")
+                      "the share sheet should offer Copy for the no-name invite link")
     }
 }

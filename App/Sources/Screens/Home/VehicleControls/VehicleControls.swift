@@ -120,12 +120,26 @@ struct VehicleControls: View {
     /// the same reason: a control that cannot reach a server has nothing honest to
     /// say. A simulated switch would be worse than a missing one, because flipping
     /// it would appear to withdraw a car from ride-hailing and would do nothing.
+    ///
+    /// MYR-358 — the position and the interactivity are DERIVED here through
+    /// `VehicleRideShare.display`, from the owner's STORED value and the car's
+    /// current status. While the car is in service the row renders off and inert;
+    /// nothing is written on the transition, so the stored value comes straight back
+    /// when the visit ends. `badgeStatus` is the same in-service signal
+    /// `serviceWindowRow` above already gates on, so the two rows can never
+    /// disagree about whether there is a visit in progress.
     private var rideShareRow: RideShareRowModel? {
         guard let rideShareEnabled, let onSetRideShareEnabled else { return nil }
+        let display = VehicleRideShare.display(
+            storedEnabled: rideShareEnabled,
+            isInService: badgeStatus == .inService
+        )
         return RideShareRowModel(
-            isEnabled: rideShareEnabled,
+            isEnabled: display.isOn,
+            isInteractive: display.isInteractive,
             state: executor.uiState(for: .rideShare),
-            onToggle: onSetRideShareEnabled
+            onToggle: onSetRideShareEnabled,
+            caption: display.caption
         )
     }
 
