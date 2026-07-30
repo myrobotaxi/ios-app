@@ -84,6 +84,35 @@ A `-MRT_SCENE <name>` launch **argument** is accepted as a fallback for tooling 
 
   All six are **live-path-only and unreachable from a simulated capture by construction**: `SimulatedShareService` mints no code (so no share sheet, no code caption, no tier line) and `SimulatedSharedVehicleCatalog` always holds three `rides`-tier grants with a redeem that cannot fail (onboarding.jsx:421's forgiving check). They inject `DebugShareEndpoint` and run the **production** `LiveShareService` / `LiveSharedVehicleCatalog` against it — the same "real code path, injected wire" precedent as `DebugServiceWindowEndpoint` — so what the capture shows came from the shipping grouping, tier mapping and gates, not a hand-set flag. The two invite-code scenes also set `autoSubmitsSampleCode`, because headless tooling cannot type six characters into the hidden field (the same stand-in-for-a-tap precedent as `ownerFreshnessWaking`). Nothing consults these overrides unless the scene is one of the six, so every existing scene is byte-identical.
 
+  **The share MESSAGE is a mini-onboarding** (MYR-340) — scenes
+  `ownerShareMessage` / `ownerShareMessageNoName`. MYR-184 handed the recipient
+  the code and nothing else, on the then-true reasoning that there was nowhere to
+  send anyone; the client's *"Feels strange just sending a text message, where do
+  they go"* was the missing half showing. The public TestFlight link went live
+  2026-07-29, so `ShareInviteMessage.compose` now writes the three steps in the
+  order they are performed (get the app → sign in with Apple → enter the code),
+  with the **code alone on its own line** and the 7-day expiry stated last. The
+  URL is a **plain https string** — Messages and Mail auto-detect it, so no
+  `LPLinkMetadata`/`NSItemProvider` preview infrastructure exists or is wanted.
+  The link lives in ONE constant, `AppDistribution.testFlightPublicJoinURL`
+  (ASC ⇢ TestFlight ⇢ **Friends & Family** external group; **capped at 100
+  testers**, after which the link refuses new joins and nothing in the client can
+  detect it). **Email needed no server**: the same share sheet already reaches
+  Mail — the gap was never the transport, it was that the message said nothing.
+  ONE presentation serves BOTH the create and the resend path (`doSend` and
+  `resendDialogConfig` both just set `handout`), so both get it for free. The
+  opening line has **two grammars, not one with a hole in it**: named when the
+  account carries a name, first-person ("I shared my Tesla with you") when it does
+  not — `UserProfile.firstName` is genuinely nil for anyone Apple did not hand a
+  name for on the FIRST authorization. Both scenes are live-path-only (SIM mints
+  no code, so it never opens a share sheet at all) and run the **production**
+  `LiveShareService.resend` against `ownerShareLive`'s own `DebugShareEndpoint` on
+  appear, because the sheet is otherwise behind a Resend → confirm → Resend tap
+  chain headless tooling cannot perform. **The share sheet's preview truncates to
+  one line**, so a screenshot can only ever prove the opening grammar —
+  `ShareInviteMessageUITests` taps the sheet's own **Copy** and asserts the
+  pasteboard, which is the only way to see the full delivered string.
+
   **"{Owner}'s {Vehicle}" is conditional, not concatenated** — `VehicleSummary.name` is the owner's OWN nickname and owners name cars after themselves (the canonical server fixture is literally `"Alex's Model 3"`), so prefixing §7.5.5's `ownerFirstName` onto it produced **"Alex's Alex's Model 3"**, which the first `riderInviteJoined` capture showed verbatim. `SharedVehicleTitle.compose` prefixes the owner only when the nickname is not already about them. The §7.0 catalog rows carry **no owner name at all** — only the redeem response does, and only at join time — so "Shared with me" titles on the vehicle nickname alone rather than persisting a name that can go stale.
 
 - Loading states (MYR-326, all **live-path-only**): `ownerConnectingCold` (owner Home in the first moments of a live boot — the `GET /api/vehicles` list is still in flight, so NOTHING is known and even the switcher chip is a placeholder), `ownerConnecting` (**the client's state**: the list landed — his car's name is known and the REAL `MapHeader` renders it — and the cold `/snapshot` has not. MYR-319's 0/0.8/3/9s retry means this routinely lasts >10s on an asleep/in-service car, which is why he screenshotted it; before this issue both scenes were one black screen with a system `ProgressView` and "Connecting to your vehicles…"), `ownerDrivesLoading` (Drives tab, first page in flight — a day heading + three `DriveRow`-shaped placeholders where a spinner and "Loading drives…" used to be), `ownerSettingsLoading` (Settings ⇢ Tesla Account with the fleet list in flight — two row-shaped placeholders instead of "Connecting…"; forces the LIVE linked-vehicle branch via `DebugScene.rendersLiveLinkedVehicles`, the same stand-in-for-a-live-session precedent as `showsLiveSettings`, so `ownerSettings` itself stays byte-identical). All four inject `DebugLoadingFleet`, which parks the app in ONE loading branch and never resolves it — these states have no other capture route, since on a healthy account each lasts milliseconds and the client's needs a real asleep car behind a real auth session. **No simulated scene can reach a skeleton at all**: `SimulatedVehicleFleet.isConnecting` and `SimulatedDrivesFeed.isLoading`/`hasMore` are `false` by construction and Settings only consults the live list when `linkedVehicles` is wired, so the whole drift gate is untouched. Capture each one twice — once normally, once with `xcrun simctl ui <udid> reduce_motion enabled` — to prove the Reduce Motion fallback: the blocks stay, the sweep goes (`MRTShimmerBand` renders nothing).
