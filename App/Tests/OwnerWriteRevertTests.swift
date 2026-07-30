@@ -112,7 +112,7 @@ final class OwnerWriteRevertTests: XCTestCase {
     /// That is why report (2) is not a second bug: one clobber, two surfaces.
     func testAClearedServiceWindowIsNotRevertedByTheNextTelemetryFrame() async throws {
         let executor = makeExecutor(
-            serviceWindowEndpoint: ScriptedServiceWindowEndpoint(resolved: nil)
+            serviceWindowEndpoint: ScriptedServiceWindowEndpoint()
         )
         // A cold snapshot lands carrying Tesla's window.
         let coldRead = Date()
@@ -242,7 +242,7 @@ final class OwnerWriteRevertTests: XCTestCase {
     /// at 0/0.8/3/9s, and MYR-315 refetches on every foreground.
     func testASnapshotIssuedBeforeTheWriteDoesNotClobberItWhenItLandsAfter() async throws {
         let executor = makeExecutor(
-            serviceWindowEndpoint: ScriptedServiceWindowEndpoint(resolved: nil)
+            serviceWindowEndpoint: ScriptedServiceWindowEndpoint()
         )
         // t=0 — the GET is issued. Its response is still in flight.
         let inFlightRead = Date()

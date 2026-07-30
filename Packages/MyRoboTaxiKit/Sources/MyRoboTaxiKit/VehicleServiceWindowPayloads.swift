@@ -63,26 +63,49 @@ public struct VehicleServiceWindowUpdateRequest: Codable, Equatable, Sendable {
 
 /// `200 OK` body of `PUT /api/tesla/vehicles/{vehicleId}/service-window` (MYR-316).
 ///
-/// The response ECHOES the server's RESOLVED `serviceEstimatedEndAt` — which is
-/// NOT necessarily the value just submitted: Tesla's `service_etc` outranks the
-/// owner's entry, so an owner who types 4 PM against a Tesla estimate of 2 PM
-/// gets 2 PM back. Callers MUST adopt this field, never the string they sent, or
-/// the sheet will claim a completion time the server does not hold.
+/// ```json
+/// { "vehicleId": "clxyz1234567890abcdef", "expectedEndAt": "2026-07-29T18:00:00Z" }
+/// ```
 ///
-/// `serviceEstimatedEndAt` is nullable here for two distinct real reasons — the
-/// owner cleared their entry and Tesla has none, or the car has already left
-/// `in_service` (the server clears the field automatically on that transition).
-/// Both mean the same thing to a consumer: no window is known.
+/// **THE KEY IS `expectedEndAt`, AND IT IS THE OWNER COLUMN — NOT the resolved
+/// `serviceEstimatedEndAt`** (MYR-362). This shape was hand-authored from a
+/// misreading of §7.16 and named a key the server has never emitted; because
+/// every property here is optional, decoding SUCCEEDED and simply produced `nil`,
+/// so **every SET adopted a nil echo** and the owner's saved completion date
+/// vanished from a sheet whose write had just returned `200`. An absent key on an
+/// optional is the quietest possible wire defect: there is no throw, no notice,
+/// and no log — only a field that is always empty.
+///
+/// §7.16 states the choice and the reason in as many words: *"the response echoes
+/// the OWNER column rather than the resolved field — echoing the resolved value
+/// would make a client believe its write had been overruled when it has merely
+/// been outranked by Tesla on the next read, and would leave it with no way to
+/// display the value the owner just typed."*
+///
+/// So the resolved window (`COALESCE(service_etc, service_expected_end_at)`) is
+/// **not knowable from this response at all**, and §7.16 says what to do instead:
+/// *"A client that needs the new value immediately either adopts this response
+/// optimistically or re-reads §7.0 / §7.1."* `LiveVehicleCommandExecutor
+/// .setServiceWindow` does both — it adopts this echo, and MYR-351's
+/// deliberately non-latching read guard lets the first `/snapshot` issued after
+/// the commit replace it with the resolved value when Tesla outranks it.
+///
+/// `expectedEndAt` is nullable for exactly one reason: the owner cleared their
+/// entry (any of §7.16's four clearing spellings). It is the OWNER's column, so
+/// it is unaffected by Tesla's estimate and by the car leaving service — both of
+/// those move the RESOLVED field on the next read, not this one.
 public struct VehicleServiceWindowResponse: Codable, Equatable, Sendable {
     /// Echo of the path parameter (the Prisma cuid, NOT a VIN).
     public var vehicleId: String
-    /// The server's RESOLVED estimate now stored, or `nil` when none is known.
-    /// Never re-derive this from the request.
-    public var serviceEstimatedEndAt: String?
+    /// The owner's expected-back instant now stored in `service_expected_end_at`,
+    /// RFC 3339 UTC, or `nil` when cleared. Server-validated (future-only) and
+    /// server-normalized, so it is the owner's submission rather than a second
+    /// opinion — but it is NOT necessarily what §7.0 / §7.1 will emit next.
+    public var expectedEndAt: String?
 
-    public init(vehicleId: String, serviceEstimatedEndAt: String?) {
+    public init(vehicleId: String, expectedEndAt: String?) {
         self.vehicleId = vehicleId
-        self.serviceEstimatedEndAt = serviceEstimatedEndAt
+        self.expectedEndAt = expectedEndAt
     }
 }
 

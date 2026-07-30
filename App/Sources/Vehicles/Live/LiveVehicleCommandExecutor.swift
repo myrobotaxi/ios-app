@@ -90,6 +90,23 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// because that frame is a genuinely fresh observation.
     private var committedAt: [VehicleControlField: Date] = [:]
 
+    /// MYR-362 — the owner's own stored `expectedEndAt`, held from a service-window
+    /// write until the first read ISSUED after it can say which source won.
+    ///
+    /// The source is a comparison between what the OWNER stored and what the server
+    /// RESOLVES, and §7.16 hands a client only the first of those: its `200` echoes
+    /// the owner column precisely so a write is never mistaken for an overrule. So
+    /// the write has nothing to compare and the comparison has to wait for
+    /// `COALESCE(service_etc, service_expected_end_at)` to arrive on §7.0 / §7.1 —
+    /// which is the ONLY place either answer was ever provable.
+    ///
+    /// `nil` means nothing is outstanding: no write yet, a CLEAR (which submits no
+    /// instant, so there is nothing to be the source OF), or a classification
+    /// already consumed. Consumed exactly ONCE, by the first accepted read, so a
+    /// later read that MOVES the value falls through to MYR-320's own rule and
+    /// resets to `.unknown` rather than re-asserting a stale claim.
+    private var pendingServiceWindowProvenance: Date?
+
     private let vehicleID: String
     private let sender: any VehicleCommandSending
     /// The §7.14 owner license-plate write (MYR-286). Deliberately a SEPARATE seam
@@ -493,14 +510,29 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         let resolvedWindow = state.serviceEstimatedEndAt.flatMap(VehicleContractMapping.parseTimestamp)
         if uiState(for: .serviceWindow).isPending == false,
            acceptsSnapshotRead(.serviceWindow, issuedAt: snapshotReadIssuedAt) {
-            // MYR-320 — a read that MOVES the value invalidates whatever the last
-            // write echo proved about its source: the instant on screen is no
-            // longer the instant we classified, so the note that described it
-            // would now be describing something else. Fall back to `.unknown` (no
-            // note) rather than carrying a stale claim forward. A read that agrees
-            // with what we hold changes nothing, so a snapshot arriving right after
-            // a save doesn't wipe the note the save just earned.
-            if controls.serviceEstimatedEndAt != resolvedWindow {
+            // MYR-362 — THIS is where the source becomes provable, and it is the
+            // only place it ever was. A read reaching here was ISSUED after our
+            // commit (`acceptsSnapshotRead`), so its `serviceEstimatedEndAt` is
+            // `COALESCE(service_etc, service_expected_end_at)` computed with the
+            // owner's entry already in the table: it comes back EQUAL to what we
+            // stored only when Tesla had no `service_etc` to outrank it, and
+            // DIFFERENT only when Tesla did. That is exactly MYR-320's predicate —
+            // the same `provenance` classifier, unchanged — fed from the read
+            // instead of from a write echo that could never have known.
+            //
+            // Consumed once. Every later read falls through to MYR-320's own rule
+            // below, so a window that MOVES again drops the note rather than
+            // carrying a claim about a different instant.
+            if let submitted = pendingServiceWindowProvenance {
+                pendingServiceWindowProvenance = nil
+                controls.serviceWindowSource = Self.provenance(submitted: submitted, resolved: resolvedWindow)
+            } else if controls.serviceEstimatedEndAt != resolvedWindow {
+                // MYR-320 — a read that MOVES the value invalidates whatever was
+                // last proved about its source: the instant on screen is no longer
+                // the instant we classified, so the note that described it would
+                // now be describing something else. Fall back to `.unknown` (no
+                // note) rather than carrying a stale claim forward. A read that
+                // agrees with what we hold changes nothing.
                 controls.serviceWindowSource = .unknown
             }
             controls.serviceEstimatedEndAt = resolvedWindow
@@ -1033,21 +1065,32 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// endpoints are the same KIND of thing (an owner-scoped DB write with no
     /// Tesla call anywhere in it):
     ///
-    ///  • **The server's RESOLVED echo is adopted, never the submitted instant.**
-    ///    This is sharper here than it is for the plate: the server keeps a fixed
-    ///    SOURCE PRECEDENCE in which Tesla's own `service_data.service_etc`
-    ///    OUTRANKS the owner's entry. An owner who types 4 PM against a Tesla
-    ///    estimate of 2 PM gets 2 PM back, and the row must show 2 PM — the value
-    ///    the rider's scheduling floor will actually be built from. Showing what
-    ///    the owner typed would put the sheet and the floor into disagreement.
-    ///    The app deliberately does NOT try to detect or explain which source won:
-    ///    the wire carries no discriminator, and inventing one would be a guess.
+    ///  • **The server's echo is adopted, never the submitted instant** — and
+    ///    MYR-362 is what that sentence actually means. §7.16's `200` echoes the
+    ///    **OWNER COLUMN** (`expectedEndAt`), not the resolved
+    ///    `serviceEstimatedEndAt`, because "echoing the resolved value would make a
+    ///    client believe its write had been overruled when it has merely been
+    ///    outranked by Tesla on the next read". MYR-316 read that backwards and
+    ///    shaped `VehicleServiceWindowResponse` around a key the server has never
+    ///    sent; the property was optional, so every save decoded a silent `nil`,
+    ///    committed it, and left the owner's just-typed date nowhere on a sheet
+    ///    whose write had returned `200` — the client's report.
+    ///  • **The RESOLVED window is not knowable here, so it is not claimed here.**
+    ///    `COALESCE(service_etc, service_expected_end_at)` lives on the read
+    ///    surfaces (§7.0 / §7.1) and Tesla's estimate may outrank what we just
+    ///    stored. §7.16 names the two legal responses to that — adopt this echo
+    ///    optimistically, or re-read — and this method does BOTH: it adopts, and
+    ///    MYR-351's guard is deliberately non-latching, so the first `/snapshot`
+    ///    ISSUED after this commit replaces the value in full if Tesla won.
     ///  • **A past instant is rejected LOCALLY first** (`VehicleServiceWindow
     ///    .isEnterable`), so the common mistake costs no round trip. The 400 arm
     ///    below is the defensive path for the case the local check cannot catch —
     ///    a sheet left open until the picked time passed.
     ///  • **The echo is broadcast** via `onServiceWindowSaved`, because there is
-    ///    no WS push for this field (snapshot-only by contract).
+    ///    no WS push for this field (snapshot-only by contract). Broadcasting the
+    ///    mis-decoded `nil` was the second half of the defect: it wrote NULL into
+    ///    the summary row the RIDER-facing `LiveFleetMemberMapping` reads, so an
+    ///    owner setting a completion date withdrew their own scheduling floor.
     ///
     /// Shares the `.serviceWindow` key's pending/notice discipline with the
     /// commanded controls (a double-save while in flight is suppressed), but NOT
@@ -1060,22 +1103,27 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
                 expectedEndAt: expectedEndAt.map(Self.rfc3339.string(from:)),
                 vehicleID: vehicleID
             )
-            let resolved = response.serviceEstimatedEndAt.flatMap(VehicleContractMapping.parseTimestamp)
-            controls.serviceEstimatedEndAt = resolved
-            // MYR-320 — the echo is the ONE moment the app can learn where the
-            // resolved window came from (see `ServiceWindowSource`). The server
-            // applies Tesla-precedence and answers with what it RESOLVED, so:
-            // echo == submission → precedence had nothing to apply, Tesla holds no
-            // estimate and this value is the owner's own; echo != submission →
-            // Tesla's estimate outranked the entry and is what is on screen.
-            controls.serviceWindowSource = Self.provenance(submitted: expectedEndAt, resolved: resolved)
+            let stored = response.expectedEndAt.flatMap(VehicleContractMapping.parseTimestamp)
+            controls.serviceEstimatedEndAt = stored
+            // MYR-320 → MYR-362 — the echo is NOT the moment the source becomes
+            // knowable, and treating it as one is how MYR-320's caption would
+            // become a fabrication. §7.16 echoes the owner's own column, so the
+            // echo agrees with the submission ALWAYS and by construction: running
+            // `provenance` on it would answer `.manual` on every save, asserting
+            // "Tesla hasn't provided an estimate for this visit" about a car whose
+            // estimate we have not looked at. Nothing is provable yet, so nothing
+            // is claimed — and the pair is HELD for the first read issued after
+            // this commit, which is where `COALESCE(service_etc, …)` finally says
+            // which source won (see `reconcile`).
+            controls.serviceWindowSource = .unknown
+            pendingServiceWindowProvenance = stored
             knownFields.insert(.serviceWindow)
             // MYR-351 — stamp the commit. A CLEAR needs this as much as a set does:
-            // `resolved` is nil, so there is no value to distinguish it by, and the
+            // `stored` is nil, so there is no value to distinguish it by, and the
             // stale read that resurrects it looks identical to a legitimate one.
             committedAt[.serviceWindow] = Date()
             uiStates[.serviceWindow] = .idle
-            onServiceWindowSaved?(resolved)
+            onServiceWindowSaved?(stored)
         } catch let error as RestError {
             settle(.serviceWindow, notice: Self.serviceWindowNotice(for: error.commandFailureKind))
         } catch {
@@ -1170,9 +1218,17 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         kind == .invalidRequest ? .serviceWindowPast : .serviceWindowNotSaved
     }
 
-    /// MYR-320 — classify a service-window write's echo into a provenance the app
-    /// can honestly display. Pure and static so the whole matrix is unit-testable
-    /// without a network.
+    /// MYR-320 — classify a service window into a provenance the app can honestly
+    /// display. Pure and static so the whole matrix is unit-testable without a
+    /// network.
+    ///
+    /// MYR-362 — the CLASSIFIER is unchanged; what changed is where its two
+    /// arguments come from. `submitted` is the owner's own stored entry (§7.16's
+    /// echo) and `resolved` is `COALESCE(service_etc, service_expected_end_at)` off
+    /// a READ issued after that write — never the write's own echo, which is the
+    /// owner column and therefore agrees with the submission unconditionally. Fed
+    /// from the echo this function answers `.manual` every time, which is a claim
+    /// about Tesla made without looking at Tesla.
     ///
     /// A CLEAR (`submitted == nil`) always yields `.unknown`, whatever comes back:
     /// clearing the owner's entry leaves either nothing (nil echo — no source to

@@ -14,20 +14,19 @@ import MyRobotaxiContracts
 //  1. **"Must be in the future"** → `400 invalid_request`. The app already
 //     prevents this locally, so this arm is what proves the defensive path is
 //     wired rather than decorative.
-//  2. **TESLA PRECEDENCE.** When `teslaEstimate` is set, the response ECHOES
-//     TESLA'S instant, not the owner's — which is the single most surprising
-//     thing about this endpoint and the reason the executor must adopt the echo
-//     instead of the value it sent. A stub that echoed the submission back would
-//     make a broken client look correct.
+//  2. **IT ECHOES THE OWNER COLUMN** — `expectedEndAt`, the instant just
+//     submitted, never the resolved `serviceEstimatedEndAt`. That is §7.16's own
+//     rule ("echoing the resolved value would make a client believe its write had
+//     been overruled when it has merely been outranked"), and MYR-362 is what it
+//     cost to have this stub say otherwise: it answered with a field the server
+//     has never emitted, so the scene proved a decode that could not work against
+//     a real backend. A stub is only evidence to the extent it is the wire.
 //
 // Release builds never compile this file.
 struct DebugServiceWindowEndpoint: VehicleServiceWindowEndpoint {
     /// When set, every write fails with this error instead (drives the notice
     /// captures).
     var failure: RestError?
-    /// Tesla's own `service_data.service_etc`, when the visit has one. Non-nil
-    /// makes this stub outrank the owner's submission exactly as the server does.
-    var teslaEstimate: String?
 
     func setServiceWindow(expectedEndAt: String?, vehicleID: String) async throws -> VehicleServiceWindowResponse {
         if let failure { throw failure }
@@ -45,12 +44,23 @@ struct DebugServiceWindowEndpoint: VehicleServiceWindowEndpoint {
             }
         }
 
-        // Precedence: (1) Tesla's estimate, (2) the owner's entry, (3) null.
+        // The OWNER column, verbatim — RFC 3339 UTC without fractional seconds,
+        // the exact shape `formatInstantOrNil` emits. Tesla precedence is a READ
+        // concern and shows up on the next `/snapshot`, not here.
         return VehicleServiceWindowResponse(
             vehicleId: vehicleID,
-            serviceEstimatedEndAt: teslaEstimate ?? expectedEndAt
+            expectedEndAt: expectedEndAt.flatMap(Self.parse).map(Self.wire.string(from:))
         )
     }
+
+    /// RFC 3339 UTC, seconds precision — `time.RFC3339`, which is what the Go
+    /// handler formats its echo with.
+    private static let wire: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        return f
+    }()
 
     private static func parse(_ value: String) -> Date? {
         let plain = ISO8601DateFormatter()
