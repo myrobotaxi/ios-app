@@ -1,0 +1,53 @@
+4603ee9ab4072aa0e53c8b136b7b9108bd5a5901	not-for-merge	branch 'feature/myr-173-data-model-riderequest-trip-schema-migrations' of https://github.com/myrobotaxi/contracts
+ca29ba93e1f4c291b66e0c81ef8f78f4b8c91842	not-for-merge	branch 'feature/myr-174-rider-api-create-cancel-status-stream-a-ride-request' of https://github.com/myrobotaxi/contracts
+7c69bab07a0559985096502a053cefc120ea5d49	not-for-merge	branch 'feature/myr-195-contracts-decode-tolerant-wire-enums-for-swift-forward' of https://github.com/myrobotaxi/contracts
+c3bc101aff7f5b80708c097c31c4263f7c986a27	not-for-merge	branch 'feature/myr-202-contracts-add-drive-drivesummary-schemas-unblocks-live' of https://github.com/myrobotaxi/contracts
+987b5d551011e49c447ee53c88e23e98f7812e13	not-for-merge	branch 'feature/myr-204-contracts-ios-driveroute-schema-74-real-route-polyline-on' of https://github.com/myrobotaxi/contracts
+3329b4e8e42c77ea87e39a5e674ebc15dabbd1de	not-for-merge	branch 'feature/myr-233-vehiclesummary-hasactiveride' of https://github.com/myrobotaxi/contracts
+a74579baf74db4ffa7fa22838151f721975d0700	not-for-merge	branch 'feature/myr-252-stream-contract-the-vehicle-control-states-hvac-lock-seats' of https://github.com/myrobotaxi/contracts
+913653a313ed3146215a432f8ce2bec539ce79fd	not-for-merge	branch 'feature/myr-286-licenseplate' of https://github.com/myrobotaxi/contracts
+dcfedbe14cae836012e5fefc13707adfe3ad3563	not-for-merge	branch 'feature/myr-303-media-nowplaying' of https://github.com/myrobotaxi/contracts
+7d2fa90abf2099069947914d186379d326d6ebb4	not-for-merge	branch 'feature/myr-316-service-window' of https://github.com/myrobotaxi/contracts
+de39dda4485486310a01b4dcb6f8ffa970e46fa4	not-for-merge	branch 'main' of https://github.com/myrobotaxi/contracts
+e544af55a63113cad293ed00158f6ca63379483f	not-for-merge	'refs/pull/1/head' of https://github.com/myrobotaxi/contracts
+6e71e1a11a3389b42699ff768a7d2a0a65a21b8e	not-for-merge	'refs/pull/10/head' of https://github.com/myrobotaxi/contracts
+6645a9212e9d2a059da7814b0568103bcf9099c0	not-for-merge	'refs/pull/11/head' of https://github.com/myrobotaxi/contracts
+7c69bab07a0559985096502a053cefc120ea5d49	not-for-merge	'refs/pull/12/head' of https://github.com/myrobotaxi/contracts
+c3bc101aff7f5b80708c097c31c4263f7c986a27	not-for-merge	'refs/pull/13/head' of https://github.com/myrobotaxi/contracts
+987b5d551011e49c447ee53c88e23e98f7812e13	not-for-merge	'refs/pull/14/head' of https://github.com/myrobotaxi/contracts
+4603ee9ab4072aa0e53c8b136b7b9108bd5a5901	not-for-merge	'refs/pull/15/head' of https://github.com/myrobotaxi/contracts
+ca29ba93e1f4c291b66e0c81ef8f78f4b8c91842	not-for-merge	'refs/pull/16/head' of https://github.com/myrobotaxi/contracts
+94ab6b7256f7c4d66a480bddf1cc688d6cbdc97b	not-for-merge	'refs/pull/17/head' of https://github.com/myrobotaxi/contracts
+1df042fc057bbda0735e5fb6bf4a47ee29bc0d48	not-for-merge	'refs/pull/18/head' of https://github.com/myrobotaxi/contracts
+a74579baf74db4ffa7fa22838151f721975d0700	not-for-merge	'refs/pull/19/head' of https://github.com/myrobotaxi/contracts
+96b75d55fcde75b38fcc75a3e03391ac38ec2ba8	not-for-merge	'refs/pull/2/head' of https://github.com/myrobotaxi/contracts
+1e367f081a0e4b54364daca5663ce70902389bb9	not-for-merge	'refs/pull/20/head' of https://github.com/myrobotaxi/contracts
+3329b4e8e42c77ea87e39a5e674ebc15dabbd1de	not-for-merge	'refs/pull/21/head' of https://github.com/myrobotaxi/contracts
+913653a313ed3146215a432f8ce2bec539ce79fd	not-for-merge	'refs/pull/22/head' of https://github.com/myrobotaxi/contracts
+dcfedbe14cae836012e5fefc13707adfe3ad3563	not-for-merge	'refs/pull/23/head' of https://github.com/myrobotaxi/contracts
+7d2fa90abf2099069947914d186379d326d6ebb4	not-for-merge	'refs/pull/24/head' of https://github.com/myrobotaxi/contracts
+ac9b2ffaaa597ab96d74d524c7a5211496e2e138	not-for-merge	'refs/pull/3/head' of https://github.com/myrobotaxi/contracts
+db525decd1821be7403c82e3bcff1617f2dea05f	not-for-merge	'refs/pull/4/head' of https://github.com/myrobotaxi/contracts
+d32b2f67a32d7b6cf31f06ea23ddeaccd467990e	not-for-merge	'refs/pull/5/head' of https://github.com/myrobotaxi/contracts
+270eb5cb00da36cf6d5e41c0313e24156a2c6f38	not-for-merge	'refs/pull/6/head' of https://github.com/myrobotaxi/contracts
+dbd0a8c1999b56f804c8b549614163da0e4f476c	not-for-merge	'refs/pull/7/head' of https://github.com/myrobotaxi/contracts
+940bfdfe3cc88d83828b899ee84080a5e7516c97	not-for-merge	'refs/pull/8/head' of https://github.com/myrobotaxi/contracts
+0ad96c193620a21c6d36c8a3a44a79db794e0379	not-for-merge	'refs/pull/9/head' of https://github.com/myrobotaxi/contracts
+5b76cc90c7eccb1ea03c0a9240cf027d80c8337f	not-for-merge	tag 'v0.1.0' of https://github.com/myrobotaxi/contracts
+b2799f66fb2599451a8cf9bfa9881df6c83268be	not-for-merge	tag 'v0.1.4' of https://github.com/myrobotaxi/contracts
+f7d96fdc71deb1b3b6adb543dbc890854cfe7fc7	not-for-merge	tag 'v0.10.0' of https://github.com/myrobotaxi/contracts
+80a545045868391c4f7df842ef96a539af29914f	not-for-merge	tag 'v0.11.0' of https://github.com/myrobotaxi/contracts
+faed3ca210204e68b2104efe4b468c72e5966166	not-for-merge	tag 'v0.12.0' of https://github.com/myrobotaxi/contracts
+19a985570a018764d6a6af52e5ae33fd04d19250	not-for-merge	tag 'v0.13.0' of https://github.com/myrobotaxi/contracts
+0c2372b6501f897ab8830efcba08a3d62ad69849	not-for-merge	tag 'v0.14.0' of https://github.com/myrobotaxi/contracts
+1bcea9e82c86fe2aad1a483b3c24def3499c3c70	not-for-merge	tag 'v0.15.0' of https://github.com/myrobotaxi/contracts
+4e80e62c659b64ed5f6dc43226eb047a3f10c69c	not-for-merge	tag 'v0.16.0' of https://github.com/myrobotaxi/contracts
+de39dda4485486310a01b4dcb6f8ffa970e46fa4	not-for-merge	tag 'v0.17.0' of https://github.com/myrobotaxi/contracts
+2ffb38a174cf8e3b2aba02ffdbda7a7b9e74bef4	not-for-merge	tag 'v0.2.0' of https://github.com/myrobotaxi/contracts
+f20d07d16c936a230d512d936cfaefe18ca8fc63	not-for-merge	tag 'v0.3.0' of https://github.com/myrobotaxi/contracts
+09c36498e22a088c7264159b1c375a26c94c4543	not-for-merge	tag 'v0.4.0' of https://github.com/myrobotaxi/contracts
+718d3465c63529230b9278903467cc0d0405116c	not-for-merge	tag 'v0.5.0' of https://github.com/myrobotaxi/contracts
+a30e3454a367d4b3ace5d0faa7bb86d6e35cbbb2	not-for-merge	tag 'v0.6.0' of https://github.com/myrobotaxi/contracts
+aaad29afbb1dbc4c5a95bf64e0e07641a803c8c2	not-for-merge	tag 'v0.7.0' of https://github.com/myrobotaxi/contracts
+93d612afa82740fd9652cc82860c0331da16d2c3	not-for-merge	tag 'v0.8.0' of https://github.com/myrobotaxi/contracts
+a8cbc8608cff34315a71c59f9d0131519f68359c	not-for-merge	tag 'v0.9.0' of https://github.com/myrobotaxi/contracts

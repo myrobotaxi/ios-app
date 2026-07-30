@@ -1,0 +1,30 @@
+{
+  "object" : {
+    "artifacts" : [
+
+    ],
+    "dependencies" : [
+      {
+        "basedOn" : null,
+        "packageRef" : {
+          "identity" : "contracts",
+          "kind" : "remoteSourceControl",
+          "location" : "https://github.com/myrobotaxi/contracts.git",
+          "name" : "MyRobotaxiContracts"
+        },
+        "state" : {
+          "checkoutState" : {
+            "revision" : "4e80e62c659b64ed5f6dc43226eb047a3f10c69c",
+            "version" : "0.16.0"
+          },
+          "name" : "sourceControlCheckout"
+        },
+        "subpath" : "contracts"
+      }
+    ],
+    "prebuilts" : [
+
+    ]
+  },
+  "version" : 7
+}

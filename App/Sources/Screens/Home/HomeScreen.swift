@@ -375,7 +375,7 @@ struct HomeScreen: View {
             base: snapshot.status == .driving
                 ? MRTMetrics.homePeekHeightDriving
                 : MRTMetrics.homePeekHeightParked,
-            qualifierLines: peekQualifierLines(snapshot: snapshot)
+            qualifiers: peekQualifiers(snapshot: snapshot)
         )
 
         VehicleMapView(
@@ -528,16 +528,30 @@ struct HomeScreen: View {
     ///
     /// Both inputs are nil on the simulated path — the stamp is live-only by two
     /// gates (`freshnessStamp`) and nothing simulated is ever in service — so this
-    /// returns 0 there and the drift-gate scenes keep the prototype's exact bands.
-    private func peekQualifierLines(snapshot: VehicleTelemetrySnapshot) -> Int {
-        var lines = 0
-        // Rendered by BOTH heroes (`mrtFreshnessStamp`).
-        if freshnessStamp(snapshot: snapshot) != nil { lines += 1 }
+    /// returns an EMPTY list there and the drift-gate scenes keep the prototype's
+    /// exact bands.
+    ///
+    /// MYR-345 (client defect) — the lines are now reported BY IDENTITY, not
+    /// counted. MYR-315 counted them and multiplied by one flat 24, which
+    /// over-reserved for the completion line by ~8pt; because the hero is
+    /// top-aligned, every point of surplus lands in the gap above the floating nav
+    /// and nowhere else — *"Weird gap between menu and synced just now"*. Each
+    /// qualifier now brings exactly its own measured room
+    /// (`MRTHomePeekQualifier.reservedHeight`), so the clearance under the hero is
+    /// the prototype's in every variant. `OwnerPeekBandTests` measures the real
+    /// views against that rule.
+    private func peekQualifiers(snapshot: VehicleTelemetrySnapshot) -> [MRTHomePeekQualifier] {
+        var qualifiers: [MRTHomePeekQualifier] = []
         // Rendered by the PARKED hero only (`ParkedSummary.serviceCompletion`);
         // a driving car is never `in_service`, but the gate is stated rather than
-        // assumed so the band can never grow for a line that isn't drawn.
-        if snapshot.status != .driving, serviceCompletionLine(snapshot: snapshot) != nil { lines += 1 }
-        return lines
+        // assumed so the band can never grow for a line that isn't drawn. Listed
+        // first because it renders first — it is the header's own second line.
+        if snapshot.status != .driving, serviceCompletionLine(snapshot: snapshot) != nil {
+            qualifiers.append(.serviceCompletion)
+        }
+        // Rendered by BOTH heroes (`mrtFreshnessStamp`), at the foot.
+        if freshnessStamp(snapshot: snapshot) != nil { qualifiers.append(.freshnessStamp) }
+        return qualifiers
     }
 
     /// The expanded-layer scroll view. Normally a plain `ScrollView`; the

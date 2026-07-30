@@ -113,12 +113,36 @@ final class VehicleRefreshNoticeTests: XCTestCase {
         XCTAssertEqual(VehicleRefreshPhase.waking("Lunar").text, "Waking Lunar\u{2026}")
     }
 
-    // Idle and the no-op acknowledgement contribute NO copy — the resting recency
-    // stamp shows through, which is exactly the acknowledgement: the owner asked
-    // how current it was and the answer re-rendered.
-    func testIdleAndAcknowledgedPhasesShowTheRestingStamp() {
+    // Idle contributes NO copy — the resting recency stamp IS the whole truth.
+    //
+    // MYR-345 (client defect): `.acknowledged` used to be in that same clause, on
+    // MYR-315's reasoning that "the resting stamp showing through is exactly the
+    // acknowledgement". It is not, from the owner's side: they tap, nothing on
+    // screen changes, and a no-op is indistinguishable from a dead control —
+    // *"when I select the refresh icon to refresh the data it doesn't work"*. The
+    // no-op now says so, without claiming a read it did not perform.
+    func testIdleShowsTheRestingStampAndTheNoOpSaysItIsANoOp() {
         XCTAssertNil(VehicleRefreshPhase.idle.text)
-        XCTAssertNil(VehicleRefreshPhase.acknowledged.text)
+        XCTAssertEqual(VehicleRefreshPhase.acknowledged.text, "Already up to date")
+    }
+
+    // MYR-345 — a refused refresh reuses MYR-329's named copy verbatim. A car in
+    // service mode is the same physical fact whether a climate command or a
+    // refresh discovered it, and telling the owner two different things about one
+    // fact is a fork, not a feature.
+    func testARefusedRefreshReusesTheNamedRejectionCopy() {
+        XCTAssertEqual(
+            VehicleRefreshNotice.rejected(.vehicleInService).message,
+            VehicleCommandNotice.rejected(.vehicleInService).message
+        )
+        XCTAssertEqual(
+            VehicleRefreshNotice.rejected(.vehicleInService).message,
+            "Car is in service \u{2014} commands are limited"
+        )
+        // …and an unnamed refusal keeps the honest generic line rather than
+        // guessing (MYR-329's own rule).
+        XCTAssertEqual(VehicleRefreshNotice.rejected(nil).message, "The car didn\u{2019}t accept that")
+        XCTAssertNotEqual(VehicleRefreshNotice.rejected(nil).message, VehicleRefreshNotice.failed.message)
     }
 
     // `vehicle_asleep` is the SAME physical fact whether a lock command or a
@@ -145,6 +169,12 @@ final class VehicleRefreshNoticeTests: XCTestCase {
         XCTAssertEqual(VehicleRefreshNotice.resolve(commandFailureKind: .vehicleAsleep), .asleep)
         XCTAssertEqual(VehicleRefreshNotice.resolve(commandFailureKind: .rateLimited), .cooldown)
         XCTAssertEqual(VehicleRefreshNotice.resolve(commandFailureKind: .other), .failed)
+        // MYR-345 — the refusal arm carries its reason through untouched.
+        XCTAssertEqual(
+            VehicleRefreshNotice.resolve(commandFailureKind: .rejected(.vehicleInService)),
+            .rejected(.vehicleInService)
+        )
+        XCTAssertEqual(VehicleRefreshNotice.resolve(commandFailureKind: .rejected(nil)), .rejected(nil))
         XCTAssertEqual(VehicleRefreshNotice.failed.message, VehicleCommandNotice.failed.message)
     }
 }
