@@ -304,6 +304,108 @@ public final class SharedViewerState {
         userLocation.coordinate ?? liveVehicleLocator?.coordinate ?? DriveFixtures.home
     }
 
+    // MARK: MYR-341 — the rider pickup ETA ("A ride is N min away")
+    //
+    // The idle placeholder's number, and — through `liveFleetMember` below —
+    // Review's "N min away" and Booking's pickup clock. ONE estimator feeds all
+    // three, so the three surfaces cannot disagree about the same car.
+    //
+    // The endpoints are ANCHORS, not fixes. `refreshPickupETAAnchors()` is called
+    // on idle-sheet appearance and whenever either raw coordinate changes, but a
+    // `StableFixAnchor` only re-seats on a move of a full grid cell — so a ~1Hz
+    // GPS stream writes NOTHING here, the observation never fires, and the number
+    // cannot twitch across the placeholder's 2800ms rotation (MYR-237 class).
+
+    /// The rider anchor the ETA is measured TO at idle — the stable form of the
+    /// device fix. `nil` with no fix, which is honesty gate 1: it is deliberately
+    /// NOT `mapRegionCenter`, whose own fallback ladder resolves to the VEHICLE's
+    /// coordinate and would yield an ETA from the car to itself.
+    public private(set) var idleRiderAnchor: CLLocationCoordinate2D?
+    /// The watched vehicle's stable coordinate anchor. `nil` until the cold
+    /// snapshot lands (or when the car reports the contract's "no fix" 0,0).
+    public private(set) var pickupETAVehicleAnchor: CLLocationCoordinate2D?
+
+    @ObservationIgnored private var riderFixAnchor = StableFixAnchor()
+    @ObservationIgnored private var vehicleFixAnchor = StableFixAnchor()
+
+    #if DEBUG
+    /// MYR-341 capture hook: a live-shaped vehicle coordinate a scene can inject,
+    /// mirroring `debugFleetMemberOverride`. `nil` for every other scene and every
+    /// shipping build. Release builds never compile it.
+    public var debugVehicleCoordinateOverride: CLLocationCoordinate2D?
+    /// MYR-341 capture hook: resolve the idle placeholder on the LIVE-shaped
+    /// branch from a simulated boot. The state is live-only by construction (it
+    /// needs a device fix, a real vehicle coordinate and a live fleet member at
+    /// once), so this is the same stand-in-for-a-live-session precedent as
+    /// `rendersLiveVehicleFreshness`. `false` everywhere else, so every simulated
+    /// scene keeps the fixture placeholder and stays byte-identical.
+    public var debugResolvesLivePickupETA = false
+    #endif
+
+    /// Whether the pickup ETA resolves at all: the live path, plus the one DEBUG
+    /// capture scene. On the simulated path this is false and every ETA surface
+    /// keeps its fixture value untouched.
+    var resolvesPickupETA: Bool {
+        #if DEBUG
+        if debugResolvesLivePickupETA { return true }
+        #endif
+        return isLiveLocation
+    }
+
+    /// The vehicle coordinate the ETA measures FROM (the cold snapshot's, or a
+    /// DEBUG scene's injected one).
+    private var pickupETAVehicleFix: CLLocationCoordinate2D? {
+        #if DEBUG
+        if let debugVehicleCoordinateOverride { return debugVehicleCoordinateOverride }
+        #endif
+        return liveVehicleLocator?.coordinate
+    }
+
+    /// A change-key over the RAW endpoints (`CLLocationCoordinate2D` isn't
+    /// `Equatable`) — the screen re-seats the anchors when this changes. Changing
+    /// it does NOT change the anchors unless the move was material.
+    public var pickupETAFixKey: String {
+        let rider = userLocation.coordinate
+        let vehicle = pickupETAVehicleFix
+        return "\(rider?.latitude ?? .nan),\(rider?.longitude ?? .nan)|\(vehicle?.latitude ?? .nan),\(vehicle?.longitude ?? .nan)"
+    }
+
+    /// Re-seat both ETA anchors from the current raw fixes. Idempotent and cheap;
+    /// writes an observable property ONLY when an anchor actually moved, so a
+    /// streaming fix does not invalidate any view.
+    public func refreshPickupETAAnchors() {
+        let rider = riderFixAnchor.update(userLocation.coordinate)
+        if !Self.sameCoordinate(rider, idleRiderAnchor) { idleRiderAnchor = rider }
+        let vehicle = vehicleFixAnchor.update(pickupETAVehicleFix)
+        if !Self.sameCoordinate(vehicle, pickupETAVehicleAnchor) { pickupETAVehicleAnchor = vehicle }
+    }
+
+    private static func sameCoordinate(_ a: CLLocationCoordinate2D?, _ b: CLLocationCoordinate2D?) -> Bool {
+        switch (a, b) {
+        case (nil, nil): return true
+        case let (a?, b?): return a.latitude == b.latitude && a.longitude == b.longitude
+        default: return false
+        }
+    }
+
+    /// The rider endpoint the pickup ETA measures TO, by phase — one lineage so
+    /// the idle placeholder, Review and Booking all measure to the same point:
+    ///  • the CONFIRMED pickup once the rider has dropped a pin,
+    ///  • else MYR-237's `previewPickupAnchor` (the fix anchored at the moment a
+    ///    destination was chosen — the same anti-jitter anchor the route preview
+    ///    already uses),
+    ///  • else the stable idle anchor (the rider's current location).
+    public var pickupETARiderAnchor: CLLocationCoordinate2D? {
+        draftPickup?.coordinate ?? previewPickupAnchor ?? idleRiderAnchor
+    }
+
+    /// Minutes for the watched vehicle to reach the rider, or `nil` when either
+    /// endpoint is unknown (or when the ETA doesn't resolve on this path).
+    public var pickupETAMinutes: Int? {
+        guard resolvesPickupETA else { return nil }
+        return RiderPickupETA.minutes(vehicle: pickupETAVehicleAnchor, rider: pickupETARiderAnchor)
+    }
+
     /// Equatable change-key for `mapRegionCenter` (`CLLocationCoordinate2D`
     /// isn't `Equatable`) — the search sheet re-runs its active query when
     /// this changes (MYR-211 region-bias fix: a search issued before the first
@@ -785,17 +887,38 @@ public final class SharedViewerState {
     /// MYR-233: the ONE place the own-ride exception is applied. Folding it here
     /// (rather than at each of the five read sites) means a rider mid-ride can
     /// never see Busy on any surface — Review, Booking, Tracking or Summary.
+    ///
+    /// MYR-341: and the ONE place the pickup ETA becomes real, for the same
+    /// reason. `LiveFleetMemberMapping` cannot compute it — it sees one wire row
+    /// and knows nothing about where the rider is standing — so it emits the 0
+    /// sentinel and this seam fills it from `RiderPickupETA`. Review's "N min
+    /// away" and Booking's pickup clock both read `etaMin` through here, so they
+    /// and the idle placeholder are guaranteed to quote the same estimate.
     public var liveFleetMember: FleetMember? {
         #if DEBUG
-        if let debugFleetMemberOverride { return resolvingOwnRide(debugFleetMemberOverride) }
+        if let debugFleetMemberOverride { return resolving(debugFleetMemberOverride) }
         #endif
         guard isLiveLocation, let member = liveVehicleLocator?.fleetMember else { return nil }
-        return resolvingOwnRide(member)
+        return resolving(member)
+    }
+
+    private func resolving(_ member: FleetMember) -> FleetMember {
+        applyingPickupETA(resolvingOwnRide(member))
     }
 
     private func resolvingOwnRide(_ member: FleetMember) -> FleetMember {
         guard riderOwnsActiveRide, member.unavailability == .busy else { return member }
         return member.clearingUnavailability()
+    }
+
+    /// MYR-341 — fill the pickup ETA, following `TripEstimate.applied(to:)`'s
+    /// gate style exactly: only when the member carries the 0 sentinel (so a
+    /// fixture's own 3/8/12 is never overwritten) and only when a real estimate
+    /// exists (so an unmeasurable car keeps 0 and the surfaces render their calm
+    /// unknown rather than a fabricated minute).
+    private func applyingPickupETA(_ member: FleetMember) -> FleetMember {
+        guard member.etaMin == 0, let minutes = pickupETAMinutes else { return member }
+        return member.withPickupETA(minutes)
     }
 
     /// MYR-270 — the streamed nav ETA (minutes) of the ride's car for the rider's

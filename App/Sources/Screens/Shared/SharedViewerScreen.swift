@@ -253,6 +253,13 @@ struct SharedViewerScreen: View {
             // the pin-drop phase mounts (no-op in sim).
             if entering { viewerState.enterPinDrop() }
         }
+        // MYR-341: re-seat the pickup-ETA anchors on this screen's appearance
+        // and whenever either RAW endpoint changes. The anchors themselves only
+        // move on a material (>250m) step, so a ~1Hz device fix writes nothing
+        // and the placeholder's number holds still across its 2800ms rotation.
+        .onChange(of: viewerState.pickupETAFixKey, initial: true) { _, _ in
+            viewerState.refreshPickupETAAnchors()
+        }
         .onChange(of: rideRequestService.activeRequest?.status) { _, newStatus in
             handleStatusChange(newStatus)
         }
@@ -1480,18 +1487,28 @@ struct SharedViewerScreen: View {
         .frame(minHeight: MRTMetrics.minTapTarget)
     }
 
-    /// screens.jsx:15-19 `FLEET[0].etaMin` (Alex's shared Model Y) — the
-    /// rotating placeholder's second string.
-    private static let watchedVehicleETAMinutes = 3
-
-    /// MYR-228 — the search bar's rotating placeholder items. LIVE: only the
-    /// static "Where to?" (the fixture ETA is dropped — no real watched-vehicle
-    /// ETA yet; a single-item `RotatingPlaceholder` never rotates). SIM: both
-    /// strings, unchanged.
+    /// The search bar's rotating placeholder items (screens.jsx:1977-1980).
+    ///
+    /// SIM: both strings on the fixture ETA, byte-identical to every prior
+    /// build — the drift-gate scenes depend on this line reading "A ride is 3
+    /// min away", and it is returned before any live machinery is consulted.
+    ///
+    /// LIVE (MYR-341): the same two strings, on a REAL estimate. MYR-228 had
+    /// suppressed the second item here "until a real watched-vehicle ETA
+    /// exists"; `RiderPickupETA` is that ETA. The gates live in
+    /// `RiderIdlePlaceholder.items` — no fix, no vehicle coordinate, an
+    /// unavailable car, or a request already in flight all fall back to the
+    /// static "Where to?" a single-item `RotatingPlaceholder` never rotates.
     private var searchPlaceholders: [String] {
-        viewerState.isLiveLocation
-            ? ["Where to?"]
-            : ["Where to?", "A ride is \(SharedViewerScreen.watchedVehicleETAMinutes) min away"]
+        RiderIdlePlaceholder.items(
+            resolvesLiveETA: viewerState.resolvesPickupETA,
+            pickupETAMinutes: viewerState.pickupETAMinutes,
+            unavailability: viewerState.liveFleetMember?.unavailability,
+            // ride-request.jsx `reqActive` (screens.jsx:1964, gating the whole
+            // greeting + search block at 2173) — any record at all, not just a
+            // pending one.
+            hasActiveRequest: rideRequestService.activeRequest != nil
+        )
     }
 }
 
