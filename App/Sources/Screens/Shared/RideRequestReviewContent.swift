@@ -147,12 +147,22 @@ struct RideRequestReviewContent: View {
                 // already carries a schedule (scheduled rides are exempt from the
                 // busy rule — contracts `hasActiveRide` doc), keeps the CTA
                 // verbatim, so sim + every existing scene are pixel-identical.
+                // MYR-342 adds the THIRD arm, and it is the absence of a button.
+                // A paused car is gated like the rest, but scheduling is blocked
+                // server-side too (§7.18), so there is nothing honest to offer:
+                // the CTA area collapses and the helper line below carries the
+                // whole message. Deliberately NOT a disabled button — a greyed
+                // "Schedule instead" would still read as an available path, and
+                // MYR-233's objection to dead ends applies to one that LOOKS
+                // actionable most of all.
                 if ctaGate.routesToScheduling {
                     MRTButton(
                         "Schedule with \(fleetMember.owner) instead",
                         variant: .outlineMuted,
                         action: { viewerState.routeToScheduling() }
                     )
+                } else if ctaGate.isGated {
+                    EmptyView()
                 } else {
                     MRTButton(schedule != nil ? "Schedule with \(fleetMember.owner)" : "Request from \(fleetMember.owner)", variant: .outlineDraw, action: confirm)
                         // MYR-237: inert while the destination's real coordinate is
@@ -405,6 +415,16 @@ struct RideRequestReviewContent: View {
                 return "\(fleetMember.owner) is in service right now \u{2014} schedule a pickup instead"
             case .offline:
                 return "\(fleetMember.owner) is offline right now \u{2014} schedule a pickup instead"
+            // MYR-342 — the ONE reason that does not end with "schedule a pickup
+            // instead", because scheduling is blocked server-side for a paused car
+            // too (§7.18). The line names WHO paused it and says "right now" to
+            // match its three siblings — a pause is temporary and normal, and copy
+            // implying the car is gone for good would send a rider away for no
+            // reason. What it deliberately does NOT do is suggest an action: there
+            // isn't one on this screen, and inventing one would be the dead end
+            // MYR-233 set out to remove.
+            case .paused:
+                return "\(fleetMember.owner) has paused ride requests right now"
             }
         }
         if let passenger, !passenger.phone.isEmpty {

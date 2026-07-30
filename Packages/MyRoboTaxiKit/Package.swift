@@ -56,7 +56,16 @@ let package = Package(
         // never full access — never fail open.
         // (0.18.0 added `VehicleState.trimLabel` + `fsdVersion`; 0.17.0
         // `serviceEstimatedEndAt`; 0.16.0 the media now-playing fields.)
-        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.19.0")
+        // MYR-342 — 0.20.0 adds ONE boolean to BOTH read shapes:
+        // `VehicleSummary.rideShareEnabled` and `VehicleState.rideShareEnabled`,
+        // the owner's ride-share PAUSE switch. It is OPTIONAL on the wire and
+        // **ABSENT MEANS ENABLED** — an older server, or any row a build predates,
+        // must read as "riders can request this car", never as paused. Every
+        // consumer therefore tests `== false` explicitly; `nil`/absent is never
+        // paused. Unlike `serviceEstimatedEndAt` this one is an ORDINARY FOLDED
+        // field: the server pushes it on `vehicle_update` when the owner flips it,
+        // so `VehicleStateMerger` folds it with the standard null-clear semantics.
+        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.20.0")
     ],
     targets: [
         .target(

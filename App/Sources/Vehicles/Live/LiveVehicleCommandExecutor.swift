@@ -90,6 +90,12 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// one-method protocol a test can stub in isolation, matching the narrowing
     /// every other seam in this file uses.
     private let serviceWindowEndpoint: any VehicleServiceWindowEndpoint
+    /// MYR-342 — the §7.18 owner ride-share write seam. Separate again, for the
+    /// same narrowing reason: one method, stubbable in isolation. It is NOT folded
+    /// into `serviceWindowEndpoint` even though both are §7.1x owner-scoped writes
+    /// with the same error catalog, because the two can be in flight independently
+    /// and their failures say different things to an owner.
+    private let rideShareEndpoint: any VehicleRideShareEndpoint
 
     /// Fired with the SERVER-NORMALIZED plate after a successful §7.14 write, so
     /// the owner's fleet row can adopt it immediately. There is no WS delta for
@@ -103,6 +109,17 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// the rider-facing summary would keep the stale value until the next
     /// `GET /api/vehicles`. Set by `LiveVehicleFleet`; nil elsewhere.
     var onServiceWindowSaved: ((Date?) -> Void)?
+    /// MYR-342 — fired with the server's RESOLVED ride-share position after a
+    /// successful §7.18 write, for the same reason the two hooks above exist:
+    /// rest-api.md §7.18 states plainly that "a ride-share edit fires no
+    /// `vehicle_update` frame", so without this hook the owner's fleet row — and
+    /// therefore the RIDER-facing `LiveFleetMemberMapping` built from it — would
+    /// keep showing the car as bookable until the next `GET /api/vehicles`. That is
+    /// the one of the three where staleness is not merely cosmetic: it is a rider
+    /// being offered a car whose owner has just withdrawn it, and a `409
+    /// vehicle_unavailable` waiting at the end of the request they fill in.
+    /// Set by `LiveVehicleFleet`; nil elsewhere.
+    var onRideShareSaved: ((Bool) -> Void)?
     /// Backoff before the single `vehicle_asleep` retry (injectable → `.zero` in
     /// tests for determinism; ~2 s in production, matching the §7.9 wake curve).
     private let wakeRetryDelay: Duration
@@ -167,6 +184,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         sender: any VehicleCommandSending,
         plateEndpoint: any VehiclePlateEndpoint,
         serviceWindowEndpoint: any VehicleServiceWindowEndpoint,
+        rideShareEndpoint: any VehicleRideShareEndpoint,
         driving: Bool,
         plate: String,
         wakeRetryDelay: Duration = .seconds(2),
@@ -178,6 +196,7 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         self.sender = sender
         self.plateEndpoint = plateEndpoint
         self.serviceWindowEndpoint = serviceWindowEndpoint
+        self.rideShareEndpoint = rideShareEndpoint
         self.wakeRetryDelay = wakeRetryDelay
         self.maxWakeRetries = maxWakeRetries
         self.settleWindow = settleWindow
@@ -450,6 +469,30 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             }
             controls.serviceEstimatedEndAt = resolvedWindow
             if resolvedWindow != nil { knownFields.insert(.serviceWindow) }
+        }
+
+        // MYR-342 — the owner's ride-share switch, reconciled like the two above
+        // and SNAPSHOT-ONLY for the same contractual reason (rest-api.md §7.18: a
+        // ride-share edit fires no push, and a `vehicle_update` never carries the
+        // field), so this arm only ever runs on a cold `/snapshot` read.
+        //
+        // `if let`, NOT unconditional — the exact opposite of the service window
+        // directly above, and the difference is what the nil MEANS on each field.
+        // A nil window is a real answer ("no window is known") that must be adopted
+        // or a completed visit's estimate would linger. A nil here is the ABSENCE
+        // of an answer: the server column is `NOT NULL DEFAULT true`, so a live
+        // server always sends a boolean, and a missing key means only that the
+        // server predates 0.20.0. Adopting it would be doubly wrong — it would
+        // overwrite a position the owner had just set, and it would raise the
+        // MYR-251 known flag off an ABSENT wire value, which is the MYR-228 honesty
+        // tripwire. Absence is handled where the contract says it is handled: at
+        // READ time, by `VehicleRideShare.isEnabled` resolving nil to ON.
+        //
+        // Skipped while a write is in flight, so a snapshot landing mid-flip cannot
+        // clobber the optimistic position — the echo settles it a moment later.
+        if let wireRideShare = state.rideShareEnabled, uiState(for: .rideShare).isPending == false {
+            controls.rideShareEnabled = wireRideShare
+            knownFields.insert(.rideShare)
         }
     }
 
@@ -965,6 +1008,63 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             settle(.serviceWindow, notice: Self.serviceWindowNotice(for: error.commandFailureKind))
         } catch {
             settle(.serviceWindow, notice: .serviceWindowNotSaved)
+        }
+    }
+
+    /// MYR-342 — pause or resume ride requests for this vehicle (rest-api.md
+    /// §7.18). The `setServiceWindow` recipe above, with three differences, each of
+    /// which is the contract asserting itself:
+    ///
+    ///  1. IT FLIPS OPTIMISTICALLY. A toggle that waits for a round trip before
+    ///     moving reads as broken — the finger leaves the switch and nothing
+    ///     happens — so the position changes immediately and the ECHO confirms it.
+    ///     The service window has no equivalent because its editor is a sheet with
+    ///     a Save button, where the wait is legible.
+    ///  2. IT ROLLS BACK ON FAILURE. The optimistic flip is a claim about the
+    ///     SERVER's state, and if the write did not land that claim is false. A
+    ///     toggle left sitting in the position the owner chose while the server
+    ///     holds the other one is the worst possible outcome here: the owner walks
+    ///     away believing their car is paused while it is still taking requests —
+    ///     the exact failure §7.18 names when it forbids reporting a failed write
+    ///     as success. So the row snaps back, and the notice beside it says why.
+    ///  3. IT ADOPTS THE ECHO, not the bool it sent. Today those always agree
+    ///     (§7.18: "this server writes exactly what was asked"), and the contract
+    ///     echoes anyway so a future server can refuse or coerce without breaking
+    ///     clients. Adopting our own submission would be correct by luck.
+    ///
+    /// The `isPending` guard makes a double-tap a no-op rather than a second write,
+    /// exactly as it does for every other keyed control.
+    func setRideShareEnabled(_ enabled: Bool) async throws {
+        guard uiState(for: .rideShare).isPending == false else { return }
+        let previous = controls.rideShareEnabled
+        let wasKnown = knownFields.contains(.rideShare)
+        // Optimistic flip — see (1). Marked KNOWN alongside it, because the two are
+        // one claim: from this instant the resolver must prefer the executor over a
+        // snapshot that CANNOT carry the new value (the field has no WS delta).
+        // Without raising the flag the row would render from the snapshot and snap
+        // straight back to the old position under the owner's finger — which is the
+        // very defect `VehicleRideShare.resolvedEnabled` exists to prevent.
+        controls.rideShareEnabled = enabled
+        knownFields.insert(.rideShare)
+        beginPending(.rideShare)
+        do {
+            let response = try await rideShareEndpoint.setRideShareEnabled(enabled, vehicleID: vehicleID)
+            controls.rideShareEnabled = response.enabled // adopt the ECHO — see (3)
+            uiStates[.rideShare] = .idle
+            onRideShareSaved?(response.enabled)
+        } catch {
+            // Roll back BOTH halves of the optimistic claim — see (2). Restoring the
+            // known flag matters as much as the value: leaving it raised would make
+            // a never-confirmed default outrank a snapshot that does know the
+            // answer, so a failed flip on a cold-launched paused car would leave the
+            // switch reading ON against a server that holds OFF.
+            controls.rideShareEnabled = previous
+            if !wasKnown { knownFields.remove(.rideShare) }
+            // ONE notice for every failure. §7.18's 400 is a malformed-body bug
+            // rather than something the owner did, so unlike the service window
+            // there is nothing to tell them apart FOR — see
+            // `VehicleCommandNotice.rideShareNotSaved`.
+            settle(.rideShare, notice: .rideShareNotSaved)
         }
     }
 

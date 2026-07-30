@@ -452,12 +452,17 @@ struct RootView: View {
     ///     scheduled accept-gate exemption;
     ///   • `ownerFreshnessStale` / `ownerFreshnessWaking` (MYR-315) — the freshness
     ///     stamp, which has no prototype counterpart and no honest simulated input.
+    ///   • `ownerRideShareOn` / `ownerRideSharePaused` / `ownerRideSharePending`
+    ///     (MYR-342) — the ride-sharing toggle, which is gated on the live path on
+    ///     purpose: a switch that cannot reach §7.18 would appear to withdraw the
+    ///     owner's car and do nothing.
     /// `false` everywhere else → the fixture persona and no stamp,
     /// pixel-identical (MYR-228).
     private var ownerHomeIsLive: Bool {
         #if DEBUG
         if DebugScene.current?.rendersLiveIncomingRequest == true { return true }
         if DebugScene.current?.rendersLiveVehicleFreshness == true { return true }
+        if DebugScene.current?.rendersLiveRideShareToggle == true { return true }
         #endif
         return isLiveMode
     }

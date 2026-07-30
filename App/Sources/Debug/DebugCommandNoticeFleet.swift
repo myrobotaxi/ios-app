@@ -91,6 +91,10 @@ final class DebugCommandNoticeFleet: VehicleFleet {
             // MYR-316 — never exercised in these scenes (none is in service), but
             // the seam is required; the stub keeps the executor total.
             serviceWindowEndpoint: DebugServiceWindowEndpoint(),
+            // MYR-342 — the §7.18 seam. These scenes never flip the switch, so it
+            // is only here to keep the executor's seam total; the row itself is
+            // live-only and none of them render it.
+            rideShareEndpoint: DebugRideShareEndpoint(),
             driving: false,
             plate: vehicle.plate,
             wakeRetryDelay: .zero,

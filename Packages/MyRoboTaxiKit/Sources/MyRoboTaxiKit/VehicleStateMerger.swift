@@ -277,6 +277,32 @@ public enum VehicleStateMerger {
             // `vehicle_data` field and no proto behind it at all. The schema says
             // plainly that a `vehicle_update` frame NEVER contains either, so
             // folding them would invent a delivery path the server does not have.
+            //
+            // NOT FOLDED, deliberately: `rideShareEnabled` (contracts 0.20.0,
+            // MYR-342). This one LOOKS foldable — a plain optional Bool, the exact
+            // shape of every MYR-272/298 cabin field above — and that is precisely
+            // why the reason is written out rather than left to the type. It is not
+            // TELEMETRY at all: it is the OWNER'S INTENTION about the car, written
+            // only by `PUT /api/tesla/vehicles/{id}/ride-share` (rest-api.md
+            // §7.18). Tesla has no proto for "this owner is lending their car out",
+            // no fleet-config change was involved, and both the contract and the
+            // endpoint spec state plainly that a `vehicle_update` frame NEVER
+            // carries it and that a ride-share edit fires NO push at all.
+            //
+            // Here folding would be worse than merely inventing a delivery path the
+            // server lacks — it would re-open on the client the exact hole the
+            // SERVER went out of its way to close. §7.18 keeps this column off the
+            // shared telemetry-fed control-state upsert specifically so that "any
+            // routine frame from the car [cannot] silently re-enable ride sharing on
+            // a vehicle its owner had paused", and asserts the property rather than
+            // commenting it (`TestVehicleRepo_RideShareIsNotReachableFromTelemetry`).
+            // A merger arm here would hand that path straight back: a frame carrying
+            // the key — from a server bug, a replayed envelope, a future field
+            // collision — would lift an owner's pause with nobody having touched the
+            // switch. The pause is liftable by exactly one actor, and the merger is
+            // not it. The value reaches clients on the REST `/snapshot` and `GET
+            // /api/vehicles` only, or from the PUT's own echo, and is declared in
+            // the MYR-298 tripwire's `snapshotOnlyFields` for those reasons.
 
             default:
                 break // unknown / forward-compat field — ignore

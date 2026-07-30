@@ -402,6 +402,7 @@ final class VehiclePlateTests: XCTestCase {
             // MYR-316 — the plate tests never touch the service window; this
             // satisfies the seam without changing any assertion here.
             serviceWindowEndpoint: NoopServiceWindowEndpoint(),
+            rideShareEndpoint: NoopRideShareEndpoint(),
             driving: false,
             plate: plate,
             wakeRetryDelay: .zero,
@@ -415,6 +416,13 @@ final class VehiclePlateTests: XCTestCase {
 /// MYR-316 — the plate tests never write a service window; this satisfies the
 /// seam. Any call is a test bug, so it returns the "no window known" answer
 /// rather than inventing one.
+/// The plate tests never flip the ride-share switch; this satisfies the seam.
+private struct NoopRideShareEndpoint: VehicleRideShareEndpoint {
+    func setRideShareEnabled(_ enabled: Bool, vehicleID: String) async throws -> VehicleRideShareResponse {
+        VehicleRideShareResponse(vehicleId: vehicleID, enabled: enabled)
+    }
+}
+
 private struct NoopServiceWindowEndpoint: VehicleServiceWindowEndpoint {
     func setServiceWindow(expectedEndAt: String?, vehicleID: String) async throws -> VehicleServiceWindowResponse {
         VehicleServiceWindowResponse(vehicleId: vehicleID, serviceEstimatedEndAt: nil)

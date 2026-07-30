@@ -15,6 +15,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         _ sender: any VehicleCommandSending,
         plateEndpoint: any VehiclePlateEndpoint = ScriptedPlateEndpoint(),
         serviceWindowEndpoint: any VehicleServiceWindowEndpoint = ScriptedServiceWindowEndpoint(),
+        rideShareEndpoint: any VehicleRideShareEndpoint = ScriptedRideShareEndpoint(),
         driving: Bool = false,
         maxWakeRetries: Int = 1,
         settleWindow: TimeInterval = 15,
@@ -27,6 +28,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
             sender: sender,
             plateEndpoint: plateEndpoint,
             serviceWindowEndpoint: serviceWindowEndpoint,
+            rideShareEndpoint: rideShareEndpoint,
             driving: driving,
             // MYR-286 — the RAW owner-entered plate (empty = none set). The
             // `VIN ····xxxx` string is a DISPLAY fallback and never lives here.
@@ -1124,6 +1126,167 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         }
         XCTFail("condition never became true", file: file, line: line)
     }
+
+    // MARK: - MYR-342 — the owner ride-share pause write (§7.18)
+
+    /// The flip is OPTIMISTIC and the ECHO is adopted. Both halves matter: a toggle
+    /// that waited for a round trip would read as broken, and a toggle that kept
+    /// its own submission would be correct only by luck — §7.18 echoes precisely so
+    /// a future server can coerce without breaking clients, so the stub echoes the
+    /// OPPOSITE here to prove which value the executor actually keeps.
+    func testRideShareAdoptsTheServerEchoNotTheSubmittedValue() async {
+        let endpoint = ScriptedRideShareEndpoint(echo: true)
+        let executor = makeExecutor(ScriptedCommandSender(), rideShareEndpoint: endpoint)
+
+        try? await executor.setRideShareEnabled(false)
+
+        let submitted = await endpoint.submitted()
+        XCTAssertEqual(submitted, [false], "the owner's choice is what goes on the wire")
+        XCTAssertTrue(
+            executor.controls.rideShareEnabled,
+            "the executor must adopt the server's answer, never the bool it sent"
+        )
+        XCTAssertTrue(executor.isKnown(.rideShare))
+        XCTAssertNil(executor.uiState(for: .rideShare).notice)
+    }
+
+    /// The ordinary case: server agrees, position sticks, the fleet hook fires with
+    /// the resolved value so the rider-facing summary row can adopt it immediately
+    /// (there is no WS delta to carry it).
+    func testRideSharePauseSticksAndNotifiesTheFleet() async {
+        let executor = makeExecutor(ScriptedCommandSender(), rideShareEndpoint: ScriptedRideShareEndpoint())
+        var notified: [Bool] = []
+        executor.onRideShareSaved = { notified.append($0) }
+
+        try? await executor.setRideShareEnabled(false)
+
+        XCTAssertFalse(executor.controls.rideShareEnabled)
+        XCTAssertEqual(notified, [false], "the fleet row must learn the new position — §7.18 fires no push")
+    }
+
+    /// A FAILED write ROLLS BACK. This is the assertion the contract itself
+    /// motivates: §7.18 refuses to report a failed write as success because it
+    /// "would leave an owner believing their car is paused while it is still taking
+    /// requests" — and a client that kept the optimistic position would manufacture
+    /// exactly that belief with no server bug at all.
+    func testFailedRideShareWriteRollsBackAndSettlesTheNotice() async {
+        let executor = makeExecutor(
+            ScriptedCommandSender(),
+            rideShareEndpoint: ScriptedRideShareEndpoint(failure: Self.restError("internal_error", 500))
+        )
+        XCTAssertTrue(executor.controls.rideShareEnabled, "precondition: the switch starts on")
+
+        try? await executor.setRideShareEnabled(false)
+
+        XCTAssertTrue(
+            executor.controls.rideShareEnabled,
+            "a write that did not land must not leave the switch claiming it did"
+        )
+        XCTAssertEqual(executor.uiState(for: .rideShare).notice, .rideShareNotSaved)
+        XCTAssertFalse(executor.uiState(for: .rideShare).isPending)
+    }
+
+    /// The rollback restores the KNOWN flag too, not just the value. Leaving it
+    /// raised would let a never-confirmed default outrank a snapshot that does know
+    /// the answer — so a failed flip on a cold-launched PAUSED car would leave the
+    /// row reading ON against a server holding OFF.
+    func testFailedWriteDoesNotLeaveTheFieldFalselyMarkedKnown() async {
+        let executor = makeExecutor(
+            ScriptedCommandSender(),
+            rideShareEndpoint: ScriptedRideShareEndpoint(failure: Self.restError("internal_error", 500))
+        )
+        XCTAssertFalse(executor.isKnown(.rideShare), "precondition: nothing confirmed yet")
+
+        try? await executor.setRideShareEnabled(false)
+
+        XCTAssertFalse(
+            executor.isKnown(.rideShare),
+            "a failed write confirms nothing — the snapshot must stay authoritative"
+        )
+    }
+
+    /// Every §7.18 failure produces the SAME notice. Unlike the service window
+    /// there is no semantic 400 to distinguish: `enabled` is a required boolean
+    /// with no clear, so a 400 means the client sent something malformed — a bug,
+    /// not something the owner did or can fix by trying differently.
+    func testEveryRideShareFailureFoldsOntoTheOneNotice() async {
+        for (code, status) in [("invalid_request", 400), ("auth_failed", 401),
+                               ("vehicle_not_owned", 403), ("not_found", 404),
+                               ("internal_error", 500)] {
+            let executor = makeExecutor(
+                ScriptedCommandSender(),
+                rideShareEndpoint: ScriptedRideShareEndpoint(failure: Self.restError(code, status))
+            )
+            try? await executor.setRideShareEnabled(false)
+            XCTAssertEqual(
+                executor.uiState(for: .rideShare).notice, .rideShareNotSaved,
+                "\(code) must fold onto the single honest fact: the switch did not move"
+            )
+        }
+    }
+
+    /// A second flip while the first is in flight is SUPPRESSED — asserted on the
+    /// WIRE (one call) rather than on a UI flag, so a future refactor that moved the
+    /// guard would trip here.
+    func testConcurrentFlipIsSuppressedWhileAWriteIsInFlight() async {
+        let endpoint = GatedRideShareEndpoint()
+        let executor = makeExecutor(ScriptedCommandSender(), rideShareEndpoint: endpoint)
+
+        let first = Task { try? await executor.setRideShareEnabled(false) }
+        // The MYR-286 `GatedPlateEndpoint` recipe: a BOUNDED poll that actually
+        // suspends. A `Task.yield()` spin does not work here — this test body is
+        // main-actor isolated and the write it is waiting for needs the same
+        // executor, so a tight loop starves the very task it is polling for.
+        await endpoint.waitUntilInFlight()
+        XCTAssertTrue(executor.uiState(for: .rideShare).isPending)
+
+        try? await executor.setRideShareEnabled(true)
+        XCTAssertEqual(endpoint.callCount, 1, "the in-flight guard must swallow the second flip")
+
+        endpoint.release()
+        await first.value
+        XCTAssertFalse(executor.controls.rideShareEnabled, "the first flip is the one that lands")
+    }
+
+    /// A snapshot carrying the field adopts it and marks it known...
+    func testSnapshotAdoptsAnExplicitRideSharePosition() {
+        let executor = makeExecutor(ScriptedCommandSender())
+        executor.reconcile(from: Self.rideShareState(false))
+        XCTAssertFalse(executor.controls.rideShareEnabled)
+        XCTAssertTrue(executor.isKnown(.rideShare))
+    }
+
+    /// ...and a snapshot that OMITS it changes nothing and confirms nothing. Absence
+    /// is not an answer here (the server column is NOT NULL, so a live server always
+    /// sends one) — adopting it would overwrite a position the owner just set, and
+    /// raising the known flag off an absent wire value is the MYR-228 honesty
+    /// tripwire.
+    func testSnapshotWithoutTheFieldNeitherAdoptsNorConfirms() async {
+        let executor = makeExecutor(ScriptedCommandSender(), rideShareEndpoint: ScriptedRideShareEndpoint())
+        try? await executor.setRideShareEnabled(false)
+        XCTAssertFalse(executor.controls.rideShareEnabled)
+
+        executor.reconcile(from: Self.rideShareState(nil))
+
+        XCTAssertFalse(
+            executor.controls.rideShareEnabled,
+            "an absent key must not silently un-pause a car the owner paused"
+        )
+    }
+
+    /// A live-shaped `VehicleState` carrying (or omitting) the ride-share field.
+    private static func rideShareState(_ enabled: Bool?) -> VehicleState {
+        VehicleState(
+            vehicleId: "veh-1", name: "Lunar", model: "Model Y", year: 2026, color: "Quicksilver",
+            status: .parked, speed: 0, heading: 0, latitude: 37.79, longitude: -122.39,
+            locationName: "Embarcadero", locationAddress: "1 Embarcadero Ctr",
+            chargeLevel: 61, estimatedRange: 166, interiorTemp: 68, exteriorTemp: 61,
+            odometerMiles: 18432, fsdMilesSinceReset: 11274,
+            rideShareEnabled: enabled,
+            lastUpdated: "2026-07-29T16:00:00Z"
+        )
+    }
+
 }
 
 // MARK: - Fakes
@@ -1178,8 +1341,8 @@ final class GatedCommandSender: VehicleCommandSending, @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return count
     }
-}
 
+}
 
 // MARK: - MYR-316 fakes
 
@@ -1208,5 +1371,81 @@ actor ScriptedServiceWindowEndpoint: VehicleServiceWindowEndpoint {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f.date(from: lastSubmitted) ?? ISO8601DateFormatter().date(from: lastSubmitted)
+    }
+}
+
+
+// MARK: - MYR-342 fakes
+
+/// A scripted stand-in for the §7.18 ride-share write.
+///
+/// `echo` exists so a test can prove the executor adopts the SERVER's answer
+/// rather than the bool it sent. rest-api.md §7.18 says this server writes exactly
+/// what was asked — so a real echo always agrees — and it echoes anyway "to keep a
+/// future server free to refuse or coerce without breaking clients". A stub that
+/// could only agree would make an executor that adopted its own submission look
+/// correct, which is precisely the bug the contract's rule exists to prevent.
+actor ScriptedRideShareEndpoint: VehicleRideShareEndpoint {
+    private let echo: Bool?
+    private let failure: RestError?
+    private var calls: [Bool] = []
+
+    init(echo: Bool? = nil, failure: RestError? = nil) {
+        self.echo = echo
+        self.failure = failure
+    }
+
+    func setRideShareEnabled(_ enabled: Bool, vehicleID: String) async throws -> VehicleRideShareResponse {
+        calls.append(enabled)
+        if let failure { throw failure }
+        return VehicleRideShareResponse(vehicleId: vehicleID, enabled: echo ?? enabled)
+    }
+
+    /// Every value the executor actually sent, in order — so double-tap
+    /// suppression is asserted on the WIRE rather than on a UI flag.
+    func submitted() -> [Bool] { calls }
+}
+
+/// Holds the write in flight until `release()`, so a test can observe the real
+/// pending state and prove a concurrent second flip is suppressed. The
+/// `GatedPlateEndpoint` recipe (MYR-286), one field narrower.
+final class GatedRideShareEndpoint: VehicleRideShareEndpoint, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func setRideShareEnabled(_ enabled: Bool, vehicleID: String) async throws -> VehicleRideShareResponse {
+        lock.lock()
+        count += 1
+        let isFirst = count == 1
+        lock.unlock()
+        if isFirst {
+            await withCheckedContinuation { c in
+                lock.lock(); continuation = c; lock.unlock()
+            }
+        }
+        return VehicleRideShareResponse(vehicleId: vehicleID, enabled: enabled)
+    }
+
+    func release() {
+        lock.lock()
+        let c = continuation
+        continuation = nil
+        lock.unlock()
+        c?.resume()
+    }
+
+    var callCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return count
+    }
+
+    /// Polls until the first write is parked inside the endpoint — no fixed sleep.
+    func waitUntilInFlight() async {
+        for _ in 0..<500 {
+            lock.lock(); let parked = continuation != nil; lock.unlock()
+            if parked { return }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
     }
 }

@@ -44,7 +44,7 @@ enum LiveFleetMemberMapping {
         // rider's own rides. The exception is folded in exactly once, at the
         // single read seam (`SharedViewerState.liveFleetMember`), so no caller
         // can forget it.
-        let unavailability = unavailability(status: summary.status, hasActiveRide: summary.hasActiveRide)
+        let unavailability = unavailability(status: summary.status, hasActiveRide: summary.hasActiveRide, rideShareEnabled: summary.rideShareEnabled)
         return FleetMember(
             id: summary.vehicleId,
             owner: nickname, // no owner display name in telemetry — nickname stands in
@@ -98,6 +98,17 @@ enum LiveFleetMemberMapping {
     //    that is driving on someone's open ride reports `hasActiveRide == true`
     //    anyway and is caught by the first clause; a car merely being driven by
     //    its owner keeps today's behavior untouched.
+    //  • MYR-342 — THE PAUSE IS A FOURTH TERM, CHECKED FIRST:
+    //
+    //        rideShareEnabled == false
+    //          || hasActiveRide == true || status ∈ { inService, offline }
+    //
+    //    ...and it is the only term that is not about the CAR. The other three are
+    //    facts the vehicle (or the ride system) reports about itself, and each ends
+    //    on its own; this one is the owner's open-ended intention. That is why it
+    //    outranks the others and why it alone survives both the own-ride exception
+    //    and the scheduled-draft exemption. Same tolerant decode as `hasActiveRide`,
+    //    pointing the same way: absence is NEVER the unavailable answer.
     //  • OWN-RIDE EXCEPTION (acceptance criterion 4). The rider holding the open
     //    ride sees their active ride, never Busy — their own ride state takes
     //    precedence client-side (the contract's own consumer guidance). It
@@ -110,12 +121,42 @@ enum LiveFleetMemberMapping {
     ///   - status: the list row's wire status.
     ///   - hasActiveRide: contracts 0.14.0 `VehicleSummary.hasActiveRide`. `nil`
     ///     (older server) is treated as available — never as Busy.
+    ///   - rideShareEnabled: contracts 0.20.0 `VehicleSummary.rideShareEnabled`.
+    ///     `nil` (older server) and `true` are BOTH available; only an explicit
+    ///     `false` is a pause. Checked FIRST — see the body.
     ///   - riderOwnsActiveRide: true when THIS rider owns the vehicle's open ride.
     static func unavailability(
         status: VehicleSummary.Status,
         hasActiveRide: Bool?,
+        rideShareEnabled: Bool? = nil,
         riderOwnsActiveRide: Bool = false
     ) -> FleetUnavailability? {
+        // MYR-342 — THE PAUSE IS CHECKED FIRST, and the ordering is load-bearing
+        // rather than cosmetic.
+        //
+        // A car can easily be paused AND in service (or offline, or busy). Which
+        // reason we name decides which CTA the rider gets, and the two disagree:
+        // `inService`/`offline`/`busy` offer "Schedule with … instead", because
+        // each of those ENDS on its own and the server accepts a reservation
+        // against them (MYR-313). A pause does not end and the server refuses
+        // scheduled rides too (rest-api.md §7.18). So naming the vehicle-state
+        // reason on a car that is ALSO paused would walk the rider into a
+        // scheduling flow ending in `409 vehicle_unavailable`, having filled in a
+        // pickup, a time and a passenger first.
+        //
+        // Explicit `== false`, via the single predicate — NEVER `!= true`. `nil`
+        // (a server predating contracts 0.20.0) means ENABLED, and a client that
+        // read absence as paused would withdraw every car on every older
+        // deployment at once. This is the tolerant-decode rule the contract states
+        // in as many words.
+        //
+        // No `riderOwnsActiveRide` exemption here, deliberately: that exception is
+        // about the rider's OWN ride and suppresses `busy` only. A pause is the
+        // owner's decision about the car and applies to everyone — offering a rider
+        // mid-ride a second request against a withdrawn car would be a lie the
+        // server then refuses.
+        if VehicleRideShare.isPaused(rideShareEnabled) { return .paused }
+
         switch status {
         case .inService: return .inService
         case .offline: return .offline
