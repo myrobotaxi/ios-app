@@ -318,13 +318,15 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
     /// the standard `perform` pipeline (Bearer + single 401 refresh-retry);
     /// `{vehicleId}` is the Prisma cuid (NOT a VIN), same key as §7.12/§7.14.
     ///
-    /// The body key is `expectedEndAt` (the owner's INPUT); the response echoes
-    /// the server's RESOLVED `serviceEstimatedEndAt`, which the caller adopts
-    /// instead of the string it submitted — Tesla's own `service_etc` outranks the
-    /// owner's entry, so the two can legitimately differ (see
-    /// ``VehicleServiceWindowUpdateRequest``). Idempotent, and `nil` clears (an
-    /// empty string is accepted by the server as the same clear; this client sends
-    /// an explicit `null`, the unambiguous form).
+    /// The body key is `expectedEndAt` (the owner's INPUT) and **so is the
+    /// response key** — §7.16 echoes the OWNER COLUMN, deliberately, never the
+    /// resolved `serviceEstimatedEndAt` (MYR-362: this doc used to claim the
+    /// opposite and ``VehicleServiceWindowResponse`` was shaped to match, so every
+    /// save adopted a nil that was never on the wire). Tesla's `service_etc` can
+    /// still outrank the stored value on the NEXT read, which is where a caller
+    /// learns it — see ``VehicleServiceWindowResponse``. Idempotent, and `nil`
+    /// clears (an empty string is accepted by the server as the same clear; this
+    /// client sends an explicit `null`, the unambiguous form).
     ///
     /// `400 invalid_request` is the "not in the future" refusal, and it is the
     /// caller's job to have prevented it client-side — this endpoint mirrors the

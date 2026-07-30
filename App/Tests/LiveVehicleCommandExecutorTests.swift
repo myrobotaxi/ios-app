@@ -46,25 +46,26 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
 
     // MARK: - MYR-316 service window (an owner write, NOT a Tesla command)
 
-    /// The load-bearing property: the executor adopts the SERVER'S RESOLVED echo,
-    /// not the instant it submitted. Tesla's `service_etc` outranks the owner's
-    /// entry server-side, so an owner who types 4 PM against a Tesla estimate of
-    /// 2 PM must end up showing 2 PM — the value the rider's floor is built from.
-    /// A client that echoed its own submission would put the owner sheet and the
-    /// rider picker into permanent disagreement.
+    /// The load-bearing property: the executor adopts the SERVER'S ECHO, not the
+    /// instant it submitted — and MYR-362 is what that echo actually is. §7.16
+    /// answers with the OWNER COLUMN (`expectedEndAt`), server-validated and
+    /// server-normalized, deliberately NOT the resolved `serviceEstimatedEndAt`.
+    /// So the adoption is of the server's normalization (here, seconds precision
+    /// where the client submitted milliseconds), and Tesla's precedence is a
+    /// property of the next READ rather than of this response.
     @MainActor
-    func testSetServiceWindowAdoptsTheServerResolvedEchoNotTheSubmission() async throws {
+    func testSetServiceWindowAdoptsTheServerEchoNotTheSubmittedString() async throws {
         let owner = ISO8601DateFormatter().date(from: "2026-08-01T23:00:00Z")!
-        let tesla = "2026-08-01T21:00:00.000Z"
-        let endpoint = ScriptedServiceWindowEndpoint(resolved: tesla)
+        // The server re-formats to `time.RFC3339` — seconds, no fractional part —
+        // which is a DIFFERENT string from the one the client sent.
+        let endpoint = ScriptedServiceWindowEndpoint(echo: "2026-08-01T23:00:00Z")
         let executor = makeExecutor(ScriptedCommandSender(), serviceWindowEndpoint: endpoint)
 
         try await executor.setServiceWindow(owner)
 
         XCTAssertEqual(
-            executor.controls.serviceEstimatedEndAt,
-            ISO8601DateFormatter().date(from: "2026-08-01T21:00:00Z"),
-            "Tesla's estimate outranks the owner's entry — the echo is the truth"
+            executor.controls.serviceEstimatedEndAt, owner,
+            "the stored owner column is what the sheet shows after a save"
         )
         let submitted = await endpoint.submitted()
         XCTAssertEqual(
@@ -75,11 +76,16 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         XCTAssertTrue(executor.isKnown(.serviceWindow))
     }
 
-    /// A CLEAR sends nil and adopts whatever the server resolves — which may still
-    /// be non-nil if Tesla holds an estimate.
+    /// A CLEAR sends nil and the owner column comes back null.
+    ///
+    /// MYR-362 — this is the path that WORKED, and it worked by accident: the old
+    /// response shape decoded an absent key to nil on every response, so a clear
+    /// got the right answer for the wrong reason while every SET got nil too. It
+    /// is kept as the regression guard on the half of the endpoint the wire fix
+    /// must not disturb.
     @MainActor
-    func testSetServiceWindowClearAdoptsTheResolvedNull() async throws {
-        let endpoint = ScriptedServiceWindowEndpoint(resolved: nil)
+    func testSetServiceWindowClearAdoptsTheEchoedNull() async throws {
+        let endpoint = ScriptedServiceWindowEndpoint()
         let executor = makeExecutor(ScriptedCommandSender(), serviceWindowEndpoint: endpoint)
 
         try await executor.setServiceWindow(nil)
@@ -151,7 +157,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
         let expected = ISO8601DateFormatter().date(from: "2026-08-01T22:00:00Z")!
         let executor = makeExecutor(
             ScriptedCommandSender(),
-            serviceWindowEndpoint: ScriptedServiceWindowEndpoint(resolved: resolvedISO)
+            serviceWindowEndpoint: ScriptedServiceWindowEndpoint()
         )
 
         // The snapshot on screen when the owner opens the editor: in service, no
@@ -199,7 +205,7 @@ final class LiveVehicleCommandExecutorTests: XCTestCase {
     func testAClearedWindowDisappearsAgainstAStaleSnapshot() async throws {
         let executor = makeExecutor(
             ScriptedCommandSender(),
-            serviceWindowEndpoint: ScriptedServiceWindowEndpoint(resolved: nil)
+            serviceWindowEndpoint: ScriptedServiceWindowEndpoint()
         )
         let stale = VehicleContractMapping.snapshot(
             from: Self.serviceState(serviceEstimatedEndAt: "2026-08-01T22:00:00.000Z")
@@ -1346,23 +1352,37 @@ final class GatedCommandSender: VehicleCommandSending, @unchecked Sendable {
 
 // MARK: - MYR-316 fakes
 
-/// A scripted stand-in for the service-window write. `resolved` is what the
-/// SERVER decides the window is, which is deliberately separate from what the
-/// caller submits — that separation is the whole point of the endpoint's echo.
+/// A scripted stand-in for the §7.16 service-window write.
+///
+/// MYR-362 — it echoes the **OWNER COLUMN** (`expectedEndAt`), which is what the
+/// server does and what this stub used to get wrong: it answered a
+/// `serviceEstimatedEndAt` field the server has never emitted, so every test
+/// built on it was proving a decode that could not work against a real backend.
+/// Tesla precedence is not expressible here at all — it is a property of the NEXT
+/// READ (`COALESCE(service_etc, service_expected_end_at)`), which tests drive
+/// through `reconcile`.
+///
+/// `echo` overrides the echoed instant so a test can prove the executor adopts
+/// the SERVER's normalization rather than the string it sent.
 actor ScriptedServiceWindowEndpoint: VehicleServiceWindowEndpoint {
-    private let resolved: String?
+    private let echo: String?
+    private let echoesSubmission: Bool
     private let failure: RestError?
     private var lastSubmitted: String?
 
-    init(resolved: String? = nil, failure: RestError? = nil) {
-        self.resolved = resolved
+    init(echo: String? = nil, failure: RestError? = nil) {
+        self.echo = echo
+        self.echoesSubmission = echo == nil
         self.failure = failure
     }
 
     func setServiceWindow(expectedEndAt: String?, vehicleID: String) async throws -> VehicleServiceWindowResponse {
         lastSubmitted = expectedEndAt
         if let failure { throw failure }
-        return VehicleServiceWindowResponse(vehicleId: vehicleID, serviceEstimatedEndAt: resolved)
+        return VehicleServiceWindowResponse(
+            vehicleId: vehicleID,
+            expectedEndAt: echoesSubmission ? expectedEndAt : echo
+        )
     }
 
     /// The instant the executor actually sent, decoded back for assertion.

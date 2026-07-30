@@ -1,10 +1,11 @@
 {
   "_meta": {
-    "description": "200 response for PUT /api/tesla/vehicles/{vehicleId}/service-window with a null body (MYR-316) — the owner CLEARED their expected-back entry and Tesla holds no estimate either, so the server's resolved value is null. Clearing is an ordinary write (200 + null echo), never a validation failure and never a separate DELETE verb. Note that a clear does NOT guarantee null: if Tesla's service_data.service_etc exists it keeps winning under precedence, and the echo would carry Tesla's instant instead.",
-    "anchoredFRs": ["FR-4.x"],
+    "description": "200 response for PUT /api/tesla/vehicles/{vehicleId}/service-window with a null body (MYR-316, CORRECTED by MYR-362) — the owner CLEARED their expected-back entry, so the OWNER COLUMN this endpoint echoes is null. Clearing is an ordinary write (200 + null echo), never a validation failure and never a separate DELETE verb; §7.16 accepts four spellings for it (absent key, explicit null, empty/whitespace string, empty body). The key is `expectedEndAt`, the same key as the happy path — the old fixture's `serviceEstimatedEndAt` is a key §7.16 never emits. Note the null says nothing about the RESOLVED window: if Tesla's service_data.service_etc exists it keeps winning under COALESCE and the next §7.0/§7.1 read will still carry an instant.",
+    "anchoredFRs": ["FR-9.3"],
     "scenario": "cleared",
-    "addedBy": "MYR-316"
+    "addedBy": "MYR-316",
+    "correctedBy": "MYR-362"
   },
   "vehicleId": "clxyz1234567890abcdef",
-  "serviceEstimatedEndAt": null
+  "expectedEndAt": null
 }

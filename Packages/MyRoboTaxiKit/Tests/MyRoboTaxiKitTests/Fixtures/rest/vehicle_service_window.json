@@ -1,10 +1,11 @@
 {
   "_meta": {
-    "description": "200 response for PUT /api/tesla/vehicles/{vehicleId}/service-window (MYR-316) — the owner's 'expected back' entry. Authored here from the locked endpoint contract because the telemetry repo ships no fixture for this endpoint (docs/contracts/fixtures/rest/ covers read paths only); replace with the upstream file the moment one exists. The echoed value is the server's RESOLVED serviceEstimatedEndAt, which is NOT necessarily what the owner submitted: Tesla's own service_data.service_etc outranks the owner's entry. Clients adopt THIS value, never the string they sent — there is no WebSocket delta for serviceEstimatedEndAt.",
-    "anchoredFRs": ["FR-4.x"],
+    "description": "200 response for PUT /api/tesla/vehicles/{vehicleId}/service-window (MYR-316, CORRECTED by MYR-362) — the owner's 'expected back' entry. Authored here from rest-api.md §7.16 'Response 200' because the telemetry repo ships no fixture for this endpoint (docs/contracts/fixtures/rest/ covers read paths only); replace with the upstream file the moment one exists. THE KEY IS `expectedEndAt` AND IT IS THE OWNER COLUMN: §7.16 echoes what was stored in service_expected_end_at, deliberately NOT the resolved serviceEstimatedEndAt, because 'echoing the resolved value would make a client believe its write had been overruled when it has merely been outranked by Tesla on the next read'. This fixture previously carried a `serviceEstimatedEndAt` key the server has never emitted, which is exactly how MYR-362 shipped: the client's optional property decoded to nil on every save and the owner's date vanished from the sheet. A hand-authored fixture is only evidence to the extent it is the wire. The instant is `time.RFC3339` — seconds precision, no fractional part — matching internal/telemetry/service_window.go formatInstantOrNil. Tesla precedence is a READ concern and shows up on the next §7.0/§7.1 fetch.",
+    "anchoredFRs": ["FR-9.3"],
     "scenario": "happy-path",
-    "addedBy": "MYR-316"
+    "addedBy": "MYR-316",
+    "correctedBy": "MYR-362"
   },
   "vehicleId": "clxyz1234567890abcdef",
-  "serviceEstimatedEndAt": "2026-08-01T21:00:00.000Z"
+  "expectedEndAt": "2026-08-01T21:00:00Z"
 }

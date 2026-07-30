@@ -3,12 +3,21 @@ import XCTest
 import MyRobotaxiContracts
 
 /// REST-surface tests for the owner "expected back" service-window endpoint
-/// (MYR-316): authenticated PUT path assembly, the `expectedEndAt` request key
-/// (NOT `serviceEstimatedEndAt` — the write names the owner's INPUT while the
-/// read names the server's RESOLVED value), the explicit-null CLEAR, the
-/// server-resolved echo the client must adopt, and the error catalog folded
-/// through the typed `RestError`. Plus the READ half: `serviceEstimatedEndAt`
-/// decoding off both read surfaces, and its tolerant absence.
+/// (MYR-316): authenticated PUT path assembly, the `expectedEndAt` request key,
+/// the explicit-null CLEAR, the owner-column echo the client adopts, and the
+/// error catalog folded through the typed `RestError`. Plus the READ half:
+/// `serviceEstimatedEndAt` decoding off both read surfaces, and its tolerant
+/// absence.
+///
+/// MYR-362 — **`expectedEndAt` is the key on BOTH halves of §7.16**, request and
+/// response, and the response's is the OWNER COLUMN rather than the resolved
+/// `serviceEstimatedEndAt`. This file used to assert the opposite against a
+/// hand-authored fixture that agreed with it, so the suite was green about a body
+/// the server has never sent — and every SET in production decoded nil. The two
+/// fixtures are corrected to §7.16's own "Response `200`" example. **The read
+/// surfaces are unaffected**: `serviceEstimatedEndAt` remains the §7.0 / §7.1 key
+/// and is where Tesla precedence becomes visible, which is exactly the asymmetry
+/// the endpoint intends.
 ///
 /// No network — the deterministic `RecordingHTTP` replays canonical fixtures.
 final class VehicleServiceWindowEndpointTests: XCTestCase {
@@ -24,20 +33,20 @@ final class VehicleServiceWindowEndpointTests: XCTestCase {
     }
 
     // The authenticated PUT lands on /api/tesla/vehicles/{id}/service-window with
-    // the body key `expectedEndAt`, and the response's RESOLVED
-    // `serviceEstimatedEndAt` comes back for the caller to adopt.
-    func testSetServiceWindowPutsExpectedEndAtAndReturnsResolvedEcho() async throws {
+    // the body key `expectedEndAt`, and the response echoes the stored OWNER
+    // COLUMN under that same key (MYR-362).
+    func testSetServiceWindowPutsExpectedEndAtAndReturnsTheStoredOwnerColumn() async throws {
         let (client, http) = client([.init(status: 200, body: try Fixture.data("rest/vehicle_service_window.json"))])
 
         let response = try await client.setServiceWindow(
-            expectedEndAt: "2026-08-01T17:00:00.000Z", vehicleID: "clxyz1234567890abcdef"
+            expectedEndAt: "2026-08-01T21:00:00.000Z", vehicleID: "clxyz1234567890abcdef"
         )
 
         XCTAssertEqual(response.vehicleId, "clxyz1234567890abcdef")
-        // Deliberately DIFFERENT from what was submitted: Tesla's own estimate
-        // outranks the owner's entry, so adopting the echo (never the submitted
-        // string) is the whole point of this response shape.
-        XCTAssertEqual(response.serviceEstimatedEndAt, "2026-08-01T21:00:00.000Z")
+        // The instant the owner sent, re-formatted by the server to `time.RFC3339`
+        // (seconds, no fractional part). The caller adopts THIS rather than the
+        // string it submitted, so a server that normalizes or coerces is honoured.
+        XCTAssertEqual(response.expectedEndAt, "2026-08-01T21:00:00Z")
 
         let requests = await http.capturedRequests()
         XCTAssertEqual(requests.count, 1)
@@ -49,11 +58,30 @@ final class VehicleServiceWindowEndpointTests: XCTestCase {
         let body = try XCTUnwrap(requests[0].httpBody)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         XCTAssertEqual(Array(json.keys), ["expectedEndAt"], "the server strict-decodes the body — no extra keys")
-        XCTAssertEqual(json["expectedEndAt"] as? String, "2026-08-01T17:00:00.000Z")
+        XCTAssertEqual(json["expectedEndAt"] as? String, "2026-08-01T21:00:00.000Z")
         XCTAssertNil(
             json["serviceEstimatedEndAt"],
-            "`serviceEstimatedEndAt` is the RESPONSE key; sending it would 400"
+            "`serviceEstimatedEndAt` belongs to the READ surfaces only; sending it would 400"
         )
+    }
+
+    // MYR-362 — the tripwire. §7.16 never emits `serviceEstimatedEndAt`, so a
+    // response type shaped around that key decodes SILENTLY to nil on every save:
+    // no throw, no notice, no log, and an owner's completion date gone from a
+    // sheet whose write returned `200`. Asserting on the RAW fixture keys is the
+    // only way to catch a wrong key on an optional property, because the decode
+    // itself can never fail.
+    func testTheResponseFixtureCarriesTheOwnerColumnKeyAndNotTheResolvedOne() throws {
+        for name in ["rest/vehicle_service_window.json", "rest/vehicle_service_window_cleared.json"] {
+            let json = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: try Fixture.data(name)) as? [String: Any]
+            )
+            XCTAssertTrue(json.keys.contains("expectedEndAt"), "\(name): §7.16 echoes the owner column")
+            XCTAssertNil(
+                json["serviceEstimatedEndAt"],
+                "\(name): §7.16 deliberately does NOT echo the resolved field — a fixture that does is fiction"
+            )
+        }
     }
 
     // `nil` CLEARS, and it must travel as an EXPLICIT JSON null. Swift's
@@ -66,7 +94,7 @@ final class VehicleServiceWindowEndpointTests: XCTestCase {
         ])
 
         let response = try await client.setServiceWindow(expectedEndAt: nil, vehicleID: "clxyz1234567890abcdef")
-        XCTAssertNil(response.serviceEstimatedEndAt, "a cleared window resolves to null, not an empty string")
+        XCTAssertNil(response.expectedEndAt, "a cleared owner column echoes null, not an empty string")
 
         let requests = await http.capturedRequests()
         let raw = String(decoding: try XCTUnwrap(requests[0].httpBody), as: UTF8.self)
