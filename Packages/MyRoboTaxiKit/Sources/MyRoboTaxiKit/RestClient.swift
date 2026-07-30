@@ -17,7 +17,7 @@ public protocol SnapshotFetching: Sendable {
 ///
 /// Value type (`Sendable`): all dependencies are immutable, so it is free to
 /// share across tasks without a serialization bottleneck.
-public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleServiceWindowEndpoint, VehicleRideShareEndpoint, VehicleRefreshing, VehicleCommandSending, VehicleSharingEndpoint, PushDeviceEndpoint {
+public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleServiceWindowEndpoint, VehicleRideShareEndpoint, VehicleRefreshing, VehicleCommandSending, VehicleSharingEndpoint, PushDeviceEndpoint, PushPrefsEndpoint {
     private let environment: BackendEnvironment
     private let tokenProvider: any TokenProvider
     private let http: any HTTPPerforming
@@ -527,6 +527,37 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
         try await performDiscardingBody(
             ["push", "devices"],
             method: "DELETE",
+            body: body,
+            allowTokenRefresh: true
+        )
+    }
+
+    // MARK: - Per-category push preferences (rest-api.md §7.19, MYR-349)
+    //
+    // Account-scoped, not device- or vehicle-scoped: these are the user's choices
+    // and they outlive every install. Both verbs answer the SAME total five-key
+    // object — see ``PushPrefsResponse``, whose properties are non-optional on
+    // purpose so a renamed key fails the decode instead of folding to `nil`.
+
+    /// `GET /api/users/me/push-prefs` (§7.19) — the account's five current values.
+    /// Authenticated via the standard pipeline (Bearer + single 401
+    /// refresh-retry). An account with no row stored answers all-`true`.
+    public func pushPrefs() async throws -> PushPrefsResponse {
+        try await get(["users", "me", "push-prefs"])
+    }
+
+    /// `PUT /api/users/me/push-prefs` (§7.19) — write any SUBSET of the five.
+    ///
+    /// The body is PARTIAL by contract: only the keys being changed are emitted
+    /// (``PushPrefsUpdateRequest`` relies on the synthesized encoder's nil-omission
+    /// for exactly that), and an unknown key is a `400`. The `200` is the whole
+    /// five-key object read back AFTER the write, which the caller adopts wholesale
+    /// rather than re-deriving from what it sent.
+    public func setPushPrefs(_ update: PushPrefsUpdateRequest) async throws -> PushPrefsResponse {
+        let body = try JSONEncoder().encode(update)
+        return try await perform(
+            ["users", "me", "push-prefs"],
+            method: "PUT",
             body: body,
             allowTokenRefresh: true
         )
