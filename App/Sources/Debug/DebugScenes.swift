@@ -72,6 +72,32 @@ enum DebugScene: String, CaseIterable {
     /// simulated fixtures can't express it (`FleetMember.unavailability` is nil
     /// for every fixture, which is what keeps every other scene pixel-identical).
     case riderBusyVehicle
+    /// MYR-341 — the rider IDLE sheet with the ROTATING placeholder carrying a
+    /// REAL "A ride is N min away". Live-only by construction: the line needs a
+    /// device fix, a watched-vehicle coordinate and an available live fleet
+    /// member all at once, behind a real auth session, so a simulated boot can
+    /// never reach it (and the simulated path deliberately keeps the fixture "3
+    /// min" line, which is why `idle` stays byte-identical).
+    ///
+    /// Nothing about the number is hand-set: the scene seeds the two ENDPOINTS
+    /// (a device fix through the existing MYR-248 `simulatedUserFix` hook, and a
+    /// vehicle coordinate through `debugVehicleCoordinateOverride`) plus an
+    /// available live-shaped `FleetMember` built by the REAL
+    /// `LiveFleetMemberMapping`, then lets the shipping `RiderPickupETA`
+    /// quantize, estimate and gate. The endpoints are ~2.8 mi apart, so the
+    /// shipping closed form (× 1.3 detour ÷ 24 mph) renders "A ride is 9 min
+    /// away".
+    ///
+    /// `RotatingPlaceholder` alternates on a 2800ms cadence, so capture at
+    /// t≈1s for "Where to?" and t≈3.5s for the ETA line.
+    case riderIdleETA
+    /// MYR-341 — the SAME scene with the honesty gate tripped: identical rider
+    /// fix and vehicle coordinate, but the car is BUSY (`hasActiveRide` through
+    /// the real MYR-233 predicate). A perfectly computable straight line is
+    /// still not an offer, so the placeholder falls back to the static "Where
+    /// to?" and stops rotating. The pair is a clean before/after of exactly the
+    /// availability gate.
+    case riderIdleETABusy
 
     // Rider scheduled-ride sheet (RideHistoryScreen → ScheduledRideSheet)
     case scheduledDetails
@@ -995,7 +1021,42 @@ enum DebugScene: String, CaseIterable {
     /// stays pixel-identical. Financial District — same SF region as the sim map /
     /// sample pickup, so the SF→SFO preview frames sensibly.
     var simulatedUserFix: CLLocationCoordinate2D? {
-        self == .pinDropBackRealPath ? DriveFixtures.financialDistrict : nil
+        switch self {
+        case .pinDropBackRealPath: return DriveFixtures.financialDistrict
+        // MYR-341 — the rider's own location, the endpoint the pickup ETA is
+        // measured TO. Financial District, the same SF region the sim map uses.
+        case .riderIdleETA, .riderIdleETABusy: return DriveFixtures.financialDistrict
+        default: return nil
+        }
+    }
+
+    /// MYR-341 — the watched vehicle's coordinate for the idle-ETA captures: the
+    /// endpoint the pickup ETA is measured FROM. ~2.8 mi north-west of the rider
+    /// (Marina-ish), so the shipping closed form lands on a plausible single-digit
+    /// number well clear of the ≥1 min clamp.
+    static let idleETAVehicleFix = CLLocationCoordinate2D(latitude: 37.8010, longitude: -122.4460)
+
+    /// MYR-341 — an AVAILABLE live-shaped vehicle for the `riderIdleETA` capture,
+    /// built through the REAL `LiveFleetMemberMapping.fleetMember(from:)` so the
+    /// scene exercises the shipping availability predicate (and the shipping
+    /// `etaMin: 0` sentinel the ETA seam then fills) rather than a hand-set flag.
+    /// `riderIdleETABusy` reuses it with `hasActiveRide: true`, which is the only
+    /// difference between the two captures.
+    private static func idleETAFleetMember(busy: Bool) -> FleetMember {
+        LiveFleetMemberMapping.fleetMember(from: VehicleSummary(
+            vehicleId: "debug-idle-eta",
+            name: "Lunar",
+            model: "Model Y",
+            year: 2026,
+            color: "Quicksilver",
+            vinLast4: "2046",
+            status: .parked,
+            chargeLevel: 68,
+            estimatedRange: 240,
+            lastUpdated: "2026-07-26T12:00:00Z",
+            role: .owner,
+            hasActiveRide: busy
+        ))
     }
 
     /// The destination the real-path replay chooses on the search sheet before
@@ -1219,6 +1280,15 @@ enum DebugScene: String, CaseIterable {
             // `.pinDropRealPath`/`.pinDropBackRealPath` deliberately seed NOTHING
             // beyond idle — the replay driver walks the real transitions after
             // boot (MYR-217 / MYR-248).
+            viewer.sheetPhase = .idle
+        case .riderIdleETA, .riderIdleETABusy:
+            // MYR-341 — the idle sheet, plus the three live-shaped inputs the
+            // placeholder's real ETA needs. Everything downstream (quantization,
+            // the estimator, the gates, the copy) is the shipping code.
+            viewer.debugResolvesLivePickupETA = true
+            viewer.debugVehicleCoordinateOverride = DebugScene.idleETAVehicleFix
+            viewer.debugFleetMemberOverride = DebugScene.idleETAFleetMember(busy: self == .riderIdleETABusy)
+            viewer.refreshPickupETAAnchors()
             viewer.sheetPhase = .idle
         case .declined:
             viewer.sheetPhase = .search

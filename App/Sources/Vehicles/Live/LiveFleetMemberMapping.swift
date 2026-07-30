@@ -21,9 +21,15 @@ import MyRobotaxiContracts
 //    We never fabricate a plate.
 //    v1 caveat: there is NO WS delta for the plate, so a plate edited mid-ride
 //    reaches the rider on the next `GET /api/vehicles` fetch.
-//  • `etaMin`: there is no live pickup-ETA yet (live routing is MYR-176/177), so
-//    the pickup-leg minutes keep the fixture placeholder. Flagged here so it's
-//    not mistaken for real data.
+//  • `etaMin`: MYR-341 — this used to copy `RideRequestFixtures.fleet[0].etaMin`,
+//    so every live member claimed the fixture's 3 minutes about a car whose
+//    position nobody had measured (a MYR-228 fixture leak with no grep
+//    signature). It is now the **0 sentinel**: this layer sees one wire row and
+//    knows nothing about where the rider is standing, so it cannot compute a
+//    pickup ETA and must not pretend to. `SharedViewerState.liveFleetMember` —
+//    the single read seam that also folds the MYR-233 own-ride exception — fills
+//    it from `RiderPickupETA` when both endpoints exist. When they do not, 0
+//    survives to the UI, which renders `RidePickupETADisplay`'s calm unknown.
 //  • `owner`: telemetry carries no owner *display name*. For the single owned
 //    vehicle the rider is requesting, the honest headline is the vehicle's own
 //    nickname (`summary.name`, e.g. "Lunar") — so the CTAs read "Request from
@@ -47,7 +53,7 @@ enum LiveFleetMemberMapping {
             model: VehicleContractMapping.modelLabel(year: summary.year, model: "Tesla"),
             colorName: nonEmpty(summary.color) ?? "",
             battery: summary.chargeLevel,
-            etaMin: RideRequestFixtures.fleet[0].etaMin, // no live pickup ETA yet (MYR-176/177)
+            etaMin: 0, // MYR-341 sentinel — filled at the `liveFleetMember` seam
             plate: VehicleContractMapping.plateDisplay(
                 licensePlate: summary.licensePlate, vinLast4: summary.vinLast4
             ),
