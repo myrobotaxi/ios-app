@@ -326,6 +326,18 @@ public enum MRTMetrics {
     /// short pill (the client's on-device screenshot). Sized to the pill card:
     /// the idle sheet's 14 top + ~52 pill row + 98 nav-clearance bottom padding.
     public static let sharedPendingPillSheetHeight: CGFloat = 164
+    /// MYR-352 — the gap BELOW the rider idle sheet's availability banner, i.e.
+    /// between it and the search bar it sits above. 14 is the search bar's own
+    /// `.padding(.bottom, 14)` and `watchOnlyNotice`'s, so the banner keeps the
+    /// idle card's existing row rhythm rather than inventing a spacing.
+    ///
+    /// The banner's own HEIGHT is deliberately NOT a constant here: its headline
+    /// wraps for the longer reasons and its second line is conditional, so what it
+    /// costs depends on the copy, the vehicle's name and the device width. It is
+    /// measured (`RiderIdleBannerHeightKey`) and the idle detent grows by exactly
+    /// `measured + this gap` — MYR-345's per-line-reserve rule, where the line's
+    /// room can only be known by asking it.
+    public static let riderIdleBannerGap: CGFloat = 14
     /// ScheduledRideSheet map-preview panel height (shared-screens.jsx:352 `height: 104`).
     public static let rideMapPreviewHeight: CGFloat = 104
     /// `S.modalSheet`'s top-corner radius in the flat look (design/app/

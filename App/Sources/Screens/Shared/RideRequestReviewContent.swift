@@ -408,24 +408,26 @@ struct RideRequestReviewContent: View {
         // the rider can do instead. Never "must accept" for a request that can't
         // be submitted at all.
         if let reason = ctaGate.reason {
-            switch reason {
-            case .busy:
-                return "\(fleetMember.owner) is on another ride right now \u{2014} schedule a pickup instead"
-            case .inService:
-                return "\(fleetMember.owner) is in service right now \u{2014} schedule a pickup instead"
-            case .offline:
-                return "\(fleetMember.owner) is offline right now \u{2014} schedule a pickup instead"
-            // MYR-342 — the ONE reason that does not end with "schedule a pickup
-            // instead", because scheduling is blocked server-side for a paused car
-            // too (§7.18). The line names WHO paused it and says "right now" to
-            // match its three siblings — a pause is temporary and normal, and copy
-            // implying the car is gone for good would send a rider away for no
-            // reason. What it deliberately does NOT do is suggest an action: there
-            // isn't one on this screen, and inventing one would be the dead end
-            // MYR-233 set out to remove.
-            case .paused:
-                return "\(fleetMember.owner) has paused ride requests right now"
-            }
+            // MYR-352 — composed from the SHARED `FleetUnavailability.riderClause`
+            // rather than four literals, because the idle banner says the same
+            // sentence about the same fact and the grammar must not drift between
+            // the two surfaces. Every string this produces is byte-identical to the
+            // four MYR-233/342 shipped (pinned by
+            // `RiderIdleAvailabilityTests.testTheReviewHelperCopyIsUnchangedByTheSharedClause`).
+            //
+            // MYR-342 — `paused` is the ONE reason that does not end with "schedule
+            // a pickup instead", because scheduling is blocked server-side for a
+            // paused car too (§7.18); that is why the tail is derived from
+            // `offersScheduling` rather than appended unconditionally. The line
+            // names WHO paused it and says "right now" to match its three siblings
+            // — a pause is temporary and normal, and copy implying the car is gone
+            // for good would send a rider away for no reason. What it deliberately
+            // does NOT do is suggest an action: there isn't one on this screen, and
+            // inventing one would be the dead end MYR-233 set out to remove.
+            let sentence = "\(fleetMember.owner) \(reason.riderClause) right now"
+            return reason.offersScheduling
+                ? "\(sentence) \u{2014} schedule a pickup instead"
+                : sentence
         }
         if let passenger, !passenger.phone.isEmpty {
             let first = passenger.name.split(separator: " ").first.map(String.init) ?? passenger.name

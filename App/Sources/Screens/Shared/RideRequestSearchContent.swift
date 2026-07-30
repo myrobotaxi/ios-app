@@ -335,7 +335,65 @@ struct RideRequestSearchContent: View {
             try? await Task.sleep(for: .milliseconds(450))
             guard !Task.isCancelled else { return }
             guard viewerState.sheetPhase == .search, pickedDestination == nil else { return }
+            // MYR-353 — and never UNDER the schedule card. The Review-routed
+            // entry (`consumeScheduleRouting`) opens the card from inside the very
+            // same `.onChange(of: sheetPhase)` that arms this focus, so a card can
+            // already be up 450ms later. Raising a keyboard beneath it would
+            // recreate the client's defect from the other direction — the card
+            // laid out fine and then got covered. Evaluated AFTER the sleep, so it
+            // sees the card whether it opened synchronously or across the
+            // dismissal settle.
+            guard !scheduleSheetOpen else { return }
             destinationFieldFocused = true
+        }
+    }
+
+    // MARK: MYR-353 — the ONE way this sheet opens the schedule slide-up card
+    //
+    // THE CLIENT'S REPORT (TestFlight, Jul 30): *"When I tap on schedule it pops
+    // up behind the keyboard. Needs to be fixed."*
+    //
+    // `RideSlideUpCard` is an in-hierarchy `.overlay`, bottom-flush and
+    // `ignoresSafeArea(edges: .bottom)` — which, by design, includes the KEYBOARD
+    // safe-area region. So the card lays out against the physical screen edge and
+    // the keyboard window simply draws on top of it: the day/time chip rows and
+    // the "Set pickup" CTA end up under the keyboard, unreachable. Nothing the app
+    // computes is wrong; a real first responder was still up over a real
+    // presentation. That is the MYR-239/344 class exactly.
+    //
+    // The fix is MYR-344's `presentHandout` pattern, verbatim in shape:
+    //
+    //  • Drop the SwiftUI focus binding AND force-resign first responder. A
+    //    `@FocusState` write alone is a REQUEST that lands on the next update; the
+    //    keyboard is still up (and still holding its inset) while the card
+    //    animates in. Dropping the binding alongside the resign is what stops
+    //    SwiftUI putting the keyboard straight back.
+    //  • Pay the 0.25s settle beat ONLY when a responder actually gave the
+    //    keyboard up. `MRTKeyboard.dismiss()` returns that fact, so a tap with no
+    //    keyboard anywhere — the Review-routed entry, every DEBUG scene — opens
+    //    the card with no added latency and is byte-identical to before.
+    //  • Cancel the pending auto-focus, so the 450ms `scheduleSearchFocus()` task
+    //    armed on arrival cannot raise the keyboard again underneath the card.
+    //
+    // All THREE entry points funnel here — the Schedule chip, the "Pickup {day} ·
+    // {time}" summary row's Edit, and Review's one-shot `opensScheduleOnSearch`
+    // route — because each of them set `scheduleSheetOpen = true` bare, and the
+    // first two are tapped on a sheet whose destination field is auto-focused by
+    // design (`scheduleSearchFocus`), i.e. keyboard-up is the DEFAULT state they
+    // are reached in, not an edge case.
+    @MainActor
+    private func openScheduleCard() {
+        focusTask?.cancel()
+        focusTask = nil
+        destinationFieldFocused = false
+        guard MRTKeyboard.dismiss() else {
+            // No keyboard was up — present immediately, exactly as before.
+            scheduleSheetOpen = true
+            return
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: MRTKeyboard.dismissalSettle)
+            scheduleSheetOpen = true
         }
     }
 
@@ -355,7 +413,7 @@ struct RideRequestSearchContent: View {
         // unavailable, so this is the likeliest of the three entry points to open
         // on a blocked slot.
         reconcileScheduleSelectionToFloor()
-        scheduleSheetOpen = true
+        openScheduleCard() // MYR-353
     }
 
     // MARK: Chips
@@ -372,7 +430,7 @@ struct RideRequestSearchContent: View {
                 }
                 // MYR-316 — never OPEN on a slot the floor forbids.
                 reconcileScheduleSelectionToFloor()
-                scheduleSheetOpen = true
+                openScheduleCard() // MYR-353 — never OPEN under the keyboard
             }
             Rectangle().fill(Color.mrtBorder).frame(width: MRTMetrics.hairline, height: 16)
                 .padding(.horizontal, 3)
@@ -392,7 +450,7 @@ struct RideRequestSearchContent: View {
             schedDay = schedule.day
             schedTime = schedule.time
             reconcileScheduleSelectionToFloor() // MYR-316
-            scheduleSheetOpen = true
+            openScheduleCard() // MYR-353 — same sheet, same keyboard, same hazard
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: "calendar").font(.system(size: 13)).foregroundStyle(Color.mrtGold)
