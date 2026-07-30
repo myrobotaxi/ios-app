@@ -517,6 +517,30 @@ enum DebugScene: String, CaseIterable {
     /// therefore proves `RideScheduleFloor` produced it — the same instant travels
     /// the shipping mapping, not a hand-set view flag.
     case riderScheduleFloored
+    /// MYR-361 — the SEARCH sheet's Now/Schedule segment DEFAULTED TO SCHEDULE,
+    /// which is the client's own screenshot AKwpPQIV… inverted: *"Even though no
+    /// car is available right now it's still allowing me to request a ride right
+    /// now. Vs defaulting to scheduling."*
+    ///
+    /// Reuses `riderBusyVehicle`'s live-shaped `busyFleetMember` and its
+    /// `MRT_BUSY_REASON=busy|inService|offline|paused` selector, so all four
+    /// branches of the new default come out of ONE scene, built from real wire
+    /// inputs through the REAL `LiveFleetMemberMapping`:
+    ///
+    ///   • `busy` / `inService` / `offline` → the segment opens on **Schedule**,
+    ///     "Now" is dimmed and untappable, and the caption beneath it is
+    ///     `RiderIdleAvailabilityBanner`'s own headline — the same sentence the
+    ///     idle sheet showed one tap earlier.
+    ///   • `paused` → **byte-identical to `search`'s segment**. The server refuses
+    ///     reservations against a paused car too (§7.18), so there is no better
+    ///     default to move to and the segment is deliberately left alone. That
+    ///     pair — `paused` vs the other three, on one scene — is the whole rule.
+    ///
+    /// LIVE-PATH-ONLY BY CONSTRUCTION, like the MYR-352 banner it borrows its
+    /// predicate from: every `FleetMember` fixture carries `unavailability == nil`
+    /// and `SharedViewerState.liveFleetMembers` is empty in SIM, so `search`,
+    /// `searchFiltered` and `searchSelected` stay byte-identical.
+    case riderScheduleDefault
     /// MYR-326 (client polish) — the LIVE PATH'S LOADING STATES, which have no
     /// other capture route: each is a state the app leaves as fast as it can,
     /// and the one the client screenshotted needs a real asleep car behind a real
@@ -1579,6 +1603,14 @@ enum DebugScene: String, CaseIterable {
             viewer.sheetPhase = .search
             viewer.showDeclinedNotice = true
         case .search, .searchFiltered:
+            viewer.sheetPhase = .search
+        case .riderScheduleDefault:
+            // MYR-361 — `search` verbatim, plus ONE unavailable live-shaped
+            // vehicle. Nothing about the segment is hand-set: the shipping
+            // `LiveFleetMemberMapping` answers `unavailability`, the shipping
+            // `RideSchedulingAvailability` decides the default, and the shipping
+            // `RiderIdleAvailabilityBanner` composes the caption.
+            viewer.debugFleetMemberOverride = DebugScene.busyFleetMember
             viewer.sheetPhase = .search
         case .searchSelected:
             // MYR-215 deliverable 3: a destination is chosen but the flow hasn't

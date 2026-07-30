@@ -277,6 +277,18 @@ struct RideChip: View {
     /// interaction, so it can't be reached by any route. `false` by default → every
     /// existing chip renders exactly as before.
     var unavailable: Bool = false
+    /// MYR-361 — whether an `unavailable` chip is also hidden from accessibility.
+    ///
+    /// `true` (the default, MYR-316's behaviour) for the schedule card's blocked
+    /// day/time slots: the card's caption already explains the whole grid, and a
+    /// VoiceOver rider gains nothing from hearing thirty unreachable slots read out.
+    ///
+    /// `false` for the Now/Schedule segment's disabled "Now". That chip is one half
+    /// of a two-option control and its reason is a single line directly beneath it
+    /// — a rider who cannot see the dimming has to be TOLD that "Now" is the
+    /// unavailable half, or the segment reads as a one-option control for no stated
+    /// reason. Untappable either way; only the announcement differs.
+    var announcesWhenUnavailable: Bool = false
     let action: () -> Void
 
     var body: some View {
@@ -295,7 +307,19 @@ struct RideChip: View {
         .frame(minHeight: MRTMetrics.minTapTarget - 18)
         .opacity(unavailable ? 0.32 : 1)
         .allowsHitTesting(!unavailable)
-        .accessibilityHidden(unavailable)
+        // MYR-361 — these chips ARE segmented controls (Now/Schedule, Me/Someone
+        // else, day, time), and until now not one of them announced which half was
+        // active: the gold fill was the ONLY signal, so the state was invisible to
+        // VoiceOver and unassertable by any UI test. Pure accessibility — no pixel
+        // of any chip changes, so every drift-gate scene is byte-identical.
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+        // An `allowsHitTesting(false)` chip is untappable but still ANNOUNCES as an
+        // ordinary enabled button, so a chip deliberately left in the tree (the
+        // segment's disabled "Now") has to SAY it is disabled as well as look it.
+        // Applied only on the announcing path — no existing call site passes
+        // `announcesWhenUnavailable`, so nothing else gains a `disabled` modifier.
+        .disabled(unavailable && announcesWhenUnavailable)
+        .accessibilityHidden(unavailable && !announcesWhenUnavailable)
     }
 }
 

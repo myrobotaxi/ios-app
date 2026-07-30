@@ -39,6 +39,12 @@ struct RideRequestSearchContent: View {
     @State private var schedDay = "Today"
     @State private var schedTime = "5:30 PM"
 
+    /// MYR-361 — the entry-time availability fact behind the Now/Schedule
+    /// default, LATCHED on arrival at Search rather than read per frame (see
+    /// `RideSchedulingAvailability`). `.unconstrained` until the first arrival,
+    /// which is also its permanent value on the simulated path.
+    @State private var schedulingAvailability: RideSchedulingAvailability = .unconstrained
+
     // MYR-215 deliverable 3: the destination chosen on this sheet, pending an
     // explicit "Continue". Non-nil ⇒ the field is filled, the results list gives
     // way to the CTA, and the flow has NOT advanced. Editing the field clears it
@@ -190,7 +196,22 @@ struct RideRequestSearchContent: View {
                     .padding(.bottom, 8)
                 }
                 chipRow
-                    .padding(.bottom, viewerState.draftSchedule != nil ? 8 : 12)
+                    .padding(.bottom, schedulingSegment.nowCaption != nil ? 7 : (viewerState.draftSchedule != nil ? 8 : 12))
+                // MYR-361 — WHY "Now" is dimmed, in the fleet's own words. This is
+                // `RiderIdleAvailabilityBanner`'s headline verbatim (see
+                // `RideSchedulingAvailability`), so it is the same sentence the
+                // rider read one tap earlier on the idle sheet. Rendered ONLY when
+                // the chip is actually disabled, which is live-path-only by
+                // construction — so every simulated scene keeps its existing
+                // 12/8pt chip-row spacing and is byte-identical.
+                if let caption = schedulingSegment.nowCaption {
+                    Text(caption)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Color.mrtTextSec)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.bottom, viewerState.draftSchedule != nil ? 8 : 12)
+                        .accessibilityIdentifier("mrt.search.nowUnavailableReason")
+                }
                 if let schedule = viewerState.draftSchedule {
                     scheduleRow(schedule)
                         .padding(.bottom, 12)
@@ -215,6 +236,51 @@ struct RideRequestSearchContent: View {
         .padding(.top, 6)
         .padding(.bottom, MRTMetrics.homeSheetContentBottomPadding)
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        // MYR-361 — THE CARD IS HOSTED INSIDE THE SHEET, SO THE SHEET HAS TO BE
+        // BIG ENOUGH TO HOST IT.
+        //
+        // THE CLIENT'S REPORT (AFYmN2g8…): *"When I select on schedule it feels
+        // weird with the bottom sheet appearing over another bottom sheet."*
+        //
+        // The presentation was already the prototype's — ride-request.jsx:302 puts
+        // the picker at `position:absolute; top:-14; left:-22; right:-22;
+        // bottom:-24` INSIDE the search content box, with its scrim at `inset:0`
+        // of that same box (so the map above is deliberately NOT dimmed). What the
+        // port lacks is the prototype's other half: its search sheet is PINNED at
+        // `SHEET_HEIGHTS.search` = 712 (ride-request.jsx:47,1128), so that box is
+        // always far taller than the ~500pt card and the card can only ever land
+        // well inside it.
+        //
+        // Ours is MEASURED (`RiderIdleSearchSheet.detents` adopts the content's
+        // natural height) and MYR-216 deliberately COLLAPSES it once a destination
+        // is chosen — the client's exact state. Measured on iPhone 17 Pro (874pt),
+        // scene `riderScheduleFloored`, BEFORE this change: the segment sat at
+        // y=550.2…581.8 while the bottom-flush card ran y≈570…874 — **~12pt of
+        // overlap**, slicing the Now/Schedule chips in half. That is the "sheet
+        // over a sheet", and it is also why item 3 read as "the time didn't
+        // stick": the "Pickup {day} · {time}" row the commit writes renders in
+        // exactly the band the card was covering. AFTER: the segment moves to
+        // y=224…255.7 and the card's top clears it by 314pt (the prototype's own
+        // equivalent clearance, measured in the running mirror, is 285pt).
+        //
+        // So while the picker is up the sheet holds the design's own search
+        // envelope, which is the number the prototype never leaves. The existing
+        // `.animation(value: scheduleSheetOpen)` below carries the sheet up WITH
+        // the card on the same curve, and back down with its dismissal. Unset, the
+        // floor is `nil` and every existing scene measures exactly as before.
+        //
+        // A FLOOR rather than a fixed frame, which is the opposite of MYR-352's
+        // rule and safe for the opposite reason: that rule exists because the idle
+        // card ends in a greedy `Spacer(minLength: 0)`, so a `minHeight` lets the
+        // card absorb whatever the engine proposed and ratchet. THIS content has no
+        // greedy vertical spacer anywhere — the results branch is a fixed
+        // `.frame(height: scrollRegionHeight)` and `proceedRegion` hugs
+        // (`proceedRegionHeight` is `nil` in both modes) — so it reports its own
+        // natural height and a floor cannot feed back. Using a floor means a header
+        // that ever grows past 712 (passenger picker + schedule row + reason
+        // caption together) is never CLIPPED, which a fixed frame would do
+        // silently.
+        .frame(minHeight: scheduleSheetOpen ? MRTMetrics.rideRequestSearchSheetHeight : nil, alignment: .topLeading)
         .onPreferenceChange(SearchHeaderHeightKey.self) { headerHeight = $0 }
         .onPreferenceChange(SearchResultsHeightKey.self) { resultsHeight = $0 }
         .rideRequestSheetChrome(pinned: !hosted)
@@ -272,11 +338,21 @@ struct RideRequestSearchContent: View {
             // focus AFTER the settle. Leaving search cancels any pending focus so
             // the keyboard never strands over a mid-exit sheet (MYR-239).
             if newPhase == .search {
+                latchSchedulingAvailability() // MYR-361 — once per arrival
                 consumeScheduleRouting() // MYR-233 — arrived here from the Busy CTA
                 scheduleSearchFocus()
             } else {
                 focusTask?.cancel()
                 focusTask = nil
+                // MYR-361 — a card must never outlive the sheet that hosts it.
+                // `RideSlideUpCard` is an in-hierarchy overlay on THIS content, and
+                // the round-4 engine keeps this content mounted across the whole
+                // idle↔search range, so a card left open while the phase moves on
+                // would hold the search layer at its full envelope (above) over a
+                // sheet that is no longer showing it. Closing here also means the
+                // next arrival opens on a clean segment rather than one still
+                // reading Schedule from a stale `scheduleSheetOpen`.
+                scheduleSheetOpen = false
             }
             guard newPhase == .idle, viewerState.draftDestination == nil else { return }
             pickedDestination = nil
@@ -290,6 +366,7 @@ struct RideRequestSearchContent: View {
             // (typing) search — the prototype's `SearchContent autoFocus` behavior
             // (ride-request.jsx:157), which the round-4 discipline had dropped.
             destinationFieldFocused = false
+            latchSchedulingAvailability() // MYR-361 — the COLD/remount arrival path
             forSomeoneElse = viewerState.draftPassenger != nil
             if let schedule = viewerState.draftSchedule {
                 schedDay = schedule.day
@@ -397,6 +474,23 @@ struct RideRequestSearchContent: View {
         }
     }
 
+    /// MYR-361 — re-resolve the entry-time availability behind the Now/Schedule
+    /// default. Called on EVERY arrival at Search and nowhere else: the cold /
+    /// remount path (`onAppear`) and the hosted idle→search phase change, the same
+    /// pair `consumeScheduleRouting()` and `scheduleSearchFocus()` already cover.
+    ///
+    /// Latching (rather than reading `liveFleetMembers` from `body`) is the whole
+    /// point — see `RideSchedulingAvailability`. The cost is that a car freeing up
+    /// WHILE the rider sits on this sheet does not re-enable "Now" until they leave
+    /// and come back; that is the deliberate trade, because the alternative is a
+    /// segment that re-arms a disabled chip between the frame a thumb aims at and
+    /// the frame it lands on. Every other surface (Review's CTA gate, the idle
+    /// banner) still re-reads live.
+    @MainActor
+    private func latchSchedulingAvailability() {
+        schedulingAvailability = .resolve(members: viewerState.liveFleetMembers)
+    }
+
     /// MYR-233 — consume `viewerState.opensScheduleOnSearch` (set by Review's
     /// unavailable-vehicle CTA) and open the schedule slide-up card. One-shot:
     /// cleared immediately so a later manual return to Search doesn't re-open it.
@@ -418,12 +512,29 @@ struct RideRequestSearchContent: View {
 
     // MARK: Chips
 
+    /// MYR-361 — what the Now/Schedule segment renders, in one place. Derived from
+    /// the LATCHED entry-time availability + the draft + whether the picker is up;
+    /// there is no separate "which chip is lit" state to fall out of step.
+    private var schedulingSegment: RideRequestSchedulingSegment {
+        RideRequestSchedulingSegment.resolve(
+            availability: schedulingAvailability,
+            hasSchedule: viewerState.draftSchedule != nil,
+            cardOpen: scheduleSheetOpen
+        )
+    }
+
     private var chipRow: some View {
-        HStack(spacing: 7) {
-            RideChip(title: "Now", selected: viewerState.draftSchedule == nil) {
+        let segment = schedulingSegment
+        return HStack(spacing: 7) {
+            RideChip(
+                title: "Now",
+                selected: segment.selection == .now,
+                unavailable: !segment.nowEnabled,
+                announcesWhenUnavailable: true
+            ) {
                 viewerState.draftSchedule = nil
             }
-            RideChip(title: "Schedule", selected: viewerState.draftSchedule != nil) {
+            RideChip(title: "Schedule", selected: segment.selection == .schedule) {
                 if let schedule = viewerState.draftSchedule {
                     schedDay = schedule.day
                     schedTime = schedule.time
