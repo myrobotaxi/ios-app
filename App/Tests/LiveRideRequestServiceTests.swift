@@ -1566,6 +1566,10 @@ private actor StubRideAPI: RideRequestAPI {
     /// MYR-292 — the OWNER incoming feed (`GET /api/ride-requests/incoming`). Empty
     /// by default so every pre-existing test's owner seed stays a no-op.
     private var incoming: [RideRequest] = []
+    /// MYR-360 — the vehicle-scoped upcoming-reservation slice. Empty by default so
+    /// no existing test's behaviour changes.
+    private var upcoming: [RideRequest] = []
+    private(set) var upcomingVehicleIDs: [String] = []
 
     private var advanceReturn: RideRequest?
     private var advanceError: Error?
@@ -1594,6 +1598,7 @@ private actor StubRideAPI: RideRequestAPI {
     func setDetail(_ ride: RideRequest) { detailReturn = ride }
     func setRideList(_ rides: [RideRequest]) { rideList = rides }
     func setIncoming(_ rides: [RideRequest]) { incoming = rides }
+    func setUpcoming(_ rides: [RideRequest]) { upcoming = rides }
     func setAdvance(_ ride: RideRequest?) { advanceReturn = ride }
     func setAdvanceError(_ error: Error?) { advanceError = error }
     func setDetailError(_ error: Error?) { detailError = error }
@@ -1637,6 +1642,15 @@ private actor StubRideAPI: RideRequestAPI {
     func droppedOff(rideID: String) async throws -> RideRequest { droppedOffCount += 1; return try advance(rideID) }
     func incomingRideRequests(cursor: String?, limit: Int) async throws -> RideRequestsListResponse {
         RideRequestsListResponse(items: incoming, hasMore: false)
+    }
+    /// MYR-360 — the owner's upcoming reservations for ONE vehicle. Empty by
+    /// default and unused by every test in this file: this service does not read
+    /// them (the ride-share pause flow does, through its own narrow seam), so the
+    /// conformance exists to keep the protocol total. `RideSharePauseWarningTests`
+    /// scripts the same call properly.
+    func upcomingReservations(vehicleID: String, cursor: String?, limit: Int) async throws -> RideRequestsListResponse {
+        upcomingVehicleIDs.append(vehicleID)
+        return RideRequestsListResponse(items: upcoming, hasMore: false)
     }
 }
 

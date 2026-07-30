@@ -274,6 +274,24 @@ struct RootView: View {
             mode: mode,
             sessionTokenProvider: auth.sessionTokenProvider
         )
+        // MYR-360 — the reservation seam behind the owner's ride-share pause
+        // warning: the owner's upcoming ACCEPTED reservations for one vehicle, plus
+        // the decline that withdraws one. `nil` in sim / static-token dev, where the
+        // toggle itself does not render.
+        //
+        // The two `ownerRideSharePauseWarning` capture scenes override it with the
+        // SAME production `LiveUpcomingReservations` over a scripted endpoint, so
+        // the dialog in the capture was built from a real fetch through the real
+        // contract mapping. Nothing else reads the override, so every existing
+        // scene — including MYR-342's three — is byte-identical.
+        var reservations = RideRequestComposition.makeUpcomingReservations(
+            mode: mode,
+            sessionTokenProvider: auth.sessionTokenProvider
+        ) as (any UpcomingReservationSource)?
+        #if DEBUG
+        if let scripted = DebugScene.current?.upcomingReservationSource { reservations = scripted }
+        #endif
+        upcomingReservations = reservations
         // MYR-186 — push device registration, bound to the same session.
         _pushCoordinator = State(initialValue: PushComposition.makeCoordinator(
             mode: mode,
@@ -466,6 +484,17 @@ struct RootView: View {
         #endif
         return isLiveMode
     }
+
+    /// MYR-360 — the reservation seam the owner's ride-share pause warning reads
+    /// and declines through.
+    ///
+    /// The live composition, or — only for the two `ownerRideSharePauseWarning`
+    /// capture scenes — the SAME production `LiveUpcomingReservations` over a
+    /// scripted endpoint, so the reservations in the capture came through the real
+    /// fetch and the real contract mapping rather than a hand-set array. `nil`
+    /// everywhere else, including the MYR-342 ride-share scenes, which therefore
+    /// stay byte-identical.
+    private let upcomingReservations: (any UpcomingReservationSource)?
 
     /// MYR-326 — whether Settings' Tesla Account section reads the LIVE fleet
     /// (and so its loading branch) rather than the fixture `OwnerVehiclesState`
@@ -949,7 +978,12 @@ struct RootView: View {
                         // (fixtures render only in SIM / DEBUG scenes). MYR-315 —
                         // it also gates the freshness stamp, which the prototype
                         // has no counterpart for.
-                        isLive: ownerHomeIsLive
+                        isLive: ownerHomeIsLive,
+                        // MYR-360 — the reservation seam behind the ride-share
+                        // pause warning. `nil` off the live path (and in the
+                        // MYR-342 capture scenes), where the pause commits exactly
+                        // as it did before this issue.
+                        upcomingReservations: upcomingReservations
                     )
                     // MYR-186 — the OWNER's permission moment: arrival on the live
                     // home map. Deliberately keyed off the coordinator's own

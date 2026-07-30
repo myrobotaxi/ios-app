@@ -176,7 +176,7 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
             rideShareEnabled: rideShareEnabled
         )
         let summary = VehicleSummary(
-            vehicleId: "debug-mdy",
+            vehicleId: Self.vehicleID,
             name: "Model Y",
             model: "Model Y",
             year: 2026,
@@ -411,6 +411,11 @@ final class DebugVehicleDetailsFleet: VehicleFleet {
         media.apply(to: &state)
         return state
     }
+
+    /// MYR-360 — the id this fleet's one car carries on BOTH read surfaces. Named
+    /// so a scene that has to target the same vehicle from another seam (the pause
+    /// warning's reservation list) cannot drift from it by re-typing the literal.
+    static let vehicleID = "debug-mdy"
 
     /// RFC 3339 UTC with milliseconds — the shape the server emits.
     static let rfc3339: ISO8601DateFormatter = {

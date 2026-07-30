@@ -396,6 +396,48 @@ enum DebugScene: String, CaseIterable {
     /// property that keeps this state out of MYR-351's revert class entirely. Pair
     /// with `MRT_OWNER_DETENT=half`.
     case ownerRideShareInService
+    /// MYR-360 — the PAUSE WARNING: the dialog an owner now gets when they reach
+    /// for the ride-sharing switch on a car that already carries an ACCEPTED
+    /// FUTURE RESERVATION.
+    ///
+    /// Before this issue the pause simply went through, the server HELD the
+    /// reservation at due time, and it expired 30 minutes later — so the rider
+    /// learned nobody was coming half an hour AFTER the pickup they had planned
+    /// around. The dialog is the whole fix: it names what is booked and offers the
+    /// decline the owner would otherwise have to go and find.
+    ///
+    ///   • `ownerRideSharePauseWarning` — ONE reservation. The singular copy, the
+    ///     singular confirm label ("Decline it and pause"), and the three-button
+    ///     card in the shape everything else in this dialog family has.
+    ///   • `ownerRideSharePauseWarningMulti` — FOUR reservations, which is also the
+    ///     cap capture: the list names three and rolls the fourth up as a muted
+    ///     "+1 more" row, and the confirm label pluralises to "Decline them and
+    ///     pause". The SECOND reservation carries NO `requesterName` on the wire, so
+    ///     the honest "A rider" fallback is in frame beside three named ones rather
+    ///     than being asserted only in tests. The rolled-up fourth is still
+    ///     declined by the confirm button — the display cap is a display cap and
+    ///     nothing else.
+    ///
+    /// NOTHING in either capture is hand-set. Both inject the SAME live-shaped,
+    /// ride-share-ON `DebugVehicleDetailsFleet` the MYR-342 scenes use, force
+    /// `HomeScreen`'s live branch through `rendersLiveRideShareToggle` (the row is
+    /// live-gated on purpose and a capture goes through that gate, not around it),
+    /// and hand the production `LiveUpcomingReservations` a scripted
+    /// `DebugRideRequestEndpoint`. The flip itself is performed on boot through the
+    /// SHIPPING `setRideShareEnabled`, because headless tooling cannot tap a switch
+    /// inside a half-detent scroll — the same stand-in-for-a-tap precedent as
+    /// `ownerFreshnessWaking`'s seeded phase and `ownerServiceWindowEditor`'s
+    /// seeded presentation. So the wire is read by the real fetch, folded by the
+    /// real `RideRequestContractMapping`, named by the real `IncomingRequestDisplay`
+    /// and written by the real `RideSharePauseDialog`.
+    ///
+    /// Both are LIVE-PATH-ONLY by construction and nothing else reads their
+    /// overrides, so every existing scene — the MYR-342 three included — is
+    /// byte-identical. Capture at PEEK (the dialog is a full-screen overlay; the
+    /// detent behind it is immaterial), or pair with `MRT_OWNER_DETENT=half` to see
+    /// the switch it came from in the same frame.
+    case ownerRideSharePauseWarning
+    case ownerRideSharePauseWarningMulti
     /// MYR-320 — the SAME in-service car, with the "Service completion date" row
     /// carrying its MANUAL sub-caption ("Set manually — Tesla hasn't provided an
     /// estimate for this visit"). That caption is only reachable AFTER a save
@@ -950,6 +992,9 @@ enum DebugScene: String, CaseIterable {
     var rendersLiveRideShareToggle: Bool {
         self == .ownerRideShareOn || self == .ownerRideSharePaused
             || self == .ownerRideSharePending || self == .ownerRideShareInService
+            // MYR-360 — the pause warning is raised BY the row, so it needs the row
+            // to exist, which needs the same live rendering the four above force.
+            || self == .ownerRideSharePauseWarning || self == .ownerRideSharePauseWarningMulti
     }
 
     /// MYR-316 — whether `HomeScreen` should boot with the "Expected back" entry
@@ -958,6 +1003,90 @@ enum DebugScene: String, CaseIterable {
     /// presentation is the same stand-in-for-a-tap move `initialRefreshPhase`
     /// makes. Scoped to the one scene, so no other capture gains an overlay.
     var opensServiceWindowEditor: Bool { self == .ownerServiceWindowEditor }
+
+    /// MYR-360 — whether `HomeScreen` should perform the ride-share PAUSE FLIP on
+    /// boot, through the shipping `setRideShareEnabled`.
+    ///
+    /// The switch lives in the Status & location card, inside the half-detent
+    /// controls scroll, which headless capture tooling can neither scroll to nor
+    /// tap. Standing in for that one tap is the same move `ownerFreshnessWaking`
+    /// and `ownerServiceWindowEditor` make — and it is a stand-in for the TAP only:
+    /// everything downstream of it (the reservation read, the decision, the copy,
+    /// the dialog) is the shipping path running for real. Scoped to the two pause
+    /// scenes, so no other capture writes anything on boot.
+    var flipsRideShareOnBoot: Bool {
+        self == .ownerRideSharePauseWarning || self == .ownerRideSharePauseWarningMulti
+    }
+
+    /// MYR-360 — the scripted reservation seam for the two pause-warning scenes,
+    /// behind the PRODUCTION `LiveUpcomingReservations`.
+    ///
+    /// The scene supplies WIRE ROWS and nothing else: the fetch, the paging, the
+    /// contract fold, the name resolution and the copy are all the shipping code's,
+    /// so what the capture shows is what the app would build from a real server's
+    /// answer. `nil` for every other scene, which is what leaves the MYR-342
+    /// ride-share captures byte-identical.
+    @MainActor
+    var upcomingReservationSource: (any UpcomingReservationSource)? {
+        let vehicleID = DebugVehicleDetailsFleet.vehicleID
+        switch self {
+        case .ownerRideSharePauseWarning:
+            return LiveUpcomingReservations(api: DebugRideRequestEndpoint(reservations: [
+                DebugRideRequestEndpoint.reservation(
+                    id: "clride0000000000000031",
+                    vehicleID: vehicleID,
+                    requesterName: "Alex",
+                    scheduledFor: DebugRideRequestEndpoint.sampleReservationDate()
+                )
+            ]))
+        case .ownerRideSharePauseWarningMulti:
+            // Soonest first, exactly as the server orders them. The SECOND row
+            // carries no `requesterName`, so the honest "A rider" fallback renders
+            // beside three named riders — a nameless reservation is a real wire
+            // shape (§7.8 omits the key when the identity lookup resolved nothing)
+            // and the client must never fill it in. Deliberately NOT the internal
+            // role term "Shared viewer", which is the incoming card's answer to a
+            // different question.
+            return LiveUpcomingReservations(api: DebugRideRequestEndpoint(reservations: [
+                DebugRideRequestEndpoint.reservation(
+                    id: "clride0000000000000031",
+                    vehicleID: vehicleID,
+                    requesterName: "Alex",
+                    scheduledFor: DebugRideRequestEndpoint.sampleReservationDate()
+                ),
+                DebugRideRequestEndpoint.reservation(
+                    id: "clride0000000000000032",
+                    vehicleID: vehicleID,
+                    requesterName: nil,
+                    scheduledFor: DebugRideRequestEndpoint.sampleReservationDate(
+                        daysAhead: 1, hour: 9, minute: 15
+                    )
+                ),
+                DebugRideRequestEndpoint.reservation(
+                    id: "clride0000000000000033",
+                    vehicleID: vehicleID,
+                    requesterName: "Priya",
+                    scheduledFor: DebugRideRequestEndpoint.sampleReservationDate(
+                        daysAhead: 4, hour: 19, minute: 0
+                    )
+                ),
+                // The FOURTH is what puts the rollup row in frame: the list caps at
+                // three named rows, so this one is only ever seen as "+1 more" — and
+                // it is still declined by "Decline them and pause", which is the
+                // property the capture is really evidence of.
+                DebugRideRequestEndpoint.reservation(
+                    id: "clride0000000000000034",
+                    vehicleID: vehicleID,
+                    requesterName: "Sam",
+                    scheduledFor: DebugRideRequestEndpoint.sampleReservationDate(
+                        daysAhead: 6, hour: 8, minute: 45
+                    )
+                )
+            ]))
+        default:
+            return nil
+        }
+    }
 
     /// MYR-316 — the service window the owner scenes inject: the NEXT Saturday at
     /// 2:00 PM local. Computed relative to `now` rather than hardcoded so the
@@ -1004,6 +1133,7 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerServiceWindowManual || self == .ownerServiceWindowSaved
             || self == .ownerRideShareOn || self == .ownerRideSharePaused
             || self == .ownerRideSharePending || self == .ownerRideShareInService
+            || self == .ownerRideSharePauseWarning || self == .ownerRideSharePauseWarningMulti
             || self == .ownerCharging || self == .ownerChargeComplete
             || self == .ownerNoticeRejected || self == .ownerNoticeRejectedInService
             || self == .ownerVehicleEnriched
@@ -1141,6 +1271,11 @@ enum DebugScene: String, CaseIterable {
         // capture.
         case .ownerRideShareInService:
             return DebugVehicleDetailsFleet(status: .inService, rideShareEnabled: true)
+        // MYR-360 — the SAME parked, healthy, ride-share-ON car the MYR-342 scenes
+        // use. It has to be ON: the warning is what happens on the way to OFF, so a
+        // capture that started from a paused car would be a capture of nothing.
+        case .ownerRideSharePauseWarning, .ownerRideSharePauseWarningMulti:
+            return DebugVehicleDetailsFleet(rideShareEnabled: true)
         // MYR-320 — every enrichment field at once: a real color off the wire, the
         // display-ready trim label composing the Model row (alongside the raw badge
         // it must NOT substitute), and the FSD designation in its own row.
@@ -1180,7 +1315,11 @@ enum DebugScene: String, CaseIterable {
         // further down frames it (plus its notice line, when there is one) at the
         // half detent.
         case .ownerRideShareOn, .ownerRideSharePaused, .ownerRideSharePending,
-             .ownerRideShareInService:
+             .ownerRideShareInService,
+             // MYR-360 — the same row, so the same anchor: the dialog is a
+             // full-screen overlay, and this is what frames the switch behind it
+             // when the capture is paired with `MRT_OWNER_DETENT=half`.
+             .ownerRideSharePauseWarning, .ownerRideSharePauseWarningMulti:
             return .fraction(0.68)
         // The Tire pressure section sits a little above the vertical middle of the
         // dense content; anchoring the content's ~55% point to the viewport brings
@@ -1686,6 +1825,7 @@ enum DebugScene: String, CaseIterable {
              .ownerServiceWindowSaved,
              .ownerRideShareOn, .ownerRideSharePaused, .ownerRideSharePending,
              .ownerRideShareInService,
+             .ownerRideSharePauseWarning, .ownerRideSharePauseWarningMulti,
              .ownerCharging, .ownerChargeComplete,
              .ownerVehicleEnriched,
              .ownerConnecting, .ownerConnectingCold, .ownerDrivesLoading, .ownerSettingsLoading,

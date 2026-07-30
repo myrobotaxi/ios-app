@@ -41,6 +41,12 @@ protocol RideRequestAPI: Sendable {
     /// already-`completed` (200), else `409`. Owner-only.
     func droppedOff(rideID: String) async throws -> RideRequest
     func incomingRideRequests(cursor: String?, limit: Int) async throws -> RideRequestsListResponse
+    /// MYR-360 — the owner's ACCEPTED, strictly-FUTURE reservations for ONE
+    /// vehicle, soonest first (`GET /api/ride-requests/incoming
+    /// ?upcomingForVehicle={id}`). The pause warning's whole input: it is what the
+    /// owner is about to strand by pausing ride sharing, so it is read BEFORE the
+    /// pause is committed rather than reconciled afterwards.
+    func upcomingReservations(vehicleID: String, cursor: String?, limit: Int) async throws -> RideRequestsListResponse
 }
 
 extension RestClient: RideRequestAPI {}

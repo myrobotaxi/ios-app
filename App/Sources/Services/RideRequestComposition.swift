@@ -43,4 +43,26 @@ enum RideRequestComposition {
         )
         return LiveRideRequestService(api: rest, socket: socket)
     }
+
+    /// MYR-360 — the reservation seam behind the owner's ride-share pause warning,
+    /// or `nil` off the live path (where the toggle does not render at all).
+    ///
+    /// It is composed from a `RestClient` of its own rather than lifted off the live
+    /// ride-request service, and deliberately so: `RestClient` is a `Sendable`
+    /// struct holding a URL, a token provider and a session — building a second one
+    /// opens no connection and costs nothing, while reaching into the service would
+    /// couple an owner availability control to the rider/owner RIDE pipelines
+    /// (MYR-325) it has nothing to do with. It also means this feature composes
+    /// with no socket at all, which is what lets a DEBUG scene drive the REAL fetch.
+    @MainActor
+    static func makeUpcomingReservations(
+        mode: AppMode,
+        sessionTokenProvider: SessionTokenProvider? = nil
+    ) -> LiveUpcomingReservations? {
+        guard let config = TelemetryComposition.liveFleetConfig(mode: mode, sessionTokenProvider: sessionTokenProvider) else { return nil }
+        let http = config.http ?? URLSession(configuration: RestClient.defaultConfiguration())
+        return LiveUpcomingReservations(
+            api: RestClient(environment: config.environment, tokenProvider: config.tokenProvider, http: http)
+        )
+    }
 }

@@ -215,7 +215,17 @@ final class VehicleCommandNoticeTests: XCTestCase {
         }
     }
 
+    /// EVERY case in the catalog. The non-tile notices (the plate, the service
+    /// window, the ride-share switch and MYR-360's decline failure all render on
+    /// labelled ROWS rather than on tiles) are measured with the rest deliberately:
+    /// the vocabulary is one vocabulary, and a token that could not fit a tile is a
+    /// token that is longer than this family's register allows.
     private static let allNotices: [VehicleCommandNotice] = [
         .waking, .asleep, .pairKey, .relink, .relinkCharging, .cooldown, .rejected(nil), .failed,
+        .invalidPlate, .plateNotSaved,
+        .serviceWindowPast, .serviceWindowNotSaved,
+        .rideShareNotSaved,
+        // MYR-360 — a decline in the pause flow that did not land.
+        .reservationNotDeclined,
     ]
 }
