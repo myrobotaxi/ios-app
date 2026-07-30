@@ -142,6 +142,20 @@ public struct FleetMember: Identifiable, Sendable, Equatable {
         )
     }
 
+    /// MYR-341 — the same member carrying a REAL pickup ETA. The live mapping
+    /// emits `etaMin: 0` ("no estimate"); `SharedViewerState.liveFleetMember`
+    /// calls this once the rider + vehicle anchors exist, so Review's "N min
+    /// away" and Booking's pickup clock quote the same number the idle
+    /// placeholder does. Nothing else about the member changes.
+    public func withPickupETA(_ minutes: Int) -> FleetMember {
+        FleetMember(
+            id: id, owner: owner, relationship: relationship, name: name, model: model,
+            colorName: colorName, battery: battery, etaMin: minutes, plate: plate,
+            isAvailable: isAvailable, availabilityWord: availabilityWord,
+            unavailability: unavailability, serviceEstimatedEndAt: serviceEstimatedEndAt
+        )
+    }
+
     public init(id: String, owner: String, relationship: String, name: String, model: String, colorName: String, battery: Int, etaMin: Int, plate: String, isAvailable: Bool = true, availabilityWord: String = "Available", unavailability: FleetUnavailability? = nil, serviceEstimatedEndAt: Date? = nil) {
         self.id = id
         self.owner = owner

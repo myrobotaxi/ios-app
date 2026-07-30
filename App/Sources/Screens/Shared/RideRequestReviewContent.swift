@@ -44,7 +44,10 @@ struct RideRequestReviewContent: View {
 
     private var tripMinutes: Int { destination?.minutes ?? 28 }
     private var tripMiles: Double { destination?.miles ?? 14 }
-    private var pickupMinutes: Int { fleetMember.etaMin }
+    // MYR-341 — the pickup-leg minutes are read straight off `fleetMember.etaMin`
+    // through `RidePickupETADisplay`, which treats 0 as the live "no estimate"
+    // sentinel `LiveFleetMemberMapping` now emits instead of the fixture 3. Every
+    // fixture member is non-zero, so the simulated flow never takes that branch.
 
     /// MYR-237 (device QA): the picked destination may still be resolving its
     /// REAL coordinate (throttled search). Until it lands, every number derived
@@ -56,17 +59,22 @@ struct RideRequestReviewContent: View {
 
     private var pickupAt: String {
         if let schedule { return schedule.time }
-        return RideRequestClock.fromNow(minutes: pickupMinutes)
+        return RidePickupETADisplay.clock(etaMin: fleetMember.etaMin)
     }
 
     private var arriveAt: String {
         if destinationResolving { return "—" }
         if let schedule { return RideRequestClock.adding(tripMinutes, to: schedule.time) }
-        return RideRequestClock.fromNow(minutes: pickupMinutes + tripMinutes)
+        // MYR-341: an unknown pickup makes the arrival unknown too — the same
+        // calm dash, never a clock counted from a minute nobody measured.
+        return RidePickupETADisplay.clock(etaMin: fleetMember.etaMin, plus: tripMinutes)
     }
 
+    /// MYR-341: the "N min away" note degrades to a calm "Time unknown" when the
+    /// car's position is unmeasurable, rather than claiming "0 min away".
     private var pickupSub: String {
-        schedule.map(\.day) ?? "\(pickupMinutes) min away"
+        if let schedule { return schedule.day }
+        return RidePickupETADisplay.awayNote(etaMin: fleetMember.etaMin) ?? RidePickupETADisplay.unknownNote
     }
 
     private var arriveSub: String {
