@@ -1,0 +1,13 @@
+{
+  "_meta": {
+    "description": "200 response for GET /api/users/me/push-prefs (MYR-349, rest-api.md §7.19) — the account's per-category push preferences. This is §7.19's OWN printed example, copied verbatim: an account with no row stored resolves to all-true before the server answers, so all five keys are present and true. Authored here from the locked endpoint contract because the telemetry repo ships no fixture for this endpoint (docs/contracts/fixtures/rest/ covers read paths only); replace with the upstream file the moment one exists. THE FIVE KEYS ARE THE WHOLE CONTRACT: rideLifecycle, driveStarted, driveCompleted, chargingComplete, viewerJoined — camelCase, non-optional on the client, and asserted RAW by PushPrefsEndpointTests. MYR-362 is why: a wrong key on an optional Swift property decodes cleanly to nil and nothing anywhere says so, so a hand-authored fixture that agreed with a client's misreading kept a whole suite green about a body the server never sends.",
+    "anchoredFRs": ["FR-9.3"],
+    "scenario": "defaults",
+    "addedBy": "MYR-349"
+  },
+  "rideLifecycle": true,
+  "driveStarted": true,
+  "driveCompleted": true,
+  "chargingComplete": true,
+  "viewerJoined": true
+}

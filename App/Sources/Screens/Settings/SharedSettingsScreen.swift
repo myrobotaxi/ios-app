@@ -1,5 +1,6 @@
 import SwiftUI
 import DesignSystem
+import MyRoboTaxiKit
 
 // MARK: - SharedSettingsScreen (MYR-170, design/app/shared-screens.jsx
 // 444-557, Handoff §5.9)
@@ -30,19 +31,15 @@ struct SharedSettingsScreen: View {
     var catalog: any SharedVehicleCatalog = SimulatedSharedVehicleCatalog()
     /// MYR-186 — see `SettingsScreen.pushAuthorization`.
     var pushAuthorization: PushAuthorizationState = .notDetermined
+    /// MYR-349 — see `SettingsScreen.pushPrefs`. The rider's two rows share ONE
+    /// category; see `notificationsCard`.
+    var pushPrefs: any PushPrefsService = SimulatedPushPrefsService()
     /// MYR-224 — flip to the owner shell. Only invoked from the switch row, which
     /// renders only when `liveProfile != nil`.
     var onSwitchMode: () -> Void = {}
     let onAddCode: () -> Void
     let onSignOut: () -> Void
 
-    private struct NotificationToggles {
-        var requestUpdates = true
-        var arrival = true
-        var promos = false
-    }
-
-    @State private var toggles = NotificationToggles()
     @State private var confirmSignOut = false
 
     /// shared-screens.jsx:452-454 `firstName`/`fullName`/`email`.
@@ -96,6 +93,10 @@ struct SharedSettingsScreen: View {
                         sharedWithCard
                         notificationsLabel
                         notificationsCard
+                        // MYR-349 — a write that did not land, or a read that did
+                        // not answer. Never present on the simulated path.
+                        PushPrefsNotice(message: pushPrefs.statusMessage)
+                            .padding(.horizontal, MRTMetrics.pageGutter)
                         // MYR-186 — renders only when the system authorization was
                         // DENIED; absent (and pixel-identical) in every other
                         // state, including the whole simulated path.
@@ -120,6 +121,8 @@ struct SharedSettingsScreen: View {
         // MYR-184 — refresh on arrival so a grant revoked by its owner stops
         // being listed here. No-op in sim.
         .task { await catalog.load() }
+        // MYR-349 — hydrate the notification rows from §7.19. No-op in sim.
+        .task { await pushPrefs.load() }
     }
 
     // MARK: Header (shared-screens.jsx:694-696 `'74px 24px 12px'`)
@@ -308,25 +311,49 @@ struct SharedSettingsScreen: View {
             .padding(.bottom, 8)
     }
 
+    // MYR-349 — BOTH rider rows bind to the SAME §7.19 category, `rideLifecycle`,
+    // and therefore always agree and always move together.
+    //
+    // That is the backend schema, not a shortcut: `ride_lifecycle` covers the whole
+    // requested / accepted / declined / en route / arrived / completed / expired
+    // status class, and EVERY rider-facing send site sits inside it. There is no
+    // column that could switch "Request accepted / declined" off while leaving
+    // "Pick-up & arrival alerts" on. Faking that independence with a second local
+    // flag would rebuild the exact defect this issue is closing — a switch that
+    // moves and means nothing — so the honest render is two rows over one value.
+    //
+    // THE OPEN DESIGN QUESTION, called out in the PR: either the server splits the
+    // column in two, or MYR-354's Settings restructure merges these into one row.
+    // Row STRUCTURE belongs to MYR-354, which is restructuring both Settings pages
+    // in parallel, so neither row is merged or removed here.
+    //
+    // The "Tips & product news" row is GONE (the client: "the tips notification
+    // seems useless"). It was the one row with no send site behind it at all, and
+    // §7.19 deliberately has no column for it.
     private var notificationsCard: some View {
         VStack(spacing: 0) {
-            notificationRow("Request accepted / declined", isOn: $toggles.requestUpdates, isFirst: true)
-            notificationRow("Pick-up & arrival alerts", isOn: $toggles.arrival, isFirst: false)
-            notificationRow("Tips & product news", isOn: $toggles.promos, isFirst: false)
+            ForEach(Array(SettingsNotificationRows.rider.enumerated()), id: \.element.id) { index, row in
+                notificationRow(row.label, category: row.category, isFirst: index == 0)
+            }
         }
         .mrtSurface(.card)
         .padding(.horizontal, MRTMetrics.pageGutter)
         .padding(.bottom, 22)
     }
 
-    private func notificationRow(_ label: String, isOn: Binding<Bool>, isFirst: Bool) -> some View {
+    /// See `SettingsScreen.notificationRow` — same seam, same binding, same
+    /// fire-and-forget setter. Layout is untouched.
+    private func notificationRow(_ label: String, category: PushPrefCategory, isFirst: Bool) -> some View {
         HStack(spacing: 12) {
             Text(label)
                 .font(.system(size: 14))
                 .tracking(-0.1)
                 .foregroundStyle(Color.mrtText)
             Spacer(minLength: 0)
-            MRTToggle(isOn: isOn)
+            MRTToggle(isOn: Binding(
+                get: { pushPrefs.prefs[category] },
+                set: { newValue in Task { await pushPrefs.setEnabled(category, newValue) } }
+            ))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 13)
