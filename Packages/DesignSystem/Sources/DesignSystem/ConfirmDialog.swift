@@ -27,6 +27,26 @@ public struct MRTConfirmDialogConfig {
     public var message: String
     /// Label of the confirm button (destructive red fill or gold fill).
     public var actionLabel: String
+    /// MYR-360 — the OPTIONAL third action, sitting between the confirm button and
+    /// the dismiss button. `nil` (the default) is the two-action dialog every
+    /// existing caller builds, and it must stay EXACTLY that: the label is the only
+    /// thing that adds a button, so with it absent the card lays out the same two
+    /// children in the same `VStack(spacing: 8)` it always did.
+    ///
+    /// It exists because MYR-360's pause warning genuinely has three answers —
+    /// decline the reservations and pause, pause anyway, keep sharing — and none of
+    /// them is a variant of another. Forking a second dialog component for the one
+    /// screen that needs three would break "Reuse, don't fork" (CLAUDE.md) and
+    /// would put the app's confirm grammar in two places for good.
+    ///
+    /// Styled `.outlineMuted`, the same variant the dismiss button uses: it is the
+    /// alternative-but-not-recommended path, so it must not compete with the confirm
+    /// button for the eye, and the app has exactly one tertiary treatment.
+    public var secondaryLabel: String?
+    /// Runs when the secondary button is tapped (the dialog dismisses itself, the
+    /// same as the confirm button does). Ignored while `secondaryLabel` is `nil` —
+    /// the LABEL is what renders the button.
+    public var secondaryAction: (() -> Void)?
     /// Label of the outline-muted dismiss button
     /// ("Keep access" / "Keep invite" / "Keep linked" / "Cancel" / "Not now").
     public var dismissLabel: String
@@ -39,6 +59,8 @@ public struct MRTConfirmDialogConfig {
         title: String,
         message: String,
         actionLabel: String,
+        secondaryLabel: String? = nil,
+        secondaryAction: (() -> Void)? = nil,
         dismissLabel: String = "Cancel",
         action: @escaping () -> Void
     ) {
@@ -47,6 +69,8 @@ public struct MRTConfirmDialogConfig {
         self.title = title
         self.message = message
         self.actionLabel = actionLabel
+        self.secondaryLabel = secondaryLabel
+        self.secondaryAction = secondaryAction
         self.dismissLabel = dismissLabel
         self.action = action
     }
@@ -98,7 +122,11 @@ private struct MRTConfirmDialogModifier: ViewModifier {
 
 // MARK: - Card
 
-private struct MRTConfirmDialogCard: View {
+// Internal rather than private ONLY so `ConfirmDialogTests` can host the card
+// directly and MEASURE it (MYR-360's byte-identical proof is a measurement, not a
+// promise). Nothing outside this package can see it, and nothing about its
+// rendering changes with the visibility.
+struct MRTConfirmDialogCard: View {
     let config: MRTConfirmDialogConfig
     let dismiss: () -> Void
 
@@ -117,6 +145,16 @@ private struct MRTConfirmDialogCard: View {
                 .padding(.top, 6)
             VStack(spacing: 8) {
                 actionButton
+                // MYR-360 — the optional third action. `nil` renders NOTHING (an
+                // absent optional view is not a laid-out child, so the stack's 8pt
+                // spacing is not spent on it either), which is what keeps every
+                // existing two-action dialog byte-identical.
+                if let secondaryLabel = config.secondaryLabel {
+                    MRTButton(secondaryLabel, variant: .outlineMuted) {
+                        config.secondaryAction?()
+                        dismiss()
+                    }
+                }
                 MRTButton(config.dismissLabel, variant: .outlineMuted, action: dismiss)
             }
             .padding(.top, 18)
