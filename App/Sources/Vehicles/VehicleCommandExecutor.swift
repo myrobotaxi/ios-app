@@ -203,6 +203,14 @@ public enum VehicleCommandNotice: Sendable, Equatable {
     // auth / ownership / transport / 5xx onto the single honest fact the owner
     // acts on the same way: the switch did not move.
     case rideShareNotSaved     // 400 / 401 / 403 / 404 / transport / 5xx — the write didn't land
+    // MYR-360 — a decline in the pause flow did not land, so the pause was NOT
+    // committed. Its own case rather than a share of `.rideShareNotSaved`, because
+    // the two leave the owner in materially different places: there, nothing
+    // happened at all; here, some reservations really were declined and the rest
+    // were not, and the switch is still ON on purpose. An owner who reads "Couldn't
+    // change ride sharing" would have no idea that riders had already been told
+    // their rides are off.
+    case reservationNotDeclined
 
     public var message: String {
         switch self {
@@ -263,6 +271,12 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         // at any point — and not a reassurance, because the row has already
         // snapped back to the server's position beside this line.
         case .rideShareNotSaved: "Couldn\u{2019}t change ride sharing"
+        // MYR-360 — names the ONE thing the owner has to know to decide what to do
+        // next: the pause did not happen. It deliberately does not apologise, does
+        // not say how many landed (a number nobody can act on), and does not
+        // suggest a retry — flipping again re-reads a now-shorter list and is the
+        // obvious next move without being told.
+        case .reservationNotDeclined: "Couldn\u{2019}t decline a ride \u{2014} still sharing"
         }
     }
 
@@ -302,6 +316,12 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         // tokenized with the rest so the vocabulary stays uniform and the
         // measuring test keeps covering every case.
         case .rideShareNotSaved: "Not saved"
+        // MYR-360 — likewise never tile-rendered (the switch is a details row), but
+        // tokenized with the rest so the vocabulary stays uniform and
+        // `VehicleCommandNoticeTests` keeps measuring every case. "Still on" states
+        // the RESTING position rather than the failed attempt, which is the useful
+        // half here: the full sentence on the row says the rest.
+        case .reservationNotDeclined: "Still on"
         }
     }
 
@@ -319,10 +339,13 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         // by saving again. Neither is a broken Tesla connection.
         // MYR-342 — and the same for the ride-share switch: a failed flip is
         // retried by flipping again, and the row is already the tap target.
+        // MYR-360 — and the same for a decline that did not land: the row is the
+        // tap target, and flipping again re-reads a now-shorter list. Nothing about
+        // it is a broken Tesla connection either.
         case .waking, .asleep, .pairKey, .cooldown, .rejected, .failed,
              .invalidPlate, .plateNotSaved,
              .serviceWindowPast, .serviceWindowNotSaved,
-             .rideShareNotSaved: nil
+             .rideShareNotSaved, .reservationNotDeclined: nil
         }
     }
 
@@ -645,10 +668,29 @@ public protocol VehicleCommandExecutor: AnyObject, Observable {
     /// ack, so an unconfirmed control renders a design-consistent unknown ("—")
     /// instead of a fixture value on the live path (MYR-228 / MYR-251).
     func isKnown(_ field: VehicleControlField) -> Bool
+
+    // MARK: Notice seam (MYR-360)
+
+    /// Raise a SETTLED notice for `key` from a caller that owns the attempt but not
+    /// this executor's command machinery.
+    ///
+    /// MYR-360's pause flow is the one such caller: its work is a read and a set of
+    /// declines on the ride-request API, and its failures still have to reach the
+    /// owner where every other ride-share failure does — the row beside the switch.
+    /// Duplicating the notice surface for it would give one row two notice systems
+    /// with two lifetimes.
+    ///
+    /// The live executor routes this straight into the EXISTING `settle`, so the
+    /// notice inherits the whole MYR-301 lifecycle unchanged: the same generation
+    /// guard, the same 6s bounded display, the same clear-on-reconcile. Default:
+    /// no-op — the simulated executor renders no notices at all, which is what
+    /// keeps every M1 / drift-gate scene pixel-identical.
+    func raiseNotice(_ notice: VehicleCommandNotice, for key: VehicleControlKey)
 }
 
 public extension VehicleCommandExecutor {
     func uiState(for key: VehicleControlKey) -> VehicleControlUIState { .idle }
+    func raiseNotice(_ notice: VehicleCommandNotice, for key: VehicleControlKey) {}
     func isSupported(_ key: VehicleControlKey) -> Bool { true }
     func isKnown(_ field: VehicleControlField) -> Bool { true }
 }

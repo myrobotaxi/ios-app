@@ -292,6 +292,17 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// one place the expiry rule is applied and no failure path can accidentally
     /// opt out of it. In-flight notices (`.waking`) are NOT settled and never pass
     /// through: they resolve with the command they belong to.
+    /// MYR-360 — the protocol's notice seam, routed into `settle` and nothing else.
+    ///
+    /// It exists so the pause flow's failures (a reservation that would not decline,
+    /// a reservation list that would not load) land on the ride-share row through
+    /// the SAME path a failed §7.18 write does, rather than through a second notice
+    /// surface with its own lifetime. `settle`'s shape, generation guard and 6s
+    /// window are untouched — this adds a caller, not a rule.
+    func raiseNotice(_ notice: VehicleCommandNotice, for key: VehicleControlKey) {
+        settle(key, notice: notice)
+    }
+
     private func settle(_ key: VehicleControlKey, notice: VehicleCommandNotice) {
         let generation = (noticeGeneration[key] ?? 0) + 1
         noticeGeneration[key] = generation
