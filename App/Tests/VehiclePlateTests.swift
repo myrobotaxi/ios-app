@@ -425,7 +425,7 @@ private struct NoopRideShareEndpoint: VehicleRideShareEndpoint {
 
 private struct NoopServiceWindowEndpoint: VehicleServiceWindowEndpoint {
     func setServiceWindow(expectedEndAt: String?, vehicleID: String) async throws -> VehicleServiceWindowResponse {
-        VehicleServiceWindowResponse(vehicleId: vehicleID, serviceEstimatedEndAt: nil)
+        VehicleServiceWindowResponse(vehicleId: vehicleID, expectedEndAt: nil)
     }
 }
 
