@@ -292,7 +292,6 @@ final class TokenTests: XCTestCase {
             ("drivingRowText", 0xEAF6EC, .mrtDrivingRowText), // screens.jsx:662
             ("dsShareCardPanelTop", 0x14120C, .mrtDsShareCardPanelTop), // screens.jsx:1208
             ("dsShareCardPanelBottom", 0x0F0E0A, .mrtDsShareCardPanelBottom), // screens.jsx:1208
-            ("confettiPale", 0xFFE9A8, .mrtConfettiPale), // screens.jsx:1079 COLORS[4]
         ]
         for (name, hex, color) in cases {
             var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0

@@ -16,14 +16,22 @@ import DesignSystem
 // `UIActivityViewController` share (via `ActivityShareSheet`, per Handoff
 // §5.6) of the rendered `DriveShareCard` image alongside a plain-text summary.
 //
-// 100% FSD celebration (screens.jsx:852-886,1030-1136): a confetti burst
-// fires once the ring's fill sweep completes — 34 particles launch radially,
-// fall under gravity, spin up to ±600°, and fade over ~1.5-2.1s, alongside a
-// pop/glow/ring-flash on the ring itself (`DSRing`'s `celebrate` state drives
-// all four together). Ported in `FSDRing` below via `KeyframeAnimator`, gated
-// on `!reduceMotion`. The page also eases into a warm gold wash 2.7s after
-// mount (reduce motion: 200ms) — screens.jsx `goldMode`, ported in
-// `goldWash`/`heroGoldTint` below.
+// 100% FSD celebration — **MYR-346, a deliberate, client-directed deviation
+// from the prototype.** screens.jsx:852-886,1030-1136 celebrates with a
+// full-surface gold wash (page + hero map), a hero highlight, a pop/glow/
+// ring-flash and a 34-particle confetti burst. All of it is GONE. On the fixed
+// (MYR-339) build the client said *"it literally looks like someone puked on the
+// screen and it's hard to read… something cleaner, crisper, and more
+// rewarding"*, and client outranks prototype.
+//
+// The map, the header and every non-FSD tile on a 100% drive are now **byte-
+// identical to a 97% drive's**. The celebration lives entirely inside the FSD
+// stat block, as an entry MOMENT (`MRTDriveCelebration.momentDuration`, 1.72s):
+// the ring draws itself behind a bright `goldTraceBright` head — the ride-CTA
+// trace / route-etch grammar — and glints once at 12 o'clock, then settles to a
+// slightly richer static ring. The "100%" numeral, the kicker and one fine gold
+// hairline on the tile are permanent but local. Reduce Motion boots straight to
+// the settled state. Every number lives in `MRTDriveCelebration`.
 //
 // The Speed sparkline (`DSSparkline`) is deliberately NOT ported: it's
 // defined in screens.jsx but never called from `DriveSummaryScreen`'s render
@@ -51,9 +59,6 @@ struct DriveSummaryScreen: View {
     @State private var shareItems: [Any] = []
     @State private var isPreparingShare = false
     @State private var showShareSheet = false
-    /// screens.jsx:856 `goldMode` — fades in the page-wide warm wash once the
-    /// celebration has settled (852-861: `isFull` gate, 2.7s / 200ms delay).
-    @State private var goldMode = false
     /// MYR-204 — the lazily-fetched live route polyline (empty until it lands /
     /// for a routeless drive). Sim drives never populate this; they render
     /// `drive.route` directly, so the simulated hero is unchanged.
@@ -101,8 +106,6 @@ struct DriveSummaryScreen: View {
         self.endBatteryPercent = drive.endChargePercent ?? max(6, startPct + drive.batteryDeltaPercent)
     }
 
-    private var isFullFSD: Bool { drive.fsdPercent >= 100 }
-
     /// The route actually rendered: a sim drive's baked `drive.route`, or the
     /// lazily-fetched live polyline (§7.4). Sim keeps `drive.route` verbatim; a
     /// live drive starts empty and fills in when `routeProvider` returns.
@@ -127,11 +130,10 @@ struct DriveSummaryScreen: View {
 
     var body: some View {
         ZStack {
+            // MYR-346 — screens.jsx:866-871's full-screen gold wash used to sit
+            // here, behind the scrolling page. It is deleted: a 100% drive's
+            // page ground is `mrtBg`, exactly like a 97% drive's.
             Color.mrtBg.ignoresSafeArea()
-            // screens.jsx:866-871 — the warm gold reward wash, a fixed
-            // full-screen layer behind the scrollable content (zIndex 0 vs.
-            // the page's zIndex 1), not part of the scrolling page flow.
-            goldWash.ignoresSafeArea()
 
             ScrollView {
                 VStack(spacing: 0) {
@@ -158,9 +160,10 @@ struct DriveSummaryScreen: View {
         // MYR-334: the animation is scoped to the OVERLAY, not hung off the
         // whole screen. Attached outside, a `.animation(_:value:)` re-times
         // every animatable difference the same transaction produces anywhere in
-        // this subtree — including the 1.4s gold-wash fade, which lands in the
-        // same window if the map is tapped between t=2.7s and t=4.1s. Inside,
-        // the cross-fade owns exactly the layer it belongs to.
+        // this subtree — it used to catch the 1.4s gold-wash fade whenever the
+        // map was tapped between t=2.7s and t=4.1s. That wash is gone (MYR-346),
+        // but the ring's own entry moment is in the same class of hazard, so the
+        // cross-fade keeps owning exactly the layer it belongs to.
         .overlay {
             ZStack {
                 if showsExpandedRoute {
@@ -171,7 +174,6 @@ struct DriveSummaryScreen: View {
             .animation(.mrtRouteExpand(reduceMotion: reduceMotion), value: showsExpandedRoute)
         }
         .onAppear {
-            scheduleGoldMode()
             #if DEBUG
             // Drift-gate capture hook: headless tooling cannot tap the hero.
             if DebugScene.opensExpandedRouteMap, hasRoute { showsExpandedRoute = true }
@@ -230,51 +232,6 @@ struct DriveSummaryScreen: View {
         endLabel = labels.end
     }
 
-    /// screens.jsx:852-861 `goldMode` scheduling — fires once, 2.7s after
-    /// mount (200ms under Reduce Motion), and only for a flawless drive.
-    private func scheduleGoldMode() {
-        guard isFullFSD else { return }
-        Task { @MainActor in
-            try? await Task.sleep(for: MRTDriveCelebration.washDelay(reduceMotion: reduceMotion))
-            // MYR-339 — one clamped terminal for every celebration layer. Under
-            // Reduce Motion `washAnimation` is nil and this snaps, exactly as
-            // the prototype's `transition: none` does.
-            withAnimation(MRTDriveCelebration.washAnimation(reduceMotion: reduceMotion)) {
-                goldMode = true
-            }
-        }
-    }
-
-    /// screens.jsx:866-871 — page-wide radial + linear gold wash. Normal
-    /// compositing in the prototype too (no `mix-blend-mode`), and it never
-    /// reaches the map: it is painted behind the scrolling page and the hero
-    /// map is opaque.
-    private var goldWash: some View {
-        ZStack {
-            EllipticalGradient(
-                stops: [
-                    .init(color: Color.mrtGold.opacity(MRTDriveCelebration.washRadialInnerOpacity), location: 0),
-                    .init(color: Color.mrtGold.opacity(MRTDriveCelebration.washRadialMidOpacity), location: 0.46),
-                    .init(color: .clear, location: 0.76),
-                ],
-                center: UnitPoint(x: 0.5, y: 0.6),
-                startRadiusFraction: 0,
-                endRadiusFraction: 0.85
-            )
-            LinearGradient(
-                stops: [
-                    .init(color: .clear, location: 0.32),
-                    .init(color: Color.mrtGold.opacity(MRTDriveCelebration.washLinearMidOpacity), location: 0.55),
-                    .init(color: Color.mrtGold.opacity(MRTDriveCelebration.washLinearEndOpacity), location: 1),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        }
-        .opacity(MRTDriveCelebration.layerOpacity(goldMode: goldMode))
-        .allowsHitTesting(false)
-    }
-
     // MARK: Hero map (screens.jsx:873-897)
 
     private var heroSection: some View {
@@ -303,49 +260,16 @@ struct DriveSummaryScreen: View {
             }
             .allowsHitTesting(false)
 
-            // screens.jsx:885-886 — gold reward tint over the map itself, same
-            // `goldMode` fade as the page wash.
-            //
-            // MYR-339: the prototype spells the first layer `mix-blend-mode:
-            // soft-light` over gold at α 0.5→0.85, and this port copied both
-            // verbatim. In CSS that is safe — the tint's parent (screens.jsx:873)
-            // creates a stacking context, so the blend is isolated to ordinary
-            // painted DOM. Here the layer sits directly above a UIKit-hosted
-            // `MKMapView` on its own compositing surface, where a blend mode is
-            // resolved against whatever backdrop the compositor has; with none it
-            // paints SOURCE-OVER, and α 0.5→0.85 gold over the map is the flood
-            // the client photographed. A screenshot flattens the tree into one
-            // offscreen buffer, the blend resolves there, and the still looks
-            // right — which is exactly why he had to photograph the phone.
-            //
-            // The tint is now the same treatment PRE-RESOLVED to normal
-            // compositing (`MRTDriveCelebration`, where the numbers and the
-            // measurements behind them live). It asks nothing of the compositor,
-            // so it has no failure mode.
-            LinearGradient(
-                colors: [
-                    Color.mrtGold.opacity(MRTDriveCelebration.heroTintTopOpacity),
-                    Color.mrtGold.opacity(MRTDriveCelebration.heroTintBottomOpacity),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .blendMode(MRTDriveCelebration.heroTintBlendMode)
-            .opacity(MRTDriveCelebration.layerOpacity(goldMode: goldMode))
-            .allowsHitTesting(false)
-            // screens.jsx:886 — the prototype gives this one no `mix-blend-mode`,
-            // so it was already normal compositing and keeps its own opacity.
-            EllipticalGradient(
-                stops: [
-                    .init(color: Color.mrtGold.opacity(MRTDriveCelebration.heroHighlightOpacity), location: 0),
-                    .init(color: .clear, location: 0.7),
-                ],
-                center: UnitPoint(x: 0.5, y: 0.3),
-                startRadiusFraction: 0,
-                endRadiusFraction: 0.75
-            )
-            .opacity(MRTDriveCelebration.layerOpacity(goldMode: goldMode))
-            .allowsHitTesting(false)
+            // MYR-346 — screens.jsx:885-886's gold reward tint and radial
+            // highlight used to sit HERE, directly above the hosted `MKMapView`.
+            // Both are deleted. MYR-339 had already resolved the first one's
+            // `mix-blend-mode: soft-light` down to normal compositing at α
+            // 0.07→0.09 (a still cannot catch that defect — a screenshot
+            // flattens the tree into one buffer where the blend resolves, which
+            // is why the client had to photograph his phone). The client then
+            // rejected the treatment itself, so the hero now renders exactly as
+            // a 97% drive's does: no celebration layer of any kind touches the
+            // map, at any opacity, in any blend mode.
 
             // MYR-327 — "click into the map": the whole hero is the tap target
             // for the expanded viewer. Placed UNDER `floatingNav` in the stack so
@@ -597,14 +521,25 @@ private extension View {
     /// site pads independently (screens.jsx:912,917,929 `DSMetric`/FSD tile/
     /// Battery tile all use different top/bottom insets). Defaults match
     /// `DSMetric`'s `'14px 16px 16px'`; FSD/Battery override below.
-    func dsTileChrome(horizontal: CGFloat = 16, top: CGFloat = 14, bottom: CGFloat = 16) -> some View {
+    ///
+    /// MYR-346 — `border` is the one thing a celebrated tile changes about this
+    /// chrome: the FSD tile on a 100% drive swaps the neutral `mrtDsTileBorder`
+    /// for `MRTDriveCelebration.celebratedCardBorder` (gold at 0.18). Fill,
+    /// radius and padding are untouched, so every other tile — and the FSD tile
+    /// on a 97% drive — is byte-identical.
+    func dsTileChrome(
+        horizontal: CGFloat = 16,
+        top: CGFloat = 14,
+        bottom: CGFloat = 16,
+        border: Color = .mrtDsTileBorder
+    ) -> some View {
         padding(.horizontal, horizontal)
             .padding(.top, top)
             .padding(.bottom, bottom)
             .background(dsTileGradient, in: RoundedRectangle(cornerRadius: MRTMetrics.driveSummaryTileRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: MRTMetrics.driveSummaryTileRadius, style: .continuous)
-                    .strokeBorder(Color.mrtDsTileBorder, lineWidth: MRTMetrics.hairline)
+                    .strokeBorder(border, lineWidth: MRTMetrics.hairline)
             )
     }
 }
@@ -645,15 +580,21 @@ private struct FSDTile: View {
     let percent: Int
     let fsdMiles: Double
 
+    /// MYR-346 — the ONE predicate (DesignSystem), shared with the ring, so the
+    /// hairline, the kicker and the ring can never disagree.
+    private var celebrates: Bool { MRTDriveCelebration.celebrates(fsdPercent: percent) }
+
     var body: some View {
         HStack(spacing: 18) {
             FSDRing(percent: percent)
             VStack(alignment: .leading, spacing: 6) {
+                // MYR-346 — the kicker takes the celebratory gold on a flawless
+                // drive; a 97% drive keeps flat `mrtGoldLight` exactly as before.
                 Text("Full Self-Driving")
                     .font(.system(size: 10.5, weight: .semibold))
                     .tracking(1)
                     .textCase(.uppercase)
-                    .foregroundStyle(Color.mrtGoldLight)
+                    .celebratedGold(celebrates, fallback: .mrtGoldLight)
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text(String(format: "%.1f", fsdMiles))
                         .font(.system(size: 30, weight: .medium))
@@ -672,301 +613,228 @@ private struct FSDTile: View {
             Spacer(minLength: 0)
         }
         // screens.jsx:917 `padding: '20px 18px'`, more generous than the
-        // shared DSMetric default.
-        .dsTileChrome(horizontal: 18, top: 20, bottom: 20)
+        // shared DSMetric default. MYR-346 — plus the one fine gold hairline.
+        .dsTileChrome(
+            horizontal: 18,
+            top: 20,
+            bottom: 20,
+            border: celebrates ? MRTDriveCelebration.celebratedCardBorder : .mrtDsTileBorder
+        )
     }
 }
 
-/// screens.jsx:1050-1136 `DSRing` — two-tone gold activity ring, fills from 0
-/// on appear. At 100% it celebrates once the sweep lands: a pop bounce + glow
-/// halo + expanding ring flash on the ring itself, plus a 34-particle gold
-/// confetti burst (ported from `ensureCelebrateStyle`'s
-/// `dsConfetti`/`dsPop`/`dsGlow`/`dsRingFlash` keyframes, screens.jsx:1030-1136).
-/// All four are driven by the same `celebrate` flip. Reduce Motion → no sweep
-/// animation and no celebration; the ring renders its final state statically.
+/// MYR-346 — the celebrated gold treatment for text, applied conditionally so
+/// the uncelebrated branch is the EXACT `foregroundStyle(Color)` it always was
+/// (a gradient with the same endpoints is not the same rasterization).
+private extension View {
+    @ViewBuilder
+    func celebratedGold(_ celebrates: Bool, fallback: Color) -> some View {
+        if celebrates {
+            foregroundStyle(MRTDriveCelebration.celebratedTextGradient)
+        } else {
+            foregroundStyle(fallback)
+        }
+    }
+}
+
+/// screens.jsx:1050-1136 `DSRing` — two-tone gold activity ring, drawing from 0
+/// on appear.
+///
+/// **MYR-346 rewrote what 100% looks like here** (the reasoning, and every
+/// number, live in `MRTDriveCelebration`). The prototype celebrates a flawless
+/// drive with a pop bounce, a glow halo, an expanding ring flash and a
+/// 34-particle confetti burst, on top of a page-wide gold wash; the client
+/// called the whole thing *"someone puked on the screen"*. All of it is gone.
+///
+/// What replaces it is ONE moment, 1.72s long: the ring draws itself behind a
+/// bright `goldTraceBright` head — the ride-CTA `MRTTraceBorder` / route-etch
+/// grammar, the app's own established "something is being drawn" language — the
+/// head glints once as it lands at 12 o'clock, and the ring settles slightly
+/// richer than the 97% variant and then holds perfectly still.
+///
+/// **The 97% variant is untouched**: same faint track, same flat-gold arc, same
+/// `mrtText` numeral, same curve, same duration, same delay. It constructs no
+/// head, no glint and no halo — those branches are `celebrates`-gated, not
+/// opacity-zeroed.
+///
+/// Reduce Motion boots straight to the settled state: `drawProgress` starts at
+/// its terminal and the glint starts spent, so nothing animates and nothing
+/// bright is ever drawn.
 private struct FSDRing: View {
     let percent: Int
     var size: CGFloat = 82
     var stroke: CGFloat = 9
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var sweep: Double = 0
-    @State private var celebrate = false
-    @State private var showBurst = false
-    @State private var particles: [ConfettiParticle] = []
+
+    /// The drawn fraction of the ring — animated exactly once, on appear.
+    @State private var drawProgress: Double = 0
+    /// 0 while the head rides the draw, 1 once the glint has burned out.
+    @State private var glintPhase: Double = 0
+    /// Arms the view-ATTACHED animations. Attached `.animation(_:value:)` is
+    /// applied at render and survives being armed inside another transition's
+    /// transaction — the MYR-237 "only renders after a hardware press" fix — and
+    /// this view mounts inside the Drives → Summary push, which is exactly that
+    /// situation. Nothing here uses `withAnimation`. Each flag is false until
+    /// its pass is armed, so no reset can animate.
+    @State private var drawArmed = false
+    @State private var glintArmed = false
 
     private var fraction: Double { min(1, Double(percent) / 100) }
-    private var isFull: Bool { percent >= 100 }
 
-    /// cubic-bezier(0.34,1.56,0.64,1) — `dsPop`'s overshoot curve (screens.jsx:1041).
-    private static let popCurve = UnitCurve.bezier(
-        startControlPoint: UnitPoint(x: 0.34, y: 1.56),
-        endControlPoint: UnitPoint(x: 0.64, y: 1)
-    )
+    /// The ONE celebration predicate (DesignSystem), shared with `FSDTile`.
+    private var celebrates: Bool { MRTDriveCelebration.celebrates(fsdPercent: percent) }
 
     var body: some View {
         ZStack {
-            if celebrate {
-                celebrationGlow
-                celebrationRingFlash
-            }
-            ringCore
-            if showBurst {
-                ForEach(particles) { particle in
-                    ConfettiParticleView(particle: particle)
-                }
-            }
+            ringTrack
+            ringHalo
+            ringArc
+            ringHead
+            numeral
         }
         .frame(width: size, height: size)
-        // The `.keyframeAnimator` *modifier* form (vs. the `KeyframeAnimator`
-        // container) applies the pop scale to this already-sized view via a
-        // `PlaceholderContentView` standing in for it, so it can't re-size
-        // the ring off a sibling's larger frame the way the container form
-        // did (it was reading `celebrationGlow`'s `size + 20` instead of
-        // `size`, rendering ~20% too large).
-        .keyframeAnimator(initialValue: 1.0, trigger: celebrate) { content, scale in
-            // MYR-227 — clamp animator samples to finite before they reach
-            // CALayer geometry (see GreetingHero's sanitized RevealValue).
-            content.scaleEffect(scale.isFinite ? scale : 1)
-        } keyframes: { _ in
-            // dsPop 0.8s: 0%→1, 24%→1.16, 48%→0.96, 70%→1.05, 100%→1.
-            KeyframeTrack(\.self) {
-                LinearKeyframe(1.16, duration: 0.192, timingCurve: Self.popCurve)
-                LinearKeyframe(0.96, duration: 0.192, timingCurve: Self.popCurve)
-                LinearKeyframe(1.05, duration: 0.176, timingCurve: Self.popCurve)
-                LinearKeyframe(1.0, duration: 0.24, timingCurve: Self.popCurve)
-            }
-        }
-        .onAppear { scheduleAnimations() }
+        .onAppear(perform: arm)
     }
 
-    // MARK: Ring (screens.jsx:1111-1117,1128-1133)
+    // MARK: The moment
 
-    private var ringCore: some View {
-        ZStack {
-            // Manual remainder — full ring underneath, light shade
-            // (screens.jsx:1113 `rgba(201,168,76,0.22)` — same alpha as the
-            // existing outline-draw resting border, `mrtGoldBorderFaint`).
-            Circle().stroke(Color.mrtGoldBorderFaint, lineWidth: stroke)
-            // Autonomous portion — animated sweep (screens.jsx:1115-1116
-            // `stroke-dashoffset 1.15s cubic-bezier(0.32,0.72,0,1)`).
-            Circle()
-                .trim(from: 0, to: sweep)
-                .stroke(Color.mrtGold, style: StrokeStyle(lineWidth: stroke, lineCap: .butt))
-                .rotationEffect(.degrees(-90))
-            HStack(alignment: .firstTextBaseline, spacing: 1) {
-                Text("\(percent)")
-                    .font(.system(size: 21, weight: .semibold))
-                Text("%")
-                    .font(.system(size: 12, weight: .medium))
-            }
-            .monospacedDigit()
-            .tracking(-0.5)
-            .foregroundStyle(percent >= 100 ? Color.mrtGold : Color.mrtText)
-        }
-        .frame(width: size, height: size)
-    }
-
-    // MARK: Celebration glow + ring flash (screens.jsx:1104-1109)
-
-    /// `dsGlow` 1s ease-out: 0%→opacity 0/scale 0.7, 30%→opacity 0.9, 100%→opacity 0/scale 1.9.
-    private var celebrationGlow: some View {
-        KeyframeAnimator(initialValue: CelebrationFade(), trigger: celebrate) { value in
-            Circle()
-                .fill(RadialGradient(colors: [.mrtGoldGlowSoft, .clear], center: .center, startRadius: 0, endRadius: size * 0.62))
-                .frame(width: size + 20, height: size + 20)
-                .scaleEffect(value.scale.isFinite ? value.scale : 1)
-                .opacity(value.opacity.isFinite ? value.opacity : 0)
-        } keyframes: { _ in
-            KeyframeTrack(\.opacity) {
-                LinearKeyframe(0.9, duration: 0.3, timingCurve: .easeOut)
-                LinearKeyframe(0, duration: 0.7, timingCurve: .easeOut)
-            }
-            KeyframeTrack(\.scale) {
-                LinearKeyframe(1.9, duration: 1.0, timingCurve: .easeOut)
-            }
-        }
-        .allowsHitTesting(false)
-    }
-
-    /// `dsRingFlash` 0.85s cubic-bezier(0.22,1,0.36,1): 0%→opacity 0/scale 1,
-    /// 25%→opacity 0.9, 100%→opacity 0/scale 1.45.
-    private var celebrationRingFlash: some View {
-        KeyframeAnimator(initialValue: CelebrationFade(scale: 1), trigger: celebrate) { value in
-            Circle()
-                .strokeBorder(Color.mrtGold, lineWidth: 2)
-                .frame(width: size + 4, height: size + 4)
-                .scaleEffect(value.scale.isFinite ? value.scale : 1)
-                .opacity(value.opacity.isFinite ? value.opacity : 0)
-        } keyframes: { _ in
-            KeyframeTrack(\.opacity) {
-                LinearKeyframe(0.9, duration: 0.2125, timingCurve: Self.flashCurve)
-                LinearKeyframe(0, duration: 0.6375, timingCurve: Self.flashCurve)
-            }
-            KeyframeTrack(\.scale) {
-                LinearKeyframe(1.45, duration: 0.85, timingCurve: Self.flashCurve)
-            }
-        }
-        .allowsHitTesting(false)
-    }
-
-    /// cubic-bezier(0.22,1,0.36,1) (screens.jsx:1109 `dsRingFlash` animation-timing-function).
-    private static let flashCurve = UnitCurve.bezier(
-        startControlPoint: UnitPoint(x: 0.22, y: 1),
-        endControlPoint: UnitPoint(x: 0.36, y: 1)
-    )
-
-    // MARK: Scheduling (screens.jsx:1060-1077)
-
-    private func scheduleAnimations() {
+    private func arm() {
         guard !reduceMotion else {
-            sweep = fraction
+            // Straight to settled: no draw, no glint. A spent `glintPhase` is
+            // what keeps the head's opacity at 0 even before its branch is read.
+            drawProgress = fraction
+            glintPhase = 1
             return
         }
-        withAnimation(.timingCurve(0.32, 0.72, 0, 1, duration: 1.15).delay(0.12)) {
-            sweep = fraction
-        }
-        guard isFull else { return }
-        // screens.jsx:1067 — celebrate fires 120ms (sweep start delay) +
-        // 1150ms (sweep duration) after mount, i.e. right as the ring lands.
+        drawArmed = true
+        drawProgress = fraction
+        guard celebrates else { return }
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(1270))
-            particles = ConfettiParticle.burst()
-            celebrate = true
-            showBurst = true
-            // screens.jsx:1075 — unmount the burst 2.5s later so its
-            // off-screen particles can't extend the page's scrollable area.
-            try? await Task.sleep(for: .milliseconds(2500))
-            showBurst = false
+            try? await Task.sleep(for: MRTDriveCelebration.glintOnset)
+            glintArmed = true
+            glintPhase = 1
         }
     }
-}
 
-/// Shared 0→opacity/scale keyframe value for the glow halo + ring flash.
-private struct CelebrationFade {
-    var opacity: Double = 0
-    var scale: Double = 0.7
-}
+    private var drawAnimation: Animation? {
+        drawArmed ? MRTDriveCelebration.ringDrawAnimation(reduceMotion: reduceMotion) : nil
+    }
 
-// MARK: - Confetti burst (screens.jsx:1078-1100,1119-1127 `particles`/`dsConfetti`)
+    // MARK: Layers (screens.jsx:1111-1117,1128-1133)
 
-/// One confetti particle — `mx`/`my` is the apex of the initial throw (10% of
-/// the animation), `tx`/`ty` is where it lands under gravity (100%), matching
-/// screens.jsx's per-particle generation verbatim (34 particles, radial launch
-/// angle + random distance, gravity pulling `ty` below `my`, random spin up to
-/// ±600°, alternating round/rect shapes, randomized size/delay/duration).
-private struct ConfettiParticle: Identifiable {
-    let id: Int
-    let mx: Double
-    let my: Double
-    let tx: Double
-    let ty: Double
-    let rotation: Double
-    let width: CGFloat
-    let height: CGFloat
-    let round: Bool
-    let color: Color
-    /// Seconds (screens.jsx `delay`, 0-200ms).
-    let delay: Double
-    /// Seconds (screens.jsx `dur`, 1500-2100ms).
-    let duration: Double
+    /// Manual remainder — the full ring underneath, light shade
+    /// (screens.jsx:1113 `rgba(201,168,76,0.22)`, the same alpha as the
+    /// outline-draw resting border, `mrtGoldBorderFaint`).
+    private var ringTrack: some View {
+        Circle().stroke(Color.mrtGoldBorderFaint, lineWidth: stroke)
+    }
 
-    private static let colors: [Color] = [.mrtGold, .mrtGoldLight, .mrtGoldDark, .mrtText, .mrtConfettiPale]
-
-    static func burst(count: Int = 34) -> [ConfettiParticle] {
-        (0..<count).map { i in
-            let angle = (2 * Double.pi / Double(count)) * Double(i) + Double.random(in: -0.3...0.3)
-            let dist = 64 + Double.random(in: 0...70)
-            let mx = cos(angle) * dist * 0.55
-            let my = sin(angle) * dist * 0.55 - 6
-            let tx = cos(angle) * dist
-            let ty = sin(angle) * dist + 46 + Double.random(in: 0...60)
-            let round = i % 3 == 0
-            let width: CGFloat = round ? CGFloat(5 + Int.random(in: 0...2)) : CGFloat(3 + Int.random(in: 0...1))
-            let height: CGFloat = round ? CGFloat(5 + Int.random(in: 0...2)) : CGFloat(8 + Int.random(in: 0...5))
-            return ConfettiParticle(
-                id: i,
-                mx: mx, my: my, tx: tx, ty: ty,
-                rotation: Double.random(in: -1...1) * 600,
-                width: width, height: height, round: round,
-                color: colors[i % colors.count],
-                // MYR-227 — floored: a randomly-zero delay makes the leading
-                // hold a ZERO-DURATION keyframe, the interpolation-NaN source.
-                delay: Double.random(in: 0.001...0.2),
-                duration: 1.5 + Double.random(in: 0...0.6)
-            )
+    /// MYR-346 — the settled ring's faint static halo, celebrated drives only:
+    /// the glint's residue, and all that survives of the prototype's glow +
+    /// ring-flash. Trimmed with the draw so it arrives WITH the ring rather than
+    /// sitting there waiting for it.
+    @ViewBuilder
+    private var ringHalo: some View {
+        if celebrates {
+            Circle()
+                .trim(from: 0, to: drawProgress)
+                .stroke(
+                    MRTDriveCelebration.celebratedRingHalo,
+                    style: StrokeStyle(lineWidth: stroke, lineCap: .butt)
+                )
+                .rotationEffect(.degrees(-90))
+                .blur(radius: MRTDriveCelebration.celebratedRingHaloBlur)
+                .animation(drawAnimation, value: drawProgress)
+                .allowsHitTesting(false)
         }
     }
-}
 
-private struct ConfettiKeyframeValue {
-    var x: Double = 0
-    var y: Double = 0
-    var scale: Double = 0.4
-    var rotation: Double = 0
-    var opacity: Double = 0
-}
+    /// The autonomous portion (screens.jsx:1115-1116 `stroke-dashoffset 1.15s
+    /// cubic-bezier(0.32,0.72,0,1)`). Flat `mrtGold` on a 97% drive — byte for
+    /// byte what it always was — and the slightly richer angular gradient on a
+    /// celebrated one. The −90° rotation puts both the trim's origin and the
+    /// gradient's stop 0 at 12 o'clock.
+    private var ringArc: some View {
+        Circle()
+            .trim(from: 0, to: drawProgress)
+            .stroke(arcStyle, style: StrokeStyle(lineWidth: stroke, lineCap: .butt))
+            .rotationEffect(.degrees(-90))
+            .animation(drawAnimation, value: drawProgress)
+    }
 
-private struct ConfettiParticleView: View {
-    let particle: ConfettiParticle
-    /// One-shot burst trigger — a trigger-less `KeyframeAnimator` repeats
-    /// forever; the jsx `dsConfetti` runs once (`forwards`) per celebration.
-    @State private var burst = false
+    private var arcStyle: AnyShapeStyle {
+        celebrates
+            ? AnyShapeStyle(MRTDriveCelebration.celebratedRingGradient)
+            : AnyShapeStyle(Color.mrtGold)
+    }
 
-    /// cubic-bezier(0.2,0.7,0.3,1) (screens.jsx:1040 `dsConfetti` timing-function).
-    private static let curve = UnitCurve.bezier(
-        startControlPoint: UnitPoint(x: 0.2, y: 0.7),
-        endControlPoint: UnitPoint(x: 0.3, y: 1)
-    )
-
-    var body: some View {
-        KeyframeAnimator(initialValue: ConfettiKeyframeValue(), trigger: burst) { value in
-            Group {
-                if particle.round {
-                    Circle().fill(particle.color)
-                } else {
-                    RoundedRectangle(cornerRadius: 1).fill(particle.color)
-                }
-            }
-            .frame(width: particle.width, height: particle.height)
-            // MYR-227 — same finite clamp as the celebration animators.
-            .rotationEffect(.degrees(value.rotation.isFinite ? value.rotation : 0))
-            .scaleEffect(value.scale.isFinite ? value.scale : 1)
-            .offset(x: value.x.isFinite ? value.x : 0, y: value.y.isFinite ? value.y : 0)
-            .opacity(value.opacity.isFinite ? value.opacity : 0)
-        } keyframes: { _ in
-            // 0%→opacity 0; 10%→opacity 1 (arrival at mx/my); 70%→opacity 1
-            // (hold); 100%→opacity 0 (fall to tx/ty). The leading zero-duration
-            // hold is each particle's random stagger delay.
-            KeyframeTrack(\.opacity) {
-                LinearKeyframe(0, duration: particle.delay)
-                LinearKeyframe(1, duration: particle.duration * 0.10, timingCurve: Self.curve)
-                LinearKeyframe(1, duration: particle.duration * 0.60)
-                LinearKeyframe(0, duration: particle.duration * 0.30, timingCurve: Self.curve)
-            }
-            KeyframeTrack(\.x) {
-                LinearKeyframe(0, duration: particle.delay)
-                LinearKeyframe(particle.mx, duration: particle.duration * 0.10, timingCurve: Self.curve)
-                LinearKeyframe(particle.tx, duration: particle.duration * 0.90, timingCurve: Self.curve)
-            }
-            KeyframeTrack(\.y) {
-                LinearKeyframe(0, duration: particle.delay)
-                LinearKeyframe(particle.my, duration: particle.duration * 0.10, timingCurve: Self.curve)
-                LinearKeyframe(particle.ty, duration: particle.duration * 0.90, timingCurve: Self.curve)
-            }
-            KeyframeTrack(\.scale) {
-                LinearKeyframe(0.4, duration: particle.delay)
-                LinearKeyframe(1.1, duration: particle.duration * 0.10, timingCurve: Self.curve)
-                LinearKeyframe(0.85, duration: particle.duration * 0.90, timingCurve: Self.curve)
-            }
-            KeyframeTrack(\.rotation) {
-                LinearKeyframe(0, duration: particle.delay)
-                LinearKeyframe(particle.rotation * 0.4, duration: particle.duration * 0.10, timingCurve: Self.curve)
-                LinearKeyframe(particle.rotation, duration: particle.duration * 0.90, timingCurve: Self.curve)
-            }
+    /// The trace head: the ride-CTA outline-draw's own hot spot
+    /// (`goldTraceBright`), riding the leading edge of the draw and flaring once
+    /// as it lands at 12 o'clock. Its three layers are `RouteEtchTrace`'s
+    /// verbatim — wide soft bloom → tight glow → hot core — because this is the
+    /// same gesture that etches the ride route, at ring scale.
+    ///
+    /// Celebrated drives only. Under Reduce Motion `glintPhase` boots spent, so
+    /// `headOpacity` is 0 on the first and every frame.
+    @ViewBuilder
+    private var ringHead: some View {
+        if celebrates {
+            let angle = Angle.degrees(-90 + drawProgress * 360)
+            headCore
+                // The glint: the head SWELLS as it burns out, so the moment ends
+                // on a brightening rather than on a fade.
+                .scaleEffect(MRTDriveCelebration.glintScale(glintPhase: glintPhase))
+                .opacity(MRTDriveCelebration.headOpacity(drawProgress: drawProgress, glintPhase: glintPhase))
+                .animation(
+                    glintArmed ? MRTDriveCelebration.ringGlintAnimation(reduceMotion: reduceMotion) : nil,
+                    value: glintPhase
+                )
+                // …carried around the ring by the draw itself.
+                .offset(
+                    x: (size / 2) * cos(angle.radians),
+                    y: (size / 2) * sin(angle.radians)
+                )
+                .animation(drawAnimation, value: drawProgress)
+                // MYR-339's invariant, stated at the one glow this screen has
+                // left. It is a stored constant rather than a literal because a
+                // blend mode written inline in a view body is precisely what
+                // flooded the hero map — and this layer, unlike that one, is
+                // 82pt wide and nowhere near the hosted `MKMapView`.
+                .blendMode(MRTDriveCelebration.celebrationBlendMode)
+                .allowsHitTesting(false)
         }
-        .allowsHitTesting(false)
-        .onAppear { burst = true }
+    }
+
+    private var headCore: some View {
+        ZStack {
+            Circle()
+                .fill(Color.mrtGold.opacity(0.35))
+                .frame(width: 30, height: 30)
+                .blur(radius: 9)
+            Circle()
+                .fill(Color.mrtGoldTrace.opacity(0.7))
+                .frame(width: 13, height: 13)
+                .blur(radius: 4)
+            Circle()
+                .fill(Color.mrtGoldTraceBright)
+                .frame(width: 6, height: 6)
+                .shadow(color: .mrtGoldTraceBright.opacity(0.9), radius: 3)
+        }
+    }
+
+    /// screens.jsx:1128-1133. MYR-346 — on a celebrated drive the numeral takes
+    /// the struck-metal gold gradient; a 97% drive keeps flat `mrtText`.
+    private var numeral: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 1) {
+            Text("\(percent)")
+                .font(.system(size: 21, weight: .semibold))
+            Text("%")
+                .font(.system(size: 12, weight: .medium))
+        }
+        .monospacedDigit()
+        .tracking(-0.5)
+        .celebratedGold(celebrates, fallback: .mrtText)
     }
 }
 

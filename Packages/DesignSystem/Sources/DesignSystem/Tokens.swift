@@ -148,7 +148,6 @@ enum Hex {
     static let dsShareCardPanelTop: UInt32 = 0x14120C // stat panel gradient 0% (screens.jsx:1208)
     static let dsShareCardPanelBottom: UInt32 = 0x0F0E0A // stat panel gradient 100% (screens.jsx:1208)
     static let dsShareCardScrimEnd: UInt32 = 0x12100C // hero scrim bottom stop, used at 0.7 alpha (screens.jsx:1202)
-    static let confettiPale: UInt32 = 0xFFE9A8 // DSRing confetti `COLORS[4]` (screens.jsx:1079)
 
     // MYR-170 — Rider Settings profile avatar (shared-screens.jsx:468). A
     // bespoke radial-gradient circle, distinct from the `Avatar` primitive's
@@ -517,10 +516,11 @@ public extension Color {
     /// `0 0 0 1px` shadow ring (screens.jsx:1194).
     static let mrtDsShareCardOuterRing = Color(hex: Hex.gold, alpha: 0.06)
 
-    // DSRing confetti burst (screens.jsx:1050-1136).
-    /// Confetti particle color `COLORS[4]` — `#FFE9A8` (screens.jsx:1079).
-    /// (The burst's other 4 colors reuse `mrtGold`/`mrtGoldLight`/`mrtGoldDark`/`mrtText`.)
-    static let mrtConfettiPale = Color(hex: Hex.confettiPale)
+    // MYR-346 — `confettiPale` (#FFE9A8, screens.jsx:1079 `COLORS[4]`) lived
+    // here for the DSRing confetti burst. The burst is deleted (the client:
+    // "it literally looks like someone puked on the screen"), so its one
+    // exclusive token goes with it rather than sitting in the palette inviting
+    // a re-add. Every other colour the burst used was already a shared gold.
 
     // MARK: - MYR-170 — Owner Share/Settings (design/app/screens.jsx
     // 1246-1834) + Rider Settings (shared-screens.jsx 444-557) + Toggle
