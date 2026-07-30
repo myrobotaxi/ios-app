@@ -72,6 +72,37 @@ targets:
         # entitlement. Builds compile and every test passes without it — only real
         # on-device registration fails until it is turned on.
         aps-environment: development
+        # MYR-346 — Associated Domains, for the `https://myrobotaxi.app/join/{CODE}`
+        # invite links. Same XcodeGen mechanism as the two entitlements above:
+        # this file is generated/owned by XcodeGen and referenced through
+        # CODE_SIGN_ENTITLEMENTS, so it is never hand-edited.
+        #
+        # NOT config-split, and unlike `aps-environment` it does not need to be:
+        # `applinks:` carries no dev/prod axis. The development-vs-production
+        # distinction for universal links lives in how iOS FETCHES the AASA, not
+        # in the entitlement string — while the web side is still deploying,
+        # bypass Apple's CDN at the OS level (Settings ▸ Developer ▸ Associated
+        # Domains Development) rather than by writing a different value here.
+        # One declared value therefore serves Debug, TestFlight and App Store.
+        #
+        # THREE THINGS MUST AGREE or the link silently opens Safari instead:
+        #   1. this entitlement;
+        #   2. `https://myrobotaxi.app/.well-known/apple-app-site-association`
+        #      serving appID `NFKX777598.app.myrobotaxi.ios` with components
+        #      `/join/*`, over https, no redirects, `Content-Type: application/json`;
+        #   3. the provisioning profile the build is signed with.
+        # `InviteLink.host` is the client-side source of truth for (1) and (2),
+        # and `InviteLinkHostTests` asserts this string against it.
+        #
+        # PORTAL STEP (client) — DONE 2026-07-29: Associated Domains is enabled on
+        # the `app.myrobotaxi.ios` App ID and the App Store profile was
+        # REGENERATED to pick it up ("MyRoboTaxi App Store",
+        # f466e22b-6d46-427e-8415-4dabaed9a7de). A profile minted before that date
+        # does NOT carry `com.apple.developer.associated-domains` and fails the
+        # entitlement check at export — see RELEASING.md, including the
+        # two-profiles-with-one-name trap the regeneration created.
+        com.apple.developer.associated-domains:
+          - applinks:myrobotaxi.app
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.myrobotaxi.ios

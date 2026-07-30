@@ -543,13 +543,17 @@ final class LiveShareServiceTests: XCTestCase {
     }
 }
 
-// MARK: - Share message composition (MYR-340)
+// MARK: - Share message composition (MYR-340, MYR-346)
 
 /// TestFlight, Jul 29: "Feels strange just sending a text message, where do they
 /// go." The MYR-184 message was the code and nothing else — a credential with no
 /// way to spend it. These pin the three things the client asked for (a way to get
 /// the app, a prominent code, and an honest expiry) plus the two grammars the
 /// opening line has to have.
+///
+/// MYR-346 moves the INVITE'S OWN LINK to the front of that message. MYR-340's
+/// shape survives intact underneath — the steps, the bare code line, the expiry
+/// last — because the link changes who has to read the steps, not what they say.
 final class ShareInviteMessageTests: XCTestCase {
 
     private func lines(_ message: String) -> [String] {
@@ -591,21 +595,89 @@ final class ShareInviteMessageTests: XCTestCase {
         XCTAssertNotNil(URL(string: AppDistribution.testFlightPublicJoinURL))
     }
 
-    /// The three steps are in the order the recipient performs them, and the
-    /// install step is FIRST — the client's "where do they go" is answered before
-    /// the code is mentioned at all.
+    /// The steps are in the order the recipient performs them, and a way IN
+    /// comes before the code is mentioned at all — the client's "where do they
+    /// go", still answered first.
     func testTheStepsReadInTheOrderTheyArePerformed() {
         let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
-        let getApp = try? XCTUnwrap(message.range(of: "1. Get the app"))
-        let signIn = try? XCTUnwrap(message.range(of: "2. Sign in with Apple"))
-        let enter = try? XCTUnwrap(message.range(of: "3. Enter this invite code"))
-        guard let getApp, let signIn, let enter else { return XCTFail("all three steps present") }
+        let openLink = try? XCTUnwrap(message.range(of: "1. Open the link above"))
+        let getApp = try? XCTUnwrap(message.range(of: "2. No app yet? Get it here:"))
+        let signIn = try? XCTUnwrap(message.range(of: "3. Sign in with Apple"))
+        let enter = try? XCTUnwrap(message.range(of: "4. Enter this invite code"))
+        guard let openLink, let getApp, let signIn, let enter else {
+            return XCTFail("all four steps present")
+        }
+        XCTAssertTrue(openLink.lowerBound < getApp.lowerBound)
         XCTAssertTrue(getApp.lowerBound < signIn.lowerBound)
         XCTAssertTrue(signIn.lowerBound < enter.lowerBound)
         XCTAssertTrue(
-            getApp.lowerBound < (message.range(of: "RBO246")?.lowerBound ?? message.startIndex),
-            "the way to get the app comes before the code"
+            openLink.lowerBound < (message.range(of: "\nRBO246")?.lowerBound ?? message.startIndex),
+            "the way in comes before the code"
         )
+    }
+
+    // MARK: MYR-346 — the invite's own link
+
+    /// THE PREVIEW CARD. Messages, Mail, WhatsApp and Slack all build a preview
+    /// from a link in the body, and with more than one they take the FIRST. The
+    /// join link must therefore lead — before the TestFlight link, which is what
+    /// used to produce a generic "join the beta" tile that named neither the
+    /// sender, the car, nor this app.
+    func testTheJoinLinkIsTheFirstUrlInTheMessage() {
+        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
+        let join = try? XCTUnwrap(message.range(of: InviteLink.url(code: "RBO246")))
+        let testFlight = try? XCTUnwrap(message.range(of: AppDistribution.testFlightPublicJoinURL))
+        guard let join, let testFlight else { return XCTFail("both links present") }
+        XCTAssertTrue(
+            join.lowerBound < testFlight.lowerBound,
+            "platforms preview the FIRST link; the invite's own page has to be it"
+        )
+    }
+
+    /// And it stands ALONE on its own line. A URL sharing a line with prose is a
+    /// URL some clients fold into the sentence rather than treating as the
+    /// message's subject.
+    func testTheJoinLinkIsAloneOnItsOwnLineDirectlyUnderTheOpening() {
+        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
+        let all = lines(message)
+        XCTAssertEqual(all.first, "Thomas shared their Tesla with you on MyRoboTaxi.")
+        XCTAssertEqual(all.count > 1 ? all[1] : "x", "", "blank line under the opening")
+        XCTAssertEqual(
+            all.count > 2 ? all[2] : "x",
+            "https://myrobotaxi.app/join/RBO246",
+            "the join link occupies a whole line by itself"
+        )
+    }
+
+    /// It is composed from the SAME type that parses an incoming link, so the
+    /// URL this app hands out and the URL this app accepts are one definition.
+    /// A literal here would be a second definition, free to drift.
+    func testTheJoinLinkIsQuotedFromTheOneDefinitionAndParsesBack() {
+        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
+        let quoted = try? XCTUnwrap(lines(message).first { $0.hasPrefix("https://myrobotaxi.app/") })
+        let line = try? XCTUnwrap(quoted)
+        XCTAssertEqual(line, AppDistribution.inviteJoinURL(code: "RBO246"))
+        XCTAssertEqual(
+            InviteLink.code(from: URL(string: line ?? "")!), "RBO246",
+            "the link we hand out must round-trip through the parser that receives it"
+        )
+    }
+
+    /// The TestFlight step SURVIVES, demoted rather than deleted. It is still
+    /// the only way to get the build, so a recipient without the app would be
+    /// stranded on a link their phone opens in Safari and nothing else.
+    func testTheTestFlightStepSurvivesForTheRecipientWithNoApp() {
+        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
+        XCTAssertTrue(message.contains("2. No app yet? Get it here: \(AppDistribution.testFlightPublicJoinURL)"))
+    }
+
+    /// The BARE CODE line survives too. The link makes it unnecessary in the
+    /// common case, not obsolete: a recipient reading this on a laptop, or
+    /// forwarding it, or arriving with the app already installed and signed in,
+    /// types it by hand.
+    func testTheBareCodeLineSurvivesForManualEntry() {
+        let message = ShareInviteMessage.compose(code: "RBO246", ownerFirstName: "Thomas")
+        XCTAssertTrue(lines(message).contains("RBO246"))
     }
 
     /// The EXPIRY is stated, and it matches the contract's own window (§7.5.4

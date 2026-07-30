@@ -38,10 +38,24 @@ enum AppDistribution {
     ///    "this beta isn't accepting new testers" rather than on the app. That
     ///    is a server-side state we cannot pre-flight from here.
     ///
-    /// Plain `https` on purpose — no link-preview metadata, no deep-link
-    /// interception. Messages and Mail both auto-detect a bare https string and
-    /// render it tappable, which is the whole requirement.
+    /// Plain `https` — Messages and Mail both auto-detect a bare https string
+    /// and render it tappable, so no `LPLinkMetadata`/`NSItemProvider` preview
+    /// infrastructure is involved on our side.
+    ///
+    /// MYR-346 — it is no longer the message's LEADING link. It is now the
+    /// fallback step, for a recipient who does not have the app: the invite's own
+    /// address (``InviteLink/url(code:)``) leads, because that is the URL that
+    /// renders the card and that a phone with the app installed opens directly.
+    /// This link is still load-bearing and still capped, so both facts above
+    /// still apply — a full Friends & Family group breaks the no-app path
+    /// exactly as before.
     static let testFlightPublicJoinURL = "https://testflight.apple.com/join/uarZRUbg"
+
+    /// The invite's own web address. Defined by ``InviteLink`` — the same type
+    /// the incoming universal-link parser uses — so the link this app HANDS OUT
+    /// and the link this app ACCEPTS are one definition rather than two strings
+    /// that agree today.
+    static func inviteJoinURL(code: String) -> String { InviteLink.url(code: code) }
 }
 
 /// Composes the text the owner hands a recipient through the system share sheet.
@@ -88,15 +102,39 @@ enum ShareInviteMessage {
             opening = "I shared my Tesla with you on MyRoboTaxi."
         }
 
-        // The code sits ALONE on its own line, separated top and bottom. It is
-        // the one thing the recipient has to transcribe by hand, and a code
-        // trailing a numbered step is a code they lose in the paragraph.
+        // MYR-346 — the JOIN LINK leads, alone on its own line directly under the
+        // opening. Two reasons, and the ordering is doing both jobs at once:
+        //
+        //  • THE CARD. Messages, Mail, WhatsApp and Slack all build their
+        //    preview from a link in the body, and with more than one they take
+        //    the FIRST. Putting the join link first is what makes the thread show
+        //    the branded card for this invite instead of TestFlight's generic
+        //    "Join the beta" tile — which is what the recipient saw before, and
+        //    which said nothing about whose car or which app.
+        //  • THE TAP. On a phone that already has the app, this URL IS the
+        //    invite: the AASA hands it straight to `InviteLinkRouting`, the code
+        //    lands in the field prefilled and submits itself, and steps 2–4 are
+        //    never read at all. The steps exist for the phone that does NOT have
+        //    the app, where the same URL renders a web page that says the same
+        //    four things.
+        //
+        // The TestFlight link stays, demoted to the no-app step. It is still the
+        // only way to get the build, so removing it would strand exactly the
+        // recipient this message was rewritten for in MYR-340.
+        //
+        // The CODE still sits alone on its own line, separated top and bottom.
+        // The link makes it unnecessary in the common case, not obsolete: a
+        // recipient reading this on a laptop, or forwarding it, or arriving after
+        // the app is already installed and signed in, transcribes it by hand.
         return """
         \(opening)
 
-        1. Get the app: \(AppDistribution.testFlightPublicJoinURL)
-        2. Sign in with Apple
-        3. Enter this invite code:
+        \(AppDistribution.inviteJoinURL(code: code))
+
+        1. Open the link above
+        2. No app yet? Get it here: \(AppDistribution.testFlightPublicJoinURL)
+        3. Sign in with Apple
+        4. Enter this invite code:
 
         \(code)
 

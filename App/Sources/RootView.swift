@@ -58,6 +58,25 @@ enum InviteOrigin {
     /// From `SharedSettingsScreen`'s "Enter invite code" row — returning,
     /// skips the tutorial and returns straight to Settings.
     case sharedSettings
+    /// MYR-346 — from a `https://myrobotaxi.app/join/{CODE}` universal link
+    /// tapped while the app was already past onboarding. Completing lands on the
+    /// rider Live Map (the car they just joined is there); cancelling restores
+    /// the exact shell the link interrupted, via ``InviteLinkReturn``.
+    ///
+    /// A link that arrives on the FIRST-RUN choice screen is `.onboarding`
+    /// instead, not this — that rider has no shell to go back to and does want
+    /// the tutorial. See `RootView.presentInviteLink`.
+    case deepLink
+}
+
+/// MYR-346 — where a join link interrupted the user, so Cancel puts them back
+/// exactly where they were rather than somewhere merely plausible. Four fields
+/// because the shell is four fields; `applyViewMode` would reset the tabs.
+private struct InviteLinkReturn: Equatable {
+    var role: UserRole
+    var screen: AppScreen
+    var ownerTab: String
+    var sharedTab: String
 }
 
 struct RootView: View {
@@ -139,6 +158,19 @@ struct RootView: View {
     @State private var ownerVehiclesState: OwnerVehiclesState
     @State private var sharedTab = "shared"
     @State private var inviteOrigin: InviteOrigin = .onboarding
+    /// MYR-346 — a code from a `/join/{CODE}` universal link that has NOT been
+    /// presented yet, because the app was still on the sign-in screen or the
+    /// user was mid-something. Held, not dropped: nothing else in the system
+    /// will ever produce these six characters again. Re-asked on every shell
+    /// change (`.onChange(of: inviteLinkContext)`), so it lands the moment the
+    /// moment is right.
+    @State private var pendingInviteCode: String?
+    /// MYR-346 — the code `InviteCodeFlow` is currently prefilled with, or `nil`
+    /// when the screen was reached by a tap. Its ONLY consumer is that screen's
+    /// `prefilledCode`.
+    @State private var inviteLinkCode: String?
+    /// MYR-346 — the shell a join link interrupted, restored on Cancel.
+    @State private var inviteLinkReturn: InviteLinkReturn?
     /// MYR-191 — mirrors `ownerHomeState`'s reasoning: lifted above the
     /// `sharedTab` switch so the rider's watched vehicle keeps ticking
     /// telemetry across Ride History/Settings and back to Live Map.
@@ -291,6 +323,13 @@ struct RootView: View {
             startRole = DebugScene.initialRole
             startSharedTab = DebugScene.initialSharedTab
             startOwnerTab = DebugScene.initialOwnerTab
+        }
+        // MYR-346 — a simulated incoming universal link, orthogonal to the scene
+        // (it works with no scene at all). Posted to the mailbox HERE, from
+        // `init`, so it lands in the same before-the-view-exists window a real
+        // cold-launch activation does and is drained by the same `install`.
+        if let url = DebugScene.incomingJoinLink {
+            InviteLinkBridge.shared.receive(url)
         }
         #endif
         _sharedViewerState = State(initialValue: viewer)
@@ -553,6 +592,132 @@ struct RootView: View {
         }
     }
 
+    // MARK: - Universal links (MYR-346)
+
+    /// What a `/join/{CODE}` link needs to know about the app right now.
+    ///
+    /// Both facts come from state that already exists. `isBusy` reads the SAME
+    /// two places `pushSurfaceContext` does — the ride-request service's incoming
+    /// slot for the owner, the rider sheet's phase for the rider — because those
+    /// are the two things in this app that a screen swap would genuinely
+    /// destroy: an Accept/Decline nobody has answered, and a ride request the
+    /// rider has partly built.
+    ///
+    /// It does NOT try to detect an arbitrary presented `.sheet`. RootView
+    /// cannot see one, and a link activation does not dismiss it — the sheet
+    /// stays up over whatever we route to and the user closes it. The two cases
+    /// above are the ones worth holding for; claiming to handle "any modal"
+    /// would be claiming something this view has no way to know.
+    private var inviteLinkContext: InviteLinkContext {
+        InviteLinkContext(screen: screen, isBusy: isBusyWithARide)
+    }
+
+    /// Mid-ride, either side of it.
+    private var isBusyWithARide: Bool {
+        switch role {
+        case .owner:
+            // An incoming request is on the owner's card waiting for an answer.
+            return rideRequestService.incomingRequest != nil
+        case .shared:
+            // The rider is anywhere past the idle sheet — searching, dropping a
+            // pin, reviewing, booking, tracking, or reading the summary.
+            return sharedViewerState.sheetPhase != .idle
+        }
+    }
+
+    /// Hand this view's state to the universal-link mailbox. Installed from
+    /// `body` for the same reason `configurePushBridge` is — the closure must
+    /// capture the live view value — and idempotent for the same reason.
+    ///
+    /// `install` DRAINS anything the mailbox was holding, which is the cold-launch
+    /// case: the system delivers the activity during launch, before this view
+    /// exists, and the mailbox keeps it until this line runs.
+    @MainActor
+    private func configureInviteLinkBridge() {
+        InviteLinkBridge.shared.install { url in
+            receiveInviteLink(url)
+        }
+    }
+
+    /// A universal link arrived. Resolve it once, then let ``drainPendingInviteLink``
+    /// own everything after that.
+    @MainActor
+    private func receiveInviteLink(_ url: URL) {
+        switch InviteLinkRouting.route(url: url, context: inviteLinkContext) {
+        case .ignore:
+            // Not a link we can spend. Open normally and say NOTHING — no error,
+            // no toast. The web page behind this URL is what renders it.
+            break
+        case .presentPrefilledInvite(let code), .awaitSignIn(let code), .awaitIdle(let code):
+            pendingInviteCode = code
+            drainPendingInviteLink()
+        }
+    }
+
+    /// Re-ask where the held code should go, and present it if the answer is
+    /// now "here". Called when a link arrives and on every change to
+    /// ``inviteLinkContext`` — which covers the sign-in landing, the tutorial
+    /// finishing, and a ride being resolved, without any of those sites knowing
+    /// a link is waiting.
+    @MainActor
+    private func drainPendingInviteLink() {
+        guard let held = pendingInviteCode else { return }
+        switch InviteLinkRouting.route(code: held, context: inviteLinkContext) {
+        case .presentPrefilledInvite(let code):
+            pendingInviteCode = nil
+            presentInviteLink(code: code)
+        case .awaitSignIn, .awaitIdle:
+            // Keep holding. Every screen that defers resolves on its own, so
+            // this terminates rather than waiting forever.
+            break
+        case .ignore:
+            pendingInviteCode = nil
+        }
+    }
+
+    /// Open `InviteCodeFlow` on a code that came from a link.
+    ///
+    /// The ORIGIN is chosen from where the user was, so the existing return
+    /// semantics do the work: a rider sitting on the first-run choice screen is
+    /// `.onboarding` (Continue → RiderTutorial, Cancel → back to the choice) —
+    /// byte-identical to tapping "Join with an invite code" there, which is
+    /// exactly what the link means at that moment. Anyone already in a shell is
+    /// `.deepLink`, and their shell is remembered so Cancel restores it.
+    @MainActor
+    private func presentInviteLink(code: String) {
+        if screen == .emptyState {
+            inviteOrigin = .onboarding
+            inviteLinkReturn = nil
+        } else {
+            inviteOrigin = .deepLink
+            // Don't overwrite a snapshot taken by an earlier link — the shell we
+            // want back is the one BEFORE any of this, not `.inviteCode`.
+            if screen != .inviteCode {
+                inviteLinkReturn = InviteLinkReturn(
+                    role: role, screen: screen, ownerTab: ownerTab, sharedTab: sharedTab
+                )
+            }
+        }
+        inviteLinkCode = code
+        screen = .inviteCode
+    }
+
+    /// Put the user back exactly where the link found them.
+    @MainActor
+    private func restoreAfterInviteLink() {
+        guard let saved = inviteLinkReturn else {
+            // No snapshot — the link was the first thing that happened. The
+            // choice screen is the honest place to land.
+            screen = .emptyState
+            return
+        }
+        inviteLinkReturn = nil
+        role = saved.role
+        ownerTab = saved.ownerTab
+        sharedTab = saved.sharedTab
+        screen = saved.screen
+    }
+
     /// MYR-186 — sign-out teardown shared by both shells: tell the backend to
     /// forget this device, so the next account on this phone does not inherit the
     /// previous one's ride alerts. Called BEFORE `session.signOut()` so the
@@ -616,6 +781,7 @@ struct RootView: View {
                 // tutorial entirely and land back on Settings.
                 InviteCodeFlow(
                     onComplete: {
+                        inviteLinkCode = nil
                         switch inviteOrigin {
                         case .onboarding:
                             role = .shared
@@ -624,18 +790,31 @@ struct RootView: View {
                             role = .shared
                             screen = .sharedHome
                             sharedTab = "sharedSettings"
+                        case .deepLink:
+                            // MYR-346 — they just joined a car; the car is on the
+                            // rider Live Map. Not the tutorial (they are already
+                            // past onboarding) and not back to where they came
+                            // from (which may be the owner shell, where the car
+                            // they just gained access to does not appear at all).
+                            inviteLinkReturn = nil
+                            role = .shared
+                            sharedTab = "shared"
+                            screen = .sharedHome
                         }
                     },
                     onCancel: {
+                        inviteLinkCode = nil
                         switch inviteOrigin {
                         case .onboarding:
                             screen = .emptyState
                         case .sharedSettings:
                             screen = .sharedHome
                             sharedTab = "sharedSettings"
+                        case .deepLink:
+                            restoreAfterInviteLink()
                         }
                     },
-                    returning: inviteOrigin == .sharedSettings,
+                    returning: inviteOrigin != .onboarding,
                     // MYR-184 — the REAL §7.5.5 redeem call. Before this the
                     // `validate` seam was never passed at all, so its `{ _ in true }`
                     // default meant every six characters "joined" on the live path
@@ -644,7 +823,12 @@ struct RootView: View {
                     // MYR-184 — the two invite-code capture scenes submit the
                     // sample code on appear; headless tooling cannot type into
                     // the hidden six-cell field. Unset everywhere else.
-                    autoSubmitsSampleCode: autoSubmitsInviteCode
+                    autoSubmitsSampleCode: autoSubmitsInviteCode,
+                    // MYR-346 — the code a `/join/{CODE}` link carried. Seats
+                    // itself in the field and submits exactly as the 6th typed
+                    // character does. `nil` on every tap-reached presentation,
+                    // so this screen is unchanged for everyone else.
+                    prefilledCode: inviteLinkCode
                 )
             case .ownerTutorial:
                 // tutorials.jsx:363 — onDone (Continue on the last card, or
@@ -884,6 +1068,23 @@ struct RootView: View {
         .background(Color.mrtBg.ignoresSafeArea())
         // MYR-186 — hand this view's state to the UIKit push delegate.
         .onAppear { configurePushBridge() }
+        // MYR-346 — same hand-off for universal links, and the drain of anything
+        // the mailbox held through a cold launch.
+        .onAppear { configureInviteLinkBridge() }
+        // MYR-346 — the SwiftUI delivery path for `applinks:myrobotaxi.app`. The
+        // app-delegate path (`PushAppDelegate.application(_:continue:_:)`) feeds
+        // the same mailbox; whichever one iOS uses, the code arrives once and
+        // re-delivery is a no-op. See `InviteLinkBridge`'s header.
+        .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+            guard let url = activity.webpageURL else { return }
+            InviteLinkBridge.shared.receive(url)
+        }
+        // MYR-346 — re-ask where a HELD code should go whenever the shell moves.
+        // This is the whole deferral mechanism: sign-in landing, a tutorial
+        // finishing, an incoming request being answered, a ride reaching its
+        // summary — none of those sites know a link is waiting, and none of them
+        // need to.
+        .onChange(of: inviteLinkContext) { _, _ in drainPendingInviteLink() }
         // MYR-184 — keep the rider's watched vehicle in step with the catalog.
         // MYR-343 — off the whole RESOLUTION, not off `grants` alone: the vehicle
         // the map watches is the owner's own car when they have one, and a change
