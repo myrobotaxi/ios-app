@@ -139,10 +139,38 @@ protocol SharedVehicleCatalog: AnyObject, Observable {
     /// fixture persona.
     var grants: [SharedVehicleGrant] { get }
 
+    /// MYR-343 — vehicles this account OWNS outright (`role: owner` rows off the
+    /// SAME §7.0 list `grants` is filtered from). Deliberately NOT grants: an
+    /// owned car is not shared with anyone and must never appear under "Shared
+    /// with me", carries no `sharePermission` (§7.0 emits the key iff `role` is
+    /// `viewer`), and is not gated by a tier.
+    ///
+    /// It lives here because this catalog is the rider shell's ONE reader of
+    /// `GET /api/vehicles`, and the shell's actual question is **"is there a car
+    /// I can ride?"** — which is not the same question as "what is shared with
+    /// me". Answering the second in place of the first is the MYR-343 defect:
+    /// an OWNER switching to rider mode has zero viewer rows, so the shell shunted
+    /// them to the invite-code prompt even though a self-ride on their own car is
+    /// a supported flow (MYR-325 verified it live).
+    ///
+    /// Empty in sim — the prototype's rider is not an owner, and `grants` is
+    /// non-empty there anyway, so every simulated + DEBUG capture is unchanged.
+    var ownedVehicles: [Vehicle] { get }
+
     /// True once a load has completed at least once, so a surface can tell
     /// "nothing shared" from "not asked yet" and avoid flashing an empty state
     /// over a list that is one round trip away. Always `true` in sim.
     var hasLoaded: Bool { get }
+
+    /// MYR-343 — true when a load was ATTEMPTED and failed with nothing known
+    /// yet. Distinct from `hasLoaded == false`, which is "still in flight".
+    ///
+    /// The distinction is what MYR-326's "loading ≠ unavailable" rule demands
+    /// once the shell holds a resolving state at all: a placeholder that never
+    /// resolves is a promise the app cannot keep, and the honest end state for a
+    /// list that did not answer is neither a skeleton nor "nothing is shared with
+    /// you". Always `false` in sim.
+    var loadFailed: Bool { get }
 
     /// Fetch the rider's shared vehicles. Idempotent; no-op in sim.
     func load() async
@@ -150,6 +178,115 @@ protocol SharedVehicleCatalog: AnyObject, Observable {
     /// `POST /api/invites/redeem` (§7.5.5). Throws ``ShareRedemptionFailure`` —
     /// the four answers the entry screen can act on — never a raw status code.
     func redeem(code: String) async throws -> RedeemedShare
+}
+
+// MARK: - MYR-343 — the rider shell's vehicle-set resolution
+//
+// THE CLIENT'S REPORT (TestFlight, Jul 29): "When I switched to rider mode as an
+// owner I briefly saw the rider home page and then it prompted me to enter a
+// code." TWO defects in one sentence, and this type answers both.
+//
+//  1. WRONG QUESTION. MYR-184 gated the rider shell on `grants.isEmpty` — i.e.
+//     on SHARES. An owner in rider mode has zero `role: viewer` rows by
+//     definition, so the zero-shared-vehicles empty state swallowed an account
+//     that owns a car outright. Self-rides are a supported flow (MYR-325 tested
+//     one live), and the ride path never had this bug: `RiderLiveVehicleLocator`
+//     has always taken `vehicles.first` regardless of role, which for an owner IS
+//     their own car. Only the shell gate and the adopted map vehicle regressed.
+//     The empty state now means what its copy says — no vehicles AT ALL, neither
+//     owned nor shared.
+//
+//  2. THE FLASH. The gate was `hasLoaded && grants.isEmpty`, so the not-yet-loaded
+//     case fell through to the ELSE branch and rendered the rider home over an
+//     unresolved vehicle set, then swapped. There is no ordering of a two-way
+//     boolean that avoids this: three genuinely different situations (not asked
+//     yet / has a car / has none) cannot be told apart by one flag, so one of them
+//     has to borrow another's surface for a frame. The resolution below is
+//     three-way (four, with the honest failure), and the shell presents NOTHING
+//     until the set resolves — a skeleton, per MYR-326's grammar, never a
+//     flash-then-swap.
+//
+// Pure + static so both rules are unit-testable with no catalog, no view, and no
+// clock (`RiderVehicleSetTests`).
+
+/// What the rider shell adopts for the Live Map: one vehicle plus the tier that
+/// gates its affordances.
+struct RiderVehicleAdoption: Equatable {
+    /// Which half of the §7.0 list this vehicle came from. Carried so the shell's
+    /// choice is legible in tests and at the call site, never re-derived.
+    enum Source: Equatable {
+        /// A `role: owner` row — the account's own car (MYR-343 self-ride).
+        case owned
+        /// A `role: viewer` row — a redeemed share.
+        case shared
+    }
+
+    let source: Source
+    /// The vehicle to watch. `nil` for a SIM grant, which carries no `Vehicle`
+    /// by construction (the prototype's "Shared with me" is three personas with
+    /// no car behind them) — the sim viewer keeps its fixture seed, unchanged.
+    let vehicle: Vehicle?
+    /// The share tier, or `nil` when tiers DO NOT APPLY — which is the owner's
+    /// own car as well as the simulated path. `SharedViewerState.canRequestRides`
+    /// already reads a nil tier as "not gated", which is correct for an owner:
+    /// §7.8's non-owner gate is not one they can fail.
+    let tier: ShareAccessLevel?
+}
+
+/// The rider shell's four honest answers to "what should I present?".
+enum RiderVehicleSet: Equatable {
+    /// The vehicle set is still being resolved. The shell shows a skeleton and
+    /// commits to NOTHING — this is the state whose absence produced the flash.
+    case resolving
+    /// There is a car to ride. Adopt it and render the Live Map.
+    case ridable(RiderVehicleAdoption)
+    /// No vehicles at all — neither owned nor shared. The invite-code empty state,
+    /// which is now the only thing it ever claimed to be.
+    case empty
+    /// The list did not answer and nothing is known. NOT `.empty`: telling a rider
+    /// they have no vehicles because one fetch timed out is a claim the app cannot
+    /// support (`LiveSharedVehicleCatalog.load` deliberately leaves the last-known
+    /// grants standing for the same reason).
+    case unavailable
+
+    /// THE ADOPTION RULE.
+    ///
+    /// **Owned wins.** An account holding both an owned car and a redeemed share
+    /// self-rides its own car. Two reasons, and the second is the load-bearing one:
+    ///
+    ///  • The owner's car is unambiguously theirs — no tier, no §7.8 gate, no 403
+    ///    to guess at. A share can sit on `live`, in which case the shell would
+    ///    have to hide the "Where to?" CTA from someone who owns a Tesla.
+    ///  • CONSISTENCY WITH THE RIDE ITSELF. `RiderLiveVehicleLocator` publishes
+    ///    `vehicles.first` as the `FleetMember` the Review/Booking cards render and
+    ///    the request is created against. Adopting a SHARED car onto the map while
+    ///    the ride is created against the OWNED one would put two different cars on
+    ///    two halves of one flow. Preferring owned keeps the map and the ride
+    ///    naming the same vehicle.
+    ///
+    /// FLAGGED (per the brief): this is a product choice, not a contract rule.
+    /// §7.0 states no precedence between an owner row and a viewer row, and an
+    /// owner who wants to ride someone ELSE's shared car has no way to pick it
+    /// here — the rider shell watches exactly one vehicle (the multi-vehicle
+    /// picker is MYR-91 scope). If that becomes the wanted flow, this function is
+    /// the one place it changes.
+    static func resolve(
+        hasLoaded: Bool,
+        loadFailed: Bool,
+        grants: [SharedVehicleGrant],
+        ownedVehicles: [Vehicle]
+    ) -> RiderVehicleSet {
+        // A successful load always wins over a stale failure flag: `hasLoaded`
+        // only becomes true when a list actually landed.
+        guard hasLoaded else { return loadFailed ? .unavailable : .resolving }
+        if let owned = ownedVehicles.first {
+            return .ridable(RiderVehicleAdoption(source: .owned, vehicle: owned, tier: nil))
+        }
+        if let grant = grants.first {
+            return .ridable(RiderVehicleAdoption(source: .shared, vehicle: grant.vehicle, tier: grant.tier))
+        }
+        return .empty
+    }
 }
 
 // MARK: - SimulatedSharedVehicleCatalog (the M1 default)
@@ -183,6 +320,14 @@ final class SimulatedSharedVehicleCatalog: SharedVehicleCatalog {
     ]
 
     var hasLoaded: Bool { true }
+
+    /// MYR-343 — the prototype's rider is not an owner. Empty here means the
+    /// simulated shell resolves to the FIRST grant exactly as it did before this
+    /// issue, so every simulated + DEBUG rider capture is byte-identical.
+    var ownedVehicles: [Vehicle] { [] }
+
+    /// Nothing can fail in sim: `load()` is a no-op that always "succeeds".
+    var loadFailed: Bool { false }
 
     func load() async {}
 

@@ -546,6 +546,39 @@ enum DebugScene: String, CaseIterable {
     /// rides unconditionally. Auto-submits like the scene above.
     case riderInviteJoined
 
+    /// MYR-343 — the client's own account: an OWNER who switched to rider mode.
+    /// ZERO `role: viewer` rows and ONE `role: owner` row, which is exactly the
+    /// shape that used to resolve to `riderSharedEmpty`'s invite-code prompt. The
+    /// rider Live Map renders on the owner's OWN car, un-tier-gated, with the gold
+    /// "Where to?" CTA up — the self-ride flow MYR-325 verified live.
+    ///
+    /// It is the AFTER half of a pair with `riderSharedEmpty`, which keeps the
+    /// same catalog machinery and zero rows of BOTH roles and must stay
+    /// byte-identical: the only difference between the two scenes is one owned row
+    /// on the injected `GET /api/vehicles`, which is the whole issue.
+    case riderOwnerSelfRide
+
+    /// MYR-343 — the rider Live Map while the vehicle set is still RESOLVING: the
+    /// `GET /api/vehicles` that decides between "ride your car", "ride the car
+    /// shared with you" and "you have nothing" has not answered yet.
+    ///
+    /// This is the client's *"I briefly saw the rider home page"* frame, which
+    /// before this issue was the rider home rendered over an unresolved set. It is
+    /// now a skeleton shaped like the idle greeting sheet. The scene parks the
+    /// list in flight and never resolves it (the same `DebugLoadingFleet` device),
+    /// because on a healthy account the real state lasts milliseconds and has no
+    /// other capture route. Capture it twice — once normally, once with Reduce
+    /// Motion — to prove `MRTShimmerBand`'s fallback.
+    case riderVehiclesResolving
+
+    /// MYR-343 — the rider Live Map when `GET /api/vehicles` FAILED and nothing
+    /// about the account is known. Deliberately not the invite-code prompt ("no
+    /// vehicles shared with you yet" is a claim one timed-out fetch cannot
+    /// support) and deliberately not a skeleton (MYR-326: loading ≠ unavailable —
+    /// nothing is in flight behind this screen). The honest line, and the same
+    /// low-friction recovery the owner's cold-read timeout uses: a resume re-asks.
+    case riderVehiclesUnreachable
+
     /// The active scene for this launch, or `nil` for a normal boot. Read
     /// from `MRT_SCENE` (env, the documented `SIMCTL_CHILD_MRT_SCENE=` path);
     /// also accepts `-MRT_SCENE <name>` launch arguments as a fallback for
@@ -1338,6 +1371,7 @@ enum DebugScene: String, CaseIterable {
              .ownerConnecting, .ownerConnectingCold, .ownerDrivesLoading, .ownerSettingsLoading,
              .ownerShare, .ownerShareLive, .ownerShareMessage, .ownerShareMessageNoName,
              .riderSharedEmpty, .riderWatchOnly,
+             .riderOwnerSelfRide, .riderVehiclesResolving, .riderVehiclesUnreachable,
              .riderInviteRateLimited, .riderInviteJoined:
             break // chooser / settings / sharing / rider live-map / owner scenes don't drive the viewer sheet
         }
@@ -1431,6 +1465,30 @@ extension DebugScene {
         )
     }
 
+    /// MYR-343 — an OWNED `GET /api/vehicles` row: `role: .owner` and, by §7.0,
+    /// NO `sharePermission` at all (the key is emitted iff the role is `viewer`).
+    /// That absence is not incidental — it is exactly why an owner produced zero
+    /// grants and got routed to the invite-code prompt.
+    static func shareOwnerRow(id: String, name: String) -> VehicleSummary {
+        VehicleSummary(
+            vehicleId: id,
+            name: name,
+            model: "Model Y",
+            year: 2026,
+            color: "Quicksilver",
+            vinLast4: "7421",
+            status: .parked,
+            chargeLevel: 64,
+            estimatedRange: 232,
+            lastUpdated: ISO8601DateFormatter().string(from: Date()),
+            role: .owner,
+            hasActiveRide: false,
+            licensePlate: "8ABC123",
+            serviceEstimatedEndAt: nil,
+            sharePermission: nil
+        )
+    }
+
     /// The OWNER's sharing service for this scene, or `nil` to leave the composed
     /// (simulated) one in place. Scoped to `ownerShareLive`, so every other owner
     /// scene keeps the fixture list and stays byte-identical.
@@ -1491,6 +1549,27 @@ extension DebugScene {
                 Self.shareViewerRow(id: "shared-1", name: "Alex\u{2019}s Model 3", permission: "live_history"),
                 Self.shareViewerRow(id: "shared-2", name: "Alex\u{2019}s Cybercab", permission: "live_history"),
             ]
+        case .riderOwnerSelfRide:
+            // MYR-343 — the client's account: ONE owned row, ZERO viewer rows.
+            // `role: .owner` carries no `sharePermission` at all (§7.0 emits the
+            // key iff the role is `viewer`), which is precisely why it produced no
+            // grant and shunted him to the invite prompt.
+            endpoint.viewerRows = [Self.shareOwnerRow(id: "owned-1", name: "Lunar")]
+        case .riderVehiclesResolving:
+            // MYR-343 — the list is parked in flight and never answers, so the
+            // shell holds its `.resolving` skeleton for the whole capture. Same
+            // "never resolve it" device as `DebugLoadingFleet`.
+            return LiveSharedVehicleCatalog(api: endpoint, listVehicles: {
+                try await Task.sleep(for: .seconds(86_400))
+                return []
+            })
+        case .riderVehiclesUnreachable:
+            // MYR-343 — the list throws, so the production `load()` records the
+            // failure WITHOUT claiming the account is empty. Nothing is hand-set:
+            // the screen is whatever the shipping `RiderVehicleSet.resolve` makes
+            // of `hasLoaded == false, loadFailed == true`.
+            struct ListUnreachable: Error {}
+            return LiveSharedVehicleCatalog(api: endpoint, listVehicles: { throw ListUnreachable() })
         default:
             return nil
         }

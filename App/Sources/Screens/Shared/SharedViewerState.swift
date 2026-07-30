@@ -222,6 +222,20 @@ public final class SharedViewerState {
         adoptSharedVehicle(grant?.vehicle)
     }
 
+    /// MYR-343 — adopt the vehicle the rider shell RESOLVED, which is not always a
+    /// share: an OWNER in rider mode self-rides their own car (a supported flow,
+    /// MYR-325) and holds zero `role: viewer` rows. The adoption carries the tier
+    /// with it, `nil` for an owned car, which `canRequestRides` already reads as
+    /// "tiers do not apply" — correct, since §7.8's non-owner gate is not one an
+    /// owner can fail.
+    ///
+    /// Same idempotence as the grant path (it delegates to it): re-adopting the
+    /// same vehicle id does not restart the ticker or jump the map.
+    func adopt(_ adoption: RiderVehicleAdoption?) {
+        sharedVehicleTier = adoption?.tier
+        adoptSharedVehicle(adoption?.vehicle)
+    }
+
     public func adoptSharedVehicle(_ vehicle: Vehicle?) {
         guard sharedVehicle?.id != vehicle?.id else { return }
         let wasRunning = telemetryStarted

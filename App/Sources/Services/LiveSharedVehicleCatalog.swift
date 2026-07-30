@@ -31,7 +31,12 @@ import Observation
 @MainActor
 final class LiveSharedVehicleCatalog: SharedVehicleCatalog {
     private(set) var grants: [SharedVehicleGrant] = []
+    /// MYR-343 — the OWNER partition of the same list. See the protocol's
+    /// declaration for why the rider shell needs it (an owner in rider mode
+    /// self-rides their own car and holds zero viewer rows).
+    private(set) var ownedVehicles: [Vehicle] = []
     private(set) var hasLoaded = false
+    private(set) var loadFailed = false
 
     @ObservationIgnored private let api: any VehicleSharingEndpoint
     @ObservationIgnored private let listVehicles: @Sendable () async throws -> [VehicleSummary]
@@ -57,11 +62,21 @@ final class LiveSharedVehicleCatalog: SharedVehicleCatalog {
                 // last-known grants standing and leave `hasLoaded` alone, so the
                 // Live Map does not swap a working map for an empty state
                 // because one fetch timed out.
+                //
+                // MYR-343 — but DO record that the attempt failed, so a shell that
+                // has never had an answer can stop claiming to be loading (MYR-326:
+                // a skeleton that never resolves is worse than the spinner it
+                // replaced). A catalog that already loaded once keeps rendering its
+                // last-known set; `RiderVehicleSet.resolve` prefers `hasLoaded`.
+                guard !Task.isCancelled else { return }
+                self.loadFailed = true
                 return
             }
             guard !Task.isCancelled else { return }
             self.grants = Self.grants(from: summaries)
+            self.ownedVehicles = Self.ownedVehicles(from: summaries)
             self.hasLoaded = true
+            self.loadFailed = false
         }
         loadTask = task
         await task.value
@@ -84,6 +99,11 @@ final class LiveSharedVehicleCatalog: SharedVehicleCatalog {
             merged.insert(contentsOf: redeemed.grants, at: 0)
             grants = merged
             hasLoaded = true
+            // MYR-343 — a redeem answers with VIEWER rows only (§7.5.5), so it can
+            // neither add to nor invalidate `ownedVehicles`; leave that partition
+            // exactly as the last list left it. And a successful redeem clears a
+            // prior list failure: the account demonstrably has a vehicle now.
+            loadFailed = false
             return redeemed
         } catch let error as RestError {
             throw error.shareRedemptionFailure
@@ -118,6 +138,25 @@ final class LiveSharedVehicleCatalog: SharedVehicleCatalog {
                 // so a shared car and an owned car are built by one code path.
                 vehicle: VehicleContractMapping.vehicle(summary: summary)
             )
+        }
+    }
+
+    /// MYR-343 — fold the OWNER partition of the same list into vehicles, in list
+    /// order. The mirror image of `grants(from:)`: same source, same production
+    /// `VehicleContractMapping.vehicle`, opposite `role` filter — so an owned car
+    /// and a shared car reaching the rider's map are built by ONE code path.
+    ///
+    /// Any row that is not explicitly `viewer` counts as owned. §7.0 emits
+    /// `role: owner` for the account's own cars, and a role this build cannot
+    /// rank is far likelier to be a NEW ownership-shaped role than a share — and
+    /// unlike a tier, guessing here fails SAFE: the rider watches a car that is on
+    /// their own account either way, and every capability is server-enforced.
+    ///
+    /// Pure + static, for the same reason `grants(from:)` is.
+    static func ownedVehicles(from summaries: [VehicleSummary]) -> [Vehicle] {
+        summaries.compactMap { summary in
+            guard summary.role != .viewer else { return nil }
+            return VehicleContractMapping.vehicle(summary: summary)
         }
     }
 }
