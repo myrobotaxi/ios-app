@@ -1,6 +1,9 @@
 import SwiftUI
 import DesignSystem
 import MyRoboTaxiKit
+#if canImport(UIKit)
+import UIKit
+#endif
 
 // MARK: - Enter Invite Code — rider join (MYR-165 — Handoff §5.3,
 // design/app/onboarding.jsx:407-538)
@@ -60,12 +63,15 @@ struct InviteCodeFlow: View {
         case entry, validating, joined
     }
 
-    private static let length = 6
+    private static let length = InviteCodeEntry.length
     private static let sample = "RBO246" // jsx:409
 
     @State private var code = ""
     @State private var phase: Phase = .entry
     @State private var shakes = 0
+    /// A paste that carried no code at all. Quiet, one line, in the same slot the
+    /// non-shake refusals use — never a shake, because nothing was rejected.
+    @State private var pasteNotice: String?
     /// The joined host, built from the redeem response. `nil` until the code is
     /// accepted — there is no host to name before then.
     @State private var joined: RedeemedShare?
@@ -124,6 +130,23 @@ struct InviteCodeFlow: View {
             cells
                 .modifier(Shake(trigger: shakes))
                 .background(hiddenField)
+                // MYR-344 — the long-press route. The cells are the thing that
+                // LOOKS like a text field, so they are where a rider long-presses
+                // expecting the system Paste item; the field actually backing them
+                // is 1×1 and invisible, so iOS's own edit menu can never be
+                // summoned on it. Reading the pasteboard here is explicit intent
+                // (the rider tapped an item that says Paste), which is the bar
+                // iOS's own paste prompt is asking about.
+                .contextMenu {
+                    Button {
+                        pasteFromPasteboard()
+                    } label: {
+                        Label("Paste code", systemImage: "doc.on.clipboard")
+                    }
+                    .disabled(phase != .entry)
+                }
+
+            pasteAffordance
 
             if phase == .validating {
                 HStack(spacing: 10) {
@@ -155,6 +178,17 @@ struct InviteCodeFlow: View {
                     .frame(maxWidth: 280)
                     .padding(.top, 26)
                     .transition(.opacity)
+            } else if let pasteNotice, phase == .entry {
+                // MYR-344 — the same quiet treatment, for the same reason: a
+                // pasteboard holding a phone number is not a rejected code, so it
+                // must not shake or clear anything.
+                Text(pasteNotice)
+                    .font(.system(size: 13.5, weight: .medium))
+                    .foregroundStyle(Color.mrtTextSec)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 280)
+                    .padding(.top, 26)
+                    .transition(.opacity)
             }
 
             Spacer(minLength: 0)
@@ -175,12 +209,22 @@ struct InviteCodeFlow: View {
         .padding(.horizontal, MRTMetrics.onboardingGutter)
         .padding(.bottom, 38)
         .mrtFadeUp(duration: 0.4)
-        .contentShape(Rectangle())
-        .onTapGesture { fieldFocused = true }
-        // MYR-346 — keyed on `prefilledCode` so a SECOND join link arriving while
-        // this screen is already up re-prefills it, instead of being held behind
-        // the screen it was trying to reach. With no link the id is `nil` and
-        // this runs exactly once on appear, as `.task` did.
+        // "Tap anywhere to focus the hidden field" — jsx:470's whole-screen tap
+        // target. MYR-344 moved it BEHIND the content instead of in front of it:
+        // as a foreground `.contentShape` + `.onTapGesture` it was the screen's
+        // gesture recognizer and it swallowed taps aimed at the UIKit-hosted paste
+        // control inside it (observed: the control drew, and every tap on it did
+        // nothing). Behind the content, a tap still falls through every
+        // non-interactive Text to reach it, and interactive children get their
+        // taps first.
+        .background {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { fieldFocused = true }
+        }
+        // Keyed on `prefilledCode` (universal links) so a SECOND join link
+        // arriving while this screen is up re-prefills it. With no link the id
+        // is `nil` and this runs exactly once on appear, as `.task` did.
         .task(id: prefilledCode) {
             // jsx:416 — focus after the entrance settles (350ms).
             try? await Task.sleep(for: .milliseconds(350))
@@ -191,6 +235,82 @@ struct InviteCodeFlow: View {
             } else if autoSubmitsSampleCode, code.isEmpty {
                 useSampleCode() // submit fires from `onChange`, exactly as a tap would
             }
+        }
+    }
+
+    // MARK: Paste (MYR-344)
+
+    /// The keyboard-height affordance: a system **`UIPasteControl`** (SwiftUI's
+    /// `PasteButton` is exactly that control), which hands the payload over on its
+    /// own tap with NO paste prompt at all — the strongest form of "user intent"
+    /// iOS offers, and the reason this is not a hand-rolled button that reads
+    /// `UIPasteboard.general.string` behind the rider's back.
+    ///
+    /// It is shown for the whole of `.entry` and gated on NOTHING ELSE. The
+    /// obvious-looking alternative — draw it only when the pasteboard holds a
+    /// candidate — cannot be built honestly: the only contents-blind probe iOS
+    /// offers is `UIPasteboard.hasStrings`, and **`hasStrings` is `true` for an
+    /// EMPTY string item** (measured: a freshly-cleared pasteboard still reports
+    /// text), so the probe cost a pasteboard touch, made the screen's rendering
+    /// depend on ambient clipboard state — the drift captures moved with the host
+    /// machine's clipboard — and did not actually answer the question. Anything
+    /// that WOULD answer it is a read without intent. So the app never touches the
+    /// pasteboard at all, and a paste carrying no code is answered by
+    /// `pasteNotice` after the fact, which is the honest place for that answer.
+    ///
+    /// Deliberate DEVIATION from the prototype, which has no paste affordance
+    /// anywhere (onboarding.jsx:440-489 is keystrokes only): the prototype was
+    /// never handed a code by text message. Tinted to the gold accent and directly
+    /// under the cells, above the keyboard, so it is in the same glance as the
+    /// thing it fills.
+    @ViewBuilder
+    private var pasteAffordance: some View {
+        if phase == .entry {
+            PasteButton(payloadType: String.self) { strings in
+                guard let first = strings.first else { return }
+                Task { @MainActor in acceptPasted(first) }
+            }
+            .labelStyle(.titleAndIcon)
+            .buttonBorderShape(.capsule)
+            .tint(Color.mrtGold)
+            .frame(minHeight: MRTMetrics.minTapTarget)
+            .padding(.top, 24)
+            .accessibilityIdentifier("mrt.invite.pasteCode")
+            .transition(.opacity)
+        }
+    }
+
+    /// The long-press route's read. Reached only from the "Paste code" menu item,
+    /// so the read is the rider's own request; iOS may show its paste prompt on
+    /// top of it, which is the correct place for that question to be asked.
+    private func pasteFromPasteboard() {
+        #if canImport(UIKit)
+        guard phase == .entry else { return }
+        acceptPasted(UIPasteboard.general.string ?? "")
+        #endif
+    }
+
+    /// Everything pasted lands here, from either route.
+    ///
+    /// `InviteCodeEntry.extractCode` finds the candidate — "code: rbo246!" and
+    /// the whole share message both resolve to RBO246 — and a COMPLETE one then
+    /// submits exactly as the 6th keystroke does, rather than sitting in the cells
+    /// waiting for a button that does not exist. The one wrinkle: re-pasting the
+    /// code already in the cells writes no CHANGE, so `onChange` never fires and
+    /// the auto-submit has to be made here.
+    private func acceptPasted(_ raw: String) {
+        guard phase == .entry else { return }
+        let cleaned = InviteCodeEntry.extractCode(from: raw)
+        guard !cleaned.isEmpty else {
+            pasteNotice = "That doesn\u{2019}t look like an invite code."
+            return
+        }
+        pasteNotice = nil
+        refusal = nil
+        if code == cleaned {
+            if InviteCodeEntry.isComplete(cleaned) { submit(cleaned) }
+        } else {
+            code = cleaned // `onChange` clamps + auto-submits, exactly as typing does
         }
     }
 
@@ -221,14 +341,11 @@ struct InviteCodeFlow: View {
             .accessibilityLabel("Invite code")
             .onChange(of: code) { _, newValue in
                 // jsx:426-430 — uppercase, alphanumeric, clamp to 6, auto-submit.
-                let cleaned = String(
-                    newValue.uppercased().unicodeScalars
-                        .filter { CharacterSet.alphanumerics.contains($0) && $0.isASCII }
-                        .prefix(Self.length)
-                        .map(Character.init)
-                )
+                // MYR-344 — the rule itself moved to `InviteCodeEntry` so the
+                // paste routes cannot sanitize differently than typing does.
+                let cleaned = InviteCodeEntry.sanitize(newValue)
                 if cleaned != newValue { code = cleaned }
-                if cleaned.count == Self.length { submit(cleaned) }
+                if InviteCodeEntry.isComplete(cleaned) { submit(cleaned) }
             }
     }
 
@@ -251,6 +368,7 @@ struct InviteCodeFlow: View {
         guard phase == .entry else { return }
         phase = .validating
         refusal = nil
+        pasteNotice = nil
         fieldFocused = false
         Task { @MainActor in
             // jsx:420-423 — the deliberate ~1.3s "Verifying code…" beat. Run it

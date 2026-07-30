@@ -600,6 +600,18 @@ enum DebugScene: String, CaseIterable {
     /// rides unconditionally. Auto-submits like the scene above.
     case riderInviteJoined
 
+    /// MYR-344 — the invite-code screen at REST, in entry, with nothing
+    /// submitted: the state the two scenes above pass through in one frame on
+    /// their way to a verdict, and the ONE the client photographed. It exists for
+    /// the PASTE affordance, which lives only in `.entry` — the two scenes above
+    /// leave that phase immediately, so neither can hold it still.
+    ///
+    /// It takes NO pasteboard seeding: the affordance is unconditional in `.entry`
+    /// (see `InviteCodeFlow.pasteAffordance` for why a pasteboard-gated one cannot
+    /// be built honestly), so this capture is deterministic regardless of what the
+    /// capturing machine has on its clipboard.
+    case riderInviteEntry
+
     /// MYR-343 — the client's own account: an OWNER who switched to rider mode.
     /// ZERO `role: viewer` rows and ONE `role: owner` row, which is exactly the
     /// shape that used to resolve to `riderSharedEmpty`'s invite-code prompt. The
@@ -773,7 +785,7 @@ enum DebugScene: String, CaseIterable {
         case .modeChooser: return .modeChooser
         // MYR-184 — the invite-code screen is its own top-level `AppScreen`, not a
         // rider tab, so it needs an explicit arm.
-        case .riderInviteRateLimited, .riderInviteJoined: return .inviteCode
+        case .riderInviteRateLimited, .riderInviteJoined, .riderInviteEntry: return .inviteCode
         case .some(let scene) where scene.isOwner: return .ownerHome
         case .some: return .sharedHome
         case nil: return .signIn
@@ -1538,7 +1550,7 @@ enum DebugScene: String, CaseIterable {
              .ownerShare, .ownerShareLive, .ownerShareMessage, .ownerShareMessageNoName,
              .riderSharedEmpty, .riderWatchOnly,
              .riderOwnerSelfRide, .riderVehiclesResolving, .riderVehiclesUnreachable,
-             .riderInviteRateLimited, .riderInviteJoined:
+             .riderInviteRateLimited, .riderInviteJoined, .riderInviteEntry:
             break // chooser / settings / sharing / rider live-map / owner scenes don't drive the viewer sheet
         }
     }
