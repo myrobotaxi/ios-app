@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- MYR-346 — the FULL-MANUAL twin of ExportOptions.plist, for exporting an
+	     archive that was signed with `CODE_SIGN_STYLE=Manual` (RELEASING.md §3b).
+	     Use it when automatic signing cannot resolve a profile: an Xcode signed
+	     out of the team account, or an App Store Connect API key without
+	     cloud-signing rights.
+
+	     The profile is named by UUID, not by name, ON PURPOSE. Two installed
+	     profiles are both called "MyRoboTaxi App Store" — the pre-Associated-
+	     Domains one (747ad8bd…) and the regenerated one below — so a
+	     name match is ambiguous and resolves on creation date, which is a
+	     tiebreak rather than a guarantee. A UUID cannot pick the wrong one.
+
+	     If this profile is ever regenerated again (any new capability requires
+	     it), the UUID here must be updated to match; the export fails loudly
+	     with "no profile matching" rather than silently signing with the old
+	     one, which is the behaviour we want. -->
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>destination</key>
+	<string>export</string>
+	<key>teamID</key>
+	<string>NFKX777598</string>
+	<key>signingStyle</key>
+	<string>manual</string>
+	<key>signingCertificate</key>
+	<string>Apple Distribution</string>
+	<key>provisioningProfiles</key>
+	<dict>
+		<key>app.myrobotaxi.ios</key>
+		<string>f466e22b-6d46-427e-8415-4dabaed9a7de</string>
+	</dict>
+	<key>uploadSymbols</key>
+	<true/>
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+</dict>
+</plist>

@@ -460,6 +460,96 @@ The pan/pinch/recenter states cannot be reached headlessly at all —
 `App/UITests/ExpandedRouteUITests.swift` synthesizes those touches and attaches
 the captures to the xcresult (`xcrun xcresulttool export attachments`).
 
+**Invite links have an address** (MYR-346) — an invite is shared as
+`https://myrobotaxi.app/join/{CODE}`, a branded web page whose OG card renders in
+the thread and which, on a phone that has the app, opens it straight to the
+prefilled code. MYR-340 made the share message a mini-onboarding; this gives the
+six characters somewhere to point.
+
+- **Entitlement**: `com.apple.developer.associated-domains: [applinks:myrobotaxi.app]`,
+  declared in `project.yml` under the target's `entitlements.properties` — the
+  same XcodeGen mechanism as `aps-environment` and the SIWA entitlement, so
+  `App/MyRoboTaxi.entitlements` stays generated and is never hand-edited. Unlike
+  `aps-environment` it needs no dev/prod split: `applinks:` has no such axis, and
+  the development-vs-production distinction lives in how iOS FETCHES the AASA
+  (Settings ▸ Developer ▸ Associated Domains Development bypasses Apple's CDN).
+  **THREE things must agree** or the link silently opens Safari with no error
+  anywhere: the entitlement, the AASA served at
+  `https://myrobotaxi.app/.well-known/apple-app-site-association` (appID
+  `NFKX777598.app.myrobotaxi.ios`, components `/join/*`), and the provisioning
+  profile. `InviteLink.host` is the client's single source of truth for the first
+  two, and `InviteLinkHostTests` pins it.
+- **The parse is strict about the envelope, forgiving about the code**
+  (`App/Sources/Links/InviteLinkRouting.swift`, pure): https + exactly our host +
+  exactly `/join/{one segment}`, then upper-case and strip to `[A-Z0-9]` and
+  require **exactly 6**. A wrong length is REFUSED, not truncated — that length
+  check is what makes auto-submit safe, since a malformed link must never spend
+  one of the rider's 10 redeem attempts per minute (§7.5.5). **An unrecognised
+  link is not an error**: it resolves to `.ignore` and the app opens normally,
+  because rendering a URL this build does not know is the web's job.
+- **Routing matrix** (`InviteLinkRouting.route`, a pure function of
+  `InviteLinkContext { screen, isBusy }`). The context takes the SCREEN as the
+  signed-in fact, deliberately — `session.isSignedIn` is `false` in SIM until the
+  tap and `false` in every DEBUG scene, all of which boot into a signed-in shell,
+  so the screen is the only fact true on every path (the same choice
+  `applyPushTapRoute` already makes). Signed in on `ownerHome`/`sharedHome`/
+  `emptyState`/`inviteCode` → present `InviteCodeFlow` prefilled, which
+  auto-submits. `signIn`/`resolvingSession` → `.awaitSignIn`. Mid-ride, or on
+  `modeChooser`/`addTesla`/either tutorial → `.awaitIdle`.
+- **A link never stomps work, and is never dropped.** Push (MYR-186) DROPS a tap
+  that lands at the wrong moment because its cold-launch refetch reaches the same
+  surface anyway; **an invite code has no refetch** — nothing in the system will
+  ever produce those six characters again — so `RootView` HOLDS it in
+  `pendingInviteCode` and re-asks on `.onChange(of: inviteLinkContext)`. Every
+  deferral state resolves on its own, so a held code always lands. Cancelling a
+  link-opened flow restores the exact shell it interrupted (`InviteLinkReturn`);
+  completing goes to the rider Live Map, where the car they just joined is. A link
+  arriving on the first-run choice screen uses the EXISTING `.onboarding` origin,
+  so it is byte-identical to tapping "Join with an invite code" there.
+- **Delivery is a MAILBOX, not a closure** (`InviteLinkBridge`). A cold-launch
+  activation is delivered during launch, before `RootView` exists; the mailbox
+  holds it and `install` drains it. BOTH delivery paths feed it — SwiftUI's
+  `.onContinueUserActivity(NSUserActivityTypeBrowsingWeb)` and the app delegate's
+  `application(_:continue:restorationHandler:)` — because this app is
+  SwiftUI-lifecycle WITH a `@UIApplicationDelegateAdaptor`, exactly the
+  configuration where which callback fires is not ours to predict. Re-delivery is
+  a genuine no-op: it resolves to the same route, and `InviteCodeFlow.prefill`
+  assigns `code` without firing `onChange` when the value is unchanged.
+- **`InviteCodeFlow`'s only external entry point is `prefilledCode`**, which
+  assigns `code` and lets the EXISTING `onChange` clean, clamp and auto-submit —
+  so a link redeems by exactly the path a thumb does, and the shake, the rate-limit
+  line and the "you already have access" line are all the shipping ones. Nothing
+  about the cell input or `submit` is reachable from outside (kept deliberately
+  narrow so MYR-344's work inside those internals merges cleanly). Its `.task` is
+  now `.task(id: prefilledCode)` so a SECOND link re-prefills a flow already up;
+  with no link the id is `nil` and it runs once on appear exactly as before.
+- **The owner tapping their own link is the likeliest first use of this feature**
+  and needed no new code: §7.5.5 answers `409`, the Kit folds it to
+  `.alreadyHasAccess`, and the entry screen already renders that honestly —
+  "You already have access to that Tesla", entry left intact, no shake.
+- **The share message leads with the join link** — alone on its own line directly
+  under the opening, BEFORE the TestFlight link, because platforms preview the
+  FIRST link and the old ordering produced TestFlight's generic "join the beta"
+  tile. The TestFlight link survives as the demoted no-app step (it is still the
+  only way to get the build), and the bare code line survives for manual entry.
+- **End-to-end cannot be verified until the web AASA deploys** — until then
+  `simctl openurl` opens Safari, not the app. The routing is pinned by
+  `App/Tests/InviteLinkRoutingTests.swift`; to drive the real screens use the
+  DEBUG hook **`MRT_JOIN_LINK`** (a full URL or a bare code; `-MRT_JOIN_LINK
+  <value>` arg fallback), which posts to the mailbox from `RootView.init` — i.e.
+  in the same before-the-view-exists window a real activation lands in, so it
+  exercises the held-then-drained path rather than a shortcut around it:
+
+  ```sh
+  SIMCTL_CHILD_MRT_SCENE=ownerHome SIMCTL_CHILD_MRT_JOIN_LINK=RBO246 \
+    xcrun simctl launch <udid> app.myrobotaxi.ios          # signed in → prefilled + submitted
+  SIMCTL_CHILD_MRT_JOIN_LINK=https://myrobotaxi.app/join/RBO246 \
+    xcrun simctl launch <udid> app.myrobotaxi.ios          # cold + signed out → held silently
+  ```
+
+  Unset — which it is for every scene and capture — nothing reads it and no scene
+  changes by a pixel.
+
 **Owner-sheet capture modifiers** (DEBUG-only, orthogonal to the scene): `MRT_OWNER_DETENT=half|tall` boots at the controls detent or (MYR-332) at the TALL one — MYR-319 makes it apply on the LIVE fleet too, not just the simulated/injected ones; `MRT_OWNER_VEHICLE=<n>` selects a fleet row; `MRT_OWNER_SCROLL=bottom|<0…1>` (MYR-319) overrides where the dense sheet's scroll rests, so a section can be framed on a scene that carries no per-scene anchor. The last two exist because the ONLY way to see the controls stack fed by a REAL REST snapshot is `MRT_SCENE=ownerHome MRT_TELEMETRY=live MRT_BACKEND_URL=…`, and headless tooling can neither drag nor scroll the sheet. Unset, every existing scene's detent and anchor are exactly as before.
 
 ### Streaming-fix camera probe (MYR-222)

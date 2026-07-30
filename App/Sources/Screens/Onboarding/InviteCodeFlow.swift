@@ -40,6 +40,21 @@ struct InviteCodeFlow: View {
     /// the redeem refusals + the real success screen have no other capture
     /// route. Always `false` outside the two sharing scenes.
     var autoSubmitsSampleCode = false
+    /// MYR-346 — a code handed in from OUTSIDE the field, by a
+    /// `https://myrobotaxi.app/join/{CODE}` universal link. Already sanitised
+    /// (`InviteLink.sanitize` — upper-case `[A-Z0-9]`, exactly six) by the time
+    /// it gets here; this screen re-cleans it anyway through the same `onChange`
+    /// every keystroke goes through, so there is no second sanitiser to keep in
+    /// step.
+    ///
+    /// This is the ENTIRE external entry point into this screen's entry state,
+    /// on purpose. It sets `code` and lets the existing `onChange` do the rest —
+    /// the clean, the clamp, and the auto-submit on the 6th character are all
+    /// the shipping ones, so a link redeems by exactly the path a rider's
+    /// thumb does. Nothing about the cell input, the hidden field, or `submit`
+    /// is reachable from outside, which is what keeps this mergeable alongside
+    /// MYR-344's work inside those internals.
+    var prefilledCode: String?
 
     private enum Phase {
         case entry, validating, joined
@@ -162,11 +177,18 @@ struct InviteCodeFlow: View {
         .mrtFadeUp(duration: 0.4)
         .contentShape(Rectangle())
         .onTapGesture { fieldFocused = true }
-        .task {
+        // MYR-346 — keyed on `prefilledCode` so a SECOND join link arriving while
+        // this screen is already up re-prefills it, instead of being held behind
+        // the screen it was trying to reach. With no link the id is `nil` and
+        // this runs exactly once on appear, as `.task` did.
+        .task(id: prefilledCode) {
             // jsx:416 — focus after the entrance settles (350ms).
             try? await Task.sleep(for: .milliseconds(350))
             fieldFocused = true
-            if autoSubmitsSampleCode, phase == .entry, code.isEmpty {
+            guard phase == .entry else { return }
+            if let prefilledCode {
+                prefill(prefilledCode)
+            } else if autoSubmitsSampleCode, code.isEmpty {
                 useSampleCode() // submit fires from `onChange`, exactly as a tap would
             }
         }
@@ -214,6 +236,15 @@ struct InviteCodeFlow: View {
         code = Self.sample
         // (submit fires from onChange; jsx adds a 200ms beat for the fill
         // to read before the spinner — folded into the same path here.)
+    }
+
+    /// MYR-346 — seat a code that came from a universal link. Deliberately the
+    /// same one-line shape as `useSampleCode`: assign, and let `onChange` clean,
+    /// clamp and auto-submit. Assigning a value equal to what is already there
+    /// fires no `onChange`, so re-delivering the same link is a genuine no-op
+    /// rather than a second redeem against the 10-per-minute limit.
+    private func prefill(_ value: String) {
+        code = value
     }
 
     private func submit(_ value: String) {

@@ -650,6 +650,40 @@ enum DebugScene: String, CaseIterable {
         return false
     }
 
+    /// MYR-346 — simulate an INCOMING universal link, orthogonal to the scene.
+    ///
+    /// `MRT_JOIN_LINK` (or `-MRT_JOIN_LINK <value>`) takes either a full URL
+    /// (`https://myrobotaxi.app/join/RBO246`) or a bare code (`RBO246`, composed
+    /// into the same URL) and feeds it to `InviteLinkBridge` from `RootView.init`
+    /// — i.e. BEFORE the view appears, which is exactly the cold-launch window
+    /// the mailbox exists for, so the hook exercises the held-then-drained path
+    /// rather than a shortcut around it.
+    ///
+    /// This exists because the real thing cannot be run yet: a universal link
+    /// only reaches the app once `https://myrobotaxi.app/.well-known/apple-app-
+    /// site-association` is DEPLOYED and iOS has fetched it for an installed
+    /// build. Until then `xcrun simctl openurl` opens Safari, not the app. The
+    /// routing decisions themselves are pinned by `InviteLinkRoutingTests`; this
+    /// hook is for driving the real screens.
+    ///
+    ///     MRT_SCENE=ownerHome MRT_JOIN_LINK=RBO246          # signed-in, owner
+    ///     MRT_JOIN_LINK=https://myrobotaxi.app/join/RBO246  # cold, signed-out
+    ///
+    /// Unset — which it is for every scene and every capture — nothing reads it
+    /// and no scene changes by a pixel.
+    static var incomingJoinLink: URL? {
+        func parse(_ raw: String?) -> URL? {
+            guard let raw, !raw.isEmpty else { return nil }
+            if raw.contains("://") { return URL(string: raw) }
+            guard let code = InviteLink.sanitize(raw) else { return nil }
+            return URL(string: InviteLink.url(code: code))
+        }
+        if let value = parse(ProcessInfo.processInfo.environment["MRT_JOIN_LINK"]) { return value }
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-MRT_JOIN_LINK"), i + 1 < args.count { return parse(args[i + 1]) }
+        return nil
+    }
+
     /// Drift-gate flag for the `ownerHome` scene (MYR-236 r5.3): when
     /// `MRT_OWNER_DETENT=half` is set (env or `-MRT_OWNER_DETENT half` arg), the
     /// owner sheet boots resting at the HALF detent so the at-rest-half full-
