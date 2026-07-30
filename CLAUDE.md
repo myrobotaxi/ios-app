@@ -235,6 +235,56 @@ A `-MRT_SCENE <name>` launch **argument** is accepted as a fallback for tooling 
 
   **"{Owner}'s {Vehicle}" is conditional, not concatenated** — `VehicleSummary.name` is the owner's OWN nickname and owners name cars after themselves (the canonical server fixture is literally `"Alex's Model 3"`), so prefixing §7.5.5's `ownerFirstName` onto it produced **"Alex's Alex's Model 3"**, which the first `riderInviteJoined` capture showed verbatim. `SharedVehicleTitle.compose` prefixes the owner only when the nickname is not already about them. The §7.0 catalog rows carry **no owner name at all** — only the redeem response does, and only at join time — so "Shared with me" titles on the vehicle nickname alone rather than persisting a name that can go stale.
 
+- Account deletion (MYR-355, App Store Guideline 5.1.1(v)): `ownerDeleteAccount` /
+  `riderDeleteAccount` (the FIRST dialog, per role — the title is shared and the
+  consequence sentence is not, which is the whole reason the copy is role-split),
+  `ownerDeleteAccountConfirm` / `riderDeleteAccountConfirm` (the SECOND dialog,
+  "This can't be undone" — identical copy for both roles by design, captured on
+  both so the claim is verified rather than asserted), and `deleteAccountFailed`
+  (the `DELETE /api/users/me` refused with a scripted `500`: the alert up, the user
+  STILL SIGNED IN, the Delete row still there to retry). All five drive the
+  SHIPPING `AccountDeletionFlow` through `debugDrive`, which calls the same three
+  methods a thumb does in the same order — the stand-in-for-a-tap precedent of
+  `ownerFreshnessWaking` / `ownerServiceWindowEditor`, and a stand-in for the TAPS
+  only. `deleteAccountFailed` injects `DebugAccountDeletionEndpoint` and has **no
+  other capture route at all**: reaching it for real means getting a live server to
+  fail a delete on purpose, and if it succeeded instead the account would be gone.
+  All five carry `ownerSettings`/`riderSettings`'s own DEBUG identity
+  (`showsLiveSettings`) and start at each list's bottom anchor, because the Account
+  section is the last thing above Sign out and a top-of-list capture would frame
+  everything except the subject. `riderSettings` itself is deliberately NOT given
+  that anchor, so it stays framed where the drift gate has always framed it.
+
+```sh
+SIMCTL_CHILD_MRT_SCENE=ownerDeleteAccount xcrun simctl launch <udid> app.myrobotaxi.ios
+SIMCTL_CHILD_MRT_SCENE=riderDeleteAccountConfirm xcrun simctl launch <udid> app.myrobotaxi.ios
+SIMCTL_CHILD_MRT_SCENE=deleteAccountFailed xcrun simctl launch <udid> app.myrobotaxi.ios
+```
+
+  **A failed delete leaves you SIGNED IN**, and that is the client rule this
+  feature turns on. `DELETE /api/users/me` is re-runnable by contract — a partial
+  failure leaves a state where calling it again finishes the job — so the honest
+  resting state after a failure is exactly where the user started, with a notice
+  that says retrying is safe. Signing someone out of an account that may still
+  exist would strand them outside the only surface that can finish the job. The
+  confirmation is **two explicit dialogs, not a type-to-confirm**: the guideline
+  wants deletion discoverable and confirmable, and a labyrinth is its own review
+  risk. **There is no rename affordance** and there must not be one — the backend
+  has no profile-update endpoint at all, so an Edit control here would be the
+  MYR-342 gate lesson in miniature (asserted by `AccountDeletionUITests`).
+
+  **`requesterName` absent now means the account was DELETED.** The server omits
+  the key if and only if the rider has no identity row in any of the three
+  sources; a rider who exists but is nameless resolves to the literal `"Rider"`.
+  So the two surfaces that stand in for a MISSING NAME — the incoming sheet's
+  title and the accept-toast / reserved-ride label — read **"Former rider"**, not
+  "Shared viewer", which asserts in the present tense a role the person no longer
+  holds. `IncomingRequestDisplay.neutralRole` survives UNCHANGED for the one
+  surface that renders it unconditionally as a ROLE subtitle even when a name IS
+  present (`IncomingRequestSheet.headerSubtitle`, ride-request.jsx:1313), and
+  MYR-360's pause warning keeps its own "A rider". Unreachable from SIM by
+  construction, so every simulated capture is byte-identical.
+
 - Loading states (MYR-326, all **live-path-only**): `ownerConnectingCold` (owner Home in the first moments of a live boot — the `GET /api/vehicles` list is still in flight, so NOTHING is known and even the switcher chip is a placeholder), `ownerConnecting` (**the client's state**: the list landed — his car's name is known and the REAL `MapHeader` renders it — and the cold `/snapshot` has not. MYR-319's 0/0.8/3/9s retry means this routinely lasts >10s on an asleep/in-service car, which is why he screenshotted it; before this issue both scenes were one black screen with a system `ProgressView` and "Connecting to your vehicles…"), `ownerDrivesLoading` (Drives tab, first page in flight — a day heading + three `DriveRow`-shaped placeholders where a spinner and "Loading drives…" used to be), `ownerSettingsLoading` (Settings ⇢ Tesla Account with the fleet list in flight — two row-shaped placeholders instead of "Connecting…"; forces the LIVE linked-vehicle branch via `DebugScene.rendersLiveLinkedVehicles`, the same stand-in-for-a-live-session precedent as `showsLiveSettings`, so `ownerSettings` itself stays byte-identical). All four inject `DebugLoadingFleet`, which parks the app in ONE loading branch and never resolves it — these states have no other capture route, since on a healthy account each lasts milliseconds and the client's needs a real asleep car behind a real auth session. **No simulated scene can reach a skeleton at all**: `SimulatedVehicleFleet.isConnecting` and `SimulatedDrivesFeed.isLoading`/`hasMore` are `false` by construction and Settings only consults the live list when `linkedVehicles` is wired, so the whole drift gate is untouched. Capture each one twice — once normally, once with `xcrun simctl ui <udid> reduce_motion enabled` — to prove the Reduce Motion fallback: the blocks stay, the sweep goes (`MRTShimmerBand` renders nothing).
 
 **Loading ≠ unavailable** (MYR-326) — skeletons render only from genuinely-in-flight branches. The honest end states keep their quiet one-liners and must never be skeletonized: "No drives yet", "No vehicles linked to this account", "Sign-in required to load vehicles", and the new cold-read timeout. That timeout is what makes the rest safe: `LiveVehicleFleet` now bounds the cold `/snapshot` wait to `ColdSnapshotLoad.budget()` (the Kit's whole retry schedule + per-attempt slack, ~21s) and then renders "Can't reach <car> right now" instead of loading forever. Before it, a car that never answered left `isConnecting` true for the whole session — survivable as a spinner, a lie as a shimmering placeholder. Recovery is the existing low-friction one (a resume re-asks; a late snapshot clears the timeout by itself), not a retry button.
