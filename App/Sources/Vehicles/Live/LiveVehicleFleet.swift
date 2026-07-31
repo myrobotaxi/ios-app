@@ -1,3 +1,4 @@
+import CoreLocation
 import DesignSystem
 import Foundation
 import MyRoboTaxiKit
@@ -38,6 +39,11 @@ final class LiveVehicleFleet: VehicleFleet {
         /// ~21s). Tests inject a few milliseconds so the timeout is provable
         /// without waiting out the Kit's real backoff schedule.
         var coldSnapshotBudget: TimeInterval?
+        /// MYR-387 — the on-device last-known-position cache the map falls back
+        /// to instead of Null Island (nil → the shared `.standard` store). Tests
+        /// and DEBUG capture scenes inject their own so nothing they observe can
+        /// leak into a later launch's camera.
+        var lastKnownPositions: LastKnownVehiclePositionStore?
 
         init(
             environment: BackendEnvironment,
@@ -45,7 +51,8 @@ final class LiveVehicleFleet: VehicleFleet {
             http: (any HTTPPerforming)? = nil,
             channelFactory: (any WebSocketChannelFactory)? = nil,
             now: (() -> Date)? = nil,
-            coldSnapshotBudget: TimeInterval? = nil
+            coldSnapshotBudget: TimeInterval? = nil,
+            lastKnownPositions: LastKnownVehiclePositionStore? = nil
         ) {
             self.environment = environment
             self.tokenProvider = tokenProvider
@@ -53,6 +60,7 @@ final class LiveVehicleFleet: VehicleFleet {
             self.channelFactory = channelFactory
             self.now = now
             self.coldSnapshotBudget = coldSnapshotBudget
+            self.lastKnownPositions = lastKnownPositions
         }
     }
 
@@ -83,6 +91,13 @@ final class LiveVehicleFleet: VehicleFleet {
     /// Injected clock, so the foreground debounce is testable without sleeping.
     private let now: () -> Date
 
+    /// MYR-387 — the on-device cache of where each car was last SEEN, written on
+    /// every snapshot that carries a fix and read by `OwnerMapCamera` when one
+    /// doesn't. `@ObservationIgnored`: the camera reads it inside a write-driven
+    /// recenter, and making it an observation dependency would invalidate the map
+    /// on a value the map itself just caused to be stored.
+    @ObservationIgnored private let lastKnownPositions: LastKnownVehiclePositionStore
+
     /// MYR-326 — see `ColdSnapshotLoad`.
     private let coldSnapshotBudget: TimeInterval
     /// The vehicle whose cold snapshot never landed inside the budget, or `nil`.
@@ -111,6 +126,7 @@ final class LiveVehicleFleet: VehicleFleet {
         environment = config.environment
         now = config.now ?? Date.init
         coldSnapshotBudget = config.coldSnapshotBudget ?? ColdSnapshotLoad.budget()
+        lastKnownPositions = config.lastKnownPositions ?? LastKnownVehiclePositionStore()
         let http = config.http ?? URLSession(configuration: RestClient.defaultConfiguration())
         rest = RestClient(environment: config.environment, tokenProvider: config.tokenProvider, http: http)
         socket = TelemetrySocket(
@@ -146,6 +162,37 @@ final class LiveVehicleFleet: VehicleFleet {
         if !hasLoaded { return true }
         guard sources.indices.contains(activeIndex) else { return false }
         return sources[activeIndex].state == nil
+    }
+
+    /// MYR-387 — whether the ACTIVE vehicle has a real snapshot, as opposed to
+    /// `placeholderActivity`'s "Locating…" at `(0, 0)`. This is the one fact that
+    /// tells `OwnerHomePresentation` whether a settled failure has anything
+    /// behind it to keep showing.
+    var hasLiveSnapshotForActiveVehicle: Bool {
+        guard sources.indices.contains(activeIndex) else { return false }
+        return sources[activeIndex].state != nil
+    }
+
+    /// MYR-387 — the cached last-known position for a fleet row.
+    func lastKnownPosition(at index: Int) -> CLLocationCoordinate2D? {
+        guard summaries.indices.contains(index) else { return nil }
+        return lastKnownPositions.position(forVehicleID: summaries[index].vehicleId)
+    }
+
+    /// MYR-387 — the owner tapped "Try again" on the honest failure state.
+    ///
+    /// Deliberately the SAME ladder `handleForeground` walks, in the same order,
+    /// because a retry and a resume are the same request: ask for whatever did
+    /// not answer. Forking them is how two recoveries come to disagree about what
+    /// "again" means.
+    func retry() {
+        guard started else { start(); return }
+        if loadStatusMessage != nil || !hasLoaded {
+            loadFleet()
+            return
+        }
+        clearColdLoadTimeout()
+        refreshActiveSnapshot()
     }
 
     func telemetry(at index: Int) -> any VehicleTelemetrySource {
@@ -447,6 +494,14 @@ final class LiveVehicleFleet: VehicleFleet {
                 // down and drop any timeout we had already declared, so a car
                 // that answers late recovers on its own.
                 self?.noteSnapshotArrived(vehicleID: vehicleID)
+                // MYR-387 — and remember WHERE, so a future cold launch that has
+                // no fix yet can open the map somewhere real. Gated inside the
+                // store on §2.3's no-fix sentinel, so a `(0, 0)` frame never
+                // poisons the fallback it is the fallback FOR.
+                self?.lastKnownPositions.record(
+                    vehicleID: vehicleID,
+                    coordinate: VehicleContractMapping.position(from: state)
+                )
             }
         }
         // MYR-286 — §7.14 fires NO WebSocket push, so a saved plate would not reach

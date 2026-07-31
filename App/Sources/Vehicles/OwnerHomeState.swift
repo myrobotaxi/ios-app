@@ -1,3 +1,4 @@
+import CoreLocation
 import DesignSystem
 import Foundation
 import MyRoboTaxiKit
@@ -117,6 +118,31 @@ public final class OwnerHomeState {
     /// A subtle status line when the fleet can't be shown (auth/unreachable),
     /// else `nil`. Design minimalism — surfaced quietly.
     public var statusMessage: String? { fleet.statusMessage }
+
+    /// MYR-387 — owner Home's ONE render decision, resolved from the fleet's own
+    /// four facts. Lives here rather than inline in `HomeScreen.body` because
+    /// three situations told apart by three chained `if`s is exactly how the
+    /// cold-read timeout's honest end state became unreachable: `statusMessage`
+    /// was set, `isConnecting` was correctly false, and the FIRST branch — which
+    /// needs only a vehicle ROW — matched anyway.
+    var presentation: OwnerHomePresentation {
+        OwnerHomePresentation.resolve(
+            hasVehicle: selectedVehicle != nil,
+            hasTelemetry: selectedTelemetry != nil,
+            isConnecting: isConnecting,
+            statusMessage: statusMessage,
+            hasLiveSnapshot: fleet.hasLiveSnapshotForActiveVehicle
+        )
+    }
+
+    /// MYR-387 — the cached last-known position of the SELECTED car, for
+    /// `OwnerMapCamera`'s fallback. `nil` on every non-live fleet.
+    var selectedLastKnownPosition: CLLocationCoordinate2D? {
+        hasSelection ? fleet.lastKnownPosition(at: selectedVehicleIndex) : nil
+    }
+
+    /// MYR-387 — the owner asked again from the honest failure state.
+    func retryFleet() { fleet.retry() }
 
     private var hasSelection: Bool { vehicles.indices.contains(selectedVehicleIndex) }
 

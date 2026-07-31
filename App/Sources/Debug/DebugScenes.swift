@@ -825,6 +825,29 @@ enum DebugScene: String, CaseIterable {
     case ownerDrivesLoading
     case ownerSettingsLoading
 
+    /// MYR-387 (client defect, build 202607311129) — THE TWO STATES THE ABOVE
+    /// FOUR LEFT UNPHOTOGRAPHED, and they are the ones he screenshotted the end
+    /// of. Both are live-path-only by construction.
+    ///
+    ///   • `ownerColdReadFailed` — `ownerConnecting`, 21 seconds later. The
+    ///     `ColdSnapshotLoad` budget is spent, the fleet publishes
+    ///     "Can't reach Lunar right now", and NOTHING is in flight. MYR-326 built
+    ///     this end state and `HomeScreen` never rendered it: its content branch
+    ///     needed only a vehicle ROW, and the fleet LIST had succeeded. So the
+    ///     screen went from a black skeleton to a full map + sheet drawn on a
+    ///     snapshot that does not exist — "Locating…", 0%, and a camera on Null
+    ///     Island. This scene is the honest line and its "Try again" button.
+    ///   • `ownerNoFixMap` — the snapshot ARRIVED carrying §2.3's `(0, 0)` no-fix
+    ///     sentinel. The map must not centre there and the gold pin must not be
+    ///     planted there; with no cached last-known position (this scene seeds
+    ///     none) the camera is simply not written and MapKit's own wide framing
+    ///     stands. **The regression this guards is invisible in a still unless
+    ///     you know what you are looking at** — a Gulf-of-Guinea camera on a
+    ///     dark, POI-free, muted map style renders as a plain black rectangle,
+    ///     which is precisely why the client reported it as "nothing loading".
+    case ownerColdReadFailed
+    case ownerNoFixMap
+
     // MARK: - Vehicle sharing (MYR-184) — ALL live-path-only
     //
     // Every state below is unreachable from a simulated capture BY CONSTRUCTION,
@@ -1648,6 +1671,8 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerVehicleEnriched
             || self == .ownerConnecting || self == .ownerConnectingCold
             || self == .ownerDrivesLoading || self == .ownerSettingsLoading
+            // MYR-387 — the two owner-shell states MYR-326's four left uncovered.
+            || self == .ownerColdReadFailed || self == .ownerNoFixMap
             || self == .ownerShare || self == .ownerShareLive
             || self == .ownerShareMessage || self == .ownerShareMessageNoName
             || self == .ownerShareEmpty || self == .ownerSharePendingOnly
@@ -1803,6 +1828,9 @@ enum DebugScene: String, CaseIterable {
             return DebugLoadingFleet(variant: .fleetListPending)
         case .ownerConnecting: return DebugLoadingFleet(variant: .snapshotPending)
         case .ownerDrivesLoading: return DebugLoadingFleet(variant: .drivesPending)
+        // MYR-387 — the retries-exhausted end state, and the no-fix map.
+        case .ownerColdReadFailed: return DebugLoadingFleet(variant: .coldReadFailed)
+        case .ownerNoFixMap: return DebugLoadingFleet(variant: .noFix)
         default: return nil
         }
     }
@@ -2501,6 +2529,7 @@ enum DebugScene: String, CaseIterable {
              .ownerCharging, .ownerChargeComplete,
              .ownerVehicleEnriched,
              .ownerConnecting, .ownerConnectingCold, .ownerDrivesLoading, .ownerSettingsLoading,
+             .ownerColdReadFailed, .ownerNoFixMap,
              .ownerShare, .ownerShareLive, .ownerShareMessage, .ownerShareMessageNoName,
              .ownerShareEmpty, .ownerSharePendingOnly, .ownerShareAcceptedOnly,
              .ownerShareComposer, .ownerShareComposerAccess,

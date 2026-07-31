@@ -1,3 +1,4 @@
+import CoreLocation
 import DesignSystem
 import Observation
 
@@ -33,6 +34,31 @@ protocol VehicleFleet: AnyObject, Observable {
     /// (e.g. auth required, backend unreachable) — `nil` when all is well.
     /// Design minimalism: surfaced quietly, never as an error dialog.
     var statusMessage: String? { get }
+
+    /// MYR-387 — whether the ACTIVE vehicle has a real telemetry snapshot in
+    /// hand, as opposed to `VehicleContractMapping.placeholderActivity`'s
+    /// "Locating…" at `(0, 0)`.
+    ///
+    /// `OwnerHomePresentation` needs it to tell a settled failure with NOTHING
+    /// behind it (render the honest line) from a settled failure behind a sheet
+    /// full of perfectly good last-known values (keep the sheet — NFR-3.12/3.13).
+    /// A vehicle ROW is not enough to tell those apart: the fleet list is the
+    /// fast call, and it succeeds in both.
+    var hasLiveSnapshotForActiveVehicle: Bool { get }
+
+    /// MYR-387 — the last position this device observed for a vehicle, off the
+    /// on-device cache, or `nil`. `OwnerMapCamera`'s fallback when the car has no
+    /// fix, so the map opens somewhere real instead of on Null Island.
+    func lastKnownPosition(at index: Int) -> CLLocationCoordinate2D?
+
+    /// MYR-387 — the owner asked again from the honest failure state.
+    ///
+    /// A deliberate, client-directed deviation from MYR-326/MYR-343's
+    /// "a resume re-asks, no retry button": the resume recovery still exists and
+    /// still runs, but it is invisible, and *"Nothing loading, what happened?"* is
+    /// a question the screen has to be able to answer where it is asked.
+    /// Idempotent, and a no-op for every fleet that cannot fail.
+    func retry()
 
     func telemetry(at index: Int) -> any VehicleTelemetrySource
     func commandExecutor(at index: Int) -> any VehicleCommandExecutor
@@ -77,6 +103,21 @@ protocol VehicleFleet: AnyObject, Observable {
 }
 
 extension VehicleFleet {
+    /// MYR-387 — default `true`: the simulated fleet and every DEBUG capture
+    /// fleet hold their data from the first frame, so "is there a real snapshot"
+    /// is definitionally yes for them. Only `LiveVehicleFleet` can answer no, and
+    /// only it overrides. This keeps `OwnerHomePresentation` byte-identical on
+    /// every non-live path.
+    var hasLiveSnapshotForActiveVehicle: Bool { true }
+
+    /// Default: no cache (nothing but the live fleet ever records one, and the
+    /// fixtures carry real coordinates so nothing else ever needs one).
+    func lastKnownPosition(at index: Int) -> CLLocationCoordinate2D? { nil }
+
+    /// Default: nothing to retry. A fleet with no server cannot fail, and
+    /// `OwnerHomePresentation` never resolves `.unavailable` for one.
+    func retry() {}
+
     /// Default: no removal (the simulated fleet's fixture list is immutable — the
     /// live teardown flow is a live-path affordance only, MYR-258/228).
     func remove(vehicleID: String) {}

@@ -263,11 +263,18 @@ struct HomeScreen: View {
 
     var body: some View {
         ZStack {
-            if let vehicle = homeState.selectedVehicle,
-               let telemetry = homeState.selectedTelemetry,
-               !homeState.isConnecting {
-                vehicleContent(vehicle: vehicle, telemetry: telemetry)
-            } else if homeState.isConnecting {
+            // MYR-387 — ONE resolved presentation, not three chained conditions.
+            // See `OwnerHomePresentation` for the defect that produced it: the
+            // cold-read timeout's honest end state was unreachable here for the
+            // entire class of accounts it was written for, because the content
+            // branch needed only a vehicle ROW and the fleet LIST had succeeded.
+            switch homeState.presentation {
+            case .content:
+                if let vehicle = homeState.selectedVehicle,
+                   let telemetry = homeState.selectedTelemetry {
+                    vehicleContent(vehicle: vehicle, telemetry: telemetry)
+                }
+            case .loading:
                 // MYR-326 — GENUINELY LOADING: the fleet list or the selected
                 // car's cold snapshot is in flight. A skeleton of the screen it
                 // is about to become, not a spinner in a void (the client's
@@ -277,14 +284,14 @@ struct HomeScreen: View {
                     vehicles: homeState.vehicles,
                     selectedIndex: $homeState.selectedVehicleIndex
                 )
-            } else {
+            case .unavailable(let message):
                 // Live fleet unavailable (deliverable 3) — subtle, never
                 // dramatic (design minimalism). NOT a skeleton: this branch is
                 // an honest end state (auth required, empty account,
                 // unreachable, or the MYR-326 cold-read timeout), and a
                 // shimmering placeholder over it would promise data that isn't
                 // coming.
-                FleetConnectingView(message: homeState.statusMessage)
+                FleetConnectingView(message: message) { homeState.retryFleet() }
             }
         }
         .background(Color.mrtBg)
@@ -472,7 +479,11 @@ struct HomeScreen: View {
             pickupCoordinate: leg1PickupCoordinate,
             // MYR-293 — and draw the REAL road route to it. Empty (in flight, or
             // only a straight fallback resolved) leaves the marker without a line.
-            pickupRoute: dispatchedLeg1Route
+            pickupRoute: dispatchedLeg1Route,
+            // MYR-387 — the fallback the camera uses instead of Null Island when
+            // this car has no fix. `nil` on the simulated fleet and until this
+            // device has seen the car once.
+            lastKnownCenter: homeState.selectedLastKnownPosition
         )
         .id(vehicle.id) // fresh camera state per vehicle on switch
         .ignoresSafeArea()
@@ -921,6 +932,15 @@ struct HomeScreen: View {
 /// honest "and it isn't coming" case, which keeps its calm one-liner.
 private struct FleetConnectingView: View {
     let message: String?
+    /// MYR-387 — the owner's way to ask again. See `OwnerHomePresentation
+    /// .offersRetry` for why this surface has a button where MYR-326/MYR-343
+    /// deliberately had none.
+    var onRetry: (() -> Void)?
+
+    /// The one identifier `OwnerHomeUnavailableUITests` and the capture scenes
+    /// find the affordance by.
+    static let retryAccessibilityIdentifier = "ownerHomeRetry"
+    static let retryTitle = "Try again"
 
     var body: some View {
         ZStack {
@@ -934,6 +954,17 @@ private struct FleetConnectingView: View {
                         .font(.system(size: 14))
                         .foregroundStyle(Color.mrtTextSec)
                         .multilineTextAlignment(.center)
+                    if let onRetry {
+                        // `outlineMuted`, not gold: gold is the sacred accent for
+                        // the thing the screen WANTS you to do, and this is a
+                        // recovery from a state the app is apologising for. Not
+                        // full-width either — a full-bleed CTA under one quiet
+                        // sentence would make the failure louder than the content
+                        // it replaced.
+                        MRTButton(Self.retryTitle, variant: .outlineMuted, size: .sm, fullWidth: false, action: onRetry)
+                            .accessibilityIdentifier(Self.retryAccessibilityIdentifier)
+                            .padding(.top, 4)
+                    }
                 }
             }
             .padding(.horizontal, 40)
