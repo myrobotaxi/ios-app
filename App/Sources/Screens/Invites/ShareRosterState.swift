@@ -119,3 +119,111 @@ enum ShareInviteDetail {
         return "Invited \(age)"
     }
 }
+
+// MARK: - Per-viewer control state (MYR-369)
+
+/// What the two switches on ONE accepted row read and whether they may be
+/// touched — resolved once, as a pure function, so the copy and the enablement
+/// can be asserted without a view.
+///
+/// This is a named type rather than four expressions inside the row body because
+/// the interaction between the three inputs is the whole feature and is easy to
+/// get subtly wrong: the vehicle-level pause and a per-grant suspension disable
+/// the SAME switch for DIFFERENT reasons, and a row that greys out without
+/// distinguishing them tells the owner nothing about how to undo it.
+struct ShareViewerControls: Equatable {
+    /// The MASTER switch — on when the grant is active. Off writes
+    /// `{suspended: true}`, which removes the car from that viewer's world
+    /// entirely.
+    var locationOn: Bool
+    /// The RIDES switch, in its STORED position. Shown in that position even
+    /// while the row is suspended, which is the contract's own instruction: a
+    /// suspended grant keeps its flags and restoring returns exactly what it had,
+    /// so an owner needs to see what is coming back. It is disabled there, not
+    /// re-drawn as off — re-drawing it off would be a claim about the stored
+    /// value that is simply false.
+    var ridesOn: Bool
+    /// Whether the RIDES switch may be touched. False while suspended (suspension
+    /// gates everything, so the flag beneath it is inert) and false while the
+    /// VEHICLE's own ride sharing is off (nobody can request this car at all, so
+    /// a per-person ride permission has nothing to grant).
+    var ridesInteractive: Bool
+    /// The line under the name. Says the CONSEQUENCE, never the mechanism.
+    var subtitle: String
+    /// Why the rides switch cannot be touched, when it cannot. `nil` when it can
+    /// — an explanation under a live control is noise.
+    var ridesCaption: String?
+
+    /// The one place the three inputs are combined.
+    ///
+    /// PRECEDENCE MATTERS AND IS NOT ARBITRARY: suspension is checked FIRST,
+    /// because it is the stronger and more specific fact. A suspended viewer of a
+    /// car whose ride sharing is also off must be told they cannot see the car at
+    /// all — telling them instead that ride requests are paused would name the
+    /// lesser of two reasons and send the owner to the wrong switch.
+    /// - Parameters:
+    ///   - vehicleRideShareEnabled: the vehicle switch's DERIVED position — off
+    ///     for an owner's pause and off for a service visit alike, because both
+    ///     mean nobody can request this car and a per-person ride permission has
+    ///     nothing to grant either way.
+    ///   - vehicleInService: which of those two it is (MYR-358). It changes only
+    ///     the CAPTION, never the enablement: an in-service car is a temporary
+    ///     FACT the owner cannot flip, and a caption that said "ride sharing is
+    ///     off for this car" would read as a choice they made and send them to a
+    ///     switch that is itself inert.
+    static func resolve(
+        viewer: Viewer,
+        vehicleRideShareEnabled: Bool,
+        vehicleInService: Bool = false,
+        vehicleName: String?
+    ) -> ShareViewerControls {
+        if viewer.suspended {
+            return ShareViewerControls(
+                locationOn: false,
+                ridesOn: viewer.allowRides,
+                ridesInteractive: false,
+                // Names the PERSON and the CONSEQUENCE. "Suspended" is the wire's
+                // word for it and means nothing to an owner; what they need to
+                // know is that this person's access is off and reversible.
+                subtitle: "Paused \u{2014} \(viewer.name) can\u{2019}t see this car",
+                ridesCaption: "Turn location back on to change this"
+            )
+        }
+        if !vehicleRideShareEnabled {
+            return ShareViewerControls(
+                locationOn: true,
+                ridesOn: viewer.allowRides,
+                ridesInteractive: false,
+                subtitle: "Can see this car\u{2019}s location",
+                // The VEHICLE-LEVEL context, stated where the disabled switch is
+                // rather than left for the owner to infer from a card two
+                // sections up. Names the car when there is more than one, since
+                // on a multi-car account "ride sharing is off" is ambiguous.
+                //
+                // MYR-358 — an IN-SERVICE car gets its own sentence, because the
+                // two states are not the same thing said twice. "Ride sharing is
+                // off" describes a switch the owner set and can unset; a car in a
+                // service bay was withdrawn by nobody, the switch above is inert,
+                // and it comes back on its own. Following
+                // `VehicleRideShare.inServiceCaption`'s reasoning, this states the
+                // FACT and that it resolves itself — and, like that caption,
+                // deliberately avoids the word this app has already spent on the
+                // owner's own decision.
+                ridesCaption: vehicleInService
+                    ? (vehicleName.map { "\($0) is in service \u{2014} rides resume automatically" }
+                        ?? "This car is in service \u{2014} rides resume automatically")
+                    : (vehicleName.map { "Ride sharing is off for \($0)" }
+                        ?? "Ride sharing is off for this car")
+            )
+        }
+        return ShareViewerControls(
+            locationOn: true,
+            ridesOn: viewer.allowRides,
+            ridesInteractive: true,
+            subtitle: viewer.allowRides
+                ? "Can see this car and request rides"
+                : "Can see this car\u{2019}s location",
+            ridesCaption: nil
+        )
+    }
+}

@@ -435,10 +435,11 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
 
     // MARK: - Vehicle sharing (rest-api.md §7.5, MYR-184)
     //
-    // Every body and every response here is a generated contracts v0.19.0 type —
-    // this family authors no local wire shapes at all (contrast §7.14/§7.16, whose
-    // write bodies predate codegen coverage). All five run the standard
-    // authenticated pipeline (Bearer + single 401 refresh-retry).
+    // Every body and every response here is a GENERATED contracts type — this
+    // family authors no local wire shapes at all (contrast §7.14/§7.16, whose
+    // write bodies predate codegen coverage, and whose hand-authored response
+    // shape is what MYR-362 was). All six run the standard authenticated pipeline
+    // (Bearer + single 401 refresh-retry).
 
     /// `POST /api/vehicles/{vehicleId}/invites` (§7.5.1) — mint one code across the
     /// requested vehicle set. See ``VehicleSharingEndpoint/createShareInvite(_:vehicleID:)``.
@@ -473,6 +474,27 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
     /// `409` (already accepted) surfaces typed via `RestError.isShareInviteAlreadyAccepted`.
     public func resendShareInvite(inviteID: String) async throws -> ShareInvite {
         try await post(["invites", inviteID, "resend"], body: Optional<Empty>.none)
+    }
+
+    /// `PATCH /api/invites/{inviteId}` (MYR-369) — edit ONE accepted grant's
+    /// capability flags in place. See ``VehicleSharingEndpoint/patchShareInvite(_:inviteID:)``.
+    ///
+    /// The body is a generated `PatchShareInviteRequest`, whose properties are
+    /// OPTIONAL and — because `JSONEncoder` omits `nil` — encode to exactly the
+    /// keys the caller set. That omission IS the contract's partial-update
+    /// semantics: an absent key leaves the capability unchanged and is NOT the
+    /// same as sending `false`, so a caller must never "helpfully" fill in the
+    /// flag it is not editing.
+    ///
+    /// The 200 body is the updated row, so callers may adopt the echo rather than
+    /// re-reading — the same shape §7.18's ride-share PUT uses.
+    public func patchShareInvite(_ body: PatchShareInviteRequest, inviteID: String) async throws -> ShareInvite {
+        try await perform(
+            ["invites", inviteID],
+            method: "PATCH",
+            body: try JSONEncoder().encode(body),
+            allowTokenRefresh: true
+        )
     }
 
     /// `POST /api/invites/redeem` (§7.5.5) — the rider's join.

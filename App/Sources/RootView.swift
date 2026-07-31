@@ -311,8 +311,13 @@ struct RootView: View {
         // The two `ownerRideSharePauseWarning` capture scenes override it with the
         // SAME production `LiveUpcomingReservations` over a scripted endpoint, so
         // the dialog in the capture was built from a real fetch through the real
-        // contract mapping. Nothing else reads the override, so every existing
-        // scene — including MYR-342's three — is byte-identical.
+        // contract mapping. Nothing else reads the override, so every other scene
+        // is byte-identical.
+        //
+        // MYR-369 — it reaches `InvitesScreen` as well as `HomeScreen` now, because
+        // the ride-share switch (and therefore the pause pre-flight) moved to the
+        // Share tab. ONE instance for both, so two surfaces can never read
+        // different answers about the same car's reservations.
         var reservations = RideRequestComposition.makeUpcomingReservations(
             mode: mode,
             sessionTokenProvider: auth.sessionTokenProvider
@@ -474,14 +479,44 @@ struct RootView: View {
         )
     }
 
-    /// Push a resolved vehicle onto the viewer state. Only `.ridable` adopts
-    /// anything: `.resolving` deliberately leaves the viewer alone (adopting `nil`
+    /// Push a resolved vehicle onto the viewer state.
+    ///
+    /// `.resolving` deliberately leaves the viewer alone — adopting `nil`
     /// mid-resolution would tear down a perfectly good telemetry source on every
-    /// re-ask), and `.empty`/`.unavailable` are surfaces with no map behind them.
+    /// re-ask. `.unavailable` likewise: a list that did not ANSWER is not
+    /// evidence the car is gone, and releasing on a transient failure would drop
+    /// a live stream every time the network blinked.
+    ///
+    /// **`.empty` NOW RELEASES, and that is MYR-369's viewer half.** Suspension
+    /// is enforced by REMOVING the grant from the viewer's access set, so a
+    /// suspended car does not arrive marked — it simply STOPS BEING IN
+    /// `GET /api/vehicles`. For a viewer whose only car was suspended, the next
+    /// list refresh therefore resolves `.empty` while `sharedVehicle`, the tier
+    /// and the `RiderLiveVehicleLocator` subscription all still point at it.
+    ///
+    /// Before this, `.empty` returned without touching any of that: the shell
+    /// swapped to `SharedNoVehiclesScreen` (so the user saw an honest empty
+    /// state) while the viewer state kept a socket open on a car the account no
+    /// longer has access to, and any later `.ridable` resolution or stale read of
+    /// `sharedVehicle` got the revoked one. Nothing crashed — there is no
+    /// index-based access anywhere on this path — but the strand was real, and
+    /// MYR-369 makes it reachable routinely rather than only on a revoke.
+    ///
+    /// Releasing here is also what the DV-09 caveat needs from the client: the
+    /// server does not tear the socket down on suspend (MYR-373 covers that), so
+    /// an already-open stream keeps delivering until it reconnects. `adopt(nil)`
+    /// calls `watch(vehicleID: nil)`, which is the client dropping it on the next
+    /// list read — the earliest honest moment available to this side.
     @MainActor
     private func adoptRiderVehicle(_ resolution: RiderVehicleSet) {
-        guard case .ridable(let adoption) = resolution else { return }
-        sharedViewerState.adopt(adoption)
+        switch resolution {
+        case .ridable(let adoption):
+            sharedViewerState.adopt(adoption)
+        case .empty:
+            sharedViewerState.adopt(nil)
+        case .resolving, .unavailable:
+            break
+        }
     }
 
     /// Clear the account's persisted view mode on sign-out — the choice is
@@ -557,7 +592,9 @@ struct RootView: View {
         #if DEBUG
         if DebugScene.current?.rendersLiveIncomingRequest == true { return true }
         if DebugScene.current?.rendersLiveVehicleFreshness == true { return true }
-        if DebugScene.current?.rendersLiveRideShareToggle == true { return true }
+        // MYR-369 — `rendersLiveRideShareToggle` is GONE with the owner-sheet row
+        // it forced into existence. The ride-share scenes are Share-tab scenes now
+        // and reach their live rendering through `shareServiceOverride` instead.
         #endif
         return isLiveMode
     }
@@ -996,7 +1033,11 @@ struct RootView: View {
                     InvitesScreen(
                         shareService: shareService,
                         ownerTab: $ownerTab,
-                        liveProfile: shareLiveProfile
+                        liveProfile: shareLiveProfile,
+                        // MYR-360, re-homed by MYR-369 — the SAME reservation
+                        // source `HomeScreen` takes, so the pause pre-flight
+                        // follows the switch to the surface that now owns it.
+                        upcomingReservations: upcomingReservations
                     )
                 case "settings":
                     SettingsScreen(
@@ -1058,12 +1099,7 @@ struct RootView: View {
                         // (fixtures render only in SIM / DEBUG scenes). MYR-315 —
                         // it also gates the freshness stamp, which the prototype
                         // has no counterpart for.
-                        isLive: ownerHomeIsLive,
-                        // MYR-360 — the reservation seam behind the ride-share
-                        // pause warning. `nil` off the live path (and in the
-                        // MYR-342 capture scenes), where the pause commits exactly
-                        // as it did before this issue.
-                        upcomingReservations: upcomingReservations
+                        isLive: ownerHomeIsLive
                     )
                     // MYR-186 — the OWNER's permission moment: arrival on the live
                     // home map. Deliberately keyed off the coordinator's own

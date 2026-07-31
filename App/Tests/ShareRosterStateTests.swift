@@ -129,9 +129,10 @@ final class ShareRosterStateTests: XCTestCase {
     /// would read as a date.
     func testAnExpiredInviteSaysItIsExpiredRatherThanBeingAged() {
         XCTAssertEqual(ShareInviteDetail.ageClause("expired"), "Invite expired")
+        // MYR-369 — `.history` is retired; `.rides` is the other surviving preset.
         XCTAssertEqual(
-            ShareInviteDetail.line(tier: .history, sent: "expired"),
-            "Live + history \u{00B7} Invite expired"
+            ShareInviteDetail.line(tier: .rides, sent: "expired"),
+            "Location + rides \u{00B7} Invite expired"
         )
     }
 
@@ -145,7 +146,7 @@ final class ShareRosterStateTests: XCTestCase {
     func testTheTierLeadsTheDetailLineAndIsOmittedWhenUnknown() {
         XCTAssertEqual(
             ShareInviteDetail.line(tier: .live, sent: "2d ago"),
-            "Live location \u{00B7} Invited 2d ago"
+            "Location \u{00B7} Invited 2d ago"
         )
         XCTAssertEqual(ShareInviteDetail.line(tier: nil, sent: "2d ago"), "Invited 2d ago")
     }

@@ -33,6 +33,12 @@ final class ScriptedShareEndpoint: VehicleSharingEndpoint, @unchecked Sendable {
         case revoke(inviteID: String)
         case resend(inviteID: String)
         case redeem(code: String)
+        /// MYR-369 — records the BODY's two optionals separately, so a test can
+        /// assert that a partial update carried exactly ONE key. Recording a
+        /// merged struct would make "sent allowRides only" and "sent both, one of
+        /// them nil-equivalent" indistinguishable, which is the whole distinction
+        /// the contract's partial-update rule turns on.
+        case patch(inviteID: String, allowRides: Bool?, suspended: Bool?)
     }
 
     private let lock = NSLock()
@@ -94,6 +100,48 @@ final class ScriptedShareEndpoint: VehicleSharingEndpoint, @unchecked Sendable {
         case nil: throw RestError.http(status: 404, code: nil, message: nil, subCode: nil)
         }
     }
+
+    /// MYR-369 — per-invite PATCH failures, so a rollback is expressible.
+    var patchError: [String: Error] = [:]
+    /// The row a successful PATCH answers with. Defaulted to `nil`, in which case
+    /// the stub synthesizes an accepted row from the body — enough for the
+    /// service, which re-reads the LIST rather than adopting this echo.
+    var patchResult: ShareInvite?
+
+    func patchShareInvite(_ body: PatchShareInviteRequest, inviteID: String) async throws -> ShareInvite {
+        record(.patch(inviteID: inviteID, allowRides: body.allowRides, suspended: body.suspended))
+        if let error = patchError[inviteID] { throw error }
+        if let patchResult { return patchResult }
+        return ShareInvite(
+            inviteId: inviteID,
+            vehicleId: "v1",
+            label: "patched",
+            // DERIVED, exactly as the server derives it — never a stored tier.
+            permission: SharePermission(rawValue: (body.allowRides ?? false) ? "rides" : "live"),
+            allowRides: body.allowRides ?? false,
+            suspended: body.suspended ?? false,
+            status: .accepted,
+            createdAt: "2026-07-27T15:04:05Z",
+            acceptedAt: "2026-07-28T15:04:05Z"
+        )
+    }
+}
+
+/// A `VehicleRideShareEndpoint` for the relocated §7.18 switch (MYR-369): echoes
+/// the submission, or fails on demand to drive the rollback.
+final class ShareTabRideShareEndpoint: VehicleRideShareEndpoint, @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var writes: [(vehicleID: String, enabled: Bool)] = []
+    var failure: Error?
+    /// When set, the echo DISAGREES with the submission — the case that proves
+    /// the client adopts the server's answer rather than the bool it sent.
+    var echoOverride: Bool?
+
+    func setRideShareEnabled(_ enabled: Bool, vehicleID: String) async throws -> VehicleRideShareResponse {
+        lock.lock(); writes.append((vehicleID, enabled)); lock.unlock()
+        if let failure { throw failure }
+        return VehicleRideShareResponse(vehicleId: vehicleID, enabled: echoOverride ?? enabled)
+    }
 }
 
 // MARK: - Builders
@@ -108,13 +156,21 @@ private func invite(
     shareUrl: String? = nil,
     createdAt: String = "2026-07-27T15:04:05Z",
     expiresAt: String? = nil,
-    acceptedAt: String? = nil
+    acceptedAt: String? = nil,
+    // MYR-369 — BOTH default to ABSENT, which is the pre-0.23.0 server AND the
+    // shape of every pending row. Existing tests therefore keep exercising the
+    // two compat FALLBACKS (`allowRides` falls back to the permission,
+    // `suspended` reads as false), and the flag tests opt in explicitly.
+    allowRides: Bool? = nil,
+    suspended: Bool? = nil
 ) -> ShareInvite {
     ShareInvite(
         inviteId: id,
         vehicleId: vehicle,
         label: label,
         permission: SharePermission(rawValue: permission),
+        allowRides: allowRides,
+        suspended: suspended,
         status: status,
         code: code,
         // MYR-368 — defaulted to ABSENT, which is a pre-0.22.0 server. Every
@@ -184,16 +240,33 @@ final class ShareTierMappingTests: XCTestCase {
 
     func testWireValuesMatchTheContractEnumExactly() {
         XCTAssertEqual(ShareTierMapping.wireValue(for: .live), "live")
-        XCTAssertEqual(ShareTierMapping.wireValue(for: .history), "live_history")
         XCTAssertEqual(ShareTierMapping.wireValue(for: .rides), "rides")
     }
 
-    /// The rendered label is the DESIGN's own string for each tier, so an owner
-    /// who picked "Live + history" in the sheet sees "Live + history" on the row.
+    /// MYR-369 — `live_history` IS RETIRED and no preset may produce it. The
+    /// wire side keeps DECODING it (below); what must be unreachable is SENDING
+    /// it, since the server neither emits nor honours the tier any more.
+    func testNoPresetCanSendTheRetiredHistoryTier() {
+        let sendable = ShareAccessLevel.allCases.map(ShareTierMapping.wireValue(for:))
+        XCTAssertFalse(sendable.contains("live_history"))
+        XCTAssertEqual(sendable, ["live", "rides"])
+    }
+
+    /// The DECODE-COMPAT half, and the one MYR-369 is most likely to lose by
+    /// accident. `live_history` is never emitted, but the enum member survives
+    /// for wire compatibility and a row somehow carrying it must still render
+    /// honestly — folded to `.live`, which is what the contract says such a
+    /// legacy grant now derives, rather than to `nil`/"Shared access".
+    func testTheRetiredHistoryTierStillDecodesAndFoldsToLive() {
+        XCTAssertEqual(ShareTierMapping.tier(forWire: "live_history"), .live)
+        XCTAssertEqual(ShareTierMapping.permLabel(forWire: "live_history"), "Location")
+    }
+
+    /// The rendered label is the DESIGN's own string for each preset, so an owner
+    /// who picked "Location + rides" in the sheet sees it on the row.
     func testPermLabelsAreTheDesignsOwnTierLabels() {
-        XCTAssertEqual(ShareTierMapping.permLabel(forWire: "live"), "Live location")
-        XCTAssertEqual(ShareTierMapping.permLabel(forWire: "live_history"), "Live + history")
-        XCTAssertEqual(ShareTierMapping.permLabel(forWire: "rides"), "Can request rides")
+        XCTAssertEqual(ShareTierMapping.permLabel(forWire: "live"), "Location")
+        XCTAssertEqual(ShareTierMapping.permLabel(forWire: "rides"), "Location + rides")
     }
 
     /// A tier this build has never heard of gets a NEUTRAL label and a nil tier —
@@ -207,10 +280,27 @@ final class ShareTierMappingTests: XCTestCase {
     /// The fixture rows carry only the rendered string; recovering the tier from
     /// it keeps a simulated row reporting a tier without changing any pixel.
     func testFixturePermLabelsRecoverTheirTier() {
-        XCTAssertEqual(ShareAccessLevel.fromPermLabel("Live location"), .live)
-        XCTAssertEqual(ShareAccessLevel.fromPermLabel("Live + history"), .history)
-        XCTAssertEqual(ShareAccessLevel.fromPermLabel("Can request rides"), .rides)
+        XCTAssertEqual(ShareAccessLevel.fromPermLabel("Location"), .live)
+        XCTAssertEqual(ShareAccessLevel.fromPermLabel("Location + rides"), .rides)
         XCTAssertNil(ShareAccessLevel.fromPermLabel("Shared access"))
+        // The retired label is no longer any preset's.
+        XCTAssertNil(ShareAccessLevel.fromPermLabel("Live + history"))
+    }
+
+    /// MYR-369 — the preset→capability mapping, which is the ONLY thing a preset
+    /// still does: it decides `allowRides` at redemption and is inert afterwards.
+    func testPresetsMapToTheRideCapabilityTheServerWillGrant() {
+        XCTAssertFalse(ShareAccessLevel.live.allowsRides)
+        XCTAssertTrue(ShareAccessLevel.rides.allowsRides)
+    }
+
+    /// The composer's summary card is checked PER CAPABILITY now, not as a
+    /// cumulative prefix. Both presets grant location; only `rides` grants rides.
+    func testTheSummaryCardChecksEachCapabilityIndependently() {
+        let caps = ShareFixtures.capabilities
+        XCTAssertEqual(caps.map(\.key), ["live", "rides"], "the history row is retired")
+        XCTAssertEqual(caps.map { ShareAccessLevel.live.grants($0) }, [true, false])
+        XCTAssertEqual(caps.map { ShareAccessLevel.rides.grants($0) }, [true, true])
     }
 }
 
@@ -236,7 +326,7 @@ final class ShareRowGroupingTests: XCTestCase {
         let row = try! XCTUnwrap(result.pending.first)
         XCTAssertEqual(row.name, "Mira Chen")
         XCTAssertEqual(row.code, "RBO246")
-        XCTAssertEqual(row.tier, .history)
+        XCTAssertEqual(row.tier, .live, "live_history folds to live (MYR-369)")
         // All three server ids are behind the one row, so a cancel removes the
         // whole grant rather than leaving two vehicles shared.
         XCTAssertEqual(result.inviteIDs[row.id]?.sorted(), ["inv1", "inv2", "inv3"])
@@ -256,7 +346,7 @@ final class ShareRowGroupingTests: XCTestCase {
 
         XCTAssertEqual(result.viewers.count, 1)
         let viewer = try! XCTUnwrap(result.viewers.first)
-        XCTAssertEqual(viewer.perm, "Live location")
+        XCTAssertEqual(viewer.perm, "Location")
         XCTAssertEqual(viewer.tier, .live)
         XCTAssertEqual(result.inviteIDs[viewer.id]?.sorted(), ["acc1", "acc2"])
     }
@@ -328,10 +418,12 @@ final class LiveShareServiceTests: XCTestCase {
 
     private func makeService(
         _ endpoint: ScriptedShareEndpoint,
-        vehicles: [Vehicle] = [VehicleFixtures.vehicles[0], VehicleFixtures.vehicles[1]]
+        vehicles: [Vehicle] = [VehicleFixtures.vehicles[0], VehicleFixtures.vehicles[1]],
+        rideShare: ShareTabRideShareEndpoint = ShareTabRideShareEndpoint()
     ) -> LiveShareService {
         LiveShareService(
             api: endpoint,
+            rideShareAPI: rideShare,
             ownedVehicles: { vehicles },
             now: { ISO8601DateFormatter().date(from: "2026-07-29T15:04:05Z")! }
         )
@@ -580,7 +672,7 @@ final class LiveShareServiceTests: XCTestCase {
 
         let service = makeService(endpoint, vehicles: vehicles)
         let handout = try await service.createInvite(
-            label: "Mira Chen", tier: .history, vehicleIDs: [vehicles[0].id]
+            label: "Mira Chen", tier: .rides, vehicleIDs: [vehicles[0].id]
         )
 
         XCTAssertEqual(handout?.shareUrl, signedShareURL)
@@ -631,7 +723,7 @@ final class LiveShareServiceTests: XCTestCase {
 
         let service = makeService(endpoint, vehicles: vehicles)
         let handout = try await service.createInvite(
-            label: "Mira Chen", tier: .history, vehicleIDs: [vehicles[0].id]
+            label: "Mira Chen", tier: .rides, vehicleIDs: [vehicles[0].id]
         )
 
         XCTAssertNil(handout?.shareUrl)
@@ -1071,7 +1163,9 @@ final class SharedVehicleCatalogTests: XCTestCase {
         )
         XCTAssertNil(grant.ownerName)
         XCTAssertEqual(grant.title, "Alex's Model 3")
-        XCTAssertEqual(grant.caption, "Live + history")
+        // MYR-369 — `live_history` is retired and folds to the `live` preset,
+        // so a legacy row carrying it captions as plain "Location".
+        XCTAssertEqual(grant.caption, "Location")
     }
 
     /// The bug the first drift-gate capture of the joined screen showed verbatim:
@@ -1092,8 +1186,15 @@ final class SharedVehicleCatalogTests: XCTestCase {
         XCTAssertEqual(SharedVehicleTitle.compose(owner: "Alex", vehicle: ""), "Alex’s Tesla")
     }
 
-    /// §7.5.0 — the gates are CUMULATIVE (`>=`), never equality.
-    func testCapabilityGatesAreCumulative() {
+    /// MYR-369 — THE GATES ARE EQUALITY NOW, and history is owner-only.
+    ///
+    /// This test previously asserted the opposite (`rides GRANTS history —
+    /// cumulative, not equal`) and was correct for the contract it was written
+    /// against. 0.23.0 retires the total order: `sharePermission` is a derived
+    /// projection emitting only `rides` or `live`, and the contract states in as
+    /// many words that "the history/drives surfaces are OWNER-ONLY as of MYR-369
+    /// and no value of this field opens them."
+    func testTheRideGateIsEqualityAndHistoryIsOwnerOnly() {
         func grant(_ tier: ShareAccessLevel?) -> SharedVehicleGrant {
             SharedVehicleGrant(
                 id: "g", ownerName: nil, relationship: nil, vehicleName: "Car",
@@ -1101,14 +1202,18 @@ final class SharedVehicleCatalogTests: XCTestCase {
             )
         }
         XCTAssertTrue(grant(.rides).grantsRides)
-        XCTAssertTrue(grant(.rides).grantsHistory, "rides GRANTS history — cumulative, not equal")
-        XCTAssertFalse(grant(.history).grantsRides)
-        XCTAssertTrue(grant(.history).grantsHistory)
-        XCTAssertFalse(grant(.live).grantsHistory)
         XCTAssertFalse(grant(.live).grantsRides)
-        // An unrankable tier fails CLOSED — nothing offered.
-        XCTAssertFalse(grant(nil).grantsHistory)
+        // An unknown tier fails CLOSED — nothing offered.
         XCTAssertFalse(grant(nil).grantsRides)
+
+        // NO viewer grant opens the drives surfaces any more — including the top
+        // one, which used to reach them through the cumulative order.
+        for tier: ShareAccessLevel? in [.rides, .live, nil] {
+            XCTAssertFalse(
+                grant(tier).grantsHistory,
+                "history is owner-only as of MYR-369 (tier: \(String(describing: tier)))"
+            )
+        }
     }
 
     /// §7.5.5 — the response rows ARE the catalog rows the next `GET /api/vehicles`
@@ -1451,8 +1556,449 @@ final class ShareMessageSceneWiringTests: XCTestCase {
         await service.load()
         XCTAssertEqual(service.pending.count, 1, "two server rows, one code, one screen row")
         let minted = try await service.createInvite(
-            label: "Mira Chen", tier: .history, vehicleIDs: [VehicleFixtures.vehicles[0].id]
+            label: "Mira Chen", tier: .rides, vehicleIDs: [VehicleFixtures.vehicles[0].id]
         )
         XCTAssertEqual(try XCTUnwrap(minted).shareUrl?.contains("/join/RBO246"), true)
+    }
+}
+
+// MARK: - MYR-369: per-viewer share controls
+//
+// The owner can now EDIT a grant in place (`PATCH /api/invites/{id}`) instead of
+// revoking and re-inviting, and the vehicle-level ride-share switch moved onto
+// this screen. These tests cover the three things that are easy to get wrong and
+// impossible to see: what the wire body carries, what happens to the row when the
+// write fails, and what the two switches say when they are disabled.
+
+@MainActor
+final class ShareViewerControlTests: XCTestCase {
+
+    private let clock = { ISO8601DateFormatter().date(from: "2026-07-29T15:04:05Z")! }
+
+    private func makeService(
+        _ endpoint: ScriptedShareEndpoint,
+        vehicles: [Vehicle] = [VehicleFixtures.vehicles[0]],
+        rideShare: ShareTabRideShareEndpoint = ShareTabRideShareEndpoint()
+    ) -> LiveShareService {
+        LiveShareService(
+            api: endpoint, rideShareAPI: rideShare,
+            ownedVehicles: { vehicles }, now: clock
+        )
+    }
+
+    /// One accepted grant, active, rides off — the ordinary starting state.
+    private func seeded(
+        _ endpoint: ScriptedShareEndpoint,
+        vehicle: Vehicle,
+        allowRides: Bool = false,
+        suspended: Bool = false
+    ) {
+        endpoint.listByVehicle[vehicle.id] = [
+            invite(
+                id: "acc-1", vehicle: vehicle.id, label: "Mira Chen",
+                permission: allowRides ? "rides" : "live", status: .accepted,
+                acceptedAt: "2026-07-01T11:23:00Z",
+                allowRides: allowRides, suspended: suspended
+            )
+        ]
+    }
+
+    // MARK: The wire body
+
+    /// **THE BODY CARRIES EXACTLY THE FLAG BEING EDITED.** The update is partial
+    /// by contract: an absent property leaves that capability alone and is NOT
+    /// the same as sending `false`. A client that sent both because it happened
+    /// to know both would overwrite a capability the owner never touched — with
+    /// whatever it last read, which on a stale row is a silent unintended edit
+    /// that answers `200`.
+    func testEachSwitchPatchesOnlyItsOwnFlag() async throws {
+        let vehicle = VehicleFixtures.vehicles[0]
+        let endpoint = ScriptedShareEndpoint()
+        seeded(endpoint, vehicle: vehicle)
+        let service = makeService(endpoint, vehicles: [vehicle])
+        await service.load()
+        let viewer = try XCTUnwrap(service.viewers.first)
+
+        try await service.setViewerAllowRides(true, viewer: viewer)
+        let firstPatches = endpoint.calls.compactMap { call -> ScriptedShareEndpoint.Call? in
+            if case .patch = call { return call } else { return nil }
+        }
+        XCTAssertEqual(
+            firstPatches,
+            [.patch(inviteID: "acc-1", allowRides: true, suspended: nil)],
+            "the rides switch must not also write `suspended`"
+        )
+
+        try await service.setViewerSuspended(true, viewer: try XCTUnwrap(service.viewers.first))
+        let patches = endpoint.calls.compactMap { call -> ScriptedShareEndpoint.Call? in
+            if case .patch = call { return call } else { return nil }
+        }
+        XCTAssertEqual(patches.last, .patch(inviteID: "acc-1", allowRides: nil, suspended: true))
+    }
+
+    /// The Location switch reads as the VIEWER'S ACCESS; the wire flag is
+    /// `suspended`. Its sense is therefore INVERTED, which is exactly the kind of
+    /// off-by-a-negation that ships silently — the switch would look right and
+    /// suspend on the wrong tap.
+    func testTurningLocationOffSuspendsAndTurningItOnRestores() async throws {
+        let vehicle = VehicleFixtures.vehicles[0]
+        let endpoint = ScriptedShareEndpoint()
+        seeded(endpoint, vehicle: vehicle, suspended: true)
+        let service = makeService(endpoint, vehicles: [vehicle])
+        await service.load()
+
+        let viewer = try XCTUnwrap(service.viewers.first)
+        XCTAssertTrue(viewer.suspended, "the row starts paused")
+
+        // Location ON → suspended: FALSE.
+        try await service.setViewerSuspended(false, viewer: viewer)
+        let patches = endpoint.calls.compactMap { call -> ScriptedShareEndpoint.Call? in
+            if case .patch = call { return call } else { return nil }
+        }
+        XCTAssertEqual(patches, [.patch(inviteID: "acc-1", allowRides: nil, suspended: false)])
+    }
+
+    /// **ONE SCREEN ROW IS N SERVER ROWS.** A multi-vehicle invite is N grants and
+    /// the PATCH applies to ONE of them, so a grouped row has to patch its whole
+    /// group — the same fan-out revoke does. Patching only the first would leave
+    /// the person still able to ride the owner's other car, from a switch that
+    /// says otherwise.
+    func testAGroupedRowPatchesEveryServerRowBehindIt() async throws {
+        let vehicles = [VehicleFixtures.vehicles[0], VehicleFixtures.vehicles[1]]
+        let endpoint = ScriptedShareEndpoint()
+        for (index, vehicle) in vehicles.enumerated() {
+            endpoint.listByVehicle[vehicle.id] = [
+                invite(
+                    id: "acc-\(index)", vehicle: vehicle.id, label: "Mira Chen",
+                    permission: "live", status: .accepted,
+                    acceptedAt: "2026-07-01T11:23:00Z",
+                    allowRides: false, suspended: false
+                )
+            ]
+        }
+        let service = makeService(endpoint, vehicles: vehicles)
+        await service.load()
+        XCTAssertEqual(service.viewers.count, 1, "two server rows, one person, one row")
+
+        try await service.setViewerAllowRides(true, viewer: try XCTUnwrap(service.viewers.first))
+        let patched = endpoint.calls.compactMap { call -> String? in
+            if case .patch(let id, _, _) = call { return id } else { return nil }
+        }
+        XCTAssertEqual(patched.sorted(), ["acc-0", "acc-1"])
+    }
+
+    /// Two grants that DISAGREE about a flag must stay two rows. Collapsing them
+    /// would render one pair of switches over two different states and write to
+    /// both — so un-pausing "Mira" would silently restore a car the owner had
+    /// paused separately.
+    func testGrantsDifferingOnlyBySuspensionDoNotCollapseIntoOneRow() {
+        let rows = [
+            invite(
+                id: "a", vehicle: "v1", label: "Mira Chen", permission: "live",
+                status: .accepted, acceptedAt: "2026-07-01T11:23:00Z",
+                allowRides: false, suspended: false
+            ),
+            invite(
+                id: "b", vehicle: "v2", label: "Mira Chen", permission: "live",
+                status: .accepted, acceptedAt: "2026-07-01T11:23:00Z",
+                allowRides: false, suspended: true
+            ),
+        ]
+        let result = ShareRowGrouping.group(rows, now: clock())
+        XCTAssertEqual(result.viewers.count, 2, "same person, same instant, different access")
+        XCTAssertEqual(result.viewers.map(\.suspended).sorted(by: { !$0 && $1 }), [false, true])
+    }
+
+    // MARK: Optimistic UI + rollback
+
+    /// The switch moves NOW — a toggle that waits for a round trip reads as
+    /// broken — and the row is the server's again the moment the write refuses.
+    /// Leaving the optimistic position up is the failure mode that matters: an
+    /// owner walks away believing they paused someone who still has full access.
+    func testAFailedPatchRollsTheRowBackToItsPreviousPosition() async throws {
+        let vehicle = VehicleFixtures.vehicles[0]
+        let endpoint = ScriptedShareEndpoint()
+        seeded(endpoint, vehicle: vehicle, allowRides: false)
+        endpoint.patchError["acc-1"] = RestError.http(
+            status: 500, code: nil, message: nil, subCode: nil
+        )
+        let service = makeService(endpoint, vehicles: [vehicle])
+        await service.load()
+        let viewer = try XCTUnwrap(service.viewers.first)
+        XCTAssertFalse(viewer.allowRides)
+
+        do {
+            try await service.setViewerAllowRides(true, viewer: viewer)
+            XCTFail("a 500 must reach the caller so the screen can say so")
+        } catch {
+            // expected — the screen turns this into its quiet failure toast.
+        }
+        XCTAssertFalse(
+            try XCTUnwrap(service.viewers.first).allowRides,
+            "the optimistic ON must not survive a refused write"
+        )
+    }
+
+    /// A `404` is the same non-oracle answer DELETE gives — gone, another
+    /// owner's, or a tombstone — so it is not a failure to report. The re-read
+    /// that follows is what shows the owner the truth.
+    func testAPatchOnAVanishedGrantIsNotSurfacedAsAFailure() async throws {
+        let vehicle = VehicleFixtures.vehicles[0]
+        let endpoint = ScriptedShareEndpoint()
+        seeded(endpoint, vehicle: vehicle)
+        endpoint.patchError["acc-1"] = RestError.http(
+            status: 404, code: nil, message: nil, subCode: nil
+        )
+        let service = makeService(endpoint, vehicles: [vehicle])
+        await service.load()
+        let viewer = try XCTUnwrap(service.viewers.first)
+
+        // Must not throw.
+        try await service.setViewerAllowRides(true, viewer: viewer)
+    }
+
+    // MARK: The relocated vehicle switch (§7.18)
+
+    /// The card at the top of the Share tab reads the SAME field the owner
+    /// sheet's row read, through the same "absent means enabled" rule.
+    func testTheVehicleRowReadsAbsentAsEnabledAndFalseAsPaused() async {
+        let base = VehicleFixtures.vehicles[0]
+        func row(_ flag: Bool?) async -> VehicleRideShareRow? {
+            let vehicle = Vehicle(
+                id: base.id, name: base.name, model: base.model, colorName: base.colorName,
+                plate: base.plate, seatHeat: base.seatHeat, seatVent: base.seatVent,
+                activity: base.activity, rideShareEnabled: flag
+            )
+            let service = makeService(ScriptedShareEndpoint(), vehicles: [vehicle])
+            return service.vehicleRideShare.first
+        }
+        let absent = await row(nil)
+        XCTAssertEqual(absent?.isEnabled, true, "ABSENT MEANS ENABLED — never paused")
+        let paused = await row(false)
+        XCTAssertEqual(paused?.isEnabled, false, "an explicit false is the owner's pause")
+        let on = await row(true)
+        XCTAssertEqual(on?.isEnabled, true)
+    }
+
+    /// The client adopts the server's ECHO, not the bool it sent — the rule that
+    /// keeps a future coercing server from being silently contradicted.
+    func testTheVehicleSwitchAdoptsTheServersEchoRatherThanTheSubmission() async throws {
+        let vehicle = VehicleFixtures.vehicles[0]
+        let rideShare = ShareTabRideShareEndpoint()
+        rideShare.echoOverride = true                 // server refuses to pause
+        let service = makeService(ScriptedShareEndpoint(), vehicles: [vehicle], rideShare: rideShare)
+
+        try await service.setVehicleRideShareEnabled(false, vehicleID: vehicle.id)
+        XCTAssertEqual(rideShare.writes.map(\.enabled), [false], "we asked for OFF")
+        XCTAssertEqual(
+            service.vehicleRideShare.first?.isEnabled, true,
+            "and adopted the server's answer, which was ON"
+        )
+    }
+
+    /// §7.18's own reasoning: a failed write reported as success "would leave an
+    /// owner believing their car is paused while it is still taking requests".
+    func testAFailedVehicleWriteRollsTheSwitchBack() async {
+        let vehicle = VehicleFixtures.vehicles[0]
+        let rideShare = ShareTabRideShareEndpoint()
+        rideShare.failure = RestError.http(status: 500, code: nil, message: nil, subCode: nil)
+        let service = makeService(ScriptedShareEndpoint(), vehicles: [vehicle], rideShare: rideShare)
+        XCTAssertEqual(service.vehicleRideShare.first?.isEnabled, true)
+
+        do {
+            try await service.setVehicleRideShareEnabled(false, vehicleID: vehicle.id)
+            XCTFail("the refusal must reach the caller")
+        } catch {}
+        XCTAssertEqual(
+            service.vehicleRideShare.first?.isEnabled, true,
+            "the optimistic PAUSE must not survive a refused write"
+        )
+    }
+
+    // MARK: What the switches SAY
+
+    private func viewer(
+        name: String = "Aanya", allowRides: Bool, suspended: Bool
+    ) -> Viewer {
+        Viewer(
+            id: "v", name: name, email: nil, online: false, perm: "Location",
+            tier: allowRides ? .rides : .live, allowRides: allowRides, suspended: suspended
+        )
+    }
+
+    /// The paused row must make the CONSEQUENCE plain and name the person. The
+    /// wire's word for this is "suspended", which means nothing to an owner.
+    func testASuspendedRowSaysThePersonCannotSeeTheCar() {
+        let controls = ShareViewerControls.resolve(
+            viewer: viewer(allowRides: true, suspended: true),
+            vehicleRideShareEnabled: true, vehicleName: nil
+        )
+        XCTAssertFalse(controls.locationOn)
+        XCTAssertEqual(controls.subtitle, "Paused \u{2014} Aanya can\u{2019}t see this car")
+        XCTAssertFalse(controls.ridesInteractive, "suspension gates everything below it")
+        XCTAssertTrue(
+            controls.ridesOn,
+            "the STORED flag still shows, so the owner can see what restoring returns"
+        )
+    }
+
+    /// **PRECEDENCE.** A viewer who is suspended on a car whose ride sharing is
+    /// ALSO off must be told the stronger, more specific fact. Naming the lesser
+    /// reason would send the owner to the wrong switch.
+    func testSuspensionOutranksTheVehicleLevelPauseInTheCopy() {
+        let controls = ShareViewerControls.resolve(
+            viewer: viewer(allowRides: true, suspended: true),
+            vehicleRideShareEnabled: false, vehicleName: "Lunar"
+        )
+        XCTAssertTrue(controls.subtitle.contains("can\u{2019}t see this car"))
+        XCTAssertEqual(controls.ridesCaption, "Turn location back on to change this")
+    }
+
+    /// A disabled Rides switch must carry the VEHICLE-LEVEL context, not just
+    /// grey out. A control that stops working without saying why is the silent
+    /// state this app has been burned by repeatedly.
+    func testTheVehiclePauseDisablesRidesAndSaysWhy() {
+        let named = ShareViewerControls.resolve(
+            viewer: viewer(allowRides: true, suspended: false),
+            vehicleRideShareEnabled: false, vehicleName: "Lunar"
+        )
+        XCTAssertTrue(named.locationOn, "the person can still SEE the car")
+        XCTAssertFalse(named.ridesInteractive)
+        XCTAssertEqual(named.ridesCaption, "Ride sharing is off for Lunar")
+
+        // A single-car owner reads the unnamed sentence better.
+        let unnamed = ShareViewerControls.resolve(
+            viewer: viewer(allowRides: true, suspended: false),
+            vehicleRideShareEnabled: false, vehicleName: nil
+        )
+        XCTAssertEqual(unnamed.ridesCaption, "Ride sharing is off for this car")
+    }
+
+    /// The ordinary active states: both switches live, and the subtitle says what
+    /// the person can actually do.
+    func testAnActiveRowStatesWhatTheGrantAllows() {
+        let watching = ShareViewerControls.resolve(
+            viewer: viewer(allowRides: false, suspended: false),
+            vehicleRideShareEnabled: true, vehicleName: nil
+        )
+        XCTAssertTrue(watching.locationOn)
+        XCTAssertFalse(watching.ridesOn)
+        XCTAssertTrue(watching.ridesInteractive)
+        XCTAssertNil(watching.ridesCaption, "a live control needs no explanation")
+        XCTAssertEqual(watching.subtitle, "Can see this car\u{2019}s location")
+
+        let riding = ShareViewerControls.resolve(
+            viewer: viewer(allowRides: true, suspended: false),
+            vehicleRideShareEnabled: true, vehicleName: nil
+        )
+        XCTAssertEqual(riding.subtitle, "Can see this car and request rides")
+    }
+}
+
+// MARK: - MYR-369: the viewer's car simply vanishes
+
+@MainActor
+final class SuspendedVehicleDisappearanceTests: XCTestCase {
+
+    /// **SUSPENSION IS NOT A MARKER, IT IS AN ABSENCE.** The server enforces it by
+    /// removing the grant from the viewer's access set, so a suspended car does
+    /// not arrive flagged — it stops being in `GET /api/vehicles`. A client
+    /// looking for a "suspended" field on the viewer side would find nothing and
+    /// conclude everything was fine.
+    func testASuspendedGrantProducesNoViewerRowAtAll() {
+        // The owner's OWN listing still serializes it — that is the whole point,
+        // they have to be able to un-suspend it.
+        let ownerRows = ShareRowGrouping.group(
+            [invite(
+                id: "acc-1", vehicle: "v1", label: "Aanya", permission: "live",
+                status: .accepted, acceptedAt: "2026-07-01T11:23:00Z",
+                allowRides: false, suspended: true
+            )],
+            now: ISO8601DateFormatter().date(from: "2026-07-29T15:04:05Z")!
+        )
+        XCTAssertEqual(ownerRows.viewers.count, 1, "the owner must still see it to restore it")
+        XCTAssertTrue(ownerRows.viewers[0].suspended)
+
+        // The VIEWER's side of the same suspension: the row is simply not there.
+        XCTAssertTrue(LiveSharedVehicleCatalog.grants(from: []).isEmpty)
+    }
+
+    /// The list refresh that follows a suspension resolves to the honest EMPTY
+    /// state rather than to "unavailable" — nothing failed, the account genuinely
+    /// has no vehicles now.
+    func testTheListRefreshAfterASuspensionResolvesToEmptyNotUnavailable() {
+        let resolution = RiderVehicleSet.resolve(
+            hasLoaded: true, loadFailed: false, grants: [], ownedVehicles: []
+        )
+        XCTAssertEqual(resolution, .empty)
+
+        // A list that did NOT answer is a different question and must not be
+        // mistaken for "your car was taken away".
+        XCTAssertEqual(
+            RiderVehicleSet.resolve(
+                hasLoaded: false, loadFailed: true, grants: [], ownedVehicles: []
+            ),
+            .unavailable
+        )
+    }
+
+    /// **THE STRAND.** Releasing the viewer state on `.empty` is MYR-369's viewer
+    /// half. Before it, `.empty` left `sharedVehicle`, the tier and the live
+    /// socket subscription all pointed at a car the account no longer has access
+    /// to: the shell showed an honest empty screen while the state underneath it
+    /// still held the revoked vehicle.
+    func testAdoptingNilReleasesTheVehicleAndItsTier() {
+        let state = SharedViewerState(vehicle: nil, seams: .simulated)
+        let grant = try! XCTUnwrap(
+            LiveSharedVehicleCatalog.grants(
+                from: [summary(id: "shared", name: "Alex's Model 3", role: .viewer, permission: "rides")]
+            ).first
+        )
+        state.adoptSharedVehicle(grant)
+        XCTAssertEqual(state.sharedVehicle?.id, "shared")
+        XCTAssertEqual(state.sharedVehicleTier, .rides)
+
+        // The car is suspended; the next list read carries nothing.
+        state.adopt(nil)
+        XCTAssertNil(state.sharedVehicle, "the vanished car must not be held")
+        XCTAssertNil(state.sharedVehicleTier, "nor its capabilities")
+    }
+
+    /// Releasing must not CRASH or strand a half-adopted state — the car can go
+    /// away mid-session, and re-adopting a real one afterwards has to work.
+    func testTheViewerSurvivesTheCarVanishingAndComingBack() {
+        let state = SharedViewerState(vehicle: nil, seams: .simulated)
+        let grant = try! XCTUnwrap(
+            LiveSharedVehicleCatalog.grants(
+                from: [summary(id: "shared", name: "Alex's Model 3", role: .viewer, permission: "live")]
+            ).first
+        )
+        state.adoptSharedVehicle(grant)
+        state.adopt(nil)
+        XCTAssertNil(state.sharedVehicle)
+        // Restored by the owner → the next refresh adopts it again cleanly.
+        state.adoptSharedVehicle(grant)
+        XCTAssertEqual(state.sharedVehicle?.id, "shared")
+        XCTAssertEqual(state.sharedVehicleTier, .live)
+    }
+
+    /// A viewer whose grant has `allowRides` false gets NO ride affordance, and
+    /// the gate reads off the derived `live` the server now emits. `live_history`
+    /// no longer arrives at all, so the old middle rung cannot be what decides it.
+    func testAViewerWithoutRidesIsOfferedNoRideAffordance() {
+        func canRide(_ permission: String) -> Bool {
+            let state = SharedViewerState(vehicle: nil, seams: .simulated)
+            let grant = try! XCTUnwrap(
+                LiveSharedVehicleCatalog.grants(
+                    from: [summary(id: "s", name: "Car", role: .viewer, permission: permission)]
+                ).first
+            )
+            state.adoptSharedVehicle(grant)
+            return state.canRequestRides
+        }
+        XCTAssertTrue(canRide("rides"), "allowRides true derives `rides`")
+        XCTAssertFalse(canRide("live"), "allowRides false derives `live` — watch only")
+        // Decode-compat: retired, never emitted, and must not open the affordance.
+        XCTAssertFalse(canRide("live_history"))
     }
 }

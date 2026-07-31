@@ -89,38 +89,34 @@ final class RideShareInServiceTests: XCTestCase {
     // MARK: - 3. Tapping while disabled fires no write
 
     /// A disabled control that still commits is worse than an enabled one: nothing
-    /// on screen predicts what it did. The row's binding refuses in addition to the
-    /// switch being hit-test-disabled, so an accessibility action or any future
-    /// programmatic path cannot reach §7.18 either.
+    /// on screen predicts what it did. `ShareVehicleToggleRow`'s binding refuses in
+    /// addition to the switch being hit-test-disabled, so an accessibility action or
+    /// any future programmatic path cannot reach §7.18 either.
+    ///
+    /// MYR-369 — asserted through `VehicleRideShareRow` now, the model the RELOCATED
+    /// card renders. The row this used to drive lived in the owner sheet's "Status &
+    /// location" card and no longer exists.
     func testTappingWhileInServiceFiresNoWrite() {
         var writes: [Bool] = []
-        let display = VehicleRideShare.display(storedEnabled: true, isInService: true)
-        let model = RideShareRowModel(
-            isEnabled: display.isOn,
-            isInteractive: display.isInteractive,
-            onToggle: { writes.append($0) },
-            caption: display.caption
+        let row = VehicleRideShareRow(
+            id: "veh-1", name: "Lunar", storedEnabled: true, isInService: true
         )
 
-        // Exactly what the row's `Binding` setter does.
-        if model.isInteractive { model.onToggle(true) }
+        // Exactly what `ShareVehicleToggleRow`'s `Binding` setter does.
+        if !row.isBusy && row.isInteractive { writes.append(true) }
 
-        XCTAssertTrue(writes.isEmpty, "an in-service row must not fire a §7.18 write")
+        XCTAssertTrue(writes.isEmpty, "an in-service row must not fire a \u{00A7}7.18 write")
     }
 
     /// The same row OUT of service is fully live — the guard must gate on the
     /// derivation, not on the toggle simply existing.
     func testTappingOutOfServiceStillWrites() {
         var writes: [Bool] = []
-        let display = VehicleRideShare.display(storedEnabled: true, isInService: false)
-        let model = RideShareRowModel(
-            isEnabled: display.isOn,
-            isInteractive: display.isInteractive,
-            onToggle: { writes.append($0) },
-            caption: display.caption
+        let row = VehicleRideShareRow(
+            id: "veh-1", name: "Lunar", storedEnabled: true, isInService: false
         )
 
-        if model.isInteractive { model.onToggle(false) }
+        if !row.isBusy && row.isInteractive { writes.append(false) }
 
         XCTAssertEqual(writes, [false], "out of service the switch commits normally")
     }

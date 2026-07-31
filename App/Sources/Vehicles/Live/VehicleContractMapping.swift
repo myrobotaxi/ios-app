@@ -381,7 +381,29 @@ enum VehicleContractMapping {
             // may change, so the contract forbids parsing, re-casing or comparing
             // it. Blank is normalized to nil so a server that emits "" omits the
             // row rather than rendering an empty value.
-            fsdVersion: nonEmpty(state?.fsdVersion)
+            fsdVersion: nonEmpty(state?.fsdVersion),
+            // MYR-369 — the owner's ride-share master switch, carried onto the
+            // list-shaped `Vehicle` so the Share tab's relocated toggle card can
+            // read its position from the §7.0 list it already fetches.
+            //
+            // BOTH read surfaces carry it (§7.18), and the SNAPSHOT LEADS for the
+            // same reason the plate does: it is the fresher read and the one a WS
+            // reconnect refetches. `??` rather than a `nonEmpty`-style fold is
+            // correct here precisely because the value is a `Bool?` whose `false`
+            // is MEANINGFUL — coalescing only past a genuinely absent snapshot
+            // field is what stops an explicit `false` being read as "unknown".
+            //
+            // nil from BOTH sides stays nil and is read as ENABLED downstream
+            // (`VehicleRideShare.isEnabled`); it must never render as paused.
+            rideShareEnabled: state?.rideShareEnabled ?? summary.rideShareEnabled,
+            // MYR-358 — the in-service FACT that derives the Share tab's
+            // ride-share switch off, resolved through the EXISTING
+            // `badgeStatus(forSummary:state:)` fold rather than a second status
+            // rule of its own. That fold already decides snapshot-vs-summary
+            // precedence for every other status surface in the app, so the
+            // relocated card and the sheet's In Service badge cannot come to
+            // disagree about the same car.
+            isInService: badgeStatus(forSummary: summary, state: state) == .inService
         )
     }
 

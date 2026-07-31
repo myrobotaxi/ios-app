@@ -70,19 +70,10 @@ struct VehicleControls: View {
     /// simulated path and before the first live frame, so the tile keeps its
     /// pre-MYR-333 port-door sub and M1 stays pixel-identical.
     var chargingState: VehicleChargingState = .idle
-    /// MYR-342 — the RESOLVED ride-share position, threaded from `HomeScreen`'s
-    /// single `resolvedRideShare(snapshot:)` call rather than re-read from the
-    /// snapshot here. Same reasoning as `serviceEstimatedEndAt` above, and the same
-    /// defect avoided: the field carries no WS delta, so a snapshot cannot hold a
-    /// value the owner just committed, and a surface reading it directly would show
-    /// a flip the server accepted as if nothing had happened.
-    ///
-    /// `nil` — the default and the whole simulated path — means the host cannot
-    /// reach a server for this vehicle, so the row does not exist.
-    var rideShareEnabled: Bool? = nil
-    /// MYR-342 — commits a flip through the executor seam. `nil` on hosts that
-    /// can't write (previews), which also hides the row.
-    var onSetRideShareEnabled: ((Bool) -> Void)? = nil
+    // MYR-369 — `rideShareEnabled` / `onSetRideShareEnabled` are GONE from this
+    // view. The owner's ride-share switch moved to the top of the Share tab,
+    // where its consequences live; see `InvitesScreen.vehicleRideShareCard`. It
+    // is the same field and the same §7.18 endpoint — only the surface moved.
 
     private var controls: VehicleControlsSnapshot { executor.controls }
 
@@ -106,40 +97,6 @@ struct VehicleControls: View {
             // here: the view has strictly less information than the executor does.
             source: controls.serviceWindowSource,
             onEdit: onEditServiceWindow
-        )
-    }
-
-    /// MYR-342 — the ride-sharing row's model, or `nil` when there is no switch to
-    /// offer. Two independent conditions, both required, and both are really the
-    /// same one stated from each side: the host resolved a real position for this
-    /// vehicle (`rideShareEnabled`) AND supplied a write route
-    /// (`onSetRideShareEnabled`). `HomeScreen` supplies both only on the LIVE path.
-    ///
-    /// The simulated path satisfies neither, so M1 and every drift-gate scene are
-    /// untouched — the same live-only gating MYR-315's freshness stamp uses, and for
-    /// the same reason: a control that cannot reach a server has nothing honest to
-    /// say. A simulated switch would be worse than a missing one, because flipping
-    /// it would appear to withdraw a car from ride-hailing and would do nothing.
-    ///
-    /// MYR-358 — the position and the interactivity are DERIVED here through
-    /// `VehicleRideShare.display`, from the owner's STORED value and the car's
-    /// current status. While the car is in service the row renders off and inert;
-    /// nothing is written on the transition, so the stored value comes straight back
-    /// when the visit ends. `badgeStatus` is the same in-service signal
-    /// `serviceWindowRow` above already gates on, so the two rows can never
-    /// disagree about whether there is a visit in progress.
-    private var rideShareRow: RideShareRowModel? {
-        guard let rideShareEnabled, let onSetRideShareEnabled else { return nil }
-        let display = VehicleRideShare.display(
-            storedEnabled: rideShareEnabled,
-            isInService: badgeStatus == .inService
-        )
-        return RideShareRowModel(
-            isEnabled: display.isOn,
-            isInteractive: display.isInteractive,
-            state: executor.uiState(for: .rideShare),
-            onToggle: onSetRideShareEnabled,
-            caption: display.caption
         )
     }
 
@@ -191,10 +148,6 @@ struct VehicleControls: View {
                     // Everything inside it (including a nil time) is then honest;
                     // outside that state it would be a row about nothing.
                     serviceWindow: serviceWindowRow,
-                    // MYR-342 — the owner's ride-sharing switch. `nil` off the live
-                    // path, so the card grows a row ONLY where the toggle can reach
-                    // a server.
-                    rideShare: rideShareRow
                 )
             }
 

@@ -132,6 +132,42 @@ final class RideSharePauseWarningTests: XCTestCase {
         RideSharePauseFlow(source: LiveUpcomingReservations(api: api))
     }
 
+    /// MYR-369 — the executor bound to the flow's seam.
+    ///
+    /// MYR-360 built the flow against `VehicleCommandExecutor` directly, because
+    /// that is where the switch lived. The switch has since moved to the Share tab,
+    /// which has no executor, so the flow now commits through `RideSharePauseTarget`
+    /// and this adapter is what keeps EVERY assertion in this file pointed at the
+    /// same wire it always was: the executor's real `setRideShareEnabled` (with its
+    /// optimistic flip, echo adoption and rollback) and its real notice lifecycle.
+    ///
+    /// It lives in the test rather than in the app because the owner sheet no
+    /// longer renders this control at all — shipping an executor adapter with no
+    /// shipping call site would be dead code wearing a test's clothes. What is
+    /// being proven here is that the FLOW's decisions are unchanged by the
+    /// re-homing, and for that the executor is the more demanding of the two
+    /// committers: it is the one with a rollback to observe.
+    @MainActor
+    private struct ExecutorPauseTarget: RideSharePauseTarget {
+        let executor: any VehicleCommandExecutor
+
+        func commitRideShareEnabled(_ enabled: Bool) async throws {
+            try await executor.setRideShareEnabled(enabled)
+        }
+
+        func reportPauseFailure(_ failure: RideSharePauseFailure) {
+            switch failure {
+            case .rideShareNotSaved: executor.raiseNotice(.rideShareNotSaved, for: .rideShare)
+            case .reservationNotDeclined: executor.raiseNotice(.reservationNotDeclined, for: .rideShare)
+            }
+        }
+    }
+
+    @MainActor
+    private func target(_ executor: any VehicleCommandExecutor) -> ExecutorPauseTarget {
+        ExecutorPauseTarget(executor: executor)
+    }
+
     private func date(_ offset: TimeInterval) -> Date { Date().addingTimeInterval(offset) }
 
     // MARK: - 1. The decision matrix
@@ -146,7 +182,7 @@ final class RideSharePauseWarningTests: XCTestCase {
         let flow = makeFlow(api)
         let executor = makeExecutor(endpoint)
 
-        await flow.setEnabled(false, vehicleID: "veh-1", executor: executor)
+        await flow.setEnabled(false, vehicleID: "veh-1", target: target(executor))
 
         XCTAssertNil(flow.warning, "nothing is booked — there is nothing to warn about")
         let submitted = await endpoint.submitted()
@@ -165,7 +201,7 @@ final class RideSharePauseWarningTests: XCTestCase {
         let flow = makeFlow(api)
         let executor = makeExecutor(endpoint)
 
-        await flow.setEnabled(false, vehicleID: "veh-1", executor: executor)
+        await flow.setEnabled(false, vehicleID: "veh-1", target: target(executor))
 
         let warning = try? XCTUnwrap(flow.warning)
         XCTAssertEqual(warning?.reservations.map(\.id), ["r1"])
@@ -208,7 +244,7 @@ final class RideSharePauseWarningTests: XCTestCase {
             Self.wire(id: "r4", name: "Jo", scheduledFor: now.addingTimeInterval(4 * 86_400))
         ])
         let flow = makeFlow(api)
-        await flow.setEnabled(false, vehicleID: "veh-1", executor: makeExecutor(ScriptedRideShareEndpoint()))
+        await flow.setEnabled(false, vehicleID: "veh-1", target: target(makeExecutor(ScriptedRideShareEndpoint())))
 
         let reservations = flow.warning?.reservations ?? []
         XCTAssertEqual(reservations.map(\.id), ["r1", "r2", "r3", "r4"], "the server's soonest-first order is preserved")
@@ -252,7 +288,7 @@ final class RideSharePauseWarningTests: XCTestCase {
         let flow = makeFlow(api)
         let executor = makeExecutor(endpoint)
 
-        await flow.setEnabled(false, vehicleID: "veh-1", executor: executor)
+        await flow.setEnabled(false, vehicleID: "veh-1", target: target(executor))
         await flow.confirmDeclineAndPause()
 
         let declined = await api.declinedIDs
@@ -276,7 +312,7 @@ final class RideSharePauseWarningTests: XCTestCase {
         let flow = makeFlow(api)
         let executor = makeExecutor(endpoint)
 
-        await flow.setEnabled(false, vehicleID: "veh-1", executor: executor)
+        await flow.setEnabled(false, vehicleID: "veh-1", target: target(executor))
         await flow.pauseAnyway()
 
         let declined = await api.declinedIDs
@@ -304,7 +340,7 @@ final class RideSharePauseWarningTests: XCTestCase {
         let flow = makeFlow(api)
         let executor = makeExecutor(endpoint)
 
-        await flow.setEnabled(false, vehicleID: "veh-1", executor: executor)
+        await flow.setEnabled(false, vehicleID: "veh-1", target: target(executor))
         XCTAssertNotNil(flow.warning)
         flow.keepSharing()
 
@@ -342,7 +378,7 @@ final class RideSharePauseWarningTests: XCTestCase {
         let flow = makeFlow(api)
         let executor = makeExecutor(endpoint)
 
-        await flow.setEnabled(false, vehicleID: "veh-1", executor: executor)
+        await flow.setEnabled(false, vehicleID: "veh-1", target: target(executor))
         await flow.confirmDeclineAndPause()
 
         let declined = await api.declinedIDs
@@ -366,7 +402,7 @@ final class RideSharePauseWarningTests: XCTestCase {
         let flow = makeFlow(api)
         let executor = makeExecutor(endpoint)
 
-        await flow.setEnabled(false, vehicleID: "veh-1", executor: executor)
+        await flow.setEnabled(false, vehicleID: "veh-1", target: target(executor))
 
         XCTAssertNil(flow.warning, "there is nothing honest to put in a dialog")
         let submitted = await endpoint.submitted()
@@ -402,7 +438,7 @@ final class RideSharePauseWarningTests: XCTestCase {
         let flow = makeFlow(api)
         let executor = makeExecutor(endpoint)
 
-        await flow.setEnabled(true, vehicleID: "veh-1", executor: executor)
+        await flow.setEnabled(true, vehicleID: "veh-1", target: target(executor))
 
         let listed = await api.listedVehicleIDs
         XCTAssertTrue(listed.isEmpty, "the ON direction reads nothing")
@@ -420,7 +456,7 @@ final class RideSharePauseWarningTests: XCTestCase {
         let flow = RideSharePauseFlow(source: nil)
         let executor = makeExecutor(endpoint)
 
-        await flow.setEnabled(false, vehicleID: "veh-1", executor: executor)
+        await flow.setEnabled(false, vehicleID: "veh-1", target: target(executor))
 
         XCTAssertNil(flow.warning)
         let submitted = await endpoint.submitted()
@@ -440,7 +476,7 @@ final class RideSharePauseWarningTests: XCTestCase {
             Self.wire(id: "r2", name: "   ", scheduledFor: date(2 * 86_400))
         ])
         let flow = makeFlow(api)
-        await flow.setEnabled(false, vehicleID: "veh-1", executor: makeExecutor(ScriptedRideShareEndpoint()))
+        await flow.setEnabled(false, vehicleID: "veh-1", target: target(makeExecutor(ScriptedRideShareEndpoint())))
 
         let reservations = flow.warning?.reservations ?? []
         XCTAssertEqual(reservations.map(\.riderFirstName), [nil, nil], "an absent or blank name stays absent")
@@ -477,7 +513,7 @@ final class RideSharePauseWarningTests: XCTestCase {
             )
         ])
         let flow = makeFlow(api)
-        await flow.setEnabled(false, vehicleID: "veh-1", executor: makeExecutor(ScriptedRideShareEndpoint()))
+        await flow.setEnabled(false, vehicleID: "veh-1", target: target(makeExecutor(ScriptedRideShareEndpoint())))
 
         XCTAssertEqual(flow.warning?.reservations.map(\.id), ["r1", "r2"])
         let cursors = await api.listedCursors

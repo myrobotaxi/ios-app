@@ -27,7 +27,11 @@ enum ShareComposition {
         guard let rest = makeRestClient(mode: mode, sessionTokenProvider: sessionTokenProvider) else {
             return SimulatedShareService()
         }
-        return LiveShareService(api: rest, ownedVehicles: ownedVehicles)
+        // ONE `RestClient` serving BOTH seams: it conforms to
+        // `VehicleSharingEndpoint` (§7.5) and `VehicleRideShareEndpoint` (§7.18).
+        // MYR-369 relocated §7.18's switch onto this screen, so the screen now
+        // needs both — but it is still one client and one session.
+        return LiveShareService(api: rest, rideShareAPI: rest, ownedVehicles: ownedVehicles)
     }
 
     /// The rider's shared-vehicle catalog + redeem call.

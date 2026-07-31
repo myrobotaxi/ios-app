@@ -3,14 +3,17 @@ import MyRobotaxiContracts
 
 // MARK: - Vehicle sharing (rest-api.md §7.5, MYR-184)
 //
-// Five endpoints, TWO audiences. Four are OWNER-facing and speak `ShareInvite`;
+// SIX endpoints, TWO audiences. Five are OWNER-facing and speak `ShareInvite`;
 // one is RIDER-facing and speaks `RedeemShareInviteResponse`. `ShareInvite` is
-// NEVER delivered to an invited party — it carries the owner-typed `label` and,
-// while pending, the live `code`.
+// NEVER delivered to an invited party — it carries the owner-typed `label`, the
+// owner-only capability flags, and, while pending, the live `code`.
 //
 // Unlike `VehiclePlatePayloads` / `VehicleTeardownPayloads`, this family needs NO
-// locally-authored DTOs: contracts v0.19.0 generates every request AND response
-// shape here, including the write bodies. The Kit owns zero wire shapes for it.
+// locally-authored DTOs: contracts generates every request AND response shape
+// here, including the write bodies (v0.19.0 for the original five, v0.23.0 for
+// MYR-369's `PatchShareInviteRequest`). The Kit owns zero wire shapes for it —
+// which is the whole reason MYR-362's wrong-key class cannot recur on this
+// family, and why the fixtures are pinned against the GENERATED types below.
 //
 // CODES, NOT EMAILS. The platform has no email infrastructure; the owner mints a
 // 6-character code and hands it out through the iOS system share sheet. Nothing
@@ -76,39 +79,93 @@ public protocol VehicleSharingEndpoint: Sendable {
     /// raw status codes: 404 deliberately conflates unknown / expired / already-
     /// consumed, and the client must not pretend to distinguish them.
     func redeemShareInvite(code: String) async throws -> RedeemShareInviteResponse
+
+    /// `PATCH /api/invites/{inviteId}` (MYR-369) — the owner editing ONE accepted
+    /// grant's capabilities IN PLACE. This is what replaces the pre-MYR-369 rule
+    /// that a grant's access was fixed for its life and changing it meant
+    /// revoke-plus-reinvite.
+    ///
+    /// ACCEPTED GRANTS ONLY: a still-`pending` invite answers `409 conflict`,
+    /// because a pending row has no grant to edit — its access is decided at
+    /// redemption from the invite's `permission` preset. Owner-only; an invite
+    /// that does not exist, belongs to another owner, or is a revoked tombstone
+    /// all answer `404` INDISTINGUISHABLY (``RestError/isShareInviteGone``), the
+    /// same non-oracle rule DELETE follows.
+    ///
+    /// PARTIAL BY DESIGN — only the properties PRESENT are written, and an absent
+    /// property is NOT the same as sending `false`. At least one is required
+    /// (`minProperties: 1`); an empty body is a `400`, deliberately, so a client
+    /// bug cannot look like a successful edit.
+    ///
+    /// APPLIES TO ONE ROW: a multi-vehicle invite is N rows and patching one
+    /// changes that vehicle's grant only, so an owner may hold different
+    /// capabilities per vehicle for the same person. Callers standing for a
+    /// grouped screen row must therefore patch every id in the group.
+    ///
+    /// The 200 body is the updated row — an accepted row, so it carries
+    /// `allowRides`, `suspended` and the DERIVED `permission`, and carries
+    /// neither `code` nor `shareUrl`.
+    func patchShareInvite(_ body: PatchShareInviteRequest, inviteID: String) async throws -> ShareInvite
 }
 
-// MARK: - Cumulative tier comparison
+// MARK: - Per-grant capability reads (MYR-369)
+//
+// The tier comparison that used to live here is GONE. `SharePermission.rank` and
+// `grants(_:)` implemented the contract's pre-MYR-369 TOTAL ORDER
+// (live < live_history < rides) with a cumulative `>=`, which the 0.23.0 contract
+// now states in as many words is WRONG on an accepted row: the underlying model
+// is a set of independent editable flags, not an order. They are DELETED rather
+// than deprecated on purpose — a comparator that still compiles is a foot-gun,
+// and every call site had to be visited anyway.
 
 extension SharePermission {
-    /// Rank over the contract's TOTAL ORDER `live` < `live_history` < `rides`.
+    /// Whether this DERIVED projection says the viewer may request rides.
     ///
-    /// `nil` for `.unrecognized` — a tier this build has never heard of. A newer
-    /// contracts version appends only in INCREASING-privilege order, so an
-    /// unrecognized value is strictly *above* `rides`; but ranking it that way
-    /// would grant affordances on a tier we cannot reason about, so it is
-    /// deliberately unrankable and `grants(_:)` fails CLOSED on it.
-    var rank: Int? {
-        switch self {
-        case .live: return 0
-        case .liveHistory: return 1
-        case .rides: return 2
-        case .unrecognized: return nil
-        }
-    }
+    /// EQUALITY, not `>=`. On an accepted row the server derives this value on
+    /// every read — `allowRides` true → `rides`, otherwise `live` — so `rides` is
+    /// the only value that means "may ride", and there is no longer a tier above
+    /// it that implies it.
+    ///
+    /// `live_history` answers `false`: it IS RETIRED AND NEVER EMITTED, and a
+    /// legacy grant created at that preset derives `live`. The member survives in
+    /// the enum for wire compat only, so an installed decoder keeps decoding.
+    ///
+    /// Fails CLOSED on `.unrecognized` — a value this build has never heard of is
+    /// not evidence of permission. UI-affordance hint only: the server enforces
+    /// the gate on every ride create, owner accept and reservation dispatch, so a
+    /// client that gets this wrong can only mis-OFFER, never escalate.
+    public var allowsRides: Bool { self == .rides }
+}
 
-    /// Cumulative `>=` over the tier order — the ONLY correct way to test a tier
-    /// (§7.5.0: "every server gate compares with a `>=` over that order, never
-    /// equality"). `rides` grants `live_history` grants `live`.
+extension ShareInvite {
+    /// Whether this grant may request rides — the truth, preferred over the
+    /// derived ``permission`` projection wherever the owner-only flag is present.
     ///
-    /// Fails CLOSED on an unrecognized tier on either side: a client that cannot
-    /// rank a value must not offer the affordance. This is a UI-affordance hint
-    /// only — the server independently enforces every gate, so a client that gets
-    /// this wrong cannot escalate, it can only mis-offer.
-    public func grants(_ required: SharePermission) -> Bool {
-        guard let mine = rank, let needed = required.rank else { return false }
-        return mine >= needed
-    }
+    /// THE ABSENCE RULE IS A FALLBACK, NOT A DEFAULT. `allowRides` is omitted on
+    /// a `pending` row (there is no grant yet) and by any server predating
+    /// MYR-369. The contract's instruction for both is to fall back to
+    /// `permission` — `rides` → true — and NEVER to assume either value outright.
+    ///
+    /// NOT INDEPENDENT OF SUSPENSION: this describes what the grant WOULD allow
+    /// once active. A suspended grant with `allowRides: true` grants NOTHING, so
+    /// an owner-facing control renders the switch in its stored position while
+    /// suspended, and no viewer-facing surface may present the person as able to
+    /// ride without checking ``isSuspended`` too.
+    public var allowsRides: Bool { allowRides ?? permission.allowsRides }
+
+    /// Whether the owner has PAUSED this grant.
+    ///
+    /// ABSENCE IS NEVER SUSPENSION — an absent key means a `pending` row or a
+    /// server predating MYR-369, and the contract is explicit that it "MUST be
+    /// read as NOT suspended". Note this points the OPPOSITE way from
+    /// ``allowsRides``'s fallback, which is exactly why both are written out here
+    /// rather than left to a call site to remember.
+    ///
+    /// SUSPENSION GATES EVERYTHING and is server-enforced by removing the grant
+    /// from the viewer's access set, so this flag is only ever read on the
+    /// OWNER's own listing — a suspended grant produces no row at all on any
+    /// viewer surface.
+    public var isSuspended: Bool { suspended ?? false }
 }
 
 extension VehicleSummary {

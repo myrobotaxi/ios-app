@@ -92,6 +92,101 @@ protocol ShareService: AnyObject, Observable {
     /// this returns, so an owner who is not handed the new one is stranded.
     @discardableResult
     func resend(_ invite: PendingInvite) async throws -> ShareHandout?
+
+    // MARK: - Per-viewer capability edits (MYR-369, PATCH /api/invites/{id})
+
+    /// The vehicle-level ride-share master switch, per owned vehicle
+    /// (`VehicleSummary.rideShareEnabled`, §7.18). Read here because MYR-369
+    /// RELOCATED that toggle from the owner sheet's "Status & location" card to
+    /// the top of the Share tab — it is the same field and the same endpoint, on
+    /// the surface where its consequences are actually visible.
+    ///
+    /// **ABSENT MEANS ENABLED** (contracts 0.20.0, and the rule most likely to be
+    /// broken by a tidy refactor). Resolved through `VehicleRideShare.isEnabled`
+    /// so the explicit-`false` test is written in exactly one place.
+    var vehicleRideShare: [VehicleRideShareRow] { get }
+
+    /// Flip the vehicle-level master switch. OPTIMISTIC with rollback: the row
+    /// moves immediately (a toggle that waits for a round trip reads as broken),
+    /// adopts the server's ECHO on success, and restores the previous position on
+    /// failure — leaving it up would manufacture the exact belief §7.18 refuses
+    /// to allow, an owner walking away thinking their car is paused while it is
+    /// still taking requests.
+    func setVehicleRideShareEnabled(_ enabled: Bool, vehicleID: String) async throws
+
+    /// PATCH one accepted grant's `allowRides`. Optimistic with rollback.
+    ///
+    /// Meaningful only while the viewer is NOT suspended and the vehicle master
+    /// switch is on; the screen disables the control in both cases rather than
+    /// sending a write whose effect the owner could not observe.
+    func setViewerAllowRides(_ allowRides: Bool, viewer: Viewer) async throws
+
+    /// PATCH one accepted grant's `suspended` — the row's MASTER switch.
+    ///
+    /// `true` removes the vehicle from that viewer's access set entirely: their
+    /// catalog row, snapshot, WebSocket handshake, drives and rides all stop at
+    /// once, with the single recorded caveat that an ALREADY-OPEN socket streams
+    /// until it reconnects (DV-09; server-side fix is MYR-373). The grant row
+    /// survives with its flags intact, so restoring returns exactly what it had —
+    /// which is the whole difference from `revoke(_:)`, a permanent tombstone.
+    func setViewerSuspended(_ suspended: Bool, viewer: Viewer) async throws
+}
+
+// MARK: - Vehicle ride-share row (MYR-369)
+
+/// One owned vehicle's ride-share master switch, as the Share tab's top card
+/// renders it.
+///
+/// THE SHARE TAB HAS NO VEHICLE SELECTION, which is the one real friction in
+/// relocating this control: `rideShareEnabled` is per-vehicle (§7.18 writes to
+/// ONE `vehicleId`) while the Share tab is the owner's whole sharing picture,
+/// fanned out across every owned car. Rather than invent a fleet-wide semantic
+/// the server does not have, or silently govern only the first car, the card
+/// renders ONE ROW PER OWNED VEHICLE. A single-car owner — the overwhelming case
+/// — sees exactly one switch and reads it as the master toggle it is; an owner
+/// with three cars gets three honest switches instead of one ambiguous one.
+struct VehicleRideShareRow: Identifiable, Equatable, Sendable {
+    /// The server vehicle id — the PATH of the §7.18 write, and the row identity.
+    let id: String
+    let name: String
+    /// The owner's STORED preference — what §7.18 holds for this car, resolved
+    /// through `VehicleRideShare.isEnabled` so an absent wire value reads as
+    /// ENABLED and never as paused.
+    ///
+    /// **THIS IS NOT THE SWITCH POSITION.** While the car is in service the switch
+    /// renders OFF and this value is untouched underneath it — see ``display``.
+    let storedEnabled: Bool
+    /// Whether the car is in a service bay right now (`Vehicle.isInService`).
+    let isInService: Bool
+    /// False while this row's own write is in flight, so a second tap cannot
+    /// queue a contradictory write behind the first.
+    var isBusy: Bool = false
+
+    /// Everything the row RENDERS — `VehicleRideShare.display` verbatim (MYR-358).
+    ///
+    /// **DERIVED, NEVER STORED**, which is what makes the relocation structural
+    /// rather than a rule the Share tab has to remember. The row cannot be
+    /// constructed holding a switch position that disagrees with the facts it
+    /// carries, so "an in-service car renders OFF and inert" is not something a
+    /// call site can forget or a future service re-implement differently: there is
+    /// exactly one expression of it and both services reach it through here.
+    ///
+    /// The MYR-358 property this preserves: `storedEnabled` is the owner's
+    /// standing instruction and a service visit is a temporary fact about the car,
+    /// so NOTHING is written on either transition and the stored preference comes
+    /// straight back when the visit ends.
+    var display: VehicleRideShare.Display {
+        VehicleRideShare.display(storedEnabled: storedEnabled, isInService: isInService)
+    }
+
+    /// The switch POSITION — off for the whole of a service visit whatever the
+    /// owner stored.
+    var isEnabled: Bool { display.isOn }
+    /// Whether the switch may be moved. False in service, where the position is
+    /// derived and there is nothing to commit.
+    var isInteractive: Bool { display.isInteractive }
+    /// The muted line beneath the car's name.
+    var caption: String { display.caption }
 }
 
 // MARK: - Handout
@@ -241,6 +336,42 @@ final class SimulatedShareService: ShareService {
         pending[index].sent = "just now"
         return nil
     }
+
+    // MARK: - Per-viewer capability edits (MYR-369)
+    //
+    // Local-array edits, exactly like every other mutation here: there is no
+    // network on this path, so nothing is in flight and nothing can fail. The
+    // switches are therefore fully LIVE in SIM — which is what makes the
+    // simulated Share-tab scenes able to capture the control at rest in each of
+    // its positions without a backend.
+
+    /// `isInService: false` for every fixture car — the simulated fleet has no
+    /// service visits, so the whole simulated Share tab renders exactly what it
+    /// did before MYR-358's derivation was restored.
+    private(set) var vehicleRideShare: [VehicleRideShareRow] = VehicleFixtures.vehicles.map {
+        VehicleRideShareRow(id: $0.id, name: $0.name, storedEnabled: true, isInService: $0.isInService)
+    }
+
+    func setVehicleRideShareEnabled(_ enabled: Bool, vehicleID: String) async throws {
+        guard let index = vehicleRideShare.firstIndex(where: { $0.id == vehicleID }) else { return }
+        let row = vehicleRideShare[index]
+        vehicleRideShare[index] = VehicleRideShareRow(
+            id: row.id,
+            name: row.name,
+            storedEnabled: enabled,
+            isInService: row.isInService
+        )
+    }
+
+    func setViewerAllowRides(_ allowRides: Bool, viewer: Viewer) async throws {
+        guard let index = viewers.firstIndex(where: { $0.id == viewer.id }) else { return }
+        viewers[index] = viewers[index].with(allowRides: allowRides)
+    }
+
+    func setViewerSuspended(_ suspended: Bool, viewer: Viewer) async throws {
+        guard let index = viewers.firstIndex(where: { $0.id == viewer.id }) else { return }
+        viewers[index] = viewers[index].with(suspended: suspended)
+    }
 }
 
 // MARK: - Tier mapping (MYR-184)
@@ -250,31 +381,41 @@ final class SimulatedShareService: ShareService {
 /// a mapping that is right in one direction and wrong in the other is exactly how
 /// an owner grants "Can request rides" and the recipient gets "Live location".
 ///
-/// The design labels are the contract's own documented pairing (the generated
-/// `SharePermission` doc comment names them: `live` → "Live location",
-/// `live_history` → "Live + history", `rides` → "Can request rides"), and both
-/// sides are STRICTLY CUMULATIVE in the same order.
+/// MYR-369 — NEITHER SIDE IS CUMULATIVE ANY MORE. This mapping used to carry
+/// three tiers in one total order; it now carries two PRESETS that each decide a
+/// single flag at redemption. `live_history` survives on the READ side only, as
+/// a decode-compat fold, and is unreachable on the write side by construction:
+/// `ShareAccessLevel` has no case that produces it.
 enum ShareTierMapping {
-    /// Design tier → wire value. Total: every case maps.
+    /// Design preset → wire value. Total: every case maps.
+    ///
+    /// There is deliberately NO arm producing `"live_history"`. The tier is
+    /// retired and never emitted by the server either, so a client that could
+    /// still SEND it would be minting invites at a preset nothing will honour.
     static func wireValue(for tier: ShareAccessLevel) -> String {
         switch tier {
         case .live: return "live"
-        case .history: return "live_history"
         case .rides: return "rides"
         }
     }
 
-    /// Wire value → design tier. `nil` for a tier this build has never heard of.
+    /// Wire value → design preset. `nil` for a value this build has never heard of.
     ///
-    /// Callers must NOT substitute a default here. A tier appended by a newer
-    /// contracts version is, by the contract's own rule, strictly HIGHER than
-    /// `rides`; guessing `live` would mislabel the row downward and guessing
-    /// `rides` would offer affordances we cannot reason about. The row renders
-    /// the honest "Shared access" instead — see `permLabel(forWire:)`.
+    /// **`live_history` STILL MAPS, AND DELIBERATELY MAPS TO `.live`.** It is
+    /// decode-compat: no server emits it, but a legacy row read by a client that
+    /// somehow still sees one must render honestly, and the contract's own rule
+    /// is that a grant created at that preset now derives `live`. Folding it to
+    /// `.live` rather than to `nil` is what keeps such a row labelled instead of
+    /// falling through to the neutral "Shared access".
+    ///
+    /// Callers must NOT substitute a default for a genuinely unknown value. A
+    /// value appended by a newer contracts version describes a capability this
+    /// build cannot reason about; guessing `live` would mislabel it and guessing
+    /// `rides` would offer affordances that will 403.
     static func tier(forWire raw: String) -> ShareAccessLevel? {
         switch raw {
         case "live": return .live
-        case "live_history": return .history
+        case "live_history": return .live
         case "rides": return .rides
         default: return nil
         }
