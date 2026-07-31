@@ -109,9 +109,17 @@ final class LiveShareService: ShareService {
                 name: vehicle.name,
                 // ABSENT MEANS ENABLED — resolved in the one place that spells
                 // the explicit-`false` test, never as `!= true`.
-                isEnabled: VehicleRideShare.isEnabled(
+                //
+                // This is the owner's STORED preference and nothing else. The
+                // in-service derivation sits ON TOP of it inside
+                // `VehicleRideShareRow.display` and never replaces it (MYR-358):
+                // if it substituted its own value here, the owner's flip would be
+                // invisible for the whole service visit and would then reappear,
+                // which is the very shape of the bug that rule shipped alongside.
+                storedEnabled: VehicleRideShare.isEnabled(
                     rideShareOverrides[vehicle.id] ?? vehicle.rideShareEnabled
                 ),
+                isInService: vehicle.isInService,
                 isBusy: rideShareInFlight.contains(vehicle.id)
             )
         }
@@ -119,9 +127,16 @@ final class LiveShareService: ShareService {
 
     func setVehicleRideShareEnabled(_ enabled: Bool, vehicleID: String) async throws {
         guard !rideShareInFlight.contains(vehicleID) else { return }
-        // The value to restore if the write fails — the RESOLVED position the
-        // owner was actually looking at, not a guess at what it might have been.
-        let previous = vehicleRideShare.first { $0.id == vehicleID }?.isEnabled
+        // The value to restore if the write fails — the RESOLVED STORED
+        // preference, not a guess at what it might have been.
+        //
+        // `storedEnabled` and NOT `isEnabled` (MYR-358): the latter is the derived
+        // switch POSITION, which reads `false` for the whole of a service visit
+        // whatever the owner stored. Rolling back to it would silently persist a
+        // pause the owner never asked for the moment a write failed on a car that
+        // happened to be in a service bay — writing the derived state back into
+        // the preference is precisely what deriving it exists to avoid.
+        let previous = vehicleRideShare.first { $0.id == vehicleID }?.storedEnabled
         rideShareOverrides[vehicleID] = enabled           // optimistic
         rideShareInFlight.insert(vehicleID)
         defer { rideShareInFlight.remove(vehicleID) }

@@ -16,9 +16,68 @@ import DesignSystem
 // (which is nearly every pause), the resume direction, or the simulated path.
 //
 // THE WHOLE FEATURE IS LIVE-ONLY, and that is correct rather than a limitation:
-// `HomeScreen.resolvedRideShare` already returns `nil` off the live path, so the
-// toggle itself does not exist there. There is no simulated variant, no seeded
-// fixture, and no DEBUG-only branch inside the shipping decision.
+// the pre-flight needs a reservation source, and `RootView` composes one only on
+// the live path — so off it `source` is `nil` and the pause commits exactly as it
+// did before MYR-360. There is no simulated variant, no seeded fixture, and no
+// DEBUG-only branch inside the shipping decision.
+//
+// MYR-369 — the switch this guards is on the SHARE TAB now, not the owner sheet.
+// See the commit seam below for what that cost and why the flow itself did not
+// have to change.
+
+// MARK: - The commit seam (re-homed by MYR-369's follow-up)
+//
+// MYR-360 built this flow against `VehicleCommandExecutor`, because that is where
+// the switch lived: the last row of the owner sheet's "Status & location" card,
+// which commits through `executor.setRideShareEnabled` and reports through the
+// executor's own MYR-301 notice lifecycle. MYR-369 MOVED that switch to the top of
+// the Share tab, which has no executor at all — it writes §7.18 straight through
+// `ShareService` — so the warning stopped firing entirely and the whole feature
+// became unreachable.
+//
+// The fix is to name what the flow ACTUALLY needs, which was never an executor:
+// somewhere to commit the flip, and somewhere to say a failure out loud. Both
+// surfaces can supply those, in their own idiom — the sheet as an inline control
+// notice, the Share tab as its quiet failure toast — and the DECISION, the read,
+// the dialog and all three answers stay in exactly one place. The alternative
+// (a second copy of this flow for the new call site) is how two surfaces come to
+// disagree about whether a rider was stranded.
+
+/// What `RideSharePauseFlow` needs from whichever surface owns the switch.
+///
+/// Deliberately TWO methods and no more. Anything else the executor happens to
+/// offer — the optimistic flip, the echo adoption, the rollback, the pending
+/// spinner — is the COMMITTER's business and is already implemented once per
+/// surface (`LiveVehicleCommandExecutor.setRideShareEnabled` /
+/// `LiveShareService.setVehicleRideShareEnabled`, which follow the same MYR-342
+/// rules). Widening this seam to expose them would drag the flow back into being
+/// about one surface's mechanics again.
+@MainActor
+protocol RideSharePauseTarget {
+    /// Commit the flip. The committer owns the optimistic move, the echo adoption
+    /// and the rollback; this flow only decides WHETHER and WHEN it is called.
+    func commitRideShareEnabled(_ enabled: Bool) async throws
+    /// Tell the owner something did not happen, in this surface's own grammar.
+    func reportPauseFailure(_ failure: RideSharePauseFailure)
+}
+
+/// The two ways this flow can fail to do what the owner asked.
+///
+/// A named pair rather than the raw `VehicleCommandNotice`, because that type is
+/// the OWNER SHEET's inline-control vocabulary (it carries a tile sub-label and a
+/// bounded 6s display) and the Share tab has neither tiles nor a notice lifecycle.
+/// Each surface maps these two to whatever it uses to say so; the copy is
+/// asserted to agree on both.
+enum RideSharePauseFailure: Equatable {
+    /// The pause did not go out — either the pre-flight read did not answer (so
+    /// pausing would risk stranding a rider we could not see), or the write
+    /// itself refused. Ride sharing is still ON, which the surface must say.
+    case rideShareNotSaved
+    /// A decline refused part-way, so the pause was abandoned rather than
+    /// stranding exactly the rider this flow exists to protect. Some declines
+    /// already landed and are irreversible.
+    case reservationNotDeclined
+}
 
 // MARK: - The decision
 
@@ -299,10 +358,12 @@ final class RideSharePauseFlow {
     /// that case does and why it is not the `blocked` case.
     var source: (any UpcomingReservationSource)?
 
-    /// The executor the presented warning belongs to. Held rather than re-derived
+    /// The committer the presented warning belongs to. Held rather than re-derived
     /// so an answer cannot land on a different car than the question was asked
-    /// about (the owner can switch vehicles while a dialog is up).
-    private var target: (any VehicleCommandExecutor)?
+    /// about — on the owner sheet the owner can switch vehicles while a dialog is
+    /// up, and on the Share tab the card renders ONE ROW PER OWNED VEHICLE, so a
+    /// re-derived target could commit against the wrong row outright.
+    private var target: (any RideSharePauseTarget)?
 
     init(source: (any UpcomingReservationSource)? = nil) {
         self.source = source
@@ -312,21 +373,21 @@ final class RideSharePauseFlow {
 
     /// The ONE entry point the toggle calls. Only the OFF direction is changed;
     /// everything else commits exactly as it did before this issue.
-    func setEnabled(_ enabled: Bool, vehicleID: String, executor: any VehicleCommandExecutor) async {
+    func setEnabled(_ enabled: Bool, vehicleID: String, target: any RideSharePauseTarget) async {
         // RESUMING is never questioned. Turning ride sharing back ON cannot strand
         // anyone — it is the recovery from this whole situation — so it never
         // reads, never dialogs, and never waits.
         guard !enabled else {
-            await commit(enabled: true, executor: executor)
+            await commit(enabled: true, target: target)
             return
         }
         // No seam at all is NOT the same as a seam that failed. `source` is `nil`
         // only where the feature was never composed — the simulated path and the
-        // MYR-342 capture scenes, neither of which has a rider, a reservation or a
-        // server to strand one on. Pausing there is the pre-MYR-360 behaviour, and
-        // keeping it is what leaves those scenes byte-identical.
+        // capture scenes, neither of which has a rider, a reservation or a server
+        // to strand one on. Pausing there is the pre-MYR-360 behaviour, and keeping
+        // it is what leaves every simulated Share-tab scene byte-identical.
         guard let source else {
-            await commit(enabled: false, executor: executor)
+            await commit(enabled: false, target: target)
             return
         }
 
@@ -336,18 +397,18 @@ final class RideSharePauseFlow {
 
         switch RideSharePause.decide(read) {
         case .pause:
-            await commit(enabled: false, executor: executor)
+            await commit(enabled: false, target: target)
         case .warn(let reservations):
-            target = executor
+            self.target = target
             warning = Warning(vehicleID: vehicleID, reservations: reservations)
         case .blocked:
             // Nothing is committed and nothing is claimed: the switch never moved
-            // (the optimistic flip lives inside `setRideShareEnabled`, which was
-            // never called), so the row is still ON and the notice explains why.
-            // `.rideShareNotSaved` is exactly right and needs no new case — its
-            // sentence is "Couldn't change ride sharing", which is the true and
-            // complete account of what just happened.
-            executor.raiseNotice(.rideShareNotSaved, for: .rideShare)
+            // (the optimistic flip lives inside the committer's own write, which
+            // was never called), so the row is still ON and the message explains
+            // why. `.rideShareNotSaved` is exactly right and needs no new case —
+            // its sentence is "Couldn't change ride sharing", which is the true
+            // and complete account of what just happened.
+            target.reportPauseFailure(.rideShareNotSaved)
         }
     }
 
@@ -364,7 +425,7 @@ final class RideSharePauseFlow {
     /// again — and the second attempt reads a shorter list, because the declines
     /// that did land are gone from it.
     func confirmDeclineAndPause() async {
-        guard let warning, let executor = target, let source else { return }
+        guard let warning, let committer = target, let source else { return }
         self.warning = nil
 
         for reservation in warning.reservations {
@@ -372,28 +433,28 @@ final class RideSharePauseFlow {
                 try await source.decline(reservationID: reservation.id)
             } catch {
                 target = nil
-                executor.raiseNotice(.reservationNotDeclined, for: .rideShare)
+                committer.reportPauseFailure(.reservationNotDeclined)
                 return
             }
         }
         target = nil
-        await commit(enabled: false, executor: executor)
+        await commit(enabled: false, target: committer)
     }
 
     /// "Pause anyway" — the pause PUT exactly as it fires today. The reservations
     /// are left alone: the server's hold-then-expire backstop still covers them,
     /// and an owner who resumes before the pickup strands nobody at all.
     func pauseAnyway() async {
-        guard warning != nil, let executor = target else { return }
+        guard warning != nil, let committer = target else { return }
         warning = nil
         target = nil
-        await commit(enabled: false, executor: executor)
+        await commit(enabled: false, target: committer)
     }
 
     /// "Keep sharing" — no PUT, no declines, nothing written. The toggle returns to
     /// ON by itself and there is no position to restore: the optimistic flip lives
-    /// inside `setRideShareEnabled`, which this path never calls, so the row has
-    /// been rendering the committed ON value the entire time the dialog was up.
+    /// inside the committer's own write, which this path never calls, so the row
+    /// has been rendering the committed ON value the entire time the dialog was up.
     func keepSharing() {
         warning = nil
         target = nil
@@ -401,9 +462,65 @@ final class RideSharePauseFlow {
 
     // MARK: Commit
 
-    /// The write, untouched: the executor still owns the optimistic flip, the echo
-    /// adoption, the rollback and the `.rideShareNotSaved` notice (MYR-342).
-    private func commit(enabled: Bool, executor: any VehicleCommandExecutor) async {
-        try? await executor.setRideShareEnabled(enabled)
+    /// The write, untouched: the COMMITTER still owns the optimistic flip, the echo
+    /// adoption, the rollback and the failure message (MYR-342). Swallowing the
+    /// error here is not a shrug — the committer has already surfaced it in its own
+    /// surface's grammar, and re-raising it from the flow would say it twice.
+    private func commit(enabled: Bool, target: any RideSharePauseTarget) async {
+        try? await target.commitRideShareEnabled(enabled)
+    }
+}
+
+// MARK: - The Share tab's binding (MYR-369)
+
+/// Commits a §7.18 flip through `ShareService` and reports failures as the Share
+/// tab's own quiet toast.
+///
+/// It is bound to ONE vehicle id, which is the whole reason it exists as a value
+/// rather than as two closures on the screen: the relocated card renders one row
+/// per owned vehicle, so "which car is this dialog about" has to travel WITH the
+/// commit target. `RideSharePauseFlow` holds it for the life of the warning, so an
+/// owner who opens the dialog on one car cannot have the answer land on another.
+///
+/// **A TOAST, NOT A DIALOG.** That is how this screen already surfaces every other
+/// mutation failure (`InvitesScreen.mutate`), and a second grammar for this one
+/// write would make the failure look like a different kind of event than the
+/// per-viewer switch failures sitting inches above it.
+@MainActor
+struct ShareServiceRideSharePauseTarget: RideSharePauseTarget {
+    let service: any ShareService
+    let vehicleID: String
+    /// Where a failure sentence goes — `InvitesScreen`'s `failureToast`.
+    let onFailure: (String) -> Void
+
+    /// The write, with the SERVICE owning the optimistic flip, the echo adoption
+    /// and the rollback exactly as it does for a flip that never went near this
+    /// flow. The failure is surfaced here rather than rethrown to the flow, which
+    /// deliberately swallows it — see `RideSharePauseFlow.commit`.
+    func commitRideShareEnabled(_ enabled: Bool) async throws {
+        do {
+            try await service.setVehicleRideShareEnabled(enabled, vehicleID: vehicleID)
+        } catch {
+            onFailure(RideSharePauseFailure.rideShareNotSaved.shareTabMessage)
+        }
+    }
+
+    func reportPauseFailure(_ failure: RideSharePauseFailure) {
+        onFailure(failure.shareTabMessage)
+    }
+}
+
+extension RideSharePauseFailure {
+    /// The Share tab's sentence for each failure.
+    ///
+    /// Held to `VehicleCommandNotice`'s own copy for the same two cases, so the
+    /// owner reads the SAME sentence whichever surface the switch was on — pinned
+    /// by test rather than left to a comment, because two independent copies of one
+    /// sentence is exactly how a relocated control starts saying something new.
+    var shareTabMessage: String {
+        switch self {
+        case .rideShareNotSaved: VehicleCommandNotice.rideShareNotSaved.message
+        case .reservationNotDeclined: VehicleCommandNotice.reservationNotDeclined.message
+        }
     }
 }

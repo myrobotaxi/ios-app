@@ -395,7 +395,15 @@ enum VehicleContractMapping {
             //
             // nil from BOTH sides stays nil and is read as ENABLED downstream
             // (`VehicleRideShare.isEnabled`); it must never render as paused.
-            rideShareEnabled: state?.rideShareEnabled ?? summary.rideShareEnabled
+            rideShareEnabled: state?.rideShareEnabled ?? summary.rideShareEnabled,
+            // MYR-358 — the in-service FACT that derives the Share tab's
+            // ride-share switch off, resolved through the EXISTING
+            // `badgeStatus(forSummary:state:)` fold rather than a second status
+            // rule of its own. That fold already decides snapshot-vs-summary
+            // precedence for every other status surface in the app, so the
+            // relocated card and the sheet's In Service badge cannot come to
+            // disagree about the same car.
+            isInService: badgeStatus(forSummary: summary, state: state) == .inService
         )
     }
 

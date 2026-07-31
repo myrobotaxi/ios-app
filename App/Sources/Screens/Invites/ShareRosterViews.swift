@@ -259,6 +259,17 @@ struct ShareEmptyHero: View {
 struct ShareVehicleToggleRow: View {
     let name: String
     let isEnabled: Bool
+    /// Whether the switch may be moved (MYR-358). `false` while the car is IN
+    /// SERVICE, where the position is DERIVED and there is nothing to commit.
+    ///
+    /// It renders the switch dimmed and inert AND blocks the write, because a
+    /// disabled control that still fires is worse than an enabled one — nothing on
+    /// screen predicts what it did.
+    var isInteractive: Bool = true
+    /// The muted line beneath the name, supplied by the caller rather than
+    /// re-derived here so the row cannot disagree with the model about why it is
+    /// in the position it is in.
+    let caption: String
     /// False while this row's own write is in flight, so a second tap cannot
     /// queue a contradictory write behind the first.
     var isBusy: Bool = false
@@ -281,12 +292,13 @@ struct ShareVehicleToggleRow: View {
                     get: { isEnabled },
                     // Guarded in the SETTER, not by removing the control: a
                     // toggle that vanishes mid-write is worse than one that
-                    // ignores a second tap.
-                    set: { if !isBusy { onToggle($0) } }
+                    // ignores a second tap. The in-service guard rides here too,
+                    // so the derived-off position can never fire a write.
+                    set: { if !isBusy && isInteractive { onToggle($0) } }
                 )
             )
-            .allowsHitTesting(!isBusy)
-            .opacity(isBusy ? 0.5 : 1)
+            .allowsHitTesting(!isBusy && isInteractive)
+            .opacity(isBusy || !isInteractive ? 0.5 : 1)
         }
         .padding(.horizontal, MRTMetrics.shareRowGutter)
         .padding(.vertical, MRTMetrics.shareRowVerticalPadding)
@@ -294,11 +306,6 @@ struct ShareVehicleToggleRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Ride sharing for \(name)")
     }
-
-    /// `VehicleRideShare.rowCaption` verbatim — the SAME strings the owner sheet's
-    /// row used before this issue moved the control. Relocating a switch must not
-    /// silently re-word what it says about the car.
-    private var caption: String { VehicleRideShare.rowCaption(isEnabled: isEnabled) }
 }
 
 // MARK: - Per-viewer control row (MYR-369)

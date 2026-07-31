@@ -85,136 +85,20 @@ struct StatusLocationSection: View {
     }
 }
 
-// MARK: - Ride sharing (MYR-342)
-
-/// What the ride-sharing row needs to render and act. Bundled rather than passed
-/// as three parallel arguments for the same reason ``ServiceWindowRowModel`` is:
-/// the row's meaningful distinction — "this surface can actually reach the server"
-/// (non-nil model) vs. "the switch is ON" (`isEnabled`) — must be impossible to
-/// collapse by accident at a call site.
-struct RideShareRowModel: Equatable {
-    /// The RESOLVED switch position — `true` when riders can request this car.
-    /// Pre-resolved by `VehicleRideShare` from the executor + snapshot pair, so
-    /// this view holds no precedence logic and no knowledge of what an absent wire
-    /// value means.
-    var isEnabled: Bool
-    /// MYR-358 — whether the switch may be moved at all. `false` while the car is
-    /// IN SERVICE, where the position is DERIVED (forced off) rather than stored.
-    /// Carried as its own field rather than inferred from `isEnabled`, because
-    /// "off" and "not yours to change right now" are different facts and a row that
-    /// collapsed them could not render a paused-but-editable car.
-    var isInteractive: Bool = true
-    /// The write's pending/notice state (`VehicleControlUIState`).
-    var state: VehicleControlUIState = .idle
-    /// Flips the switch. Async because the write is; the row fires and forgets,
-    /// because the executor owns the optimistic flip, the echo and the rollback.
-    var onToggle: (Bool) -> Void
-
-    /// The muted line under the label, from the single copy source so the owner's
-    /// row and any future surface can never word this differently.
-    var caption: String
-
-    static func == (lhs: RideShareRowModel, rhs: RideShareRowModel) -> Bool {
-        lhs.isEnabled == rhs.isEnabled
-            && lhs.isInteractive == rhs.isInteractive
-            && lhs.caption == rhs.caption
-            && lhs.state == rhs.state
-    }
-}
-
-/// The ride-sharing toggle row — label + state caption on the left, `MRTToggle` on
-/// the right.
-///
-/// REUSED, NOT FORKED (CLAUDE.md): the switch is the DesignSystem's existing
-/// `MRTToggle` (components.jsx `Toggle`), gold-on, the same control the Settings
-/// notification rows use — so the one interactive switch grammar in this app stays
-/// one grammar. And gold is legitimate here rather than decorative: an ON switch is
-/// the car being actively offered for rides, which is precisely the "actionable
-/// moment" the accent is reserved for.
-///
-/// The row is NOT a `Button` wrapping the toggle, unlike its `ExpectedBackRow` /
-/// `PlateRow` neighbours. Those open an editor, so the whole row is one tap target
-/// leading somewhere. This one commits a change in place, and a whole-row tap
-/// target for a destructive-ish, invisible-consequence action is how an owner
-/// withdraws their car from ride-hailing by brushing the sheet while scrolling.
-/// The 44pt target is the toggle's own (`MRTToggle` already insets its content
-/// shape to it), which is the deliberate, aimed-at surface.
-private struct RideShareRow: View {
-    let model: RideShareRowModel
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    /// `MRTToggle` takes a `Binding`, because at every other call site it owns its
-    /// own `@State`. Here the position is NOT local state — it is resolved from the
-    /// executor, which owns the optimistic flip and the rollback — so the setter
-    /// forwards to the executor and the getter always re-reads the resolved truth.
-    /// A local `@State` mirror is exactly how a rolled-back write would leave the
-    /// switch showing a position the server does not hold.
-    /// MYR-358 — the setter REFUSES while the row is non-interactive, as well as the
-    /// switch being hit-test-disabled below. Belt AND braces on purpose: hit testing
-    /// stops a finger, but a `Binding` is reachable from accessibility actions and
-    /// from any future programmatic path, and the one thing this row must never do
-    /// is fire a §7.18 write the owner did not ask for and cannot see the result of.
-    private var isOn: Binding<Bool> {
-        Binding(
-            get: { model.isEnabled },
-            set: { newValue in
-                guard model.isInteractive else { return }
-                model.onToggle(newValue)
-            }
-        )
-    }
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(VehicleRideShare.rowLabel)
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.mrtTextSec)
-                // The state caption, in the same muted 11pt this sheet gives every
-                // other qualifier-on-a-value (the service-window source note is its
-                // sibling). Allowed to WRAP rather than truncate: both strings fit
-                // the card at this size (`VehicleRideShareTests
-                // .testRowCopyFitsTheCardWithoutTruncating`), and if a future
-                // localization did not, losing the half that says what is off would
-                // be the half worth keeping.
-                Text(model.caption)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.mrtTextMuted)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            Spacer(minLength: 12)
-            // In flight: the toggle is replaced by the same small gold spinner the
-            // service-window row uses, so the two owner-write rows in this card
-            // report progress identically. Replaced rather than overlaid, because a
-            // switch that is still tappable while its own write is outstanding
-            // invites the double-flip the executor's `isPending` guard then silently
-            // swallows — better to show plainly that it is busy.
-            if model.state.isPending, !reduceMotion {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(.mrtGold)
-                    .frame(width: MRTMetrics.toggleTrackWidth, height: MRTMetrics.toggleTrackHeight)
-            } else {
-                MRTToggle(isOn: isOn)
-                    // Reduce Motion has no spinner to show, so the switch stays put
-                    // and simply goes inert for the duration — no animation, no
-                    // second write.
-                    //
-                    // MYR-358 — the IN-SERVICE state is inert for the same reason and
-                    // wears the same muting, so the sheet has one visual grammar for
-                    // "this switch is not yours to move right now" rather than two.
-                    .allowsHitTesting(model.isInteractive && !model.state.isPending)
-                    .opacity(model.isInteractive && !model.state.isPending ? 1 : 0.5)
-                    .accessibilityLabel(VehicleRideShare.rowLabel)
-                    .accessibilityValue(model.caption)
-                    .accessibilityAddTraits(model.isInteractive ? [] : .isStaticText)
-            }
-        }
-        .padding(.vertical, 8)
-    }
-}
+// MARK: - Ride sharing (MYR-342 → relocated by MYR-369)
+//
+// THE ROW THAT WAS HERE IS GONE, and this note stands where it stood because the
+// deletion is the point rather than an omission. `RideShareRowModel` +
+// `RideShareRow` rendered the owner's ride-share switch as the last row of the
+// "Status & location" card. MYR-369 MOVED that control to the top of the Share
+// tab, where its consequences are visible and where the per-viewer Rides switches
+// it gates are drawn — so this card is again exactly what it was before MYR-342:
+// the car REPORTING its situation, with no row where the owner answers.
+//
+// Everything the row knew now lives on the surface that renders it:
+// `VehicleRideShareRow` (the model, deriving MYR-358's in-service display through
+// `VehicleRideShare.display`) and `ShareVehicleToggleRow` (the view). Two switches
+// for one field on two screens would be worse than either placement.
 
 // MARK: - Expected back (MYR-316)
 

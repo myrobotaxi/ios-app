@@ -149,12 +149,44 @@ struct VehicleRideShareRow: Identifiable, Equatable, Sendable {
     /// The server vehicle id — the PATH of the §7.18 write, and the row identity.
     let id: String
     let name: String
-    /// The switch position. Resolved through `VehicleRideShare.isEnabled`, so an
-    /// absent wire value reads as ENABLED and never as paused.
-    let isEnabled: Bool
+    /// The owner's STORED preference — what §7.18 holds for this car, resolved
+    /// through `VehicleRideShare.isEnabled` so an absent wire value reads as
+    /// ENABLED and never as paused.
+    ///
+    /// **THIS IS NOT THE SWITCH POSITION.** While the car is in service the switch
+    /// renders OFF and this value is untouched underneath it — see ``display``.
+    let storedEnabled: Bool
+    /// Whether the car is in a service bay right now (`Vehicle.isInService`).
+    let isInService: Bool
     /// False while this row's own write is in flight, so a second tap cannot
     /// queue a contradictory write behind the first.
     var isBusy: Bool = false
+
+    /// Everything the row RENDERS — `VehicleRideShare.display` verbatim (MYR-358).
+    ///
+    /// **DERIVED, NEVER STORED**, which is what makes the relocation structural
+    /// rather than a rule the Share tab has to remember. The row cannot be
+    /// constructed holding a switch position that disagrees with the facts it
+    /// carries, so "an in-service car renders OFF and inert" is not something a
+    /// call site can forget or a future service re-implement differently: there is
+    /// exactly one expression of it and both services reach it through here.
+    ///
+    /// The MYR-358 property this preserves: `storedEnabled` is the owner's
+    /// standing instruction and a service visit is a temporary fact about the car,
+    /// so NOTHING is written on either transition and the stored preference comes
+    /// straight back when the visit ends.
+    var display: VehicleRideShare.Display {
+        VehicleRideShare.display(storedEnabled: storedEnabled, isInService: isInService)
+    }
+
+    /// The switch POSITION — off for the whole of a service visit whatever the
+    /// owner stored.
+    var isEnabled: Bool { display.isOn }
+    /// Whether the switch may be moved. False in service, where the position is
+    /// derived and there is nothing to commit.
+    var isInteractive: Bool { display.isInteractive }
+    /// The muted line beneath the car's name.
+    var caption: String { display.caption }
 }
 
 // MARK: - Handout
@@ -313,14 +345,22 @@ final class SimulatedShareService: ShareService {
     // simulated Share-tab scenes able to capture the control at rest in each of
     // its positions without a backend.
 
+    /// `isInService: false` for every fixture car — the simulated fleet has no
+    /// service visits, so the whole simulated Share tab renders exactly what it
+    /// did before MYR-358's derivation was restored.
     private(set) var vehicleRideShare: [VehicleRideShareRow] = VehicleFixtures.vehicles.map {
-        VehicleRideShareRow(id: $0.id, name: $0.name, isEnabled: true)
+        VehicleRideShareRow(id: $0.id, name: $0.name, storedEnabled: true, isInService: $0.isInService)
     }
 
     func setVehicleRideShareEnabled(_ enabled: Bool, vehicleID: String) async throws {
         guard let index = vehicleRideShare.firstIndex(where: { $0.id == vehicleID }) else { return }
         let row = vehicleRideShare[index]
-        vehicleRideShare[index] = VehicleRideShareRow(id: row.id, name: row.name, isEnabled: enabled)
+        vehicleRideShare[index] = VehicleRideShareRow(
+            id: row.id,
+            name: row.name,
+            storedEnabled: enabled,
+            isInService: row.isInService
+        )
     }
 
     func setViewerAllowRides(_ allowRides: Bool, viewer: Viewer) async throws {

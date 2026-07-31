@@ -161,9 +161,20 @@ struct ShareViewerControls: Equatable {
     /// car whose ride sharing is also off must be told they cannot see the car at
     /// all — telling them instead that ride requests are paused would name the
     /// lesser of two reasons and send the owner to the wrong switch.
+    /// - Parameters:
+    ///   - vehicleRideShareEnabled: the vehicle switch's DERIVED position — off
+    ///     for an owner's pause and off for a service visit alike, because both
+    ///     mean nobody can request this car and a per-person ride permission has
+    ///     nothing to grant either way.
+    ///   - vehicleInService: which of those two it is (MYR-358). It changes only
+    ///     the CAPTION, never the enablement: an in-service car is a temporary
+    ///     FACT the owner cannot flip, and a caption that said "ride sharing is
+    ///     off for this car" would read as a choice they made and send them to a
+    ///     switch that is itself inert.
     static func resolve(
         viewer: Viewer,
         vehicleRideShareEnabled: Bool,
+        vehicleInService: Bool = false,
         vehicleName: String?
     ) -> ShareViewerControls {
         if viewer.suspended {
@@ -188,8 +199,21 @@ struct ShareViewerControls: Equatable {
                 // rather than left for the owner to infer from a card two
                 // sections up. Names the car when there is more than one, since
                 // on a multi-car account "ride sharing is off" is ambiguous.
-                ridesCaption: vehicleName.map { "Ride sharing is off for \($0)" }
-                    ?? "Ride sharing is off for this car"
+                //
+                // MYR-358 — an IN-SERVICE car gets its own sentence, because the
+                // two states are not the same thing said twice. "Ride sharing is
+                // off" describes a switch the owner set and can unset; a car in a
+                // service bay was withdrawn by nobody, the switch above is inert,
+                // and it comes back on its own. Following
+                // `VehicleRideShare.inServiceCaption`'s reasoning, this states the
+                // FACT and that it resolves itself — and, like that caption,
+                // deliberately avoids the word this app has already spent on the
+                // owner's own decision.
+                ridesCaption: vehicleInService
+                    ? (vehicleName.map { "\($0) is in service \u{2014} rides resume automatically" }
+                        ?? "This car is in service \u{2014} rides resume automatically")
+                    : (vehicleName.map { "Ride sharing is off for \($0)" }
+                        ?? "Ride sharing is off for this car")
             )
         }
         return ShareViewerControls(

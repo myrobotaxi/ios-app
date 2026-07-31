@@ -42,12 +42,6 @@ struct HomeScreen: View {
     /// / DEBUG scenes keeps them pixel-identical (CLAUDE.md "No fixtures on the
     /// live path").
     var isLive: Bool = false
-    /// MYR-360 — the reservation seam behind the ride-share pause warning. `nil`
-    /// off the live path and in every MYR-342 capture scene, where the flow falls
-    /// back to committing the pause exactly as it did before this issue (there is
-    /// no rider, no reservation and no server to strand one on). `RootView` is the
-    /// only composer.
-    var upcomingReservations: (any UpcomingReservationSource)? = nil
 
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var isFollowing = true
@@ -67,11 +61,6 @@ struct HomeScreen: View {
     /// off"). Reset on every status change so a re-shown button is tappable again
     /// (MYR-265 review: never leave the CTA permanently greyed after one advance).
     @State private var dispatchInFlight = false
-    /// MYR-360 — the ride-share pause interaction (the reservation read, the
-    /// decision, the presented warning and its three answers). A small object
-    /// rather than three `@State` flags here, so every assertion about it is about
-    /// the WIRE and needs no view to run.
-    @State private var pauseFlow = RideSharePauseFlow()
 
     /// MYR-171 — `IncomingRequestSheet` shows only while there's a request
     /// actually awaiting this owner's decision; once accepted/declined the
@@ -423,46 +412,9 @@ struct HomeScreen: View {
         // so a remount over an already-acknowledged ride reads `dispatchedRide == nil`
         // and this no-ops instead of re-arming the confirmation.
         .onAppear { scheduleDroppedOffDismiss(for: dispatchedRide?.status) }
-        // MYR-360 — the ride-share pause warning, at the screen ROOT so the scrim
-        // covers the whole screen (the same placement every other shared overlay in
-        // this codebase takes). Presented only when the flow is holding a warning,
-        // which is only reachable on the live path with a real reservation on the
-        // wire — so every simulated and DEBUG capture renders this as nothing at
-        // all, exactly as before.
-        .mrtConfirmDialog(isPresented: isShowingPauseWarning, config: pauseWarningConfig) {
-            // MYR-360 — the reservations as ROWS in the dialog's content slot, not
-            // as prose in the message. A list flattened into a centred sentence
-            // stops being a list (the client, on the first build: "list in plain
-            // text is not helpful").
-            RideSharePauseReservationList(reservations: pauseFlow.warning?.reservations ?? [])
-        }
-        .task { await flipRideShareForCaptureSceneIfRequested() }
-    }
-
-    /// MYR-360 (DEBUG capture only) — perform the ride-share pause flip on boot for
-    /// the two `ownerRideSharePauseWarning` scenes.
-    ///
-    /// It stands in for exactly ONE tap on a switch that lives inside a half-detent
-    /// scroll, which headless capture tooling can neither reach nor synthesize — the
-    /// same precedent as `ownerFreshnessWaking`'s seeded phase and
-    /// `ownerServiceWindowEditor`'s seeded presentation. Everything downstream is
-    /// the shipping path: the real `setRideShareEnabled`, the real reservation
-    /// fetch, the real contract fold and the real dialog copy.
-    ///
-    /// Release builds compile this to an empty async function, and in DEBUG it
-    /// returns on the first line for every scene but those two — so no other
-    /// capture writes anything, and no scene changes by a pixel.
-    private func flipRideShareForCaptureSceneIfRequested() async {
-        #if DEBUG
-        guard DebugScene.current?.flipsRideShareOnBoot == true else { return }
-        // The injected fleet resolves its one car within a frame or two; wait for
-        // the selection rather than racing it, and give up rather than spin.
-        for _ in 0..<40 {
-            if homeState.selectedCommandExecutor != nil, homeState.selectedVehicle != nil { break }
-            try? await Task.sleep(for: .milliseconds(50))
-        }
-        setRideShareEnabled(false)
-        #endif
+        // MYR-369 — the ride-share pause warning is NOT presented here any more. It
+        // followed its switch to the Share tab, which is the only surface that
+        // renders the control at all now; see `InvitesScreen`.
     }
 
     /// Auto-dismiss the owner's "Dropped off ✓" confirmation after a beat so Home
@@ -863,66 +815,6 @@ struct HomeScreen: View {
             return snapshot.serviceEstimatedEndAt
         }
         return VehicleServiceWindow.resolvedEndAt(executor: executor, snapshot: snapshot)
-    }
-
-    /// MYR-342 — the ONE resolution of the ride-share position for this sheet, and
-    /// the LIVE gate on the whole row in a single place.
-    ///
-    /// `nil` means "do not render the row at all", and it is returned for exactly
-    /// two situations, both of which are "this switch could not reach a server":
-    /// the simulated path (`!isLive` — which is why every drift-gate scene is
-    /// byte-identical), and the theoretical no-executor case the selection invariant
-    /// does not actually produce. A switch that cannot be committed is worse than a
-    /// missing one: flipping it would appear to withdraw the owner's car from
-    /// ride-hailing and would do nothing at all.
-    ///
-    /// Resolved through `VehicleRideShare` rather than read off the snapshot,
-    /// because the field carries no WS delta (rest-api.md §7.18 — the edit fires no
-    /// push): the snapshot cannot hold the value the owner just committed, and a
-    /// surface reading it directly would snap the switch back under their finger.
-    /// This is the MYR-316 stale-window defect, avoided in advance on the sibling
-    /// field with the same delivery property.
-    private func resolvedRideShare(snapshot: VehicleTelemetrySnapshot) -> Bool? {
-        guard isLive, let executor = homeState.selectedCommandExecutor else { return nil }
-        return VehicleRideShare.resolvedEnabled(executor: executor, snapshot: snapshot)
-    }
-
-    /// MYR-342 — commit a ride-share flip through the executor seam. Fire-and-forget
-    /// on purpose: the executor owns the optimistic flip, the echo adoption, the
-    /// rollback and the notice, so there is nothing for the view to await and
-    /// nothing for it to do with a failure that the row is not already showing.
-    ///
-    /// MYR-360 — the OFF direction now goes through `RideSharePauseFlow` first,
-    /// which reads the car's upcoming reservations and either pauses immediately
-    /// (nothing booked — the common case, unchanged) or raises the warning. The ON
-    /// direction is untouched: resuming can strand nobody, so it never reads and
-    /// never asks.
-    private func setRideShareEnabled(_ enabled: Bool) {
-        guard let executor = homeState.selectedCommandExecutor,
-              let vehicleID = homeState.selectedVehicle?.id else { return }
-        pauseFlow.source = upcomingReservations
-        Task { await pauseFlow.setEnabled(enabled, vehicleID: vehicleID, executor: executor) }
-    }
-
-    /// MYR-360 — the pause warning's presentation binding. `mrtConfirmDialog` takes
-    /// a `Bool`; the flow owns the model, so setting it false IS "Keep sharing" —
-    /// which is also the path the confirm and secondary buttons take on their way
-    /// out, after their own action has already run.
-    private var isShowingPauseWarning: Binding<Bool> {
-        Binding(
-            get: { pauseFlow.warning != nil },
-            set: { if !$0 { pauseFlow.keepSharing() } }
-        )
-    }
-
-    /// The dialog itself. Built from the reservations the flow is holding, so the
-    /// rows name exactly the rides the confirm button will decline.
-    private var pauseWarningConfig: MRTConfirmDialogConfig {
-        RideSharePauseDialog.warning(
-            count: pauseFlow.warning?.reservations.count ?? 0,
-            onDeclineAndPause: { Task { await pauseFlow.confirmDeclineAndPause() } },
-            onPauseAnyway: { Task { await pauseFlow.pauseAnyway() } }
-        )
     }
 
     /// The LOW crossfade layer — the summary hero only (peek). Identical pixels

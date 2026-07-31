@@ -311,8 +311,13 @@ struct RootView: View {
         // The two `ownerRideSharePauseWarning` capture scenes override it with the
         // SAME production `LiveUpcomingReservations` over a scripted endpoint, so
         // the dialog in the capture was built from a real fetch through the real
-        // contract mapping. Nothing else reads the override, so every existing
-        // scene — including MYR-342's three — is byte-identical.
+        // contract mapping. Nothing else reads the override, so every other scene
+        // is byte-identical.
+        //
+        // MYR-369 — it reaches `InvitesScreen` as well as `HomeScreen` now, because
+        // the ride-share switch (and therefore the pause pre-flight) moved to the
+        // Share tab. ONE instance for both, so two surfaces can never read
+        // different answers about the same car's reservations.
         var reservations = RideRequestComposition.makeUpcomingReservations(
             mode: mode,
             sessionTokenProvider: auth.sessionTokenProvider
@@ -587,7 +592,9 @@ struct RootView: View {
         #if DEBUG
         if DebugScene.current?.rendersLiveIncomingRequest == true { return true }
         if DebugScene.current?.rendersLiveVehicleFreshness == true { return true }
-        if DebugScene.current?.rendersLiveRideShareToggle == true { return true }
+        // MYR-369 — `rendersLiveRideShareToggle` is GONE with the owner-sheet row
+        // it forced into existence. The ride-share scenes are Share-tab scenes now
+        // and reach their live rendering through `shareServiceOverride` instead.
         #endif
         return isLiveMode
     }
@@ -1026,7 +1033,11 @@ struct RootView: View {
                     InvitesScreen(
                         shareService: shareService,
                         ownerTab: $ownerTab,
-                        liveProfile: shareLiveProfile
+                        liveProfile: shareLiveProfile,
+                        // MYR-360, re-homed by MYR-369 — the SAME reservation
+                        // source `HomeScreen` takes, so the pause pre-flight
+                        // follows the switch to the surface that now owns it.
+                        upcomingReservations: upcomingReservations
                     )
                 case "settings":
                     SettingsScreen(
@@ -1088,12 +1099,7 @@ struct RootView: View {
                         // (fixtures render only in SIM / DEBUG scenes). MYR-315 —
                         // it also gates the freshness stamp, which the prototype
                         // has no counterpart for.
-                        isLive: ownerHomeIsLive,
-                        // MYR-360 — the reservation seam behind the ride-share
-                        // pause warning. `nil` off the live path (and in the
-                        // MYR-342 capture scenes), where the pause commits exactly
-                        // as it did before this issue.
-                        upcomingReservations: upcomingReservations
+                        isLive: ownerHomeIsLive
                     )
                     // MYR-186 — the OWNER's permission moment: arrival on the live
                     // home map. Deliberately keyed off the coordinator's own

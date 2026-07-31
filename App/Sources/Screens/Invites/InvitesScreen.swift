@@ -35,6 +35,17 @@ struct InvitesScreen: View {
     /// simulated + DEBUG capture of this tab is byte-identical.
     var liveProfile: UserProfile? = nil
 
+    /// MYR-360, re-homed here by MYR-369 — the car's upcoming ACCEPTED
+    /// reservations, read before a pause so the owner can be warned that turning
+    /// ride sharing off is about to strand somebody who has already booked.
+    ///
+    /// `nil` off the live path, where there is no rider, no reservation and no
+    /// server to strand one on — which is what keeps every simulated Share-tab
+    /// capture byte-identical. It arrives from `RootView` exactly as it does for
+    /// `HomeScreen`; the SAME instance, so the two surfaces cannot read different
+    /// answers about one car.
+    var upcomingReservations: (any UpcomingReservationSource)? = nil
+
     @State private var email = ""
     @State private var emailError = false
     @State private var emailShakeTrigger = 0
@@ -76,6 +87,11 @@ struct InvitesScreen: View {
     /// both on the live path (§7.5: the owner "sends the code out-of-band through
     /// the iOS system share sheet").
     @State private var handout: ShareHandout?
+
+    /// MYR-360's pause flow, re-homed onto this screen with the switch it guards
+    /// (MYR-369). It owns the pre-flight read, the decision, the presented warning
+    /// and all three answers; this screen hands it a target and renders `warning`.
+    @State private var pauseFlow = RideSharePauseFlow()
 
     var body: some View {
         ZStack {
@@ -147,6 +163,21 @@ struct InvitesScreen: View {
             isPresented: Binding(get: { confirmCancelInvite != nil }, set: { if !$0 { confirmCancelInvite = nil } }),
             config: cancelInviteDialogConfig
         )
+        // MYR-360, re-homed by MYR-369 — the ride-share pause warning, now on the
+        // screen that owns the switch. At the screen ROOT so the scrim covers the
+        // whole page, the same placement the owner sheet gave it and the same one
+        // every other overlay in this codebase takes.
+        //
+        // Reachable only on the live path with a real accepted reservation on the
+        // wire, so every simulated and DEBUG Share-tab capture renders this as
+        // nothing at all.
+        .mrtConfirmDialog(isPresented: isShowingPauseWarning, config: pauseWarningConfig) {
+            // The reservations as ROWS in the dialog's content slot, not as prose
+            // in the message. A list flattened into a centred sentence stops being
+            // a list (the client, on the first build: "list in plain text is not
+            // helpful").
+            RideSharePauseReservationList(reservations: pauseFlow.warning?.reservations ?? [])
+        }
         .mrtSuccessToast(
             isPresented: Binding(get: { revokedToastName != nil }, set: { if !$0 { revokedToastName = nil } }),
             message: "Access revoked for \(revokedToastName ?? "")"
@@ -215,6 +246,13 @@ struct InvitesScreen: View {
             }
             #endif
         }
+        // MYR-360, re-homed by MYR-369 — the pause-flip stand-in for the three
+        // scenes that can only be reached through a tap. Its own `.task` rather
+        // than a line inside the one above, because it must run AFTER
+        // `shareService.load()` has put a car on the page and it waits for that
+        // itself; folding it in would serialize it behind the composer seeds for
+        // no reason.
+        .task { await flipRideShareForCaptureSceneIfRequested() }
     }
 
     /// The send toast. SIM keeps the prototype's "Invite sent to {email}"; LIVE
@@ -415,6 +453,9 @@ struct InvitesScreen: View {
             // enabled" rule the field itself carries: an owner whose fleet has
             // not loaded must not see every ride switch mysteriously disabled.
             vehicleRideShareEnabled: vehicle?.isEnabled ?? true,
+            // MYR-358 — which KIND of off this is, so the disabled caption states
+            // the in-service fact instead of asserting an owner choice.
+            vehicleInService: vehicle?.isInService ?? false,
             vehicleName: vehicleName
         )
         return ShareViewerControlRow(
@@ -459,20 +500,105 @@ struct InvitesScreen: View {
                         if index > 0 { ShareRowSeparator() }
                         ShareVehicleToggleRow(
                             name: row.name,
+                            // All three come off `VehicleRideShareRow.display`,
+                            // i.e. `VehicleRideShare.display` verbatim (MYR-358)
+                            // — so an in-service car renders OFF, inert and
+                            // captioned "Off while in service — resumes
+                            // automatically", with the owner's stored preference
+                            // untouched underneath and no write fired either way.
                             isEnabled: row.isEnabled,
+                            isInteractive: row.isInteractive,
+                            caption: row.caption,
                             isBusy: row.isBusy
                         ) { isOn in
-                            mutate("Couldn\u{2019}t change ride sharing") {
-                                try await shareService.setVehicleRideShareEnabled(
-                                    isOn, vehicleID: row.id
-                                )
-                            }
+                            setVehicleRideShare(isOn, row: row)
                         }
                     }
                 }
             }
             .padding(.top, MRTMetrics.shareSectionGap)
         }
+    }
+
+    /// MYR-360, re-homed by MYR-369 — commit a vehicle ride-share flip through the
+    /// pause flow rather than straight to the service.
+    ///
+    /// **THE OFF DIRECTION IS THE WHOLE POINT.** Before this screen owned the
+    /// switch, turning ride sharing off read the car's upcoming ACCEPTED
+    /// reservations first and warned the owner before stranding a rider who had
+    /// already booked. MYR-369 moved the switch here and the write went direct, so
+    /// the warning stopped firing at all — a rider could be silently stranded by a
+    /// tap that used to ask. This is that pre-flight, restored on the new surface
+    /// through the SAME flow, the same decision and the same dialog.
+    ///
+    /// Flipping ON never warns and never waits: resuming cannot strand anybody, it
+    /// is the recovery from this whole situation, and the flow short-circuits it
+    /// before any read happens.
+    ///
+    /// The IN-SERVICE case never reaches here at all — `ShareVehicleToggleRow`
+    /// blocks the write on `isInteractive`, because that position is DERIVED and
+    /// there is nothing to commit (MYR-358).
+    /// MYR-360 (DEBUG capture only), re-homed by MYR-369 — perform the ride-share
+    /// pause flip on boot for the scenes that can only be reached through one.
+    ///
+    /// It stands in for exactly ONE tap on a switch, which headless capture tooling
+    /// can neither synthesize nor reach — the same precedent as
+    /// `ownerFreshnessWaking`'s seeded phase and `ownerServiceWindowEditor`'s
+    /// seeded presentation. It is a stand-in for the TAP only: everything
+    /// downstream (the reservation read, the decision, the dialog copy, the write)
+    /// is the shipping path running for real, through the same
+    /// `setVehicleRideShare` a thumb would call.
+    ///
+    /// Always the OFF direction, because only OFF warns — flipping ON would
+    /// capture nothing at all.
+    ///
+    /// Release builds compile this to an empty async function, and in DEBUG it
+    /// returns on the first line for every scene but those three, so no other
+    /// capture writes anything and no scene changes by a pixel.
+    private func flipRideShareForCaptureSceneIfRequested() async {
+        #if DEBUG
+        guard DebugScene.current?.flipsRideShareOnBoot == true else { return }
+        // The injected service resolves its one car within a frame or two; wait for
+        // the row rather than racing it, and give up rather than spin.
+        for _ in 0..<40 {
+            if let row = shareService.vehicleRideShare.first {
+                setVehicleRideShare(false, row: row)
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        #endif
+    }
+
+    private func setVehicleRideShare(_ isOn: Bool, row: VehicleRideShareRow) {
+        pauseFlow.source = upcomingReservations
+        let target = ShareServiceRideSharePauseTarget(
+            service: shareService,
+            vehicleID: row.id,
+            onFailure: { failureToast = $0 }
+        )
+        Task { await pauseFlow.setEnabled(isOn, vehicleID: row.id, target: target) }
+    }
+
+    /// MYR-360 — the pause warning's presentation binding. `mrtConfirmDialog` takes
+    /// a `Bool`; the flow owns the model, so setting it false IS "Keep sharing" —
+    /// which is also the path the confirm and secondary buttons take on their way
+    /// out, after their own action has already run.
+    private var isShowingPauseWarning: Binding<Bool> {
+        Binding(
+            get: { pauseFlow.warning != nil },
+            set: { if !$0 { pauseFlow.keepSharing() } }
+        )
+    }
+
+    /// The dialog itself. Built from the reservations the flow is holding, so the
+    /// rows name exactly the rides the confirm button will decline.
+    private var pauseWarningConfig: MRTConfirmDialogConfig {
+        RideSharePauseDialog.warning(
+            count: pauseFlow.warning?.reservations.count ?? 0,
+            onDeclineAndPause: { Task { await pauseFlow.confirmDeclineAndPause() } },
+            onPauseAnyway: { Task { await pauseFlow.pauseAnyway() } }
+        )
     }
 
     /// Run one optimistic mutation and surface its failure the way this screen

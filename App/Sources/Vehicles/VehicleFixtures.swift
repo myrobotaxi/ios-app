@@ -76,6 +76,26 @@ public struct Vehicle: Identifiable, Equatable, Sendable {
     /// row this build read before the field existed, and it must NEVER render as
     /// paused. Read it through `VehicleRideShare.isEnabled`, never as `!= true`.
     public let rideShareEnabled: Bool?
+    /// MYR-358, re-threaded by MYR-369 — whether this car is IN A SERVICE BAY
+    /// right now (`VehicleSummary.status == .inService`, folded through the
+    /// EXISTING `VehicleContractMapping.badgeStatus`).
+    ///
+    /// It rides on the list-shaped `Vehicle` for exactly the reason
+    /// `rideShareEnabled` does: the Share tab's relocated ride-share card is the
+    /// only surface that renders this switch now, that tab has no telemetry
+    /// snapshot and no `VehicleCommandExecutor`, and its ONE data source is the
+    /// §7.0 list. Without this the card can read the owner's stored preference
+    /// but cannot know the fact that DERIVES the switch off, which is the whole
+    /// of MYR-358.
+    ///
+    /// **THIS IS A DISPLAY INPUT, NEVER A WRITE INPUT.** Nothing is persisted when
+    /// it flips in either direction — see
+    /// `VehicleRideShare.display(storedEnabled:isInService:)`, which is the one
+    /// place the derivation lives.
+    ///
+    /// Defaults to `false`, so every fixture and every simulated row is a car
+    /// that is not in service and the whole simulated Share tab is unchanged.
+    public let isInService: Bool
 
     public init(
         id: String,
@@ -90,7 +110,8 @@ public struct Vehicle: Identifiable, Equatable, Sendable {
         softwareVersion: String? = nil,
         fsdVersion: String? = nil,
         tirePressures: TirePressures? = nil,
-        rideShareEnabled: Bool? = nil
+        rideShareEnabled: Bool? = nil,
+        isInService: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -105,6 +126,7 @@ public struct Vehicle: Identifiable, Equatable, Sendable {
         self.fsdVersion = fsdVersion
         self.tirePressures = tirePressures
         self.rideShareEnabled = rideShareEnabled
+        self.isInService = isInService
     }
 }
 
