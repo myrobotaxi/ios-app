@@ -49,6 +49,12 @@ final class LiveShareService: ShareService {
     var sharesByCode: Bool { true }
 
     @ObservationIgnored private let api: any VehicleSharingEndpoint
+    /// §7.18's `PUT /api/tesla/vehicles/{id}/ride-share`. A SECOND seam rather
+    /// than a widened `VehicleSharingEndpoint`, because the vehicle-level pause
+    /// is not part of the §7.5 sharing family at all — MYR-369 only moved WHERE
+    /// its switch is drawn. `RestClient` conforms to both, so the live path still
+    /// composes exactly one client.
+    @ObservationIgnored private let rideShareAPI: any VehicleRideShareEndpoint
     @ObservationIgnored private let ownedVehicles: @MainActor () -> [Vehicle]
     @ObservationIgnored private let now: () -> Date
 
@@ -61,14 +67,157 @@ final class LiveShareService: ShareService {
     /// `.task` can all land at once).
     @ObservationIgnored private var loadTask: Task<Void, Never>?
 
+    /// MYR-369 — the ride-share position the owner has flipped on THIS screen,
+    /// keyed by vehicle id, holding the server's ECHO once the write lands.
+    ///
+    /// It exists because `ownedVehicles` is a CLOSURE into the fleet, which this
+    /// service does not own and cannot refresh: §7.18 carries no WebSocket delta,
+    /// so nothing would push the new position back into that list before the next
+    /// cold read. Without the override the switch would spring back under the
+    /// owner's thumb. The override is authoritative over the fleet row for
+    /// exactly the same reason `VehicleRideShare.resolvedEnabled` prefers the
+    /// committed value over the snapshot (the MYR-316 stale-read defect).
+    /// DELIBERATELY OBSERVED (no `@ObservationIgnored`): `vehicleRideShare` is
+    /// computed from it, so the OPTIMISTIC flip only reaches the switch if
+    /// writing here publishes. It happened to work through the sibling
+    /// `rideShareInFlight` changing in the same breath, which is the kind of
+    /// accidental dependency that survives until someone removes the spinner.
+    private var rideShareOverrides: [String: Bool] = [:]
+
+    /// Vehicle ids whose §7.18 write is in flight, so a second tap cannot race
+    /// the first and land the two echoes out of order.
+    private var rideShareInFlight: Set<String> = []
+
     init(
         api: any VehicleSharingEndpoint,
+        rideShareAPI: any VehicleRideShareEndpoint,
         ownedVehicles: @escaping @MainActor () -> [Vehicle],
         now: @escaping () -> Date = Date.init
     ) {
         self.api = api
+        self.rideShareAPI = rideShareAPI
         self.ownedVehicles = ownedVehicles
         self.now = now
+    }
+
+    // MARK: - Vehicle-level ride sharing (§7.18, relocated by MYR-369)
+
+    var vehicleRideShare: [VehicleRideShareRow] {
+        ownedVehicles().map { vehicle in
+            VehicleRideShareRow(
+                id: vehicle.id,
+                name: vehicle.name,
+                // ABSENT MEANS ENABLED — resolved in the one place that spells
+                // the explicit-`false` test, never as `!= true`.
+                isEnabled: VehicleRideShare.isEnabled(
+                    rideShareOverrides[vehicle.id] ?? vehicle.rideShareEnabled
+                ),
+                isBusy: rideShareInFlight.contains(vehicle.id)
+            )
+        }
+    }
+
+    func setVehicleRideShareEnabled(_ enabled: Bool, vehicleID: String) async throws {
+        guard !rideShareInFlight.contains(vehicleID) else { return }
+        // The value to restore if the write fails — the RESOLVED position the
+        // owner was actually looking at, not a guess at what it might have been.
+        let previous = vehicleRideShare.first { $0.id == vehicleID }?.isEnabled
+        rideShareOverrides[vehicleID] = enabled           // optimistic
+        rideShareInFlight.insert(vehicleID)
+        defer { rideShareInFlight.remove(vehicleID) }
+        do {
+            let response = try await rideShareAPI.setRideShareEnabled(enabled, vehicleID: vehicleID)
+            // Adopt the ECHO, not the bool we sent — §7.18 answers with the
+            // stored position, and believing our own request is how a client
+            // comes to disagree with the server about an availability switch.
+            rideShareOverrides[vehicleID] = response.enabled
+        } catch {
+            // Roll the switch back. Leaving the optimistic position up would
+            // manufacture the exact belief §7.18 refuses to allow — an owner
+            // walking away certain their car is paused while it still takes
+            // requests. Restoring `nil` (rather than `!enabled`) when there was
+            // no prior override keeps "absent means enabled" intact.
+            // `previous` is already optional and assigning nil REMOVES the key,
+            // which is the correct restore when there was no override to begin
+            // with — the row falls back to the fleet's value and "absent means
+            // enabled" survives intact.
+            rideShareOverrides[vehicleID] = previous
+            throw error
+        }
+    }
+
+    // MARK: - Per-viewer capability edits (MYR-369, PATCH /api/invites/{id})
+
+    func setViewerAllowRides(_ allowRides: Bool, viewer: Viewer) async throws {
+        try await patchViewer(viewer, optimistic: { $0.with(allowRides: allowRides) }) {
+            PatchShareInviteRequest(allowRides: allowRides)
+        }
+    }
+
+    func setViewerSuspended(_ suspended: Bool, viewer: Viewer) async throws {
+        try await patchViewer(viewer, optimistic: { $0.with(suspended: suspended) }) {
+            PatchShareInviteRequest(suspended: suspended)
+        }
+    }
+
+    /// The shared body of both per-viewer edits: move the row NOW, patch every
+    /// server row behind it, and restore the exact previous row if anything
+    /// refused.
+    ///
+    /// **ONE SCREEN ROW IS N SERVER ROWS.** A multi-vehicle invite is N grants and
+    /// the PATCH applies to ONE of them, so a grouped row has to patch its whole
+    /// group — the same fan-out `deleteGroup` does, and for the same reason.
+    ///
+    /// **THE BODY IS BUILT PER CALL, CARRYING EXACTLY ONE KEY.** The contract's
+    /// update is PARTIAL: only properties PRESENT are written and an absent one is
+    /// NOT `false`. Sending both flags because we happen to know both would
+    /// overwrite a capability the owner did not touch — with whatever this
+    /// client last read, which on a stale row is a silent unintended edit.
+    private func patchViewer(
+        _ viewer: Viewer,
+        optimistic: (Viewer) -> Viewer,
+        body: () -> PatchShareInviteRequest
+    ) async throws {
+        let ids = inviteIDs[viewer.id] ?? []
+        guard !ids.isEmpty else {
+            // The row predates the newest load. Re-read rather than patch a grant
+            // we can no longer name.
+            await performLoad()
+            return
+        }
+        guard let index = viewers.firstIndex(where: { $0.id == viewer.id }) else { return }
+        let previous = viewers[index]
+        viewers[index] = optimistic(previous)             // optimistic
+
+        var firstFailure: Error?
+        for id in ids {
+            do {
+                _ = try await api.patchShareInvite(body(), inviteID: id)
+            } catch let error as RestError where error.isShareInviteGone {
+                // 404 is the same non-oracle answer DELETE gives: gone, another
+                // owner's, or a tombstone. The grant this row stood for is not
+                // ours to edit, and the re-read below shows the owner the truth.
+                continue
+            } catch {
+                if firstFailure == nil { firstFailure = error }
+            }
+        }
+
+        if let firstFailure {
+            // ROLL BACK to the exact row we replaced, then re-read. The rollback
+            // is what the owner sees immediately; the re-read is what makes it
+            // true, since a partial failure across a multi-vehicle group can
+            // leave the server holding a mix neither position describes.
+            if let current = viewers.firstIndex(where: { $0.id == viewer.id }) {
+                viewers[current] = previous
+            }
+            await performLoad()
+            throw firstFailure
+        }
+        // Re-read rather than adopt the echo: the 200 body is ONE row of a group
+        // that may be N, and this screen's standing rule is that the server is
+        // authoritative about who has access.
+        await performLoad()
     }
 
     // MARK: - Load
@@ -288,7 +437,19 @@ enum ShareRowGrouping {
                 if pendingByKey[key] == nil { pendingOrder.append(key) }
                 pendingByKey[key, default: []].append(row)
             case .accepted:
-                let key = "acc:\(row.label)|\(row.permission.rawValue)|\(row.acceptedAt ?? "")"
+                // MYR-369 — the FLAGS ARE PART OF THE KEY NOW. A grouped row
+                // renders one pair of switches and patches every id behind it, so
+                // two grants that disagree about `allowRides` or `suspended` must
+                // NOT collapse into one row: the switches would show one grant's
+                // state while writing to both, and un-suspending "Mira" would
+                // silently restore a car the owner had paused separately.
+                //
+                // `permission` is derived from `allowRides` and so is already
+                // implied by it; both are in the key anyway, because a key that
+                // depends on a derivation staying true is a key that breaks
+                // silently when the derivation changes.
+                let key = "acc:\(row.label)|\(row.permission.rawValue)"
+                    + "|\(row.allowsRides)|\(row.isSuspended)|\(row.acceptedAt ?? "")"
                 if acceptedByKey[key] == nil { acceptedOrder.append(key) }
                 acceptedByKey[key, default: []].append(row)
             case .unrecognized:
@@ -313,7 +474,13 @@ enum ShareRowGrouping {
                     // than claiming someone is watching.
                     online: false,
                     perm: ShareTierMapping.permLabel(forWire: first.permission.rawValue),
-                    tier: ShareTierMapping.tier(forWire: first.permission.rawValue)
+                    tier: ShareTierMapping.tier(forWire: first.permission.rawValue),
+                    // MYR-369 — read through the Kit's two accessors so the pair
+                    // of DIFFERENT absence rules is applied in exactly one place:
+                    // an absent `allowRides` falls back to the derived permission,
+                    // an absent `suspended` is NOT suspension.
+                    allowRides: first.allowsRides,
+                    suspended: first.isSuspended
                 )
             )
             result.inviteIDs[key] = group.map(\.inviteId)

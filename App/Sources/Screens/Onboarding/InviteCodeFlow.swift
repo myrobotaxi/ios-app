@@ -556,13 +556,19 @@ private struct JoinedSuccessView: View {
     /// ("You can request rides and watch the live map."), which is FALSE below the
     /// `rides` tier — the very promise §7.8 would then 403. It now says what this
     /// grant carries.
+    /// MYR-369 — the HISTORY rung is gone from this ladder, with the tier it
+    /// described. The drives surfaces are owner-only now and no share grant opens
+    /// them, so "…and see past trips" was a promise no value of the wire can keep
+    /// — and unlike the pre-MYR-184 rides promise, it would have been unreachable
+    /// rather than merely wrong, since `live_history` is never emitted. Two rungs
+    /// remain, matching the two presets the composer can now send.
     private var capabilityLine: String {
         guard let first, first.tier != nil else {
             return "You can request rides and watch the live map."
         }
-        if first.grantsRides { return "You can request rides and watch the live map." }
-        if first.grantsHistory { return "You can watch the live map and see past trips." }
-        return "You can watch the live map."
+        return first.grantsRides
+            ? "You can request rides and watch the live map."
+            : "You can watch the live map."
     }
 
     var body: some View {

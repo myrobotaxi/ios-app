@@ -997,11 +997,6 @@ struct HomeScreen: View {
                 // The SAME resolution the line above was built from, so the hero
                 // and the details row can never disagree about what is saved.
                 serviceEstimatedEndAt: resolvedServiceWindow(snapshot: snapshot),
-                // MYR-342 — the owner's ride-sharing switch. `nil` off the live
-                // path, which is the whole gate: the Status & location card grows
-                // its one new row only where the toggle can actually reach §7.18.
-                rideShareEnabled: resolvedRideShare(snapshot: snapshot),
-                onSetRideShareEnabled: setRideShareEnabled
             )
         }
     }

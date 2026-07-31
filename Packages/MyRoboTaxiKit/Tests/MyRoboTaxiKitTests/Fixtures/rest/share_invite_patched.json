@@ -1,0 +1,16 @@
+{
+  "_meta": {
+    "description": "200 body of PATCH /api/invites/{inviteId} (MYR-369), built from vehicle-sharing.schema.json's own printed examples. The contract states exactly what this body is: 'the updated ShareInvite (an accepted row, so it carries allowRides, suspended and the derived permission, and carries NEITHER code NOR shareUrl)'. Both absences are asserted rather than merely omitted here — a redeemed grant has no live code, and a body that carried one would be handing back a bearer credential the redemption spent. This row is the result of suspending a grant that may ride: allowRides stays TRUE because a partial update writes only the properties present, and suspension does not clear the capabilities it gates.",
+    "scenario": "happy-path",
+    "addedBy": "MYR-369"
+  },
+  "inviteId": "csh0123456789abcdef0123456789abcd",
+  "vehicleId": "clxyz1234567890abcdef",
+  "label": "Mira Chen",
+  "permission": "rides",
+  "allowRides": true,
+  "suspended": true,
+  "status": "accepted",
+  "createdAt": "2026-07-29T15:04:05Z",
+  "acceptedAt": "2026-07-30T09:12:44Z"
+}

@@ -335,28 +335,231 @@ final class VehicleSharingEndpointTests: XCTestCase {
         }
     }
 
-    // MARK: - §7.5.0 cumulative tiers
+    // MARK: - §7.5.0 capability reads (rewritten by MYR-369)
 
-    /// The tiers form a TOTAL ORDER and every gate compares with `>=`, never
-    /// equality. `rides` grants history; `live` grants neither of the others.
-    func testTierComparisonIsCumulativeNotEqual() {
-        XCTAssertTrue(SharePermission.rides.grants(.live))
-        XCTAssertTrue(SharePermission.rides.grants(.liveHistory))
-        XCTAssertTrue(SharePermission.rides.grants(.rides))
-        XCTAssertTrue(SharePermission.liveHistory.grants(.live))
-        XCTAssertFalse(SharePermission.liveHistory.grants(.rides))
-        XCTAssertTrue(SharePermission.live.grants(.live))
-        XCTAssertFalse(SharePermission.live.grants(.liveHistory))
+    /// **THE CUMULATIVE COMPARISON IS GONE, AND ITS REPLACEMENT IS EQUALITY.**
+    ///
+    /// This class previously asserted `SharePermission.rides.grants(.liveHistory)`
+    /// and the rest of a total order — correct for the contract it was written
+    /// against, and wrong for 0.23.0, which states that on an accepted row the
+    /// value is DERIVED from per-grant flags and that the `>=` comparison "is
+    /// WRONG on an accepted row and MUST be replaced by a direct read of the
+    /// flags". `rank`/`grants(_:)` are deleted rather than deprecated, so this is
+    /// the test that would stop them coming back.
+    func testTheRideCapabilityIsAnEqualityReadNotACumulativeOne() {
+        XCTAssertTrue(SharePermission.rides.allowsRides)
+        XCTAssertFalse(SharePermission.live.allowsRides)
     }
 
-    /// An UNRECOGNIZED tier (appended by a newer contracts version) fails CLOSED
-    /// on both sides. It is by the contract's rule strictly higher than `rides`,
-    /// but offering affordances on a tier this build cannot reason about is the
+    /// `live_history` is RETIRED AND NEVER EMITTED, but the member survives for
+    /// wire compat. It must still DECODE, and it must not be read as granting
+    /// rides — under the old order it did not either, but it got there by ranking
+    /// below `rides` rather than by being a value nothing emits.
+    func testTheRetiredHistoryTierStillDecodesAndGrantsNoRides() throws {
+        let decoded = try JSONDecoder().decode(
+            SharePermission.self, from: Data("\"live_history\"".utf8)
+        )
+        XCTAssertEqual(decoded, .liveHistory, "the enum member is kept for decode compat")
+        XCTAssertEqual(decoded.rawValue, "live_history")
+        XCTAssertFalse(decoded.allowsRides)
+    }
+
+    /// An UNRECOGNIZED value (appended by a newer contracts version) fails CLOSED.
+    /// Offering affordances on a capability this build cannot reason about is the
     /// guess that produces a 403 wall.
     func testUnrecognizedTierFailsClosed() {
-        let future = SharePermission.unrecognized("full_control")
-        XCTAssertFalse(future.grants(.live))
-        XCTAssertFalse(SharePermission.rides.grants(future))
+        XCTAssertFalse(SharePermission.unrecognized("full_control").allowsRides)
+    }
+
+    // MARK: - Per-grant flags and their TWO different absence rules (MYR-369)
+
+    /// The rule most likely to be swapped by a tidy refactor: the two optional
+    /// flags fall back in OPPOSITE directions. An absent `allowRides` defers to
+    /// the derived `permission`; an absent `suspended` is NOT suspension.
+    func testTheTwoFlagsFallBackInOppositeDirections() throws {
+        let response = try JSONDecoder().decode(
+            ShareInviteListResponse.self,
+            from: try Fixture.data("rest/share_invites_list.json")
+        )
+        // This fixture is now the PRE-0.23.0 server: neither key is on any row.
+        let accepted = try XCTUnwrap(response.invites.first { $0.status == .accepted })
+        XCTAssertNil(accepted.allowRides, "the legacy fixture carries no flag")
+        XCTAssertNil(accepted.suspended)
+        XCTAssertFalse(accepted.allowsRides, "falls back to permission `live` → no rides")
+        XCTAssertFalse(accepted.isSuspended, "ABSENCE IS NEVER SUSPENSION")
+
+        // And the fallback follows the permission rather than defaulting to false.
+        var promoted = accepted
+        promoted.permission = .rides
+        XCTAssertTrue(promoted.allowsRides, "absent allowRides falls back to `rides` → true")
+    }
+
+    /// A 0.23.0 row: the flags are present and are the truth, and `permission`
+    /// agrees with them because the server derives it on every read.
+    func testAcceptedRowsCarryBothFlagsAndTheDerivedPermissionAgrees() throws {
+        let response = try JSONDecoder().decode(
+            ShareInviteListResponse.self,
+            from: try Fixture.data("rest/share_invites_list_flags.json")
+        )
+        let accepted = response.invites.filter { $0.status == .accepted }
+        XCTAssertEqual(accepted.count, 3)
+        for row in accepted {
+            XCTAssertNotNil(row.allowRides, "\(row.label): accepted rows carry the flag")
+            XCTAssertNotNil(row.suspended, "\(row.label)")
+            XCTAssertEqual(
+                row.permission.allowsRides, row.allowsRides,
+                "\(row.label): `permission` is DERIVED from allowRides, so it cannot disagree"
+            )
+        }
+
+        // The state the contract is most specific about: suspended WITH the ride
+        // flag still set. The flag survives, and it grants nothing while paused.
+        let paused = try XCTUnwrap(accepted.first { $0.isSuspended })
+        XCTAssertEqual(paused.label, "Aanya Iyer")
+        XCTAssertTrue(paused.allowsRides, "the stored flag survives suspension")
+    }
+
+    // MARK: - Raw-key assertions (the MYR-362 decode trap, pointed at MYR-369)
+    //
+    // `allowRides` and `suspended` are OPTIONAL BOOLS. A wrong key on an optional
+    // decodes SILENTLY to nil — no throw, no 4xx, no log — which is exactly how
+    // MYR-362 shipped an empty service-window row over a `200`. Worse here: nil
+    // on `suspended` reads as NOT SUSPENDED, so a mis-keyed fixture would show a
+    // paused viewer as having full access and every decode test would pass. The
+    // only guard that works is asserting on the RAW keys.
+
+    /// The keys are exactly where the schema says, and — the half a decode can
+    /// never check — ABSENT where it says they must be. Both flags are
+    /// ACCEPTED-ROWS-ONLY: a pending invite has no grant yet, so a pending row
+    /// carrying either would be describing access that does not exist.
+    func testTheFlagsAreOnAcceptedRowsAndAbsentFromPendingOnes() throws {
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: try Fixture.data("rest/share_invites_list_flags.json")
+            ) as? [String: Any]
+        )
+        let invites = try XCTUnwrap(json["invites"] as? [[String: Any]])
+
+        for row in invites {
+            let status = row["status"] as? String
+            let label = (row["label"] as? String) ?? "?"
+            if status == "accepted" {
+                XCTAssertNotNil(row["allowRides"], "\(label): §7.5.2 emits allowRides on accepted rows")
+                XCTAssertNotNil(row["suspended"], "\(label): and suspended alongside it")
+                XCTAssertNil(row["code"], "\(label): the code is spent on redemption")
+                XCTAssertNil(row["shareUrl"], "\(label): the link goes with the code")
+            } else {
+                XCTAssertNil(row["allowRides"], "\(label): a PENDING row has no grant to describe")
+                XCTAssertNil(row["suspended"], "\(label): ditto — absence here is the contract, not an oversight")
+            }
+        }
+
+        // `live_history` is retired and NEVER emitted. A fixture that carried one
+        // would be modelling a server that no longer exists.
+        let permissions = invites.compactMap { $0["permission"] as? String }
+        XCTAssertFalse(permissions.contains("live_history"), "the tier is retired")
+        XCTAssertTrue(Set(permissions).isSubset(of: ["live", "rides"]))
+    }
+
+    /// The PATCH response fixture, against the contract's own sentence about it:
+    /// an accepted row carrying both flags and the derived permission, and
+    /// carrying NEITHER `code` NOR `shareUrl`.
+    func testThePatchResponseFixtureIsAnAcceptedRowWithNoLiveCredential() throws {
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: try Fixture.data("rest/share_invite_patched.json")
+            ) as? [String: Any]
+        )
+        XCTAssertEqual(json["status"] as? String, "accepted")
+        XCTAssertNotNil(json["allowRides"])
+        XCTAssertNotNil(json["suspended"])
+        XCTAssertNil(json["code"], "a redeemed grant has no live code to hand back")
+        XCTAssertNil(json["shareUrl"], "and no link, which contains one")
+
+        let decoded = try JSONDecoder().decode(
+            ShareInvite.self, from: try Fixture.data("rest/share_invite_patched.json")
+        )
+        XCTAssertTrue(decoded.isSuspended)
+        XCTAssertTrue(decoded.allowsRides, "a partial update did not clear what it did not touch")
+    }
+
+    /// **THE FIXTURES ARE PINNED AGAINST THE GENERATED TYPES, NOT AGAINST MY
+    /// READING OF THE SPEC.** Every key a fixture uses is round-tripped through
+    /// the contracts type it stands for, so a fixture key that codegen does not
+    /// produce fails here rather than decoding quietly to nil. This is the guard
+    /// MYR-362 did not have: its hand-authored response type and its fixture were
+    /// written from the same misreading, so they agreed with each other and the
+    /// suite was green about a body the server never sends.
+    func testEveryFixtureKeyIsAKeyTheGeneratedTypeProduces() throws {
+        let encoder = JSONEncoder()
+        let decoded = try JSONDecoder().decode(
+            ShareInviteListResponse.self,
+            from: try Fixture.data("rest/share_invites_list_flags.json")
+        )
+        for row in decoded.invites {
+            let reEncoded = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: try encoder.encode(row)) as? [String: Any]
+            )
+            let fixtureKeys: Set<String> = Set(
+                (try fixtureRow(labelled: row.label) ?? [:]).keys
+            )
+            XCTAssertTrue(
+                fixtureKeys.isSubset(of: Set(reEncoded.keys)),
+                "\(row.label): fixture keys \(fixtureKeys.subtracting(Set(reEncoded.keys))) "
+                    + "are not produced by the generated ShareInvite"
+            )
+        }
+    }
+
+    private func fixtureRow(labelled label: String) throws -> [String: Any]? {
+        let json = try JSONSerialization.jsonObject(
+            with: try Fixture.data("rest/share_invites_list_flags.json")
+        ) as? [String: Any]
+        let invites = json?["invites"] as? [[String: Any]]
+        return invites?.first { ($0["label"] as? String) == label }
+    }
+
+    // MARK: - The PATCH body (MYR-369)
+
+    /// **PARTIAL BY DESIGN.** `JSONEncoder` omits `nil`, and that omission IS the
+    /// contract's update semantics — an absent property leaves the capability
+    /// unchanged and is NOT the same as sending `false`. So a body built to edit
+    /// ONE flag must encode exactly ONE key. A client that filled in both would
+    /// overwrite a capability the owner never touched, with whatever it last
+    /// read — a silent unintended edit that answers `200`.
+    func testAPartialPatchBodyEncodesExactlyTheKeysItSets() throws {
+        func keys(_ body: PatchShareInviteRequest) throws -> Set<String> {
+            let object = try JSONSerialization.jsonObject(with: try JSONEncoder().encode(body))
+            return Set(((object as? [String: Any]) ?? [:]).keys)
+        }
+        XCTAssertEqual(try keys(PatchShareInviteRequest(allowRides: true)), ["allowRides"])
+        XCTAssertEqual(try keys(PatchShareInviteRequest(suspended: true)), ["suspended"])
+        // `false` is a VALUE and must travel; only nil is omitted.
+        XCTAssertEqual(try keys(PatchShareInviteRequest(allowRides: false)), ["allowRides"])
+        XCTAssertEqual(
+            try keys(PatchShareInviteRequest(allowRides: true, suspended: false)),
+            ["allowRides", "suspended"]
+        )
+        // `minProperties: 1` — an empty body is a 400 by contract, so a client
+        // that builds one has a bug. Nothing stops it compiling; this names it.
+        XCTAssertTrue(try keys(PatchShareInviteRequest()).isEmpty)
+    }
+
+    /// The RAW key spellings on the wire, asserted against the literal strings
+    /// the schema prints. Both properties are optional bools, so a typo here is
+    /// invisible to every decode test in this file.
+    func testThePatchBodyUsesTheSchemasOwnKeySpellings() throws {
+        let data = try JSONEncoder().encode(
+            PatchShareInviteRequest(allowRides: true, suspended: false)
+        )
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(json["allowRides"] as? Bool, true)
+        XCTAssertEqual(json["suspended"] as? Bool, false)
+        // The names this client must NOT invent — the MYR-362 shape, where a
+        // plausible-looking synonym decodes to nil and nothing anywhere says so.
+        for wrong in ["allow_rides", "allowRide", "ridesAllowed", "isSuspended", "suspend"] {
+            XCTAssertNil(json[wrong], "\(wrong) is not a key §7.5 emits or accepts")
+        }
     }
 
     /// §7.0: an ABSENT `sharePermission` on a VIEWER row means the LOWEST tier —
@@ -367,12 +570,11 @@ final class VehicleSharingEndpointTests: XCTestCase {
             .decode(VehicleListResponse.self, from: try Fixture.data("rest/vehicles_list_viewer.json"))
         var viewer = try XCTUnwrap(response.items.first)
         XCTAssertEqual(viewer.role, .viewer)
-        XCTAssertEqual(viewer.effectiveSharePermission, .liveHistory, "the fixture's declared tier")
 
         viewer.sharePermission = nil
         XCTAssertEqual(viewer.effectiveSharePermission, .live, "absent means the LOWEST tier")
         XCTAssertFalse(
-            (viewer.effectiveSharePermission ?? .live).grants(.rides),
+            (viewer.effectiveSharePermission ?? .live).allowsRides,
             "absence must never be read as full access"
         )
 

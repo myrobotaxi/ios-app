@@ -1,0 +1,53 @@
+{
+  "_meta": {
+    "description": "200 body of GET /api/vehicles/{vehicleId}/invites (rest-api.md §7.5.2) from a contracts-0.23.0 server, built from vehicle-sharing.schema.json's own printed examples (MYR-369). Its whole job is the KEY PLACEMENT the schema specifies, which no decode can check for itself: `allowRides` and `suspended` are OWNER-ONLY and ACCEPTED-ROWS-ONLY, so they are present on all three accepted rows and OMITTED ENTIRELY from the pending one. `permission` on an accepted row is DERIVED, never stored — `rides` iff allowRides is true, `live` otherwise — so it agrees with the flag on every row here by construction. `live_history` appears nowhere: it is retired and never emitted (the sibling share_invites_list.json still carries one, as the pre-0.23.0 server it now stands for). The suspended row deliberately keeps allowRides TRUE, which is the state the contract is most specific about: suspension gates everything, so that grant allows nothing, and the flag describes only what would come back on restore. `code`/`shareUrl` remain pending-only and `acceptedAt` accepted-only, unchanged from MYR-184/MYR-368.",
+    "scenario": "happy-path",
+    "addedBy": "MYR-369"
+  },
+  "invites": [
+    {
+      "inviteId": "csh0123456789abcdef0123456789abcd",
+      "vehicleId": "clxyz1234567890abcdef",
+      "label": "Mira Chen",
+      "permission": "live",
+      "status": "pending",
+      "code": "RBO246",
+      "shareUrl": "https://myrobotaxi.app/join/RBO246?k=1.1785942245.mHRTPwZlrUFqzQ9k1p8O_5xkzXQ9dHTh5rHhNaeJ0OQz3n0XmL4vJ8ptKQC1cO8bZ5MPKB6h0nlFmVLbUqEQAg&from=Alex&to=Mira",
+      "createdAt": "2026-07-29T15:04:05Z",
+      "expiresAt": "2026-08-05T15:04:05Z"
+    },
+    {
+      "inviteId": "csh0123456789abcdef0123456789abce",
+      "vehicleId": "clxyz1234567890abcdef",
+      "label": "Jonas Park",
+      "permission": "rides",
+      "allowRides": true,
+      "suspended": false,
+      "status": "accepted",
+      "createdAt": "2026-07-01T10:00:00Z",
+      "acceptedAt": "2026-07-01T11:23:00Z"
+    },
+    {
+      "inviteId": "csh0123456789abcdef0123456789abcf",
+      "vehicleId": "clxyz1234567890abcdef",
+      "label": "Roommate",
+      "permission": "live",
+      "allowRides": false,
+      "suspended": false,
+      "status": "accepted",
+      "createdAt": "2026-07-02T10:00:00Z",
+      "acceptedAt": "2026-07-02T11:23:00Z"
+    },
+    {
+      "inviteId": "csh0123456789abcdef0123456789abd0",
+      "vehicleId": "clxyz1234567890abcdef",
+      "label": "Aanya Iyer",
+      "permission": "rides",
+      "allowRides": true,
+      "suspended": true,
+      "status": "accepted",
+      "createdAt": "2026-07-03T10:00:00Z",
+      "acceptedAt": "2026-07-03T11:23:00Z"
+    }
+  ]
+}

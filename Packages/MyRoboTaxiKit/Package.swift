@@ -40,9 +40,10 @@ let package = Package(
         // (0.17.0 added `serviceEstimatedEndAt`; 0.16.0 the eight media
         // now-playing fields + `seatCoolingCapable`.)
         // MYR-184 — 0.19.0 adds the whole VEHICLE-SHARING family (rest-api.md §7.5):
-        //   • `SharePermission` — `live | live_history | rides`, STRICTLY CUMULATIVE
-        //     (live < live_history < rides). Consumers MUST compare with `>=` over
-        //     that order, never equality — see `SharePermission.grants(_:)` below.
+        //   • `SharePermission` — `live | live_history | rides`. This was a STRICTLY
+        //     CUMULATIVE total order (live < live_history < rides) compared with
+        //     `>=`. **MYR-369 RETIRED THAT** — see the 0.23.0 note below. The enum
+        //     is now a derived projection of per-grant flags, compared by EQUALITY.
         //   • `ShareInvite` / `ShareInviteListResponse` — the OWNER-facing grant row
         //     in its two wire lives (`pending`, carrying the redeemable `code` +
         //     `expiresAt`; `accepted`, carrying `acceptedAt`). Never delivered to an
@@ -83,7 +84,37 @@ let package = Package(
         //     that a consumer finding `code` without `shareUrl` MUST fall back —
         //     which for this app is MYR-359's client-composed unsigned link. Absent
         //     therefore decodes to `nil` and is a supported state, not a defect.
-        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.22.0")
+        // MYR-369 — 0.23.0 REPLACES THE TIER WITH TWO PER-GRANT FLAGS, and this is
+        // a semantic change to a value that already shipped, not an addition.
+        //   • `ShareInvite.allowRides` + `ShareInvite.suspended` — OWNER-ONLY and
+        //     ACCEPTED-ROWS-ONLY (both keys are OMITTED while `status` is `pending`,
+        //     where there is no grant yet). Both are OPTIONAL for compat, with two
+        //     DIFFERENT absence rules that must not be swapped: an absent
+        //     `allowRides` on an accepted row falls back to `permission == .rides`,
+        //     and an absent `suspended` reads as NOT suspended. Absence is never
+        //     suspension. `SharePermission.allowsRides` / `ShareInvite.allowsRides`
+        //     / `ShareInvite.isSuspended` are the ONLY places either is read.
+        //   • `PatchShareInviteRequest` — `{ allowRides?, suspended? }` for
+        //     `PATCH /api/invites/{inviteId}`. PARTIAL BY DESIGN: only the
+        //     properties PRESENT are written, an absent property is NOT `false`,
+        //     and an empty body is a 400 (`minProperties: 1`). ACCEPTED GRANTS
+        //     ONLY — a pending invite answers 409.
+        //   • `SharePermission` IS NO LONGER A TOTAL ORDER. On an accepted row it
+        //     is DERIVED on every read (`allowRides` true → `rides`, else `live`),
+        //     so the pre-MYR-369 `>=` comparison is WRONG and `rank`/`grants(_:)`
+        //     are DELETED rather than deprecated — a cumulative comparator left in
+        //     place is a foot-gun that still compiles. `live_history` IS RETIRED
+        //     AND NEVER EMITTED; the enum member stays for wire compat so an
+        //     installed decoder keeps working, and nothing may offer it.
+        //   • SUSPENSION GATES EVERYTHING and is enforced by REMOVING the grant
+        //     from the viewer's access set — so a suspended car is ABSENT from the
+        //     viewer's `GET /api/vehicles` rather than present-and-marked. There is
+        //     no "suspended" marker on the viewer side by construction. One caveat
+        //     the contract records rather than closes: an ALREADY-OPEN WebSocket
+        //     keeps streaming until it reconnects (websocket-protocol.md §10 DV-09,
+        //     server-side fix tracked as MYR-373), so the client must tolerate the
+        //     car simply being gone on the next list read.
+        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.23.0")
     ],
     targets: [
         .target(

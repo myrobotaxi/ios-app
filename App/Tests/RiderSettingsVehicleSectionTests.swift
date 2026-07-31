@@ -110,8 +110,8 @@ final class RiderSettingsVehicleSectionTests: XCTestCase {
         let s = section(SettingsAccount.shared)
         XCTAssertEqual(s.label, RiderSettingsVehicleSection.sharedOnlyLabel)
         XCTAssertEqual(s.rows, [
-            .shared(id: "shared-1", title: "Alex\u{2019}s Model 3", caption: "Can request rides"),
-            .shared(id: "shared-2", title: "Mom\u{2019}s Model Y", caption: "Live location"),
+            .shared(id: "shared-1", title: "Alex\u{2019}s Model 3", caption: "Location + rides"),
+            .shared(id: "shared-2", title: "Mom\u{2019}s Model Y", caption: "Location"),
             .enterCode,
         ])
     }
@@ -124,8 +124,8 @@ final class RiderSettingsVehicleSectionTests: XCTestCase {
         let s = section(SettingsAccount.both)
         XCTAssertEqual(s.rows, [
             .owned(id: "owned-1", name: "Lunar"),
-            .shared(id: "shared-1", title: "Alex\u{2019}s Model 3", caption: "Can request rides"),
-            .shared(id: "shared-2", title: "Mom\u{2019}s Model Y", caption: "Live location"),
+            .shared(id: "shared-1", title: "Alex\u{2019}s Model 3", caption: "Location + rides"),
+            .shared(id: "shared-2", title: "Mom\u{2019}s Model Y", caption: "Location"),
             .enterCode,
         ])
     }

@@ -764,6 +764,28 @@ enum DebugScene: String, CaseIterable {
     case ownerSharePendingOnly
     case ownerShareAcceptedOnly
 
+    /// MYR-369 — the PER-VIEWER SHARE CONTROLS, the state this issue exists for.
+    ///
+    /// `ownerShareControls` is the whole redesigned tab in one frame: the
+    /// relocated vehicle ride-share card at the TOP (moved out of the owner
+    /// sheet's "Status & location" card, same field and same §7.18 endpoint), and
+    /// an accepted roster spanning every independent position the two per-viewer
+    /// switches can now hold — rides ON, rides OFF, and SUSPENDED — plus a
+    /// pending row that correctly has no switches at all.
+    ///
+    /// `ownerShareVehiclePaused` is the same page with the VEHICLE-level switch
+    /// off. It exists because that is the only way to see the per-viewer Rides
+    /// switches DISABLED: they are gated on the vehicle master toggle, and a row
+    /// that greys out without saying why is the kind of silent state this app has
+    /// been burned by. The pair is a clean one-toggle diff.
+    ///
+    /// Both are live-path-only by construction — `allowRides`/`suspended` exist
+    /// only on a §7.5.2 owner listing — so every simulated Share-tab capture
+    /// (`ownerShare`, the three MYR-347 matrix arms, both composer steps) is
+    /// byte-identical.
+    case ownerShareControls
+    case ownerShareVehiclePaused
+
     /// MYR-347 — the two composer steps, which headless tooling cannot reach:
     /// step one is behind a tap on the hero CTA / "Invite someone" row, and step
     /// two additionally needs six characters typed into a field. Both seed the
@@ -1126,7 +1148,9 @@ enum DebugScene: String, CaseIterable {
             return "settings"
         case .ownerShare, .ownerShareLive, .ownerShareMessage, .ownerShareMessageNoName,
              .ownerShareEmpty, .ownerSharePendingOnly, .ownerShareAcceptedOnly,
-             .ownerShareComposer, .ownerShareComposerAccess:
+             .ownerShareComposer, .ownerShareComposerAccess,
+             // MYR-369 — the per-viewer control scenes are the Share tab too.
+             .ownerShareControls, .ownerShareVehiclePaused:
             return "invites"
         default: return "home"
         }
@@ -1410,6 +1434,10 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerShareEmpty || self == .ownerSharePendingOnly
             || self == .ownerShareAcceptedOnly
             || self == .ownerShareComposer || self == .ownerShareComposerAccess
+            // MYR-369 — per-viewer share controls. This is the `isOwner` chain
+            // the repo's own notes flag as the classic miss: without it the scene
+            // boots the RIDER shell and the Share tab is unreachable.
+            || self == .ownerShareControls || self == .ownerShareVehiclePaused
             // MYR-355 — the owner-shell deletion scenes. MYR-366 — `offboarding
             // Failed` is captured on the OWNER shell because the owner's sequence
             // is the longer one and therefore the harder stepper to stop honestly
@@ -2162,6 +2190,7 @@ enum DebugScene: String, CaseIterable {
              .ownerShare, .ownerShareLive, .ownerShareMessage, .ownerShareMessageNoName,
              .ownerShareEmpty, .ownerSharePendingOnly, .ownerShareAcceptedOnly,
              .ownerShareComposer, .ownerShareComposerAccess,
+             .ownerShareControls, .ownerShareVehiclePaused,
              .riderSharedEmpty, .riderWatchOnly,
              .riderOwnerSelfRide, .riderVehiclesResolving, .riderVehiclesUnreachable,
              .riderInviteRateLimited, .riderInviteJoined, .riderInviteEntry:
@@ -2180,8 +2209,25 @@ enum DebugScene: String, CaseIterable {
 ///
 /// DEBUG-only, like the rest of this file.
 struct DebugShareEndpoint: VehicleSharingEndpoint {
+    /// MYR-369 — the rows live in a REFERENCE store, not in this struct.
+    ///
+    /// `patchShareInvite` has to be OBSERVABLE: the shipping
+    /// `LiveShareService.patchViewer` re-reads the list after every write, so a
+    /// stub that patched a value copy would answer `200`, re-read the untouched
+    /// seed, and snap the switch straight back — a capture of a broken toggle,
+    /// produced by a broken stub. Backing the rows with a class means the copy
+    /// the service holds and the copy the scene seeded are the same rows, and the
+    /// per-viewer switches are genuinely LIVE in every Share-tab DEBUG scene.
+    private let store = DebugShareInviteStore()
+
     /// Rows the owner's per-vehicle list returns, keyed by vehicle id.
-    var invitesByVehicle: [String: [ShareInvite]] = [:]
+    ///
+    /// `nonmutating set` so the existing `endpoint.invitesByVehicle = […]` seeding
+    /// in every scene is unchanged while the storage moved underneath it.
+    var invitesByVehicle: [String: [ShareInvite]] {
+        get { store.rows }
+        nonmutating set { store.rows = newValue }
+    }
     /// Viewer rows the rider's catalog sees on `GET /api/vehicles`.
     var viewerRows: [VehicleSummary] = []
     /// What redeem answers. `nil` → the §7.5.5 happy path built from `viewerRows`.
@@ -2247,6 +2293,68 @@ struct DebugShareEndpoint: VehicleSharingEndpoint {
             throw RestError.http(status: status, code: nil, message: nil, subCode: nil)
         }
         return RedeemShareInviteResponse(ownerFirstName: redeemOwnerFirstName, vehicles: viewerRows)
+    }
+
+    /// `PATCH /api/invites/{inviteId}` (MYR-369), reproducing the three server
+    /// behaviours that actually shape this client:
+    ///
+    ///  1. **PARTIAL UPDATE.** Only the properties PRESENT are written; an absent
+    ///     one leaves that capability exactly as it was. A stub that assigned both
+    ///     flags unconditionally would make the client's careful one-key bodies
+    ///     look interchangeable with two-key ones, and hide the bug where a client
+    ///     overwrites a capability the owner never touched.
+    ///  2. **`permission` IS DERIVED, NEVER STORED.** The row is re-emitted with
+    ///     `rides` when `allowRides` is set and `live` otherwise, so the capture
+    ///     exercises the real projection instead of a tier the stub kept around.
+    ///  3. **ACCEPTED ONLY.** A pending row answers `409`, exactly as the contract
+    ///     says, which is what keeps the screen's "no switches until accepted"
+    ///     rule honest rather than merely untested.
+    func patchShareInvite(_ body: PatchShareInviteRequest, inviteID: String) async throws -> ShareInvite {
+        guard let found = store.find(inviteID) else {
+            throw RestError.http(status: 404, code: .notFound, message: nil, subCode: nil)
+        }
+        guard found.row.status == .accepted else {
+            throw RestError.http(status: 409, code: .conflict, message: nil, subCode: nil)
+        }
+        var updated = found.row
+        if let allowRides = body.allowRides { updated.allowRides = allowRides }
+        if let suspended = body.suspended { updated.suspended = suspended }
+        updated.permission = SharePermission(rawValue: (updated.allowRides ?? false) ? "rides" : "live")
+        store.replace(updated, vehicleKey: found.vehicleKey)
+        return updated
+    }
+}
+
+/// Mutable row storage behind ``DebugShareEndpoint`` (MYR-369).
+///
+/// A class so a PATCH survives the struct copies the endpoint makes on its way
+/// into `LiveShareService`. `@unchecked Sendable` over a lock rather than an
+/// actor because `VehicleSharingEndpoint` is synchronous-`Sendable` and every
+/// access here is a trivial dictionary read under DEBUG-only, single-scene use.
+final class DebugShareInviteStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String: [ShareInvite]] = [:]
+
+    var rows: [String: [ShareInvite]] {
+        get { lock.withLock { storage } }
+        set { lock.withLock { storage = newValue } }
+    }
+
+    func find(_ inviteID: String) -> (row: ShareInvite, vehicleKey: String)? {
+        lock.withLock {
+            for (key, rows) in storage {
+                if let row = rows.first(where: { $0.inviteId == inviteID }) { return (row, key) }
+            }
+            return nil
+        }
+    }
+
+    func replace(_ row: ShareInvite, vehicleKey: String) {
+        lock.withLock {
+            guard let index = storage[vehicleKey]?.firstIndex(where: { $0.inviteId == row.inviteId })
+            else { return }
+            storage[vehicleKey]?[index] = row
+        }
     }
 }
 
@@ -2404,6 +2512,18 @@ extension DebugScene {
             return SimulatedShareService(viewers: [], pending: ShareFixtures.pending)
         case .ownerShareAcceptedOnly:
             return SimulatedShareService(viewers: ShareFixtures.viewers, pending: [])
+        // MYR-369 — the per-viewer control scenes. Both run the PRODUCTION
+        // `LiveShareService` against `DebugShareEndpoint`'s now-MUTABLE store, so
+        // every switch on the page is genuinely live: a flip runs the shipping
+        // optimistic write, the real `PATCH` (partial body, derived `permission`,
+        // `409` on a pending row) and the real re-read.
+        //
+        // They are live-path-only for a sharper reason than the rest of this
+        // family: `allowRides` and `suspended` are OWNER-ONLY fields that exist
+        // only on a §7.5.2 listing, so a simulated scene could draw the switches
+        // but could never show them reconciling a server.
+        case .ownerShareControls, .ownerShareVehiclePaused:
+            return Self.shareControlsService(vehiclePaused: self == .ownerShareVehiclePaused)
         default:
             break
         }
@@ -2454,7 +2574,97 @@ extension DebugScene {
                 createdAt: created, expiresAt: expires
             )
         ]
-        return LiveShareService(api: endpoint, ownedVehicles: { vehicles })
+        return LiveShareService(
+            api: endpoint,
+            // MYR-369 — the Share tab now also holds §7.18's vehicle-level
+            // switch, so it needs that seam even on scenes that are not about it.
+            rideShareAPI: DebugRideShareEndpoint(),
+            ownedVehicles: { vehicles }
+        )
+    }
+
+    /// MYR-369's Share tab, built from the WIRE so every control on it is the
+    /// shipping one.
+    ///
+    /// The roster deliberately spans all THREE meaningful accepted states at
+    /// once, because the whole point of the redesign is that they are now
+    /// independent rather than points on a ladder:
+    ///
+    ///   • **Jonas** — active, rides ON. Both switches on.
+    ///   • **Mira** — active, rides OFF. Location on, Rides off. This is the
+    ///     ordinary state and the composer's default preset.
+    ///   • **Aanya** — SUSPENDED. Location off, and the Rides switch collapsed to
+    ///     inert beneath it, carrying "Paused — Aanya can't see this car". Her
+    ///     `allowRides` is deliberately left TRUE on the wire, which is the state
+    ///     the contract is most specific about: a suspended grant with the ride
+    ///     flag set grants NOTHING, and the owner's row must still show the flag
+    ///     in its stored position so restoring shows what comes back. A client
+    ///     that "tidied" that to false would silently downgrade her on restore.
+    ///
+    /// A PENDING row rides along so the "no switches until accepted" rule is in
+    /// the same frame as the rows that do have them — and because `PATCH` answers
+    /// `409` on it, that rule is enforced by the stub rather than merely drawn.
+    ///
+    /// `vehiclePaused` seeds the vehicle-level master switch OFF, which is the
+    /// only way to capture the per-viewer Rides switches in their DISABLED
+    /// state — the vehicle-level context the row has to explain rather than just
+    /// grey out.
+    @MainActor
+    private static func shareControlsService(vehiclePaused: Bool) -> any ShareService {
+        let base = VehicleFixtures.vehicles[0]
+        // ONE car: the Share tab's toggle card is per-vehicle, and a single-car
+        // owner is the case the relocation is designed around.
+        let vehicle = Vehicle(
+            id: base.id, name: base.name, model: base.model, colorName: base.colorName,
+            plate: base.plate, seatHeat: base.seatHeat, seatVent: base.seatVent,
+            activity: base.activity,
+            // The wire's own position for §7.18, read by the relocated card.
+            rideShareEnabled: vehiclePaused ? false : true
+        )
+        let day = 86_400.0
+        func stamp(_ offset: Double) -> String {
+            ISO8601DateFormatter().string(from: Date().addingTimeInterval(offset))
+        }
+        let endpoint = DebugShareEndpoint()
+        endpoint.invitesByVehicle[vehicle.id] = [
+            ShareInvite(
+                inviteId: "acc-jonas", vehicleId: vehicle.id, label: "Jonas Park",
+                permission: SharePermission(rawValue: "rides"),
+                allowRides: true, suspended: false, status: .accepted,
+                createdAt: stamp(-20 * day), acceptedAt: stamp(-19 * day)
+            ),
+            ShareInvite(
+                inviteId: "acc-mira", vehicleId: vehicle.id, label: "Mira Chen",
+                permission: SharePermission(rawValue: "live"),
+                allowRides: false, suspended: false, status: .accepted,
+                createdAt: stamp(-12 * day), acceptedAt: stamp(-11 * day)
+            ),
+            ShareInvite(
+                inviteId: "acc-aanya", vehicleId: vehicle.id, label: "Aanya Iyer",
+                permission: SharePermission(rawValue: "live"),
+                // Suspended WITH the ride flag still set — see above.
+                allowRides: true, suspended: true, status: .accepted,
+                createdAt: stamp(-8 * day), acceptedAt: stamp(-7 * day)
+            ),
+            ShareInvite(
+                inviteId: "pen-diego", vehicleId: vehicle.id, label: "Diego Vega",
+                // A PENDING row carries NEITHER flag — the keys are omitted while
+                // there is no grant to describe, which is exactly the absence the
+                // screen must render as "no switches yet" rather than as "off".
+                permission: SharePermission(rawValue: "rides"), status: .pending,
+                code: "RBO246",
+                shareUrl: DebugSignedInviteLink.url(
+                    code: "RBO246", expires: Date().addingTimeInterval(5 * day),
+                    from: "Thomas Nandola", to: "Diego Vega"
+                ),
+                createdAt: stamp(-2 * day), expiresAt: stamp(5 * day)
+            ),
+        ]
+        return LiveShareService(
+            api: endpoint,
+            rideShareAPI: DebugRideShareEndpoint(),
+            ownedVehicles: { [vehicle] }
+        )
     }
 
     /// The RIDER's shared-vehicle catalog for this scene, or `nil` to leave the

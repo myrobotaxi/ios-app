@@ -64,27 +64,45 @@ struct SharedVehicleGrant: Identifiable, Equatable, Sendable {
         return "\(relationship) \u{00B7} \(accessLabel)"
     }
 
-    // MARK: - Client-side capability gates (§7.5.0)
+    // MARK: - Client-side capability gates (§7.5.0, rewritten by MYR-369)
     //
-    // CUMULATIVE `>=` over `live < live_history < rides`, never equality — the
-    // same comparison every server gate makes. These are AFFORDANCE HINTS ONLY:
-    // the server independently enforces all of them, so getting one wrong cannot
-    // escalate anything. What they prevent is the app OFFERING something that
-    // will 403 — which is the actual product failure (a rider taps "Request a
-    // ride" and gets a wall).
+    // **THE CUMULATIVE `>=` IS GONE.** These used to compare over a total order
+    // `live < live_history < rides`, mirroring the comparison every server gate
+    // made. The 0.23.0 contract retires that order outright: on an accepted grant
+    // `sharePermission` is now DERIVED from per-grant flags on every read, emits
+    // ONLY `rides` or `live`, and the contract's own guidance is to "gate the
+    // ride-request affordance on `== 'rides'`". So these are equality tests now.
     //
-    // An UNRANKABLE tier fails CLOSED (nothing offered) rather than open. A tier
-    // this build has never seen is, by the contract's append-in-increasing-order
-    // rule, strictly higher than `rides` — but offering affordances on a tier we
-    // cannot reason about is exactly the guess that produces a 403 wall.
+    // They remain AFFORDANCE HINTS ONLY: the server independently enforces every
+    // gate, so getting one wrong cannot escalate anything. What they prevent is
+    // the app OFFERING something that will 403 — the actual product failure (a
+    // rider taps "Request a ride" and gets a wall).
+    //
+    // An UNKNOWN tier still fails CLOSED. `ShareTierMapping.tier(forWire:)`
+    // answers `nil` for a value this build has never seen, and offering
+    // affordances on a capability we cannot reason about is exactly the guess
+    // that produces that wall.
 
-    /// §7.2/§7.3/§7.4 — the drives/history surfaces need `>= live_history`.
-    var grantsHistory: Bool {
-        guard let tier else { return false }
-        return tier == .history || tier == .rides
-    }
+    /// **HISTORY IS OWNER-ONLY NOW, so this is always `false` for a viewer.**
+    ///
+    /// It is kept as a named property rather than deleted at its call sites
+    /// because the FACT it encodes is what changed, and a reader of those call
+    /// sites needs to see the answer stated. MYR-369's contract is explicit: "the
+    /// history/drives surfaces are OWNER-ONLY as of MYR-369 and no value of this
+    /// field opens them." The `live_history` tier that used to open them is
+    /// retired and never emitted, and `rides` never implied history in the new
+    /// model — it only ever did so through the cumulative order that is gone.
+    ///
+    /// A viewer reaching §7.2/§7.3/§7.4 would now be refused server-side, so
+    /// offering the drives surfaces to one is precisely the 403 wall these gates
+    /// exist to prevent.
+    var grantsHistory: Bool { false }
 
-    /// §7.8 — creating a ride request as a non-owner needs `rides`, the top tier.
+    /// §7.8 — creating a ride request as a non-owner needs `rides`, which is now
+    /// the projection of the grant's own `allowRides` flag rather than a tier
+    /// reached by climbing past `live_history`. Unchanged in spelling, and for
+    /// the first time the equality is the contract's own instruction rather than
+    /// a shortcut that happened to agree with it.
     var grantsRides: Bool { tier == .rides }
 }
 

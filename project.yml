@@ -30,7 +30,14 @@ packages:
     # SIGNED join link (`/join/{CODE}?k={kid}.{exp}.{sig}&from=&to=`). The app
     # target names `ShareInvite` directly (`DebugShareEndpoint`), so this pin has
     # to move with the Kit's rather than relying on SPM's dedupe to carry it.
-    from: 0.22.0
+    #
+    # MYR-369 — 0.23.0 turns the share TIER into two per-grant FLAGS:
+    # `ShareInvite.allowRides` + `ShareInvite.suspended` (owner-only, accepted
+    # rows only) and the new `PatchShareInviteRequest`. `SharePermission` is no
+    # longer a total order — see the Kit's `Package.swift` for the full note. The
+    # app target names `ShareInvite`/`SharePermission` directly (`DebugShareEndpoint`,
+    # `DebugScenes`), so this pin moves with the Kit's, same reason as 0.22.0.
+    from: 0.23.0
 
 settings:
   base:

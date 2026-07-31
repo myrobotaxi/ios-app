@@ -474,14 +474,44 @@ struct RootView: View {
         )
     }
 
-    /// Push a resolved vehicle onto the viewer state. Only `.ridable` adopts
-    /// anything: `.resolving` deliberately leaves the viewer alone (adopting `nil`
+    /// Push a resolved vehicle onto the viewer state.
+    ///
+    /// `.resolving` deliberately leaves the viewer alone — adopting `nil`
     /// mid-resolution would tear down a perfectly good telemetry source on every
-    /// re-ask), and `.empty`/`.unavailable` are surfaces with no map behind them.
+    /// re-ask. `.unavailable` likewise: a list that did not ANSWER is not
+    /// evidence the car is gone, and releasing on a transient failure would drop
+    /// a live stream every time the network blinked.
+    ///
+    /// **`.empty` NOW RELEASES, and that is MYR-369's viewer half.** Suspension
+    /// is enforced by REMOVING the grant from the viewer's access set, so a
+    /// suspended car does not arrive marked — it simply STOPS BEING IN
+    /// `GET /api/vehicles`. For a viewer whose only car was suspended, the next
+    /// list refresh therefore resolves `.empty` while `sharedVehicle`, the tier
+    /// and the `RiderLiveVehicleLocator` subscription all still point at it.
+    ///
+    /// Before this, `.empty` returned without touching any of that: the shell
+    /// swapped to `SharedNoVehiclesScreen` (so the user saw an honest empty
+    /// state) while the viewer state kept a socket open on a car the account no
+    /// longer has access to, and any later `.ridable` resolution or stale read of
+    /// `sharedVehicle` got the revoked one. Nothing crashed — there is no
+    /// index-based access anywhere on this path — but the strand was real, and
+    /// MYR-369 makes it reachable routinely rather than only on a revoke.
+    ///
+    /// Releasing here is also what the DV-09 caveat needs from the client: the
+    /// server does not tear the socket down on suspend (MYR-373 covers that), so
+    /// an already-open stream keeps delivering until it reconnects. `adopt(nil)`
+    /// calls `watch(vehicleID: nil)`, which is the client dropping it on the next
+    /// list read — the earliest honest moment available to this side.
     @MainActor
     private func adoptRiderVehicle(_ resolution: RiderVehicleSet) {
-        guard case .ridable(let adoption) = resolution else { return }
-        sharedViewerState.adopt(adoption)
+        switch resolution {
+        case .ridable(let adoption):
+            sharedViewerState.adopt(adoption)
+        case .empty:
+            sharedViewerState.adopt(nil)
+        case .resolving, .unavailable:
+            break
+        }
     }
 
     /// Clear the account's persisted view mode on sign-out — the choice is

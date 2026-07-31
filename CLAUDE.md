@@ -1355,6 +1355,142 @@ exactly), which is why this is the prototype's grammar and not a port defect.
   `ownerSettings` — the one other consumer of this data — is **byte-identical**,
   which is the guard that the Settings surface was not touched.
 
+**The grant is EDITABLE now, and the vehicle's switch moved onto this page**
+(MYR-369, contracts **0.23.0**) — scenes `ownerShareControls` /
+`ownerShareVehiclePaused`. Before this issue a share's access was **fixed for the
+life of the row**: the contract said so in as many words, and changing what
+someone could do meant revoking them and sending a fresh invite. `PATCH
+/api/invites/{inviteId}` replaces that, and the tier it replaces is retired with
+it.
+
+- **THE TIER IS NOW TWO INDEPENDENT FLAGS.** `ShareInvite.allowRides` and
+  `ShareInvite.suspended` are owner-only, accepted-rows-only, and are the truth;
+  `sharePermission` survives as a **derived compatibility projection** the server
+  recomputes on every read (`allowRides` true → `rides`, else `live`). So the
+  pre-MYR-369 rule that consumers compare tiers with a cumulative `>=` is now
+  **wrong**, and `SharePermission.rank` / `grants(_:)` are **deleted rather than
+  deprecated** — a comparator that still compiles is a foot-gun, and every call
+  site had to be visited anyway. `SharePermission.allowsRides` (equality) and
+  `ShareInvite.allowsRides` / `.isSuspended` are the only reads.
+- **`live_history` IS RETIRED AND NEVER EMITTED**, and the third invite option
+  went with it. Two things killed it independently: the drives surfaces are
+  **owner-only** as of MYR-369, so no share preset opens them at all
+  (`SharedVehicleGrant.grantsHistory` is now `false` for every viewer, which is a
+  real behaviour change, not a tidy-up); and a preset that cannot come back from
+  the server is a one-way trip. The enum member **stays** for decode compat and
+  `ShareTierMapping.tier(forWire:)` folds it to `.live` — but no
+  `ShareAccessLevel` case can produce it, so sending it is unreachable by
+  construction rather than by care.
+- **THE TWO ABSENCE RULES POINT IN OPPOSITE DIRECTIONS**, which is the single
+  most swappable thing here. An absent `allowRides` falls back to the derived
+  `permission` (`rides` → true); an absent `suspended` reads as **NOT suspended**.
+  *Absence is never suspension.* Both are spelled once, in the Kit, for the same
+  reason `VehicleRideShare.isPaused` is.
+- **The vehicle-level ride-share toggle moved to the TOP of the Share tab** —
+  same field, same `PUT /api/tesla/vehicles/{id}/ride-share` (§7.18), same
+  `VehicleRideShare.rowCaption` strings. It was the last row of the owner sheet's
+  "Status & location" card, three detents down inside a scroll, beside the car's
+  location and range. That is where the FIELD lives; it is not where its
+  CONSEQUENCES are. It also makes the per-viewer Rides switches legible, since
+  they are gated on it — and a gate the owner cannot see is a control that
+  mysteriously does nothing. **The Share tab has no vehicle selection**, so the
+  card renders **one row per owned vehicle** rather than inventing a fleet-wide
+  semantic the server does not have or silently governing only the first car.
+  It is a MOVE, not a copy: `StatusLocationSection` no longer takes a
+  `rideShare:` model, `VehicleControls` no longer has `rideShareEnabled` /
+  `onSetRideShareEnabled`, and neither does `HomeSheetContent`. That card is
+  again exactly what it was before MYR-342 — the car REPORTING its situation,
+  with no row where the owner answers. Two switches for one field on two screens
+  would be worse than either placement.
+- **⚠️ MYR-360's PAUSE WARNING IS CURRENTLY UNREACHABLE, and that is a disclosed
+  gap rather than a decision.** Turning ride sharing OFF used to read the car's
+  upcoming reservations first and warn before stranding a booked rider
+  (`RideSharePauseFlow`). That flow is built on the per-vehicle
+  `VehicleCommandExecutor` seam — it commits through `executor
+  .setRideShareEnabled` and raises its failures as executor NOTICES — and the
+  Share tab has no executor: it writes §7.18 directly through
+  `VehicleRideShareEndpoint`. Re-homing the flow onto a seam both surfaces can
+  reach is **follow-up work**, and `RideSharePauseFlow`, `RideSharePause`,
+  `RideSharePauseDialog` and their tests are deliberately LEFT IN PLACE rather
+  than deleted, because that follow-up needs them. The `ownerRideShareOn` /
+  `ownerRideSharePaused` / `ownerRideSharePending` / `ownerRideSharePauseWarning`
+  scenes still boot, but the row they were written to capture is gone from that
+  card, so they should be retired or re-pointed as part of the same follow-up.
+- **The per-viewer row is not `ShareRosterRow` with switches bolted on.** Two
+  labelled switches do not fit beside a name and two lines of text at 393pt, and
+  stacking them on the trailing edge gives the owner two unlabelled toggles whose
+  meaning is positional. They get their own sub-rows, indented to the text column
+  exactly as the separator is. **The PENDING row keeps the plain
+  `ShareRosterRow`**, which is what makes "no switches until accepted" visible at
+  a glance — and `PATCH` answers `409` on a pending row, so that rule is enforced
+  rather than merely drawn.
+- **A DISABLED RIDE SWITCH IS DIMMED AND INERT, NEVER HIDDEN OR RE-DRAWN OFF.**
+  The contract is specific: a suspended grant keeps its flags and restoring
+  returns exactly what it had, so the owner has to see what is coming back.
+  `ownerShareVehiclePaused` is the capture that proves it — Jonas's Rides toggle
+  sits dimmed-GOLD (stored on) directly above Mira's dimmed-GREY one (stored
+  off). Re-drawing either as plain off would be a claim about the stored value
+  that is simply false.
+- **Precedence in the copy is not arbitrary.** `ShareViewerControls.resolve`
+  checks suspension FIRST, because it is the stronger and more specific fact: a
+  viewer suspended on a car whose ride sharing is *also* off must be told they
+  cannot see the car at all. Naming the lesser reason would send the owner to the
+  wrong switch. The subtitle says the CONSEQUENCE and names the person ("Paused —
+  {name} can't see this car"); "suspended" is the wire's word and means nothing
+  to an owner.
+- **Optimistic with rollback, and the ROLLBACK IS THE SERVICE'S JOB** — it holds
+  the exact row it replaced. A view re-deriving "the opposite of what I just
+  sent" would be guessing at a value the server may have changed underneath it.
+  Leaving an optimistic position up is the failure that matters: an owner walks
+  away believing they paused someone who still has full access. The vehicle
+  switch adopts the server's **echo** rather than the bool it sent, same rule as
+  MYR-342.
+- **ONE SCREEN ROW IS N SERVER ROWS**, so a per-viewer edit fans out over the
+  whole group exactly as revoke does — patching only the first would leave the
+  person able to ride the owner's other car from a switch that says otherwise.
+  The accepted-row grouping key gained BOTH flags: two grants that disagree must
+  stay two rows, or one pair of switches would render one grant's state while
+  writing to both.
+- **The viewer's half is an ABSENCE, not a marker.** Suspension is enforced by
+  removing the grant from the access set, so a suspended car does not arrive
+  flagged — it **stops being in `GET /api/vehicles`**. A client looking for a
+  "suspended" field on the viewer side finds nothing and concludes all is well.
+  `RootView.adoptRiderVehicle` now **releases on `.empty`**: before this it
+  returned without touching anything, so the shell showed an honest empty screen
+  while `SharedViewerState` and the live socket stayed pointed at a car the
+  account no longer had access to. `.unavailable` still does NOT release — a list
+  that did not *answer* is not evidence the car is gone. One caveat is recorded
+  rather than closed: the server does not tear the socket down on suspend, so an
+  already-open stream keeps delivering until it reconnects (websocket-protocol.md
+  §10 DV-09, server-side fix tracked as **MYR-373**); `adopt(nil)` dropping it on
+  the next list read is the earliest honest moment this side has.
+- **`DebugShareEndpoint` stores its rows in a REFERENCE box now.** The shipping
+  service re-reads the list after every write, so a stub that patched a value
+  copy would answer `200`, re-read the untouched seed, and snap the switch back —
+  a capture of a broken toggle produced by a broken stub. Every switch in both
+  scenes is genuinely live: real optimistic write, real PATCH (partial body,
+  derived `permission`, `409` on pending), real re-read. Both scenes are
+  live-path-only by construction — the flags exist only on a §7.5.2 owner listing
+  — so `ownerShareEmpty` / `ownerSharePendingOnly` / `ownerShareAcceptedOnly` and
+  both composer steps are unchanged. **`ownerShare` DID change on purpose**: it
+  grows the vehicle card and the switches, and its fixture roster moves the middle
+  persona off the retired `history` preset onto `allowRides`, with the third
+  persona now SUSPENDED — a state that had no fixture at all before.
+- **The decode trap, pointed forwards** (MYR-362's lesson): both flags are
+  OPTIONAL BOOLS, so a wrong key decodes silently to `nil` — and `nil` on
+  `suspended` reads as NOT suspended, i.e. a mis-keyed fixture would show a paused
+  viewer as having full access while every decode test passed. The guards are raw
+  fixture keys (`share_invites_list_flags.json` asserts the flags are on accepted
+  rows and **absent** from the pending one), raw encoded PATCH-body keys, and a
+  test that pins every fixture key against what the GENERATED type actually
+  produces — the check MYR-362 did not have, since its hand-authored type and its
+  fixture were written from the same misreading and agreed with each other.
+
+```sh
+SIMCTL_CHILD_MRT_SCENE=ownerShareControls xcrun simctl launch <udid> app.myrobotaxi.ios
+SIMCTL_CHILD_MRT_SCENE=ownerShareVehiclePaused xcrun simctl launch <udid> app.myrobotaxi.ios
+```
+
 **Invite links have an address** (MYR-346) — an invite is shared as
 `https://myrobotaxi.app/join/{CODE}`, a branded web page whose OG card renders in
 the thread and which, on a phone that has the app, opens it straight to the

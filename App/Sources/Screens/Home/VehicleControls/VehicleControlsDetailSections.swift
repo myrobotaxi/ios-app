@@ -29,19 +29,12 @@ struct StatusLocationSection: View {
     /// parked. Non-nil means "this car is in service" — the value INSIDE may still
     /// be nil, which is the honest "no time set yet" state, not an error.
     var serviceWindow: ServiceWindowRowModel? = nil
-    /// MYR-342 — the owner's ride-sharing switch. `nil` (the default) hides the row
-    /// entirely, which is what keeps the simulated sheet and every drift-gate scene
-    /// byte-identical: the host supplies a model only on the LIVE path, because a
-    /// switch that cannot reach a server is a switch that lies.
-    ///
-    /// It belongs in THIS card and not in Vehicle details for the reason the
-    /// service-window row is here: this section is where the AVAILABILITY facts
-    /// live. "In Service", "Parked", "Expected back" and "can riders book this car"
-    /// are answers to one question an owner asks in one glance; Vehicle details
-    /// answers "what car is this" (plate, VIN, trim, software). Filing an
-    /// availability switch under identity would separate it from the very badge it
-    /// modifies.
-    var rideShare: RideShareRowModel? = nil
+    // MYR-369 — the ride-sharing row has LEFT this card. It moved to the top of
+    // the Share tab (`InvitesScreen.vehicleRideShareCard`), the surface where the
+    // rest of the owner's sharing decisions live and where the per-viewer
+    // switches it gates are visible directly beneath it. Same field, same §7.18
+    // endpoint; only the surface moved. What stays here is what it always was
+    // apart from that row: the car REPORTING its situation.
 
     /// Elapsed-since-parked, or `nil` when the park-start is unknown (live — no
     /// contracted park-start; MYR-268) so the "Parked" row is omitted rather than
@@ -84,25 +77,6 @@ struct StatusLocationSection: View {
                     // the row's own full width, with the same notice machinery
                     // every other control uses.
                     if let notice = serviceWindow.state.notice {
-                        VehicleCommandNoticeLine(notice: notice)
-                    }
-                }
-                // MYR-342 — the owner's ride-sharing switch, LAST in the card. The
-                // order is the card's own logic, not an afterthought: everything
-                // above is the car REPORTING its situation (where it is, how long
-                // it has been there, how far it can go, when it is back), and this
-                // is the one row where the owner ANSWERS. Reading top to bottom
-                // gives the facts, then the decision they inform.
-                if let rideShare {
-                    RideShareRow(model: rideShare)
-                    // The write can fail (no network, a session that expired while
-                    // the sheet sat open). Surface it in place, on the row's own
-                    // full width, with the same notice machinery every other
-                    // control uses — and note the row above has already SNAPPED
-                    // BACK to the server's position by the time this renders, so
-                    // the line explains a switch that visibly did not move rather
-                    // than contradicting one that did.
-                    if let notice = rideShare.state.notice {
                         VehicleCommandNoticeLine(notice: notice)
                     }
                 }
