@@ -21,16 +21,27 @@ final class ShareRosterStateTests: XCTestCase {
         PendingInvite(name: name, email: nil, code: "RBO246", sent: "2d ago", tier: .live)
     }
 
+    /// MYR-386 — the matrix below is about a COMPLETED fetch, which is what every
+    /// one of these assertions has always meant. Stating it once here keeps each
+    /// test about its own subject; the phase gets its own section at the bottom.
+    private func resolve(
+        phase: ShareRosterLoadPhase = .loaded,
+        viewers: [Viewer] = [],
+        pending: [PendingInvite] = []
+    ) -> ShareRosterState {
+        ShareRosterState.resolve(phase: phase, viewers: viewers, pending: pending)
+    }
+
     // MARK: The four arms
 
     func testNothingSharedAndNothingPendingIsTheHeroEmptyState() {
-        XCTAssertEqual(ShareRosterState.resolve(viewers: [], pending: []), .empty)
+        XCTAssertEqual(resolve(viewers: [], pending: []), .empty)
     }
 
     /// THE CLIENT'S OWN STATE. Before MYR-347 this rendered "VIEWERS · 0", a
     /// consolation sentence and a second header over one row.
     func testPendingOnlyRendersExactlyOneSectionAndNoViewersHeader() {
-        let state = ShareRosterState.resolve(viewers: [], pending: [invite("Diego Vega")])
+        let state = resolve(viewers: [], pending: [invite("Diego Vega")])
         guard case .populated(let sections) = state else { return XCTFail("expected content") }
         XCTAssertEqual(sections.map(\.id), ["invited"])
         XCTAssertEqual(sections[0].title, "Invited")
@@ -38,7 +49,7 @@ final class ShareRosterStateTests: XCTestCase {
     }
 
     func testAcceptedOnlyRendersExactlyOneSectionAndNoInvitedHeader() {
-        let state = ShareRosterState.resolve(viewers: [viewer("Mira Chen")], pending: [])
+        let state = resolve(viewers: [viewer("Mira Chen")], pending: [])
         guard case .populated(let sections) = state else { return XCTFail("expected content") }
         XCTAssertEqual(sections.map(\.id), ["accepted"])
         XCTAssertEqual(sections[0].title, "Shared with")
@@ -46,7 +57,7 @@ final class ShareRosterStateTests: XCTestCase {
     }
 
     func testMixedRendersBothSectionsWithAcceptedFirst() {
-        let state = ShareRosterState.resolve(
+        let state = resolve(
             viewers: [viewer("Mira Chen"), viewer("Jonas Park")],
             pending: [invite("Diego Vega")]
         )
@@ -64,7 +75,7 @@ final class ShareRosterStateTests: XCTestCase {
     func testNoResolvedSectionIsEverEmpty() {
         for viewerCount in 0...3 {
             for pendingCount in 0...3 {
-                let state = ShareRosterState.resolve(
+                let state = resolve(
                     viewers: (0..<viewerCount).map { viewer("Viewer \($0)") },
                     pending: (0..<pendingCount).map { invite("Invite \($0)") }
                 )
@@ -79,6 +90,11 @@ final class ShareRosterStateTests: XCTestCase {
                             "\(section.title) rendered with \(viewerCount)/\(pendingCount)"
                         )
                     }
+                case .loading, .unavailable:
+                    // MYR-386 — unreachable from `.loaded`, which is the phase
+                    // this whole matrix is about. Asserted rather than defaulted
+                    // so a future arm cannot be swallowed by a `default:`.
+                    XCTFail("a completed fetch resolved to \(state)")
                 }
             }
         }
@@ -89,8 +105,81 @@ final class ShareRosterStateTests: XCTestCase {
     /// keeps the hero from ever appearing over a list (MYR-343's lesson about a
     /// gate that answered a different question than its copy).
     func testOneRowOfEitherKindLeavesTheEmptyState() {
-        XCTAssertNotEqual(ShareRosterState.resolve(viewers: [viewer("A")], pending: []), .empty)
-        XCTAssertNotEqual(ShareRosterState.resolve(viewers: [], pending: [invite("B")]), .empty)
+        XCTAssertNotEqual(resolve(viewers: [viewer("A")], pending: []), .empty)
+        XCTAssertNotEqual(resolve(viewers: [], pending: [invite("B")]), .empty)
+    }
+
+    // MARK: - MYR-386 — the fetch's phase
+    //
+    // THE CLIENT'S REPORT (TestFlight, build 202607311129): *"Need to add the
+    // skeleton loading to this page. It flashes no one added then appears."*
+    //
+    // `ShareService` had published `isLoading` and `statusMessage` since MYR-184
+    // and this screen read NEITHER, so the whole render came off two arrays that
+    // start `[]`. An empty array in flight and an empty array that came back empty
+    // are the same value, and the screen answered both with the definitive,
+    // CTA-bearing hero.
+
+    /// THE DEFECT, as an assertion: a fetch that is genuinely running renders
+    /// skeletons, not "no one has access yet".
+    func testAnInFlightFetchRendersSkeletonsRatherThanTheEmptyState() {
+        XCTAssertEqual(resolve(phase: .loading, viewers: [], pending: []), .loading)
+    }
+
+    /// `.idle` shimmers WITH `.loading`, deliberately. `InvitesScreen.task` calls
+    /// `load()` unconditionally on appear, so on this screen "not asked yet" is
+    /// always "about to ask" — and splitting them would put the empty hero on
+    /// screen for exactly the one frame the client photographed.
+    func testNotYetAskedRendersSkeletonsToo() {
+        XCTAssertEqual(resolve(phase: .idle, viewers: [], pending: []), .loading)
+    }
+
+    /// The other half of the fix, and the reason the phase is not just a
+    /// `Bool`: the empty state is reachable ONLY from a completed fetch.
+    func testTheEmptyStateIsReachableOnlyFromACompletedFetch() {
+        for phase: ShareRosterLoadPhase in [.idle, .loading, .failed("nope")] {
+            XCTAssertNotEqual(
+                resolve(phase: phase, viewers: [], pending: []), .empty,
+                "\(phase) claimed the account has shared with nobody"
+            )
+        }
+        XCTAssertEqual(resolve(phase: .loaded, viewers: [], pending: []), .empty)
+    }
+
+    /// A FAILED read is its own state and carries the service's sentence. "No one
+    /// has access yet" over a list that simply did not load is a lie of exactly
+    /// the kind MYR-343 removed from the rider shell — and a worse one here,
+    /// because an owner who believes it will re-send an invite that already
+    /// landed.
+    func testAFailedFetchIsNeverTheEmptyState() {
+        XCTAssertEqual(
+            resolve(phase: .failed(LiveShareService.unreadableMessage), viewers: [], pending: []),
+            .unavailable(LiveShareService.unreadableMessage)
+        )
+    }
+
+    /// ROWS IN HAND OUTRANK EVERY PHASE. `LiveShareService` re-reads the whole
+    /// list after every mutation and on every appearance of the tab, so a
+    /// mid-flight or failed re-read that blanked a populated roster into a
+    /// skeleton — or into a failure screen — would make a revoke look like the
+    /// list falling over. Same rule `LiveSharedVehicleCatalog` applies when it
+    /// leaves the last-known grants standing.
+    func testARefreshNeverBlanksARosterAlreadyOnScreen() {
+        for phase: ShareRosterLoadPhase in [.idle, .loading, .loaded, .failed("nope")] {
+            let state = resolve(phase: phase, viewers: [viewer("Mira Chen")], pending: [invite("Diego Vega")])
+            guard case .populated(let sections) = state else {
+                return XCTFail("\(phase) discarded rows that were already in hand")
+            }
+            XCTAssertEqual(sections.map(\.id), ["accepted", "invited"])
+        }
+    }
+
+    /// The skeleton is a PROMISE (MYR-326), so no phase may shimmer forever. Only
+    /// the two phases that precede an answer resolve to `.loading`; both terminal
+    /// phases resolve to something that stands still.
+    func testOnlyAnUnansweredFetchShimmers() {
+        XCTAssertNotEqual(resolve(phase: .loaded, viewers: [], pending: []), .loading)
+        XCTAssertNotEqual(resolve(phase: .failed("nope"), viewers: [], pending: []), .loading)
     }
 
     // MARK: Copy

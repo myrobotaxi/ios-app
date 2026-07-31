@@ -22,7 +22,11 @@ enum ShareComposition {
     static func makeShareService(
         mode: AppMode,
         sessionTokenProvider: SessionTokenProvider? = nil,
-        ownedVehicles: @escaping @MainActor () -> [Vehicle]
+        ownedVehicles: @escaping @MainActor () -> [Vehicle],
+        // MYR-386 — what that same fleet is DOING, so an empty vehicle list can
+        // be told apart from a vehicle list that has not answered yet. Defaulted,
+        // because on the SIMULATED branch below it is never consulted.
+        fleetState: @escaping @MainActor () -> ShareFleetState = { .resolved }
     ) -> any ShareService {
         guard let rest = makeRestClient(mode: mode, sessionTokenProvider: sessionTokenProvider) else {
             return SimulatedShareService()
@@ -31,7 +35,10 @@ enum ShareComposition {
         // `VehicleSharingEndpoint` (§7.5) and `VehicleRideShareEndpoint` (§7.18).
         // MYR-369 relocated §7.18's switch onto this screen, so the screen now
         // needs both — but it is still one client and one session.
-        return LiveShareService(api: rest, rideShareAPI: rest, ownedVehicles: ownedVehicles)
+        return LiveShareService(
+            api: rest, rideShareAPI: rest,
+            ownedVehicles: ownedVehicles, fleetState: fleetState
+        )
     }
 
     /// The rider's shared-vehicle catalog + redeem call.

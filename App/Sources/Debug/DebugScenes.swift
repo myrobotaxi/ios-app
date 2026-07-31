@@ -922,6 +922,36 @@ enum DebugScene: String, CaseIterable {
     case ownerShareControls
     case ownerShareVehiclePaused
 
+    /// MYR-386 — THE TWO STATES THIS TAB DID NOT HAVE: the roster genuinely IN
+    /// FLIGHT, and the roster that FAILED TO LOAD.
+    ///
+    /// Both were rendered as `ownerShareEmpty` before this issue — "No one has
+    /// access yet", icon, explainer and gold CTA — because the screen resolved
+    /// from two arrays that start `[]` and an empty array in flight is not
+    /// distinguishable from an empty answer. The client photographed the first
+    /// one: *"It flashes no one added then appears."*
+    ///
+    /// `ownerShareLoading` parks the §7.5.2 fetch in flight and never resolves it
+    /// (`DebugHangingSharingEndpoint`) — the same park-in-one-branch mechanism
+    /// MYR-326's `DebugLoadingFleet` and MYR-342's `DebugHangingRideShareEndpoint`
+    /// use, and for the same reason: against a healthy backend this state lasts
+    /// milliseconds and cannot be screenshotted by racing it. Everything on screen
+    /// is the shipping render of a REAL `.loading` phase raised by the production
+    /// `LiveShareService`, not a hand-set flag. **Capture it twice** — once
+    /// normally, once with `xcrun simctl ui <udid> reduce_motion enabled` — to
+    /// prove `MRTShimmerBand`'s fallback: the blocks stay, the sweep goes.
+    ///
+    /// `ownerShareUnreachable` fails every per-vehicle read, which is the ONLY
+    /// route to the failure state: `LiveShareService` reports it only when EVERY
+    /// vehicle failed, precisely so one transient 500 does not put a notice under
+    /// a list that is fine.
+    ///
+    /// Both are live-path-only by construction (`SimulatedShareService.rosterPhase`
+    /// is `.loaded` from the first frame), so every simulated Share-tab capture is
+    /// byte-identical.
+    case ownerShareLoading
+    case ownerShareUnreachable
+
     /// MYR-347 — the two composer steps, which headless tooling cannot reach:
     /// step one is behind a tap on the hero CTA / "Invite someone" row, and step
     /// two additionally needs six characters typed into a field. Both seed the
@@ -1289,6 +1319,8 @@ enum DebugScene: String, CaseIterable {
              .ownerShareComposer, .ownerShareComposerAccess,
              // MYR-369 — the per-viewer control scenes are the Share tab too.
              .ownerShareControls, .ownerShareVehiclePaused,
+             // MYR-386 — the loading + failure states of the same tab.
+             .ownerShareLoading, .ownerShareUnreachable,
              // MYR-369 — AND SO ARE THE RIDE-SHARE SCENES NOW. They used to fall
              // through to `"home"` and photograph the owner sheet's Status &
              // location card, which is where that switch lived until this issue
@@ -1682,6 +1714,8 @@ enum DebugScene: String, CaseIterable {
             // the repo's own notes flag as the classic miss: without it the scene
             // boots the RIDER shell and the Share tab is unreachable.
             || self == .ownerShareControls || self == .ownerShareVehiclePaused
+            // MYR-386 — same chain, same reason.
+            || self == .ownerShareLoading || self == .ownerShareUnreachable
             // MYR-355 — the owner-shell deletion scenes. MYR-366 — `offboarding
             // Failed` is captured on the OWNER shell because the owner's sequence
             // is the longer one and therefore the harder stepper to stop honestly
@@ -2534,6 +2568,7 @@ enum DebugScene: String, CaseIterable {
              .ownerShareEmpty, .ownerSharePendingOnly, .ownerShareAcceptedOnly,
              .ownerShareComposer, .ownerShareComposerAccess,
              .ownerShareControls, .ownerShareVehiclePaused,
+             .ownerShareLoading, .ownerShareUnreachable,
              .riderSharedEmpty, .riderWatchOnly,
              .riderOwnerSelfRide, .riderVehiclesResolving, .riderVehiclesUnreachable,
              .riderInviteRateLimited, .riderInviteJoined, .riderInviteEntry:
@@ -2867,6 +2902,25 @@ extension DebugScene {
         // but could never show them reconciling a server.
         case .ownerShareControls, .ownerShareVehiclePaused:
             return Self.shareControlsService(vehiclePaused: self == .ownerShareVehiclePaused)
+        // MYR-386 — the two LOAD states. Both run the PRODUCTION
+        // `LiveShareService` against a §7.5.2 read that never answers / always
+        // fails, so the phase the screen renders is the shipping one. The fleet
+        // is a literal here (`fleetState` defaults to `.resolved`), which is what
+        // isolates each capture to the ROSTER's own phase: the ride-sharing card
+        // renders its real switch in both, and the skeleton below it is the only
+        // thing in flight.
+        case .ownerShareLoading:
+            return LiveShareService(
+                api: DebugHangingSharingEndpoint(),
+                rideShareAPI: DebugRideShareEndpoint(),
+                ownedVehicles: { [VehicleFixtures.vehicles[0]] }
+            )
+        case .ownerShareUnreachable:
+            return LiveShareService(
+                api: DebugFailingSharingEndpoint(),
+                rideShareAPI: DebugRideShareEndpoint(),
+                ownedVehicles: { [VehicleFixtures.vehicles[0]] }
+            )
         // MYR-369 — the RE-POINTED ride-share scenes build the same Share tab, and
         // differ from each other only in the WIRE their one car carries. Each is
         // the state its name has always claimed, now on the surface that renders

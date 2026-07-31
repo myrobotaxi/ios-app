@@ -120,6 +120,13 @@ struct InvitesScreen: View {
                         // account that has shared with nobody.
                         vehicleRideShareCard
                         switch rosterState {
+                        // MYR-386 — the fetch is genuinely running and nothing is
+                        // known. Skeleton rows, not the empty hero: an empty array
+                        // in flight is not an account with nobody on it.
+                        case .loading:
+                            ShareRosterSkeleton()
+                        case .unavailable(let message):
+                            ShareRosterUnavailable(message: message)
                         case .empty:
                             ShareEmptyHero(sharesByCode: shareService.sharesByCode, action: openSend)
                         case .populated(let sections):
@@ -263,6 +270,25 @@ struct InvitesScreen: View {
         // itself; folding it in would serialize it behind the composer seeds for
         // no reason.
         .task { await flipRideShareForCaptureSceneIfRequested() }
+        // MYR-386 — RE-ASK WHEN THE FLEET LANDS.
+        //
+        // §7.5.2 is per-vehicle, so `LiveShareService.performLoad` short-circuits
+        // on an empty fleet. The `.task` above fires on APPEARANCE, and an owner
+        // who opens this tab during a cold boot appears before `GET /api/vehicles`
+        // answers — so the roster fetch was skipped and nothing ever re-ran it.
+        // The tab sat on "No one has access yet" for the rest of the session; the
+        // client's flash is the same defect on an account whose fleet won the
+        // race by a few hundred milliseconds.
+        //
+        // Keyed on the vehicle IDS rather than on the rows, so the per-second
+        // telemetry churn that rewrites charge and location on the same `Vehicle`
+        // values cannot spend a §7.5.2 fetch per frame. Empty → non-empty is the
+        // transition that matters; a car linked or torn down mid-session is worth
+        // a re-read too, and both come out of the same key.
+        .onChange(of: shareService.vehicleRideShare.map(\.id)) { _, ids in
+            guard !ids.isEmpty else { return }
+            Task { await shareService.load() }
+        }
     }
 
     /// The send toast. SIM keeps the prototype's "Invite sent to {email}"; LIVE
@@ -323,8 +349,18 @@ struct InvitesScreen: View {
 
     /// MYR-347 — the ONE resolved state this screen renders. Pure, and pinned by
     /// `ShareRosterStateTests` across the whole matrix.
+    ///
+    /// MYR-386 — it takes the FETCH'S PHASE as well as the two lists. That is the
+    /// whole fix: the two arrays start `[]` on the live path and stay `[]` until
+    /// §7.5.2 answers, so resolving from them alone gave the in-flight case and
+    /// the genuinely-empty case one and the same render — and it was the
+    /// definitive one, complete with a CTA.
     private var rosterState: ShareRosterState {
-        ShareRosterState.resolve(viewers: shareService.viewers, pending: shareService.pending)
+        ShareRosterState.resolve(
+            phase: shareService.rosterPhase,
+            viewers: shareService.viewers,
+            pending: shareService.pending
+        )
     }
 
     private var recipientField: some View {
@@ -493,14 +529,23 @@ struct InvitesScreen: View {
 
     /// The vehicle-level ride-share card, relocated to the top of this tab.
     ///
-    /// Renders NOTHING when the fleet is empty or still loading — an empty card
-    /// with a heading and no rows is the stacked-chrome defect MYR-347 was
-    /// entirely about, and a switch about a car nobody has linked is worse than
-    /// no switch.
+    /// Renders NOTHING when the fleet has answered and holds no cars — an empty
+    /// card with a heading and no rows is the stacked-chrome defect MYR-347 was
+    /// entirely about, and a switch about a car nobody has linked is worse than no
+    /// switch.
+    ///
+    /// MYR-386 — but a fleet that has NOT answered gets a placeholder instead of
+    /// that same nothing. This card reads the very list the roster's fetch is
+    /// keyed on, so with no cars in hand it drew nothing, and the page's first
+    /// card popped in and shoved the roster down the moment the fleet landed. The
+    /// two cases are told apart by the roster PHASE rather than by the row count,
+    /// which is the same "an empty array is not an answer" rule one level up.
     @ViewBuilder
     private var vehicleRideShareCard: some View {
         let rows = shareService.vehicleRideShare
-        if !rows.isEmpty {
+        if rows.isEmpty {
+            if case .loading = rosterState { ShareVehicleRideShareSkeleton() }
+        } else {
             VStack(spacing: 0) {
                 // No count badge — see `ShareSectionHeader.count`. The number of
                 // cars an owner has is not a fact this header exists to report.

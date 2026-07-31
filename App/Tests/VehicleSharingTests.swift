@@ -454,15 +454,19 @@ final class LiveShareServiceTests: XCTestCase {
 
     /// An account with no linked car has nothing shared. That is the screen's
     /// existing honest empty state, NOT a failure and NOT a loading spinner.
-    func testAnEmptyFleetLoadsToEmptyListsWithNoStatusLineAndNoRequests() async {
+    ///
+    /// MYR-386 — and it holds ONLY because the fleet has ANSWERED. `makeService`
+    /// leaves `fleetState` at its `.resolved` default, which is what a literal
+    /// vehicle list means; the `.resolving` arm is the one that used to be
+    /// answered with this same empty verdict and is asserted below.
+    func testAnEmptyRESOLVEDFleetLoadsToTheEmptyStateWithNoRequests() async {
         let endpoint = ScriptedShareEndpoint()
         let service = makeService(endpoint, vehicles: [])
         await service.load()
 
         XCTAssertTrue(service.viewers.isEmpty)
         XCTAssertTrue(service.pending.isEmpty)
-        XCTAssertNil(service.statusMessage)
-        XCTAssertFalse(service.isLoading)
+        XCTAssertEqual(service.rosterPhase, .loaded)
         XCTAssertTrue(endpoint.calls.isEmpty, "nothing to ask about")
     }
 
@@ -482,7 +486,10 @@ final class LiveShareServiceTests: XCTestCase {
         await service.load()
 
         XCTAssertEqual(service.viewers.count, 1)
-        XCTAssertNil(service.statusMessage, "a partial failure must not put a status line under a list that is fine")
+        XCTAssertEqual(
+            service.rosterPhase, .loaded,
+            "a partial failure must not put a status line under a list that is fine"
+        )
     }
 
     /// EVERY vehicle failing is the only case that earns the quiet status line —
@@ -496,8 +503,7 @@ final class LiveShareServiceTests: XCTestCase {
         let service = makeService(endpoint, vehicles: vehicles)
         await service.load()
 
-        XCTAssertNotNil(service.statusMessage)
-        XCTAssertFalse(service.isLoading)
+        XCTAssertEqual(service.rosterPhase, .failed(LiveShareService.unreadableMessage))
     }
 
     /// §7.5.1 — the PATH vehicle authorizes the call and MUST be in the set. The
@@ -1080,11 +1086,13 @@ final class SimulatedShareServiceTests: XCTestCase {
         XCTAssertEqual(service.viewers, ShareFixtures.viewers)
         XCTAssertEqual(service.pending, ShareFixtures.pending)
         XCTAssertEqual(service.shareableVehicles, VehicleFixtures.vehicles)
-        XCTAssertFalse(service.isLoading)
-        XCTAssertNil(service.statusMessage)
+        // MYR-386 — `.loaded` FROM THE FIRST FRAME, which is what makes every
+        // simulated + DEBUG Share-tab capture byte-identical: no simulated scene
+        // can reach a skeleton or a failure state at all.
+        XCTAssertEqual(service.rosterPhase, .loaded)
         XCTAssertFalse(service.sharesByCode)
         await service.load()
-        XCTAssertFalse(service.isLoading, "load is a no-op in sim")
+        XCTAssertEqual(service.rosterPhase, .loaded, "load is a no-op in sim")
     }
 
     /// MYR-184 data fix: the prototype's `doSend` DISCARDED the chosen tier

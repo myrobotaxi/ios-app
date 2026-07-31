@@ -589,7 +589,7 @@ SIMCTL_CHILD_MRT_SCENE=ownerOffboardingDone xcrun simctl launch <udid> app.myrob
 
 - Loading states (MYR-326, all **live-path-only**): `ownerConnectingCold` (owner Home in the first moments of a live boot — the `GET /api/vehicles` list is still in flight, so NOTHING is known and even the switcher chip is a placeholder), `ownerConnecting` (**the client's state**: the list landed — his car's name is known and the REAL `MapHeader` renders it — and the cold `/snapshot` has not. MYR-319's 0/0.8/3/9s retry means this routinely lasts >10s on an asleep/in-service car, which is why he screenshotted it; before this issue both scenes were one black screen with a system `ProgressView` and "Connecting to your vehicles…"), `ownerDrivesLoading` (Drives tab, first page in flight — a day heading + three `DriveRow`-shaped placeholders where a spinner and "Loading drives…" used to be), `ownerSettingsLoading` (Settings ⇢ Tesla Account with the fleet list in flight — two row-shaped placeholders instead of "Connecting…"; forces the LIVE linked-vehicle branch via `DebugScene.rendersLiveLinkedVehicles`, the same stand-in-for-a-live-session precedent as `showsLiveSettings`, so `ownerSettings` itself stays byte-identical). All four inject `DebugLoadingFleet`, which parks the app in ONE loading branch and never resolves it — these states have no other capture route, since on a healthy account each lasts milliseconds and the client's needs a real asleep car behind a real auth session. **No simulated scene can reach a skeleton at all**: `SimulatedVehicleFleet.isConnecting` and `SimulatedDrivesFeed.isLoading`/`hasMore` are `false` by construction and Settings only consults the live list when `linkedVehicles` is wired, so the whole drift gate is untouched. Capture each one twice — once normally, once with `xcrun simctl ui <udid> reduce_motion enabled` — to prove the Reduce Motion fallback: the blocks stay, the sweep goes (`MRTShimmerBand` renders nothing).
 
-**Loading ≠ unavailable** (MYR-326) — skeletons render only from genuinely-in-flight branches. The honest end states keep their quiet one-liners and must never be skeletonized: "No drives yet", "No vehicles linked to this account", "Sign-in required to load vehicles", and the new cold-read timeout. That timeout is what makes the rest safe: `LiveVehicleFleet` now bounds the cold `/snapshot` wait to `ColdSnapshotLoad.budget()` (the Kit's whole retry schedule + per-attempt slack, ~21s) and then renders "Can't reach <car> right now" instead of loading forever. Before it, a car that never answered left `isConnecting` true for the whole session — survivable as a spinner, a lie as a shimmering placeholder. Recovery is the existing low-friction one (a resume re-asks; a late snapshot clears the timeout by itself), not a retry button.
+**Loading ≠ unavailable** (MYR-326) — skeletons render only from genuinely-in-flight branches. The honest end states keep their quiet one-liners and must never be skeletonized: "No drives yet", "No vehicles linked to this account", "Sign-in required to load vehicles", and the new cold-read timeout. **MYR-386 adds the converse, which is the more common defect: an honest end state must never be rendered BEFORE the fetch that would justify it.** The owner Share tab spent two issues resolving from two arrays that start `[]`, so an in-flight list and a genuinely empty one produced the same definitive, CTA-bearing hero — see "A published loading signal that no screen read" below. The check that catches this class is not "does the loading state exist" but "**can the empty state be reached from a phase that is not `loaded`**". That timeout is what makes the rest safe: `LiveVehicleFleet` now bounds the cold `/snapshot` wait to `ColdSnapshotLoad.budget()` (the Kit's whole retry schedule + per-attempt slack, ~21s) and then renders "Can't reach <car> right now" instead of loading forever. Before it, a car that never answered left `isConnecting` true for the whole session — survivable as a spinner, a lie as a shimmering placeholder. Recovery is the existing low-friction one (a resume re-asks; a late snapshot clears the timeout by itself), not a retry button.
 
 **THE HONEST END STATE WAS UNREACHABLE, AND THE MAP WENT TO NULL ISLAND**
 (MYR-387, client defect, build `202607311129`) — scenes `ownerColdReadFailed` /
@@ -1765,6 +1765,90 @@ SIMCTL_CHILD_MRT_SCENE=ownerRideSharePauseWarningMulti xcrun simctl launch <udid
 SIMCTL_CHILD_MRT_SCENE=ownerShareControls xcrun simctl launch <udid> app.myrobotaxi.ios
 SIMCTL_CHILD_MRT_SCENE=ownerShareVehiclePaused xcrun simctl launch <udid> app.myrobotaxi.ios
 ```
+
+**A PUBLISHED LOADING SIGNAL THAT NO SCREEN READ** (MYR-386, client-reported) —
+scenes `ownerShareLoading` / `ownerShareUnreachable`. TestFlight, build
+`202607311129`: *"Need to add the skeleton loading to this page. It flashes no
+one added then appears."*
+
+`ShareService` has published `isLoading: Bool` and `statusMessage: String?` since
+MYR-184 and **`InvitesScreen` read neither**. So the tab resolved its entire
+render from the two arrays those signals were meant to qualify — arrays that start
+`[]` on the live path — and an empty array IN FLIGHT is byte-identical to an empty
+array that came back empty. The screen answered both with `.empty`: the hero, the
+explainer and the gold CTA, i.e. the most definitive thing it can say, over a
+fetch that had not answered. **A signal with no consumer is worse than no signal:
+it makes the surface look wired, and no test, compiler or screenshot disagrees.**
+This is MYR-343's lesson for the third time (`hasLoaded && grants.isEmpty`, then
+`RiderSettingsVehicleSection`, now here) — three situations told apart by fewer
+arms than they have, so one always borrows another's surface for a frame.
+
+- **The phase REPLACES the two booleans rather than joining them**
+  (`ShareRosterLoadPhase`: `idle` / `loading` / `loaded` / `failed(String)`).
+  They could not express the flash's own state: `isLoading == false,
+  statusMessage == nil` was BOTH "loaded, genuinely empty" and "nobody has asked
+  yet". `ShareRosterState` grows `.loading` and `.unavailable(String)` to match,
+  so the empty hero is **reachable only from a completed fetch** — structurally,
+  not by care.
+- **`.idle` shimmers WITH `.loading`, deliberately.** `InvitesScreen.task` calls
+  `load()` unconditionally on appear, so on this screen "not asked yet" is always
+  "about to ask"; splitting them would put the hero on screen for exactly the one
+  frame the client photographed. The standing rule (shimmer only while a fetch
+  genuinely runs) is kept by the SERVICE, which leaves `.idle` the moment it
+  establishes there is nothing to fetch.
+- **ROWS IN HAND OUTRANK EVERY PHASE**, and this is not a nicety.
+  `LiveShareService` re-reads the whole list after every mutation and on every
+  appearance of the tab, so a re-read that blanked a populated roster into a
+  skeleton — or into a failure screen — would make a REVOKE look like the list
+  falling over. Same rule `LiveSharedVehicleCatalog` applies when it leaves the
+  last-known grants standing.
+- **THE SECOND FLASH WAS THE EMPTY FLEET, and it is the sharper half.** §7.5.2 is
+  per-vehicle, so `performLoad` short-circuits when `ownedVehicles()` is empty —
+  correctly — but it could not tell "this account owns no cars" from "the vehicle
+  list has not answered yet" and answered both with "nothing is shared". On a cold
+  boot that is the flash; worse, the `.task` had already fired and **nothing
+  re-asked when the fleet landed**, so a Share tab opened during a cold boot sat
+  on the empty hero for the rest of the session. `ShareFleetState`
+  (`resolving`/`resolved`/`unreachable`) is a closure into the SAME started fleet
+  `shareableVehicles` already reads — no new fetch — and `InvitesScreen` re-asks
+  on the vehicle IDS changing (ids, not rows: telemetry rewrites charge and
+  location on those same `Vehicle` values every second).
+- **A FAILED READ IS NOT AN EMPTY LIST.** "No one has access yet" is a claim about
+  the ACCOUNT and a failed fetch does not support it — and an owner who believes
+  it will re-send an invite that already landed. `ShareRosterUnavailable` carries
+  `LiveShareService.unreadableMessage` verbatim, mirrors
+  `SharedVehiclesUnreachableScreen`'s second line, and has **no retry button and
+  no CTA at all**: recovery is the low-friction one (a resume re-asks), and
+  minting a code onto a roster the app cannot see is not an offer to make.
+- **The ride-sharing card gets a placeholder too**, because it reads the very
+  vehicle list the roster's fetch is keyed on: with no cars in hand it drew
+  NOTHING, so the page's first card popped in and shoved the roster down when the
+  fleet landed. Its switch's slot gets a block while the roster row's overflow
+  menu deliberately does not — **the ellipsis is an affordance that exists
+  regardless of the data, so a block there invents a button; a toggle's whole
+  content IS the value being fetched.**
+- Both scenes are **live-path-only by construction**
+  (`SimulatedShareService.rosterPhase` is `.loaded` from the first frame), so
+  every simulated + DEBUG Share-tab capture is byte-identical.
+  `ownerShareLoading` parks the §7.5.2 read in flight and never resolves it
+  (`DebugHangingSharingEndpoint` — the MYR-326 / MYR-342 park-in-one-branch
+  mechanism); `ownerShareUnreachable` fails EVERY per-vehicle read, which is the
+  only route to the failure state since the service reports one only when all of
+  them failed. **Capture each twice** — once normally, once with `xcrun simctl ui
+  <udid> reduce_motion enabled` — to prove `MRTShimmerBand`'s fallback: the blocks
+  stay, the sweep goes.
+
+```sh
+SIMCTL_CHILD_MRT_SCENE=ownerShareLoading xcrun simctl launch <udid> app.myrobotaxi.ios
+SIMCTL_CHILD_MRT_SCENE=ownerShareUnreachable xcrun simctl launch <udid> app.myrobotaxi.ios
+```
+
+**Still open, found and NOT fixed here**: owner **Settings** renders the same
+`shareService.viewers` list behind a bare `isEmpty` fallback
+(`SettingsScreen.sharedWithCard` → `SettingsNoticeRow("No one has access yet.")`),
+so it has this exact flash on its own surface. It is a different tab and MYR-354's
+grammar owns that page; the phase it needs is now published, and unread there for
+the same reason it was unread here.
 
 **The Live Activity is the first surface this app does not draw** (MYR-172) —
 scene `riderLiveActivity`. The rider's ride card on the lock screen and in the
