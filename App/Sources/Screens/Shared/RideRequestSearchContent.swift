@@ -374,7 +374,22 @@ struct RideRequestSearchContent: View {
                 // reading Schedule from a stale `scheduleSheetOpen`.
                 scheduleSheetOpen = false
             }
-            guard newPhase == .idle, viewerState.draftDestination == nil else { return }
+            // MYR-389 — THIS LOCAL STATE IS A MIRROR OF THE DRAFT, so it is
+            // re-synced on ARRIVAL as well as on collapse. MYR-248 wired only the
+            // `.idle` half, on the reading that the draft can only end there; the
+            // client's r15 defect is a draft that ended somewhere else entirely
+            // (Review's scheduled submit) and a sheet re-entered with these fields
+            // still holding the last trip. Whichever way the draft became empty,
+            // a sheet that arrives over an empty draft must show an empty sheet —
+            // otherwise the field says "SFO · Terminal 2" over a `draftDestination`
+            // of nil, which is the stale, dead "Continue" MYR-248 was about,
+            // wearing the previous trip's name.
+            //
+            // Arriving at `.search` WITH a draft is left alone on purpose: that is
+            // the retention path (pin-drop back, MYR-233's scheduling route, a
+            // declined rebook), where the filled field is the point.
+            guard newPhase == .idle || newPhase == .search,
+                  viewerState.draftDestination == nil else { return }
             pickedDestination = nil
             // MYR-363b — the prompt's latch is PER DRAFT, and this is where the
             // draft ends (`RiderIdleSearchSheet.commitSettle` → `closeToIdle` →

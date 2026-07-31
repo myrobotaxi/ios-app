@@ -493,7 +493,16 @@ struct RideRequestReviewContent: View {
             // (mirrors `SimulatedRideRequestService.accept()`'s own
             // `schedule != nil` branch, which never seeds `trackProgress`) —
             // go straight back to idle rather than into Booking/Tracking.
-            viewerState.sheetPhase = .idle
+            //
+            // MYR-389 — and the draft ENDS here. This was a bare
+            // `sheetPhase = .idle`: the trip had been submitted and the rider was
+            // back on the map, but every draft field survived, so the next
+            // "Where to?" reopened this very trip (the client's r15 clip). The
+            // input above is already captured, and the reservation lives in the
+            // service's slot from `submit(_:)` — nothing downstream reads the
+            // draft for a ride that exists. The ENTRY invariant covers this path
+            // regardless; clearing here is the same fact stated where it happens.
+            viewerState.resetDraftToIdle()
         } else {
             viewerState.sheetPhase = .booking
         }
