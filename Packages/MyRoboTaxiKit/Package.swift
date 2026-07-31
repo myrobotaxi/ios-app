@@ -147,7 +147,40 @@ let package = Package(
         //     simply shows no countdown, with no throw anywhere. That is MYR-362's
         //     defect in a new place, which is why the guard is a RAW-KEY assertion
         //     rather than a round-trip.
-        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.24.0")
+        //
+        // MYR-385 — 0.26.0 adds the SCHEDULE-PICKER CONFLICT READ (schemas/
+        // booked-windows.schema.json, rest-api.md §7.22): `VehicleBookedWindowsResponse`
+        // and `BookedWindow`, the read side of the MYR-383 create-time booking gate.
+        // Four properties of the shape decide how every consumer must treat it:
+        //   • CONCRETE INSTANTS, NOT AN ANCHOR PLUS A RADIUS. The ±45min half-width is
+        //     a PRODUCT GUESS living in exactly one place on the server, passed to SQL
+        //     as a bind parameter and encoded in no schema, no enum and no client. The
+        //     server resolves it and emits `start`/`end`, so widening it later changes
+        //     every picker on the NEXT RESPONSE with no client release. Consumers MUST
+        //     NOT re-derive, re-centre, pad, round, or infer the half-width from a
+        //     window — a client that hard-codes 45 minutes is a client that silently
+        //     disagrees with the gate the day the number moves.
+        //   • THE INTERVAL IS OPEN AT BOTH ENDS. The gate compares strictly inside, so
+        //     a reservation for exactly `start` or exactly `end` is ACCEPTED (two rides
+        //     touching at a boundary are a legal back-to-back booking). A picker dims
+        //     `start < slot < end` and nothing else; dimming the endpoints refuses a
+        //     slot the server would have taken.
+        //   • A SNAPSHOT, NOT A SUBSCRIPTION. Windows appear and vanish underneath the
+        //     response, and the ACTIVE-INSTANT arm anchors on the server's clock so it
+        //     SLIDES forward while the response does not. The create-time `409
+        //     time_conflict` therefore remains the authority; this read reduces how
+        //     often a rider meets it and does not replace it.
+        //   • `items: []` MEANS "NO RESERVATIONS", NOT "WIDE OPEN". §7.22 deliberately
+        //     does NOT consult the §7.18 pause or the §7.16 service window — both
+        //     refuse a create, neither describes a window — so a paused or in-service
+        //     car answers with its real (often empty) window list and the picker's
+        //     existing gates stay responsible for those.
+        // `pending` (a still-undecided `requested` claim) changes only the WORDS, never
+        // the availability — the create path counts pending claims in full. `own`
+        // tracks the RIDER, so an owner sees `own: false` for rides other people booked
+        // in their car. (0.24.0 added the Live Activity family; 0.23.0 the per-grant
+        // share flags; 0.22.0 `ShareInvite.shareUrl`.)
+        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.26.0")
     ],
     targets: [
         .target(

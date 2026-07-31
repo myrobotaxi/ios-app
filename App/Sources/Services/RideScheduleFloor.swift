@@ -20,10 +20,29 @@ import Foundation
 // window leaves scheduling fully open, per the contract's explicit consumer
 // guidance. Every function here degrades to "all allowed" on nil, so a bug that
 // loses the floor makes the picker permissive, never bricked.
+//
+// MYR-385 — THE GRID NOW ANSWERS TO TWO RULES, AND THAT IS WHY THEY MEET HERE.
+// A slot can be out because the car is still in a service bay (the floor, above)
+// or because the car is already spoken for at that hour (§7.22's booked windows,
+// `RideBookedWindows.swift`). They are unrelated facts from unrelated endpoints,
+// and the second was NOT given its own parallel set of `allowedTimes` /
+// `allowedDays` / `firstAllowedSlot` helpers — because five call sites in the
+// card (day chips, time chips, the CTA gate, the selection reconciler, its
+// fallback scan) would then each have had to remember to consult both, and the
+// first one to forget produces a chip the CTA refuses or a "first bookable slot"
+// that is not bookable. `windows` defaults to `[]`, which allows everything, so
+// every pre-MYR-385 caller and test is unchanged by construction.
+//
+// The two rules are also DIFFERENT IN KIND and neither may be expressed as the
+// other: the floor is a single monotone bound (everything before an instant is
+// out), while windows are a scattered set of intervals with gaps a rider can and
+// should book into. Folding windows into a "floor" would push the earliest
+// bookable slot past a perfectly free morning.
 
 enum RideScheduleFloor {
 
-    /// Whether one picker cell is bookable against `floor`.
+    /// Whether one picker cell is bookable against `floor` AND against the
+    /// vehicle's booked `windows`.
     ///
     /// A cell whose day/time cannot be resolved at all (an unparseable time — not
     /// reachable from the shipped chip sets, but the mapping's signature admits
@@ -33,6 +52,7 @@ enum RideScheduleFloor {
         day: String,
         time: String,
         floor: Date?,
+        windows: [RideBookedWindow] = [],
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> Bool {
@@ -61,6 +81,14 @@ enum RideScheduleFloor {
             return false
         }
 
+        // MYR-385 — §7.22's booked windows. Checked on the RESOLVED instant (the
+        // same one the create body would carry), strictly inside, so the picker's
+        // verdict and the gate's are the same comparison on the same value.
+        // `windows` is empty whenever the read has not landed, has failed, or the
+        // path is simulated — all three of which mean "no dimming", which is the
+        // pre-MYR-385 picker exactly.
+        if RideBookedWindows.conflict(at: slot, in: windows) != nil { return false }
+
         guard let floor else { return true }
         return VehicleServiceWindow.allows(slot, floor: floor)
     }
@@ -77,10 +105,11 @@ enum RideScheduleFloor {
         on day: String,
         times: [String],
         floor: Date?,
+        windows: [RideBookedWindow] = [],
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> [String] {
-        times.filter { allows(day: day, time: $0, floor: floor, now: now, calendar: calendar) }
+        times.filter { allows(day: day, time: $0, floor: floor, windows: windows, now: now, calendar: calendar) }
     }
 
     /// The days with at least one bookable time.
@@ -93,11 +122,12 @@ enum RideScheduleFloor {
         _ days: [String],
         times: [String],
         floor: Date?,
+        windows: [RideBookedWindow] = [],
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> [String] {
         days.filter {
-            !allowedTimes(on: $0, times: times, floor: floor, now: now, calendar: calendar).isEmpty
+            !allowedTimes(on: $0, times: times, floor: floor, windows: windows, now: now, calendar: calendar).isEmpty
         }
     }
 
@@ -111,11 +141,14 @@ enum RideScheduleFloor {
         days: [String],
         times: [String],
         floor: Date?,
+        windows: [RideBookedWindow] = [],
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> RideSchedule? {
         for day in days {
-            if let time = allowedTimes(on: day, times: times, floor: floor, now: now, calendar: calendar).first {
+            if let time = allowedTimes(
+                on: day, times: times, floor: floor, windows: windows, now: now, calendar: calendar
+            ).first {
                 return RideSchedule(day: day, time: time)
             }
         }

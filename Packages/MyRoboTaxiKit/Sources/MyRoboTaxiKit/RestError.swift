@@ -62,4 +62,26 @@ public enum RestError: Error, Sendable {
         guard case .http(let status, let code, _, _) = self else { return false }
         return status == 409 && code?.rawValue == "vehicle_unavailable"
     }
+
+    /// MYR-383/385 — the `409 vehicle_unavailable` refusal whose `subCode` is
+    /// `time_conflict`: the car is not unavailable at all, the TIME is already
+    /// spoken for (rest-api.md §7.8's per-vehicle window gate).
+    ///
+    /// A STRICT NARROWING of ``isVehicleUnavailable`` — every time-conflict refusal
+    /// is also a vehicle-unavailable one, so a caller that only tests the broader
+    /// predicate keeps working unchanged and keeps routing the rider to scheduling.
+    /// What the sub-code buys is the WORDS: "that car just became unavailable" is
+    /// simply false of a rider who collided with their own noon reservation, and
+    /// "try scheduling it" is a strange thing to say to somebody who was already
+    /// scheduling. It also identifies the one refusal whose picker-side read
+    /// (§7.22) is worth re-asking, since the answer demonstrably moved.
+    ///
+    /// Branches on the TYPED sub-code, never the human `message` (FR-7.1).
+    /// `ErrorPayload.SubCode.timeConflict` is a real member as of contracts
+    /// 0.26.0; matching on `rawValue` keeps it working against an older or newer
+    /// build where the same string arrives as `.unrecognized`.
+    public var isTimeConflict: Bool {
+        guard case .http(_, _, _, let subCode) = self else { return false }
+        return isVehicleUnavailable && subCode?.rawValue == "time_conflict"
+    }
 }
