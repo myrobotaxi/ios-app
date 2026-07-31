@@ -430,6 +430,13 @@ struct RootView: View {
             } else {
                 scene.apply(viewer: viewer, service: SimulatedRideRequestService())
             }
+            // MYR-396 — `ownerDispatchColdAdopted` is the one scene whose subject
+            // is a SERVER READ, so it composes the production
+            // `LiveRideRequestService` over a scripted §7.8 endpoint and lets the
+            // real `start()` sequence run. Applied AFTER the seeding above, which
+            // for this scene is a no-op (it seeds nothing — the record comes off
+            // the wire). Every other scene leaves this `nil`.
+            if let coldAdopted = scene.rideRequestServiceOverride { service = coldAdopted }
             startScreen = DebugScene.initialScreen
             startRole = DebugScene.initialRole
             startSharedTab = DebugScene.initialSharedTab
@@ -614,6 +621,11 @@ struct RootView: View {
     @MainActor
     private func signOutLocally(stopsTelemetry: Bool) {
         clearModeOnSignOut()
+        // MYR-396 — release the remembered owner dispatch with the session. It is a
+        // single record on a device that holds one session at a time (the same
+        // reasoning `UserDefaultsProfileStore` is written on), so the next account
+        // must not inherit the previous one's ride.
+        rideRequestService.forgetOwnerDispatch()
         unregisterPushOnSignOut()
         if stopsTelemetry { ownerHomeState.stopTelemetry() }
         session.signOut()
@@ -789,7 +801,13 @@ struct RootView: View {
         case .ownerHome:
             guard screen == .ownerHome else { return }
             ownerTab = "home"
-            Task { await service.refreshIncoming() }
+            // MYR-396 — the dispatch first, for the same reason `start()` orders
+            // them that way: a ride already accepted owns the owner's slot, and the
+            // still-`requested` ones queue behind it.
+            Task {
+                await service.refreshOwnerDispatch()
+                await service.refreshIncoming()
+            }
         case .riderActiveFlow:
             guard screen == .sharedHome else { return }
             sharedTab = "shared"
@@ -1425,6 +1443,13 @@ struct RootView: View {
                 // one it cannot. Makes no request unless something dormant is held
                 // and its moment has actually passed.
                 Task { await rideRequestService.refreshDueReservations() }
+                // MYR-396 — and the OWNER's live dispatch. A force-quit is the
+                // reported case, but a long suspend is the same situation with a
+                // different cause: the socket dropped, whatever frames arrived
+                // while the app was away are gone, and the card has to be able to
+                // come back from the server. Costs no request unless this device
+                // remembers a ride it accepted and is not already holding it.
+                Task { await rideRequestService.refreshOwnerDispatch() }
                 // MYR-343 — a rider whose vehicle list never answered is sitting on
                 // the honest "can't reach" line with nothing in flight behind it.
                 // Recovery is the low-friction one MYR-326 settled on (a resume

@@ -400,6 +400,29 @@ enum DebugScene: String, CaseIterable {
     /// `OwnerHomeState` (not view state), so it stays gone across a `HomeScreen`
     /// remount. Capture at t≈1s and t≈7s to see both halves.
     case ownerDispatchedCompleted
+    /// MYR-396 — owner Home holding a ride in progress that was **NOT seeded, but
+    /// READ BACK**: the cold-launch adoption, running for real.
+    ///
+    /// THE PAIR'S OTHER HALF IS `ownerDispatched`, and the diff is provenance
+    /// rather than pixels: the same leg-1 dispatch card, one arrived at by tapping
+    /// Accept in this process and one restored from the server after the process
+    /// that accepted it died. On TestFlight r16 this frame was BLANK — *"When I
+    /// close out the app the owner loses the UI of the current ride in progress."*
+    ///
+    /// It is LIVE-PATH-ONLY by construction and could not be otherwise: the
+    /// simulated service holds one in-process record and has no server to re-read,
+    /// so `refreshOwnerDispatch` is a no-op there and every simulated owner capture
+    /// is byte-identical. This scene composes the PRODUCTION
+    /// `LiveRideRequestService` over a scripted `DebugRideRequestEndpoint` and lets
+    /// its real `start()` sequence run — the same "real code path, injected wire"
+    /// precedent as `DebugShareEndpoint` / `DebugServiceWindowEndpoint`.
+    ///
+    /// **The wire is what makes it proof.** The ride is served ONLY by
+    /// `GET /api/ride-requests/{id}` (`DebugRideRequestEndpoint.dispatched`): the
+    /// rider list is empty and the incoming feed is empty, exactly as §7.8 leaves
+    /// an owner whose ride has been accepted. A stub that also listed it would let
+    /// this scene pass with the adoption deleted.
+    case ownerDispatchColdAdopted
     // MARK: MYR-376/377 — the reservation lifecycle
     /// MYR-376 — owner Home holding an ACCEPTED RESERVATION FOR TOMORROW.
     ///
@@ -1483,7 +1506,44 @@ enum DebugScene: String, CaseIterable {
     /// identity it cannot authenticate for. Scoped to this ONE scene, so every
     /// other scene — `ownerScheduled` and `ownerIncoming` included — keeps its
     /// simulated, pixel-identical rendering (CLAUDE.md drift gate).
-    var rendersLiveIncomingRequest: Bool { self == .ownerScheduledLive }
+    ///
+    /// MYR-396 adds `ownerDispatchColdAdopted` for the same reason, pointed at the
+    /// DISPATCH card rather than the incoming one: the record it restores is a wire
+    /// record, so its rider name must come off `requesterName` too. Without this
+    /// the status line would read the fixture "Sam" over a ride the server named,
+    /// which is a capture of the shipping code telling a small lie.
+    var rendersLiveIncomingRequest: Bool {
+        self == .ownerScheduledLive || self == .ownerDispatchColdAdopted
+    }
+
+    /// MYR-396 — the PRODUCTION `LiveRideRequestService` over a scripted §7.8
+    /// endpoint, for the ONE scene whose subject is a cold read.
+    ///
+    /// `autoStart: true`, deliberately: what the capture has to show is the real
+    /// `start()` sequence — rider adoption, then `refreshOwnerDispatch`, then the
+    /// incoming feed — doing on a simulator exactly what it does on the client's
+    /// phone. The pointer is seeded IN MEMORY (`InMemoryOwnerDispatchPointer`, the
+    /// `RootView.recentDestinationsStore()` precedent), so a ride left behind by
+    /// hand-driving a live flow on the same simulator can never frame a capture,
+    /// and nothing this scene does outlives it.
+    @MainActor
+    var rideRequestServiceOverride: LiveRideRequestService? {
+        guard self == .ownerDispatchColdAdopted else { return nil }
+        let rideID = "ride_cold_adopted"
+        return LiveRideRequestService(
+            api: DebugRideRequestEndpoint(dispatched: [
+                DebugRideRequestEndpoint.dispatch(
+                    id: rideID,
+                    vehicleID: DebugVehicleDetailsFleet.vehicleID,
+                    requesterName: "Mira",
+                    status: .accepted
+                )
+            ]),
+            socket: DebugInertRideSocket(),
+            autoStart: true,
+            dispatchPointer: InMemoryOwnerDispatchPointer(rideID: rideID)
+        )
+    }
 
     /// MYR-315 — whether owner Home should render its LIVE surfaces even though the
     /// simulator composed the simulated app mode. Same precedent as
@@ -1740,6 +1800,8 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerNoticeCharge || self == .ownerNoticeAsleep || self == .ownerNoticeSeat
             || self == .ownerDispatched || self == .ownerDispatchedArrived
             || self == .ownerDispatchedEnroute || self == .ownerDispatchedCompleted
+            // MYR-396 — the same owner Home, restored from a cold read.
+            || self == .ownerDispatchColdAdopted
             || self == .ownerFreshnessStale || self == .ownerFreshnessWaking
             || self == .ownerDrivingNoNav || self == .ownerDrivingResolvingDestination
             || self == .ownerFreshnessInService || self == .ownerFreshnessRefused
@@ -2684,6 +2746,9 @@ enum DebugScene: String, CaseIterable {
              .ownerNoticeRejectedInService,
              .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute,
              .ownerDispatchedCompleted,
+             // MYR-396 — the cold-adopted dispatch seeds NOTHING: its whole point
+             // is that the record comes off the wire through the shipping service.
+             .ownerDispatchColdAdopted,
              // MYR-376 — the two owner reservation scenes seed nothing about the
              // rider sheet; the dormant one's whole subject is a card that is NOT
              // rendered, and the upcoming one is the Drives tab.
