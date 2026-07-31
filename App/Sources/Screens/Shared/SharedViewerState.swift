@@ -142,6 +142,33 @@ public final class SharedViewerState {
     /// (the jsx overlays it on top of `search`, not a separate screen).
     public var showDeclinedNotice = false
 
+    /// MYR-381 (shipping MYR-306's `.declined` variant on MYR-292's precedent) —
+    /// the id of the declined ride the rider has ALREADY DISMISSED.
+    ///
+    /// *"I already dismissed the declined ride, why is it showing up again?"* —
+    /// TestFlight r14. `showDeclinedNotice` is raised from the HELD RECORD every
+    /// time the rider screen reconciles (mount, foreground refetch, WS frame,
+    /// MYR-376's due-refetch), and a declined ride stays in the slot on purpose —
+    /// so a dismissal that only lowered the flag was undone by the very next
+    /// reconcile.
+    ///
+    /// It lives HERE, on the rider-scoped observable, for exactly the reason
+    /// `OwnerHomeState.acknowledgedCompletedRideID` does: `RootView` builds the
+    /// rider shell inside a `switch`, so view `@State` is destroyed by a tab
+    /// switch — and the record outlives it. Keyed by RIDE ID rather than a bare
+    /// flag, so the dismissal is permanent for THIS ride and no ride at all for
+    /// the next one.
+    public var acknowledgedDeclinedRideID: String?
+
+    /// The rider dismissed (or rebooked past) the declined card for `rideID`.
+    /// Lowers the notice and records the acknowledgement in one place, so a caller
+    /// cannot do half of it.
+    public func acknowledgeDeclined(rideID: String?) {
+        showDeclinedNotice = false
+        guard let rideID else { return }
+        acknowledgedDeclinedRideID = rideID
+    }
+
     /// MYR-233 (acceptance criterion 2): the instant CTA on an unavailable
     /// vehicle routes the rider TOWARD the scheduling flow rather than dead-
     /// ending. The scheduling affordance is the Search sheet's "Schedule" chip

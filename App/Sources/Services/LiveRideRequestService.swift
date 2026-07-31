@@ -186,6 +186,12 @@ final class LiveRideRequestService: RideRequestService {
     /// card; drives the muted "+N more waiting" chip on `IncomingRequestSheet`.
     var waitingIncomingCount: Int { incomingQueue.count }
 
+    /// MYR-381 — see the protocol's own note. Bumped in `integrate` for every
+    /// frame about a ride carrying `scheduledFor`; the rider's Scheduled tab and
+    /// the owner's Drives → Upcoming re-read on it. `&+=` so a very long session
+    /// wraps instead of trapping — the VALUE is meaningless, only the change is.
+    private(set) var scheduledSurfaceTick = 0
+
     /// The server-assigned ride id for the RIDER's request (distinct from the
     /// local `activeRequest.id`, which for a rider-submitted ride is a client
     /// UUID until the create POST returns). Rider mutations target this id.
@@ -924,6 +930,13 @@ final class LiveRideRequestService: RideRequestService {
     /// incoming request cannot displace the rider's Ride Summary or `DeclinedNotice`
     /// because the owner arm never writes `activeRequest`.
     private func integrate(_ ride: RideRequest) {
+        // MYR-381 — tell the RESERVATION surfaces something happened, BEFORE the
+        // terminal early-return below. A cancelled ride is mapped to no status at
+        // all and returns immediately, and a cancelled reservation is precisely the
+        // frame the rider's Scheduled tab and the owner's Upcoming list most need:
+        // the row has to stop existing. Bumping first is what makes that
+        // unmissable rather than a case someone has to remember.
+        if ride.scheduledFor != nil { scheduledSurfaceTick &+= 1 }
         guard let mapped = RideRequestContractMapping.status(ride.status) else {
             // Cancelled / unknown-terminal — retire it from BOTH pipelines and from
             // the queue (MYR-317: a rider who cancels while queued must not be

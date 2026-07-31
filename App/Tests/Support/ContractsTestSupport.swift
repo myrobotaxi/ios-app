@@ -340,6 +340,11 @@ actor RoutedHTTP: HTTPPerforming {
     }
 
     func paths() -> [String] { requests.compactMap { $0.url?.path } }
+    /// MYR-381 — the whole requests, for the tests that assert the BYTES (method +
+    /// path + the id inside it) rather than only which routes were touched. A path
+    /// list cannot tell a `POST …/cancel` from a `GET` of the same URL, and that
+    /// distinction is exactly what the r14 cancel defect turned on.
+    func capturedRequests() -> [URLRequest] { requests }
     /// How many times a route has been asked — "did the client try again?".
     func callCount(suffix: String) -> Int { served[suffix] ?? 0 }
 }

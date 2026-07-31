@@ -123,7 +123,9 @@ struct DrivesScreen: View {
         // re-reads instead of removing it), and this is the sentence that stops the
         // owner walking away believing a reservation is gone when it is not. Same
         // quiet-toast grammar every other refused write in this app uses.
-        .mrtSuccessToast(
+        //
+        // MYR-381 — in the FAILURE look; it shipped wearing the success ✓.
+        .mrtFailureToast(
             isPresented: Binding(
                 get: { drivesState.cancelFailureNotice != nil },
                 set: { if !$0 { drivesState.cancelFailureNotice = nil } }

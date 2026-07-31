@@ -98,6 +98,29 @@ public protocol RideRequestService: AnyObject, Observable {
     /// is waiting, and `0` on the simulated path (see the default implementation).
     var waitingIncomingCount: Int { get }
 
+    /// MYR-381 — bumped whenever a WebSocket ride frame arrives about a SCHEDULED
+    /// ride (one carrying `scheduledFor`), whatever its status and whichever
+    /// pipeline — if any — holds it.
+    ///
+    /// THE DEFECT it exists for: *"Took a long time for ride declined to appear on
+    /// the rider side."* The rider's Scheduled tab and the owner's Drives →
+    /// Upcoming are their own narrow read seams (MYR-376/377), deliberately off
+    /// `RideRequestService`'s two ride pipelines — which meant they refreshed on
+    /// screen appearance and foreground and NOTHING ELSE. The socket was already
+    /// delivering the decline; nothing was listening on behalf of a list.
+    ///
+    /// A TICK rather than a payload, for two reasons. A reservation surface's
+    /// question is "is my list still right", not "what changed" — the answer is
+    /// always the same one page fetch it already knows how to make. And the frames
+    /// arrive about rides these surfaces may not hold (a decline is the exact case:
+    /// the row is about to STOP existing), so routing by held id would miss the one
+    /// event that matters most. Gated on `scheduledFor` so a live ride's per-status
+    /// frames never spend a reservation refetch.
+    ///
+    /// `0` forever on the simulated path (see the default), so no DEBUG scene or
+    /// drift-gate capture can be moved by it.
+    var scheduledSurfaceTick: Int { get }
+
     /// Submits a new request — mirrors ride-request.jsx's `onSubmit`
     /// (`ReviewContent`'s primary CTA, ride-request.jsx:1234-1237): status
     /// becomes `.pending` immediately so the rider's Review→Booking transition
@@ -261,6 +284,12 @@ public extension RideRequestService {
     /// renders. Only `LiveRideRequestService` overrides this (MYR-317); the DEBUG
     /// capture scene seeds the simulated service's own DEBUG-only counter.
     var waitingIncomingCount: Int { 0 }
+
+    /// Default: the simulated service has no SOCKET, so no frame can arrive about
+    /// anything. It stays `0` for the life of every simulated run and every DEBUG
+    /// scene — which is what keeps MYR-381's refresh wiring incapable of moving a
+    /// drift-gate capture. Only `LiveRideRequestService` overrides it.
+    var scheduledSurfaceTick: Int { 0 }
 
     /// Default: no send-window deferral. The simulated service (M1) has no
     /// network — its `submit` already installs the full state machine, and the

@@ -1,0 +1,75 @@
+import Foundation
+
+// MARK: - What a TERMINAL ride may still drive on the rider's map (MYR-381)
+//
+// A declined ride does not leave the rider's active slot: the `DeclinedNotice` is
+// built from that record, so `LiveRideRequestService` keeps it (`cancelled` is the
+// one status that erases — MYR-172's note). That retention is correct and it is
+// also why two of r14's defects were the same defect: every surface that reached
+// for `activeRequest` got a ride that had ENDED and treated it as one that had not.
+//
+//  • The rider Live Map kept ETCHING the dead ride's leg — the client's 1,000-mile
+//    Illinois → Dallas polyline behind the idle sheet.
+//  • The Ride declined / Dismiss | Rebook card CAME BACK after it was dismissed,
+//    because the dismissal wrote a view-scoped flag while the record that raises
+//    the card was still there to raise it again on the next appearance.
+//
+// Both rules live here, pure and side-effect-free, for the reason MYR-294 gives:
+// three situations told apart by one flag means one of them always borrows
+// another's surface. `SharedViewerScreen` reads them; the tests drive them directly.
+
+/// May this ride's geometry be drawn?
+enum RiderRouteLifetime {
+    /// `false` for exactly one status: **`.declined`** — the ride that never
+    /// happened. A route is a claim about a journey, and the client's screenshots
+    /// are that claim made about a refusal: a 1,000-mile line across four states,
+    /// drawn in the route's own gold, for a ride the owner had said no to. This is
+    /// MYR-237's "no straight lines ever" pointed at TIME rather than at shape —
+    /// real road geometry for a ride nobody is taking is exactly as false as a
+    /// fabricated line for a ride they are.
+    ///
+    /// **`.completed` KEEPS ITS ROUTE, deliberately.** That map is ABOUT the ride
+    /// that just happened: the tracking sheet holds the leg through the drop-off
+    /// and hands it to the Ride Summary, whose hero is that very polyline. Ending
+    /// it at `completed` would blank the map at the exact moment it is the subject
+    /// — and would drop the tracking map onto its `[financialDistrict,
+    /// embarcaderoCenter]` fallback pair for the frame between `completed` and the
+    /// summary. The completed ride's route is released with the SLOT instead (see
+    /// `SharedViewerScreen.releaseRouteIfSlotEmpty`), which is also the only signal
+    /// a CANCELLED ride ever gives.
+    ///
+    /// Written as an exhaustive switch rather than `!= .declined` so a status added
+    /// later has to be classified rather than defaulting into drawing.
+    static func bearsRoute(status: RideRequestStatus) -> Bool {
+        switch status {
+        case .pending, .accepted, .arrived, .enroute, .completed: return true
+        case .declined: return false
+        }
+    }
+}
+
+/// Should the Ride-declined card be on screen?
+///
+/// MYR-306 filed the `.declined` acknowledgment variant on 2026-07-27 and it never
+/// shipped; r14 is where it became user-visible. The precedent it is built on is
+/// MYR-292's `.completed` one, which is why the acknowledgement is an ID on the
+/// ROLE-SCOPED observable rather than a `Bool` in the view: `SharedViewerScreen`
+/// is rebuilt by `RootView`'s own `switch`, so a flag in `@State` is forgotten by
+/// the next tab switch — and the record that raises the card is still there to
+/// raise it again, which is precisely what the client saw.
+///
+/// Keying on the RIDE ID (not a bare flag) is what makes the dismissal both
+/// permanent and narrow: the NEXT declined ride is a different id, so it raises a
+/// fresh card, however many times this one is re-folded by a due-refetch, a
+/// foreground refetch, a WS frame or a mount reconciliation.
+enum RiderDeclinedNotice {
+    /// - Parameters:
+    ///   - status: the held record's status.
+    ///   - rideID: the held record's id. A record with no server id yet cannot have
+    ///     been declined, so `nil` never raises.
+    ///   - acknowledgedID: the id the rider has already dismissed (or rebooked from).
+    static func shouldRaise(status: RideRequestStatus, rideID: String?, acknowledgedID: String?) -> Bool {
+        guard status == .declined, let rideID else { return false }
+        return rideID != acknowledgedID
+    }
+}

@@ -127,7 +127,12 @@ struct RideHistoryScreen: View {
             .task { await scheduledStore?.load() }
             // A refused cancel says so, in the app's quiet-toast grammar, and the
             // row stays where it is.
-            .mrtSuccessToast(
+            //
+            // MYR-381 — in the FAILURE look. It shipped as `mrtSuccessToast`'s
+            // default, which put a gold ✓ over "Couldn't cancel that ride" in the
+            // client's own screenshot: the glyph said the opposite of the sentence
+            // it was next to.
+            .mrtFailureToast(
                 isPresented: Binding(
                     get: { scheduledStore?.failureNotice != nil },
                     set: { if !$0 { scheduledStore?.failureNotice = nil } }
