@@ -1092,6 +1092,115 @@ both paths — a recents row in the simulator is a real choice made in the simul
   behind by hand-driving the flow on the same simulator**. That is the whole reason a
   persistent feature does not drift a byte-stable gate.
 
+**No straight lines, on the OWNER's two surfaces too** (MYR-293) — TestFlight,
+Jul 25: *"Fake route poly line rendered."* MYR-237 settled the rule ("no straight
+lines ever") and MYR-177 built the machinery, and then two owner surfaces drew
+literal two-point segments anyway: `VehicleMapView`'s dispatched car→pickup leg
+(whose own doc comment called it "a straight car→pickup route") and
+`IncomingRequestSheet`'s mini-map, whose header still read "M1 has no routing
+API". Both now consume the SAME `RideRouteStore` the rider has used since
+MYR-177 — same MKDirections source, same 8s deadline, same 6-dp cache key, same
+deviation-driven refetch.
+
+- **The rule is ONE predicate now.** `RideRoutePolyline.isReal` (`count > 2`) was
+  inline on the rider's review map; the two owner surfaces had no predicate at
+  all. `RideRequestRouteMap` reads it too, so a new surface cannot invent a looser
+  test. **`drawable` returns EMPTY for a fallback**, and both owner surfaces draw
+  their PINS unconditionally and their LINE only from that — a pickup we know is
+  a fact, a route we haven't fetched is not.
+- **Both surfaces get a REAL route, neither gets pins-only as a resting state.**
+  The incoming card is what an owner accepts or declines a ride from — across
+  town or around the block is the decision — so one MKDirections call per card is
+  worth it, and the pair is fixed for the card's life so it is exactly one call.
+- **`AppleRideRouteProvider` in BOTH modes**, matching `SharedViewerState`'s own
+  store verbatim (MYR-177, client-approved). MYR-293's text suggests a
+  straight-line provider in SIM "so drift-gate scenes stay pixel-identical" — that
+  reasoning does not survive its own rule (a straight provider yields 2 points,
+  which must not be drawn, so the scene changes either way), and it would mean
+  these two surfaces could never PHOTOGRAPH the road route the issue adds. That is
+  the repo's own "cold scenes passing while real paths fail" lesson pointed at a
+  drift gate.
+- **Leg 1 gained the two guards leg 2 already had.** A new PICKUP drops the cache
+  outright — real road geometry rendered to the WRONG place is worse than the
+  straight line this removed, and far more convincing. And a cached 2-point
+  FALLBACK now retries on `fallbackRetryCooldown`: deviation alone cannot bring
+  the route back, because **a car following the straight fallback never strays
+  from it**, and the caller no longer draws that fallback to paper over the wait.
+- **The owner's store lives on `OwnerHomeState`**, not `HomeScreen` — `RootView`'s
+  `switch ownerTab` destroys the view, and a per-mount store would spend a fresh
+  throttle-budgeted call on every tab switch.
+- **No camera is touched.** Routes are map CONTENT; a polyline landing late
+  changes what is drawn on the frame, never the frame (the MYR-237 overlay
+  pattern). The incoming card's camera fits the two ENDPOINTS via
+  `initialPosition`, written once, so a route arriving later cannot re-frame a map
+  the owner is already reading.
+- **`MRTRouteStroke.aheadOpacity` (0.85)** — the client's *"Route poly line feels
+  hard to see"*. `RouteLine`'s 0.30 is the prototype's alpha for an ILLUSTRATED
+  route; MYR-234 already moved the rider's ACTIVE leg to 0.85 and the owner map
+  was still on 0.30, so at trip start (progress ≈ 0) the whole route was the dim
+  wash. Named in DesignSystem and read by both surfaces — identical number, so
+  every tracking capture is byte-identical.
+
+**The honest driving hero** (MYR-294) — three TestFlight reports, one cause:
+*"When no navigation, state just shows navigating"*, *"Taking a long time to
+populate destination name even though route appeared"*, *"I don't like the dot
+next to the destination."* `DrivingTrip.destinationName` was a non-optional
+`String`, so `VehicleContractMapping` substituted the literal `"Navigating"` — and
+the hero, with no way to know the difference, wrapped that word in a whole
+fabricated trip: "Arriving in 0 min", an "ETA" of `Date() + 0`, a progress bar at
+its 5% clamp, and a Route leg reading "· " because `destinationCity` is parsed
+from an address the wire never live-broadcasts.
+
+- **`DrivingNavigation` is THREE cases, not a `String?`** — `.none`,
+  `.resolvingDestination`, `.destination(name:city:address:)`. Two of them are
+  nameless and they render differently, and MYR-343's lesson is that three
+  situations told apart by one flag means one always borrows another's surface.
+- **The predicate is the ATOMIC GROUP, not `destinationName`.** The contract's
+  navigation group is all-or-nothing and its nullability is *"Null = no active
+  navigation"*, so `navigation(from:)` asks whether ANY member is present.
+  Gating on `destinationName` — the obvious implementation — would classify the
+  first ~60s of every real trip as "not navigating", because Tesla emits
+  `RouteLine` and `DestinationName` independently.
+- **`DrivingHeroElement.resolve` is the whole render rule, and it is
+  CLIENT-DIRECTED.** The first build shimmered an `MRTSkeletonBar` in the
+  destination slot while the name was pending. He rejected it on sight: *"why are
+  you skeleton loading when no route that looks so weird and useless"*, then
+  stated the rule — *"if no route then no need to show a route, if a route is
+  about to arrive then sure thats fine bc we're loading something"*. **The test is
+  whether a fetch is ACTUALLY RUNNING**, and for the destination name none ever
+  is: Tesla either pushes it or does not, so the shimmer had no deadline and no
+  honest end state. `DrivingHeroElement` therefore has **no placeholder case at
+  all** — asserted, so it cannot grow one — and the elements gate as: title +
+  Route section need a NAMED destination; the arrival pair needs active navigation
+  AND `etaMinutes > 0` (0 is reachable under live nav, inside the server's 500ms
+  accumulation window); the progress bar needs active navigation AND a real
+  fraction (`TripProgressBar` CLAMPS to 0.05, so 0 draws the orb 5% along); the
+  location line renders exactly when there is no journey to describe.
+- **The Route SECTION goes whole, rather than degrading.** It is a two-ended
+  statement, and one unnameable end leaves nothing to list — a dot with a
+  placeholder beside it is the stacked-chrome-for-no-content shape MYR-347 was
+  about. `RouteLeg.title` is non-optional again; `RouteLeg.subtitle` is optional,
+  because a live leg with no address used to render an empty 12pt line.
+- **`homePeekHeightDrivingNoNavigation` (234) is MYR-345's rule pointed the other
+  way**: a live-only hero that DROPS lines gives its room back rather than banking
+  it as a gap above the nav. It is tuned to **INK, not layout**, and the two
+  disagree by ~4pt here because the heroes end on different kinds of thing — the
+  trip hero's last element is `TripProgressBar`, whose 15pt orb overflows its own
+  14pt frame (~2pt of ink BELOW the box), and the honest hero's is a 12pt text
+  line (~2pt ABOVE it). Measured full-frame: 42.7pt of clearance for the
+  navigating hero, 46.7pt at a layout-parity 238, **42.7pt at 234**.
+  `OwnerPeekBandTests` carries the 4pt offset explicitly rather than widening its
+  tolerance to hide it. `.resolvingDestination` keeps the FULL driving band — the
+  arrival pair and the bar are real, so the block does not resize when the name
+  lands.
+- **Every simulated hero is untouched.** `VehicleFixtures.cybercabTrip` is
+  `.destination("Duarte's Tavern", "Pescadero", …)` and the sim snapshot starts at
+  progress 0.42 with `etaMinutes ≥ 1`, so all three gates pass and `ownerHome` /
+  `ownerDrives` render exactly what they did. Scenes `ownerDrivingNoNav` /
+  `ownerDrivingResolvingDestination` are live-path-only by construction.
+- **THE WIRE DOES CARRY NAV**, so the named variant is reachable and this is not a
+  backend gap — see the enabler note below.
+
 **Expanded route viewer** (MYR-327) — tapping the map on the **Drive Summary**
 hero (owner Drives → a drive, and the rider's Ride History → a completed ride —
 one screen, `DriveSummaryScreen`) or on the **rider live tracking** map opens

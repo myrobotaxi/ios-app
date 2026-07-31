@@ -473,29 +473,62 @@ private struct LiveTripBanner: View {
         VehicleRoute.totalDistanceMiles(along: trip.route) * (1 - snapshot.progress)
     }
 
+    /// MYR-294 — the same two gates `DrivingSummary.showsArrival` applies, for the
+    /// same reason: this row is the sheet hero's statement in miniature, and both
+    /// of its figures (minutes remaining, miles remaining) are measured off a
+    /// navigation route. With no navigation there is no route — `trip.route` is
+    /// the car's own single position — so "0 min remaining · 0.0 mi" is what it
+    /// used to print.
+    private var showsTripFigures: Bool { trip.navigation.isActive && snapshot.etaMinutes > 0 }
+
+    /// "→ {city}" only when there is a destination to point at.
+    private var destinationFragment: Text {
+        guard let city = trip.destinationCity, !city.isEmpty else { return Text("") }
+        return Text(" → ").foregroundStyle(Color.mrtDriving).fontWeight(.regular)
+            + Text(city).foregroundStyle(Color.mrtDrivingRowText)
+    }
+
+    /// The badge. "EN ROUTE" is a claim about going somewhere; a car with no
+    /// navigation is simply driving.
+    private var badgeLabel: String { trip.navigation.isActive ? "EN ROUTE" : "DRIVING" }
+
+    /// The second line. Byte-identical to the pre-MYR-294 string whenever the
+    /// figures exist (which is every simulated render); the live speed stands in
+    /// when they do not, matching the hero's own promotion of speed.
+    private var detailLine: Text {
+        if showsTripFigures {
+            return Text("\(snapshot.etaMinutes) min ").foregroundStyle(Color.mrtDriving).fontWeight(.semibold)
+                + Text("remaining · \(String(format: "%.1f", remainingMiles)) mi").foregroundStyle(Color.mrtTextSec)
+        }
+        return Text("\(snapshot.speedMPH) mph").foregroundStyle(Color.mrtTextSec)
+    }
+
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 12) {
                 PulseDot(color: .mrtDriving)
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(alignment: .lastTextBaseline, spacing: 10) {
-                        (Text("\(trip.originLabel) ")
-                            .foregroundStyle(Color.mrtDrivingRowText)
-                            + Text("→ ").foregroundStyle(Color.mrtDriving).fontWeight(.regular)
-                            + Text(trip.destinationCity).foregroundStyle(Color.mrtDrivingRowText))
+                        // MYR-294 — the "→ {city}" half renders only when there IS
+                        // a destination. `destinationCity` is derived from the
+                        // snapshot-only `destinationAddress`, so this row used to
+                        // print a bare arrow pointing at an empty string on every
+                        // live trip, and an arrow to nowhere on a car with no
+                        // navigation at all.
+                        (Text(trip.originLabel).foregroundStyle(Color.mrtDrivingRowText)
+                            + destinationFragment)
                             .font(.system(size: 15, weight: .semibold))
                             .tracking(-0.2)
                             .lineLimit(1)
                             .truncationMode(.tail)
                         Spacer(minLength: 0)
-                        Text("EN ROUTE")
+                        Text(badgeLabel)
                             .font(.system(size: 10, weight: .bold))
                             .tracking(1)
                             .foregroundStyle(Color.mrtDriving)
                             .fixedSize()
                     }
-                    (Text("\(snapshot.etaMinutes) min ").foregroundStyle(Color.mrtDriving).fontWeight(.semibold)
-                        + Text("remaining · \(String(format: "%.1f", remainingMiles)) mi").foregroundStyle(Color.mrtTextSec))
+                    detailLine
                         .font(.system(size: 12.5))
                         .monospacedDigit()
                 }

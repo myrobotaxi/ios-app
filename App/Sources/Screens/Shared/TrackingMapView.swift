@@ -286,8 +286,12 @@ enum TrackingRouteMapContent {
         if route.count > 1 {
             if active {
                 // Whole leg at full strength — ahead segment included.
+                // MYR-293 named this alpha (`MRTRouteStroke.aheadOpacity`) so the
+                // owner map's route, which was still on the illustration 0.30,
+                // reads the SAME value rather than a matching literal. Identical
+                // number, so every tracking capture is byte-identical.
                 MapPolyline(coordinates: route)
-                    .stroke(Color.mrtGold.opacity(0.85), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                    .stroke(Color.mrtGold.opacity(MRTRouteStroke.aheadOpacity), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
                 let travelled = VehicleRoute.travelledCoordinates(along: route, progress: legProgress)
                 MapPolyline(coordinates: travelled)
                     .stroke(Color.mrtGoldGlowSoft, style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))

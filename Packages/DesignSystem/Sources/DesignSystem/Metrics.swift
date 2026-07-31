@@ -145,6 +145,37 @@ public enum MRTMetrics {
     public static let mapPickerWidth: CGFloat = 250
     /// Sheet peek height while driving (screens.jsx:400 `peekH`).
     public static let homePeekHeightDriving: CGFloat = 280
+    /// Sheet peek height while driving with **no active navigation** (MYR-294) —
+    /// a state the prototype does not have, so 280 is not its number.
+    ///
+    /// 280 is the prototype's band for the prototype's driving hero, which is a
+    /// TRIP: a destination headline, an "Arriving in N min · ETA h:mm" pair, and
+    /// the trip progress bar. A car that is driving with nowhere programmed has
+    /// none of those — it has a status line, a speed and a place — so the honest
+    /// hero is ~57pt shorter, and leaving the band at 280 would drop every one of
+    /// those points into the gap above the floating nav. That is MYR-345's rule
+    /// (a live-only line brings exactly its own room) applied in the direction it
+    /// has not been needed before: a live-only hero that DROPS lines gives the
+    /// room back rather than banking it as a hole.
+    ///
+    /// Measured, not derived, and tuned against INK rather than the layout box —
+    /// MYR-345's rule, which matters here more than it did there because the two
+    /// heroes END ON DIFFERENT KINDS OF THING. The trip hero's last element is
+    /// `TripProgressBar`, whose 15pt orb (plus its 2pt ring) OVERFLOWS the bar's
+    /// own 14pt frame, so its ink reaches ~2pt BELOW its layout box; the honest
+    /// hero's last element is a 12pt location line, whose glyphs stop ~2pt ABOVE
+    /// theirs. Layout parity and optical parity therefore disagree by ~4pt, and
+    /// the gap the owner actually sees is the optical one.
+    ///
+    /// Full-frame ink clearance above the floating nav, iPhone 17 Pro:
+    /// **42.7pt** for the navigating hero (base and branch alike — unchanged),
+    /// 46.7pt at a layout-parity 238, **42.7pt at 234**.
+    /// `OwnerPeekBandTests` pins the layout side of the same fact, carrying the
+    /// 4pt offset explicitly rather than widening its tolerance to hide it.
+    ///
+    /// Unreachable on the simulated path: every fixture trip is
+    /// `.destination(…)`, so no drift-gate scene sees this band.
+    public static let homePeekHeightDrivingNoNavigation: CGFloat = 234
     /// Sheet peek height while parked, "floating" style — the only
     /// `parkedStyle` variant this app ships (screens.jsx:400,369 default).
     public static let homePeekHeightParked: CGFloat = 210

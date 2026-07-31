@@ -370,6 +370,40 @@ enum DebugScene: String, CaseIterable {
     /// `MRT_OWNER_DETENT=half` to see it under the controls stack.
     case ownerFreshnessStale
     case ownerFreshnessWaking
+    /// MYR-294 — the two DRIVING heroes the prototype has no state for, both
+    /// **live-path-only by construction**: every fixture trip carries the
+    /// prototype's own destination literals, so `ownerHome` and every other
+    /// simulated owner scene keeps the navigating hero and is byte-identical.
+    /// Both inject `DebugDrivingNavigationFleet`, whose live-shaped
+    /// `VehicleState` travels the production
+    /// `VehicleContractMapping.navigation(from:)` — so the capture shows the
+    /// shipping atomic-group classification, not a seeded enum.
+    ///
+    ///   • `ownerDrivingNoNav` — **the client's report**: *"When no navigation,
+    ///     state just shows navigating — maybe remove that."* The nav group is
+    ///     entirely null. Before this issue the same wire rendered the literal
+    ///     word "Navigating" as a 28pt destination headline, "Arriving in 0 min",
+    ///     "ETA <now>", a trip progress bar parked at its 5% clamp, and a Route
+    ///     section whose destination leg read "· " and nothing else. The honest
+    ///     hero is status / speed / battery / location, and the peek band is
+    ///     `homePeekHeightDrivingNoNavigation` — the shorter hero gives its room
+    ///     back instead of banking it as a gap above the nav (MYR-345's rule).
+    ///   • `ownerDrivingResolvingDestination` — *"Taking a long time to populate
+    ///     destination name even though route appeared."* RouteLine, ETA and
+    ///     destination coordinates have landed; `DestinationName` has not. The
+    ///     arrival pair and the trip bar are REAL and stay; the headline is the
+    ///     speed and there is **no placeholder of any kind** — see
+    ///     `DrivingHeroElement` for the client's rule. The first build of this
+    ///     scene shimmered a skeleton in the destination slot and he rejected it
+    ///     on sight: *"why are you skeleton loading when no route that looks so
+    ///     weird and useless"*. Nothing is being fetched, so nothing may promise
+    ///     to arrive.
+    ///
+    /// Pair either with `MRT_OWNER_DETENT=half` for the Route section, which is
+    /// absent in BOTH — it is a two-ended statement and neither scene can name
+    /// the far end.
+    case ownerDrivingNoNav
+    case ownerDrivingResolvingDestination
     /// MYR-345 — **the client's own screenshot** (AKXUQLSW…, Jul 29): a car IN
     /// SERVICE whose snapshot was read moments ago, so the peek hero carries BOTH
     /// live-only qualifier lines at once — the service-completion line under the
@@ -1359,6 +1393,7 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerDispatched || self == .ownerDispatchedArrived
             || self == .ownerDispatchedEnroute || self == .ownerDispatchedCompleted
             || self == .ownerFreshnessStale || self == .ownerFreshnessWaking
+            || self == .ownerDrivingNoNav || self == .ownerDrivingResolvingDestination
             || self == .ownerFreshnessInService || self == .ownerFreshnessRefused
             || self == .ownerServiceWindow || self == .ownerServiceWindowEditor
             || self == .ownerServiceWindowManual || self == .ownerServiceWindowSaved
@@ -1425,6 +1460,13 @@ enum DebugScene: String, CaseIterable {
         // MYR-315 — a car offline for 7h, so the stamp resolves its stale branch
         // through the real mapping (see `DebugFreshnessFleet`).
         case .ownerFreshnessStale, .ownerFreshnessWaking: return DebugFreshnessFleet()
+        // MYR-294 — a car DRIVING, with the navigation atomic group either
+        // entirely absent or present-without-a-name. The production mapping does
+        // the classifying (see `DebugDrivingNavigationFleet`).
+        case .ownerDrivingNoNav:
+            return DebugDrivingNavigationFleet(condition: .noNavigation)
+        case .ownerDrivingResolvingDestination:
+            return DebugDrivingNavigationFleet(condition: .resolvingDestination)
         // MYR-345 — the client's own condition: the SAME in-service fleet
         // `ownerServiceWindow` injects (so that scene stays byte-identical), read
         // moments ago, with the stamp's live rendering forced on. Both live-only
@@ -2107,6 +2149,7 @@ enum DebugScene: String, CaseIterable {
              .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute,
              .ownerDispatchedCompleted,
              .ownerFreshnessStale, .ownerFreshnessWaking,
+             .ownerDrivingNoNav, .ownerDrivingResolvingDestination,
              .ownerFreshnessInService, .ownerFreshnessRefused,
              .ownerServiceWindow, .ownerServiceWindowEditor, .ownerServiceWindowManual,
              .ownerServiceWindowSaved,

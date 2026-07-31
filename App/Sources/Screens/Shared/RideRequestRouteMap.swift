@@ -153,7 +153,11 @@ struct RideRequestRouteMap: View {
     /// A REAL MKDirections route (many road points) vs. the straight
     /// `[pickup, destination]` fallback/placeholder (exactly 2). Only a real
     /// route etches.
-    private var isRealRoute: Bool { route.count > 2 }
+    ///
+    /// MYR-293 moved the predicate itself to `RideRoutePolyline.isReal` — this
+    /// screen invented it, and the two OWNER surfaces that should have applied it
+    /// never did. Same test, one home.
+    private var isRealRoute: Bool { RideRoutePolyline.isReal(route) }
 
     /// Identity of the current route — re-fits + replays the etch when it
     /// changes (the real route arriving, or a new trip via "Change trip").

@@ -113,14 +113,26 @@ struct VehicleMapView: View {
     /// not miles wide (MYR-213). Only affects programmatic recenters — user
     /// zoom/pan afterwards is never overridden.
     var regionSpanDelta: Double = MRTMetrics.mapRegionSpanDelta
-    /// MYR-277 B — the dispatched ride's PICKUP, drawn as a straight car→pickup
-    /// route (leg 1) with a gold pickup marker on the OWNER map. A dispatched
-    /// in-service car maps to `.parked`, so `mapContent`'s `.driving` route branch
-    /// never fires for it; this makes the owner's map show where the car is headed.
-    /// Non-nil only while the owner's active ride is heading to the pickup
-    /// (`.accepted`/`.arrived`, gated at the call site); `nil` otherwise and on the
-    /// rider map, so every other call site is unchanged.
+    /// MYR-277 B — the dispatched ride's PICKUP, drawn with a gold pickup marker
+    /// on the OWNER map. A dispatched in-service car maps to `.parked`, so
+    /// `mapContent`'s `.driving` route branch never fires for it; this makes the
+    /// owner's map show where the car is headed. Non-nil only while the owner's
+    /// active ride is heading to the pickup (`.accepted`/`.arrived`, gated at the
+    /// call site); `nil` otherwise and on the rider map, so every other call site
+    /// is unchanged.
     var pickupCoordinate: CLLocationCoordinate2D? = nil
+    /// MYR-293 — the REAL car → pickup road polyline for the leg above, resolved
+    /// by the caller from `RideRouteStore.leg1Route(pickup:)`.
+    ///
+    /// MYR-277 B drew `[vehiclePosition, pickup]` — a literal two-point segment,
+    /// which its own doc comment called a "straight car→pickup route". That is
+    /// exactly the fabricated line the client ruled out twice (MYR-237: "no
+    /// straight lines"), so the line now comes from MKDirections and this view
+    /// draws NOTHING when only the provider's 2-point fallback has resolved
+    /// (`RideRoutePolyline`): the gold pickup marker still says where the car is
+    /// going, and the store's cooldown retries until real geometry lands. Empty at
+    /// every other call site.
+    var pickupRoute: [CLLocationCoordinate2D] = []
 
     // MYR-222 — token accounting for the legacy (non-pin-drop) writers,
     // replacing the wall-clock `programmaticCameraUntil` window. The window
@@ -471,32 +483,43 @@ struct VehicleMapView: View {
         if showsUserLocation {
             UserAnnotation()
         }
-        // MYR-277 B — the dispatched leg-1 route: a straight gold car→pickup line
-        // + a gold pickup marker, using the same two-point technique as
-        // `IncomingRequestRouteMap`. Drawn before the activity switch so it renders
+        // MYR-277 B / MYR-293 — the dispatched leg-1 route: the REAL car→pickup
+        // road polyline (MKDirections, via the owner's `RideRouteStore`) plus a
+        // gold pickup marker. Drawn before the activity switch so it renders
         // whether the (dispatched, in-service → parked) car is parked or driving.
+        //
+        // The MARKER is unconditional and the LINE is not: a pickup we know is a
+        // fact, a route we haven't fetched is not. `drawable` returns empty for
+        // the provider's straight 2-point fallback, so a throttled or failed fetch
+        // degrades to honest pins rather than to a fabricated line.
         if let pickup = pickupCoordinate {
-            let leg = [vehiclePosition.coordinate, pickup]
-            MapPolyline(coordinates: leg)
-                .stroke(Color.mrtGoldGlowSoft, style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))
-            MapPolyline(coordinates: leg)
-                .stroke(Color.mrtGold.opacity(0.95), style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+            let leg = RideRoutePolyline.drawable(pickupRoute)
+            if leg.count > 1 {
+                MapPolyline(coordinates: leg)
+                    .stroke(Color.mrtGoldGlowSoft, style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))
+                MapPolyline(coordinates: leg)
+                    .stroke(Color.mrtGold.opacity(0.95), style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+            }
             Annotation("Pickup", coordinate: pickup) { MRTEndpointDot(color: .mrtGold, size: 12) }
         }
         switch vehicle.activity {
         case .driving(let trip):
             if showRoute {
                 let travelled = VehicleRoute.travelledCoordinates(along: trip.route, progress: snapshot.progress)
-                // Full path, dim (RouteLine.swift: alpha 0.30).
+                // MYR-293 (client: "Route poly line feels hard to see") — the
+                // full path is stroked at the LIVE route alpha, not `RouteLine`'s
+                // illustration 0.30. At trip start progress ≈ 0, so before this
+                // the entire route on the owner's own map was the dim wash while
+                // the rider watching the same car saw it at 0.85.
                 MapPolyline(coordinates: trip.route)
-                    .stroke(Color.mrtGold.opacity(0.3), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                    .stroke(Color.mrtGold.opacity(MRTRouteStroke.aheadOpacity), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
                 // Glow underlay beneath the travelled segment (RouteLine.swift
                 // doc: "draw a third, wider underlay polyline").
                 MapPolyline(coordinates: travelled)
                     .stroke(Color.mrtGoldGlowSoft, style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round))
                 // Travelled portion, bright (RouteLine.swift: alpha 0.95).
                 MapPolyline(coordinates: travelled)
-                    .stroke(Color.mrtGold.opacity(0.95), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                    .stroke(Color.mrtGold.opacity(MRTRouteStroke.travelledOpacity), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
 
                 if let origin = trip.route.first {
                     Annotation("Origin", coordinate: origin) {

@@ -65,6 +65,29 @@ public final class OwnerHomeState {
     /// module — screens read the projected accessors below, not the fleet.
     let fleet: any VehicleFleet
 
+    /// MYR-293 — the OWNER's road-route cache: the dispatched car → pickup leg
+    /// drawn on the Home map, and the pickup → destination route previewed on the
+    /// incoming-request card. The same `RideRouteStore` the rider's tracking map
+    /// has used since MYR-177, with the same MKDirections source, the same 8s
+    /// deadline, the same 6-decimal-place cache key and the same deviation-driven
+    /// refetch — the owner surfaces simply never consumed it and drew literal
+    /// two-point lines instead (the client's *"Fake route poly line rendered"*).
+    ///
+    /// It lives HERE, on the owner-scoped observable, for the reason
+    /// `acknowledgedCompletedRideID` does: `HomeScreen` is built inside a
+    /// `switch ownerTab` branch of `RootView`, so a trip to Drives DESTROYS the
+    /// view — and a per-mount store would spend a fresh (throttle-budgeted)
+    /// MKDirections call on every tab switch for a route it already had.
+    ///
+    /// `AppleRideRouteProvider` in BOTH modes, matching `SharedViewerState`'s own
+    /// store verbatim (MYR-177, client-approved: "the route should be calculated
+    /// by Apple Maps until the Tesla integration"). A simulated-only straight-line
+    /// provider would mean these two surfaces could never PHOTOGRAPH the road
+    /// route this issue adds — every capture would show the pins-only degradation
+    /// — which is this repo's own "cold scenes passing while real paths fail"
+    /// lesson pointed at a drift gate.
+    @ObservationIgnored let rideRouteStore = RideRouteStore(provider: AppleRideRouteProvider())
+
     /// M1 default: the fixture-backed simulated fleet (no network).
     public init() {
         self.fleet = SimulatedVehicleFleet()

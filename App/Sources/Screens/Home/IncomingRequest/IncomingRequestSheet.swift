@@ -48,6 +48,16 @@ struct IncomingRequestSheet: View {
     /// (`RideRequestService.waitingIncomingCount`). `0` (the default, and every
     /// simulated path) renders the card exactly as before.
     var waitingCount: Int = 0
+    /// MYR-293 — the REAL pickup → destination road polyline for this request,
+    /// resolved by `HomeScreen` from the owner's `RideRouteStore`. Empty until
+    /// MKDirections answers (one fetch per request card — the pair is fixed for
+    /// the life of the card, and `ensureLeg2` dedupes on a 6-decimal-place key).
+    ///
+    /// The mini-map used to draw `[pickup, destination]` outright, its own header
+    /// still saying "M1 has no routing API". Empty here means the map renders its
+    /// two pins and NO line, which is the honest degradation the client's rule
+    /// requires — never a straight segment standing in for a route.
+    var route: [CLLocationCoordinate2D] = []
     let onAccept: () -> Void
     let onDecline: () -> Void
 
@@ -319,7 +329,8 @@ struct IncomingRequestSheet: View {
             ZStack(alignment: .bottomLeading) {
                 IncomingRequestRouteMap(
                     pickup: request.input.pickup.coordinate,
-                    destination: request.input.destination.coordinate
+                    destination: request.input.destination.coordinate,
+                    route: route
                 )
                 LinearGradient(
                     stops: [.init(color: .clear, location: 0.3), .init(color: .mrtRideMapScrim, location: 1)],
@@ -733,22 +744,40 @@ struct IncomingRequestSheet: View {
     }
 }
 
-// MARK: - Static route preview map
+// MARK: - Route preview map (MYR-171; real routes MYR-293)
 //
-// Non-interactive two-point route between the request's pickup/destination —
-// same technique as `ScheduledRideSheet`'s private `RideRouteMap` (which is
-// file-private to a file this issue doesn't own), sized for
-// `MRTMetrics.incomingRequestMapHeight` instead of that screen's
-// `rideMapPreviewHeight`. No real street routing (per this issue's spec —
-// M1 has no routing API), a straight two-point polyline is enough.
+// Non-interactive pickup → destination preview, sized for
+// `MRTMetrics.incomingRequestMapHeight`.
+//
+// MYR-171 built this against "M1 has no routing API" and drew a literal
+// `[pickup, destination]` segment. M1 is over: `RideRouteProvider` has been
+// fetching real MKDirections geometry for the rider since MYR-177, and the client
+// ruled twice that a straight line may never stand in for a route (MYR-237,
+// restated in MYR-293 as *"Fake route poly line rendered"*). The owner is
+// ACCEPTING OR DECLINING a ride off this preview — across town or around the
+// block is the decision — so this surface gets a real route rather than pins
+// alone, at the cost of ONE MKDirections call per incoming card. The pair is
+// fixed for the card's whole life, so that is exactly one call.
+//
+// Degradation is honest, never fabricated: `route` is empty until the fetch
+// answers, and `RideRoutePolyline` discards a 2-point fallback, so a throttled or
+// failed lookup leaves the two endpoint pins and no line at all. The CAMERA fits
+// the endpoints in every case (`initialPosition`, written once, never re-framed),
+// so the preview shows the same ground whether or not the road geometry arrives —
+// what changes is only whether a line is drawn on it.
 private struct IncomingRequestRouteMap: View {
     let pickup: CLLocationCoordinate2D
     let destination: CLLocationCoordinate2D
+    /// The resolved road polyline; empty = no route to draw (yet, or at all).
+    let route: [CLLocationCoordinate2D]
 
-    private var route: [CLLocationCoordinate2D] { [pickup, destination] }
+    /// What the camera frames — the two endpoints, always. Deliberately NOT the
+    /// route: a road polyline arriving later must not re-frame a map the owner is
+    /// already reading, and the endpoints are what the preview is about.
+    private var fitCoordinates: [CLLocationCoordinate2D] { [pickup, destination] }
 
     var body: some View {
-        Map(initialPosition: .region(VehicleRoute.fittedRegion(for: route, paddingFactor: 1.8)), interactionModes: []) {
+        Map(initialPosition: .region(VehicleRoute.fittedRegion(for: fitCoordinates, paddingFactor: 1.8)), interactionModes: []) {
             mapContent.annotationTitles(.hidden)
         }
         .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll, showsTraffic: false))
@@ -758,10 +787,13 @@ private struct IncomingRequestRouteMap: View {
 
     @MapContentBuilder
     private var mapContent: some MapContent {
-        MapPolyline(coordinates: route)
-            .stroke(Color.mrtGoldGlowSoft, style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))
-        MapPolyline(coordinates: route)
-            .stroke(Color.mrtGold.opacity(0.95), style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+        let line = RideRoutePolyline.drawable(route)
+        if line.count > 1 {
+            MapPolyline(coordinates: line)
+                .stroke(Color.mrtGoldGlowSoft, style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))
+            MapPolyline(coordinates: line)
+                .stroke(Color.mrtGold.opacity(MRTRouteStroke.travelledOpacity), style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+        }
         Annotation("Pickup", coordinate: pickup) { MRTEndpointDot(color: .mrtDriving, size: 11) }
         Annotation("Destination", coordinate: destination) { MRTEndpointDot(color: .mrtGold, size: 13) }
     }
