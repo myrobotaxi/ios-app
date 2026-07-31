@@ -42,9 +42,11 @@ public actor TelemetrySocket {
     private let randomUnit: @Sendable () -> Double
     /// MYR-319 — the cold-read attempt schedule: one entry per attempt, the
     /// delay BEFORE it (the first is always immediate). See
-    /// ``fetchAndEmitSnapshot(vehicleId:generation:)`` for why a non-streaming
+    /// ``fetchAndEmitSnapshot(vehicleId:scope:)`` for why a non-streaming
     /// car cannot be left on a single ask. Injected as `[0]` in tests.
     private let snapshotRetryDelays: [Double]
+    /// MYR-387 — see ``defaultStandaloneSnapshotGrace``.
+    private let standaloneSnapshotGrace: Double
 
     // MARK: State
 
@@ -76,6 +78,13 @@ public actor TelemetrySocket {
     /// MYR-319 — the in-flight cold-read retry per vehicle, so an unsubscribe or a
     /// newer activation cancels the old schedule instead of racing it.
     private var snapshotRetryTasks: [String: Task<Void, Never>] = [:]
+    /// MYR-387 — the pending SOCKET-INDEPENDENT cold read per vehicle. Armed on a
+    /// subscribe that could not be activated immediately, cancelled the moment
+    /// the socket activates that subscription itself.
+    private var standaloneSnapshotTasks: [String: Task<Void, Never>] = [:]
+    /// MYR-387 — vehicles a snapshot has genuinely been emitted for. Guards the
+    /// fallback against spending a request on data we already hold.
+    private var snapshotDelivered: Set<String> = []
 
     // MARK: Init
 
@@ -86,7 +95,8 @@ public actor TelemetrySocket {
         channelFactory: any WebSocketChannelFactory = URLSessionWebSocketChannelFactory(),
         backoff: ExponentialBackoff = .standard,
         randomUnit: @escaping @Sendable () -> Double = { Double.random(in: 0..<1) },
-        snapshotRetryDelays: [Double] = TelemetrySocket.defaultSnapshotRetryDelays
+        snapshotRetryDelays: [Double] = TelemetrySocket.defaultSnapshotRetryDelays,
+        standaloneSnapshotGrace: Double = TelemetrySocket.defaultStandaloneSnapshotGrace
     ) {
         self.webSocketURL = webSocketURL
         self.tokenProvider = tokenProvider
@@ -97,7 +107,17 @@ public actor TelemetrySocket {
         // An empty schedule would mean "never fetch", which is never what a
         // caller means; degrade to the single immediate attempt.
         self.snapshotRetryDelays = snapshotRetryDelays.isEmpty ? [0] : snapshotRetryDelays
+        self.standaloneSnapshotGrace = max(0, standaloneSnapshotGrace)
     }
+
+    /// MYR-387 — how long a subscribe waits for the socket before asking REST for
+    /// the cold snapshot itself.
+    ///
+    /// Long enough that a working handshake always wins the race (open + `auth` +
+    /// `auth_ok` is a fraction of this on any network the app is usable on), short
+    /// enough that a broken one costs the owner two seconds instead of the whole
+    /// `ColdSnapshotLoad` budget — or, before this issue, the entire session.
+    public static let defaultStandaloneSnapshotGrace: Double = 2
 
     /// Four attempts over ~13s: immediate, +0.8s, +3s, +9s. Short enough that an
     /// owner opening the app to a sleeping car sees it fill in rather than
@@ -160,8 +180,72 @@ public actor TelemetrySocket {
         if connectionState == .connected, let channel {
             let gen = generation
             Task { await self.activateSubscription(vehicleId: vehicleId, channel: channel, generation: gen) }
+        } else {
+            // MYR-387 — THE COLD READ IS A REST CALL AND MUST NOT WAIT FOREVER
+            // ON THE SOCKET.
+            //
+            // Before this, `fetchAndEmitSnapshot` had exactly two callers, and
+            // both required a live connection: `activateSubscription` (reached
+            // only from `auth_ok`, or from this branch when already connected)
+            // and `refreshSnapshot` (which requires a subscription that had
+            // already been activated). So a WebSocket that failed to connect or
+            // failed to authenticate meant `GET /api/vehicles/{id}/snapshot` was
+            // **never even attempted** — on a device whose REST client was
+            // demonstrably healthy, since `GET /api/vehicles` had just answered.
+            //
+            // That is the MYR-387 client report: the fleet list landed (his
+            // switcher chip read "Lunar"), the snapshot never did, and owner Home
+            // sat on MYR-326's skeleton over a black map for the whole
+            // `ColdSnapshotLoad` budget with nothing in flight that could end it.
+            // A terminal `auth_failed` is the sharpest form — `supervise()` breaks
+            // out of its loop for the rest of the session — but any transient
+            // failure inside the backoff produces the same silence for as long as
+            // it lasts, which is why the symptom is intermittent.
+            //
+            // The two reads are independent facts about the backend and are now
+            // treated as such. `.standalone` scope, NOT the connection
+            // generation: a subscribe issued before the first `runConnection()`
+            // captures generation 0, which the connect then bumps to 1 — so a
+            // generation-gated fetch would have its emit dropped as "superseded"
+            // in the common case, which is the whole case this exists for.
+            //
+            // **It is a GRACE-DELAYED FALLBACK, not a second cold read**, and
+            // that is what keeps the healthy path byte-identical. A socket that
+            // is going to work authenticates in well under
+            // `standaloneSnapshotGrace`, and `activateSubscription` cancels the
+            // pending fallback the moment it does — so a healthy boot still makes
+            // exactly ONE `/snapshot` request, from exactly the caller it always
+            // did, with CG-SM-4's ordering guarantee intact. Only a socket that
+            // has visibly failed to deliver pays for the fallback.
+            scheduleStandaloneSnapshot(vehicleId: vehicleId)
         }
         return stream
+    }
+
+    /// MYR-387 — arm the socket-independent cold read for a vehicle.
+    ///
+    /// Cancelled by `activateSubscription` (the socket got there first), by
+    /// `unsubscribe` (nobody is watching), and by `disconnect` (we are stopping).
+    /// Declines to run at all once a snapshot has genuinely been emitted for the
+    /// vehicle, so a late-arriving grace can never spend a request on data we
+    /// already hold.
+    private func scheduleStandaloneSnapshot(vehicleId: String) {
+        standaloneSnapshotTasks[vehicleId]?.cancel()
+        let grace = standaloneSnapshotGrace
+        standaloneSnapshotTasks[vehicleId] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, grace) * 1_000_000_000))
+            if Task.isCancelled { return }
+            await self?.runStandaloneSnapshot(vehicleId: vehicleId)
+        }
+    }
+
+    private func runStandaloneSnapshot(vehicleId: String) async {
+        standaloneSnapshotTasks.removeValue(forKey: vehicleId)
+        guard !isStopped,
+              subscribers[vehicleId] != nil,
+              !snapshotDelivered.contains(vehicleId)
+        else { return }
+        await fetchAndEmitSnapshot(vehicleId: vehicleId, scope: .standalone)
     }
 
     /// Stop receiving updates for a vehicle. Finishes its streams and, if
@@ -173,6 +257,9 @@ public actor TelemetrySocket {
         dataStates.removeValue(forKey: vehicleId)
         // MYR-319 — stop asking for a car nobody is watching any more.
         snapshotRetryTasks.removeValue(forKey: vehicleId)?.cancel()
+        // MYR-387 — including the pending socket-independent fallback.
+        standaloneSnapshotTasks.removeValue(forKey: vehicleId)?.cancel()
+        snapshotDelivered.remove(vehicleId)
         if connectionState == .connected, let channel {
             Task { try? await channel.send(WireCodec.encodeFrame(type: .unsubscribe, payload: UnsubscribePayload(vehicleId: vehicleId))) }
         }
@@ -195,6 +282,9 @@ public actor TelemetrySocket {
         // MYR-319 — a pending cold-read retry must not outlive the connection.
         for task in snapshotRetryTasks.values { task.cancel() }
         snapshotRetryTasks.removeAll()
+        // MYR-387 — nor a pending socket-independent fallback.
+        for task in standaloneSnapshotTasks.values { task.cancel() }
+        standaloneSnapshotTasks.removeAll()
         let channel = self.channel
         self.channel = nil
         authOK = false
@@ -357,8 +447,31 @@ public actor TelemetrySocket {
     /// Send the subscribe frame, move the vehicle's groups to `.loading` (D-7),
     /// then fetch + emit the snapshot (D-1 on success, D-2 on failure).
     private func activateSubscription(vehicleId: String, channel: any WebSocketChannel, generation gen: Int) async {
+        // MYR-387 — the socket got here; the fallback is not needed and must not
+        // fire behind it.
+        standaloneSnapshotTasks.removeValue(forKey: vehicleId)?.cancel()
         try? await channel.send(WireCodec.encodeFrame(type: .subscribe, payload: SubscribePayload(vehicleId: vehicleId)))
-        await fetchAndEmitSnapshot(vehicleId: vehicleId, generation: gen)
+        await fetchAndEmitSnapshot(vehicleId: vehicleId, scope: .connection(generation: gen))
+    }
+
+    /// MYR-387 — what a cold read's emit is still VALID for.
+    ///
+    /// A read started by a connection belongs to that connection: if a newer one
+    /// supersedes it, its answer describes a socket generation nobody is on any
+    /// more and is dropped (invariant #5, unchanged). A `.standalone` read
+    /// belongs to the SUBSCRIPTION — it is a plain REST fact about a vehicle
+    /// somebody is watching, and no amount of socket churn makes it wrong.
+    private enum SnapshotFetchScope {
+        case connection(generation: Int)
+        case standalone
+    }
+
+    /// Whether a fetch started under `scope` may still emit.
+    private func isCurrent(_ scope: SnapshotFetchScope) -> Bool {
+        switch scope {
+        case .connection(let gen): return gen == generation
+        case .standalone: return true
+        }
     }
 
     /// Move the vehicle's groups to `.loading` (D-7), fetch the cold snapshot and
@@ -377,24 +490,28 @@ public actor TelemetrySocket {
     /// capability, from a snapshot the server was serving perfectly well a second
     /// later. The retry is bounded and backed off; a healthy first read is
     /// unchanged (one request, no delay).
-    private func fetchAndEmitSnapshot(vehicleId: String, generation gen: Int) async {
+    private func fetchAndEmitSnapshot(vehicleId: String, scope: SnapshotFetchScope) async {
         setDataState(vehicleId: vehicleId, groups: AtomicGroup.allCases, to: .loading)
         // The FIRST attempt stays inline, so the ordering guarantee is untouched:
         // a caller awaiting this (the receive loop, on `auth_ok`) still parks
         // until the snapshot has been emitted, and live frames still buffer
         // behind it (CG-SM-4).
-        if await attemptSnapshot(vehicleId: vehicleId, generation: gen) { return }
+        if await attemptSnapshot(vehicleId: vehicleId, scope: scope) { return }
         // The retries do NOT block the receive loop — parking it for a whole
         // backoff schedule would hold up every OTHER vehicle's live frames to
         // wait on one car that isn't answering.
+        //
+        // MYR-387 — one schedule per VEHICLE, whichever scope started it. A
+        // connection coming up mid-schedule replaces the standalone one with its
+        // own, which is right: that read is the one with the ordering guarantee.
         snapshotRetryTasks[vehicleId]?.cancel()
         snapshotRetryTasks[vehicleId] = Task { [weak self] in
-            await self?.runSnapshotRetries(vehicleId: vehicleId, generation: gen)
+            await self?.runSnapshotRetries(vehicleId: vehicleId, scope: scope)
         }
     }
 
     /// One cold-read attempt. `true` when the snapshot was emitted.
-    private func attemptSnapshot(vehicleId: String, generation gen: Int) async -> Bool {
+    private func attemptSnapshot(vehicleId: String, scope: SnapshotFetchScope) async -> Bool {
         // MYR-351 — stamped BEFORE the await, deliberately. This is the instant the
         // read was ISSUED, which is the only instant that says what the response
         // can possibly have seen. Stamping after the await would record when it
@@ -403,12 +520,13 @@ public actor TelemetrySocket {
         let issuedAt = Date()
         do {
             let snapshot = try await snapshotSource.snapshot(vehicleId: vehicleId)
-            guard gen == generation, subscribers[vehicleId] != nil else { return true }
+            guard isCurrent(scope), subscribers[vehicleId] != nil else { return true }
             emit(.snapshot(snapshot, readIssuedAt: issuedAt), to: vehicleId)
             setDataState(vehicleId: vehicleId, groups: AtomicGroup.allCases, to: .ready)
+            snapshotDelivered.insert(vehicleId) // MYR-387
             return true
         } catch {
-            guard gen == generation else { return true } // superseded — stop, don't retry
+            guard isCurrent(scope) else { return true } // superseded — stop, don't retry
             // Surface the failure NOW rather than claiming to still be loading
             // through the backoff. The last-known snapshot, if any, is retained
             // either way (NFR-3.12/3.13).
@@ -420,12 +538,12 @@ public actor TelemetrySocket {
     /// The backed-off remainder of the attempt schedule. Abandons the moment the
     /// connection is superseded, the vehicle is unsubscribed, or the socket stops
     /// — a car nobody is watching must not keep costing requests.
-    private func runSnapshotRetries(vehicleId: String, generation gen: Int) async {
+    private func runSnapshotRetries(vehicleId: String, scope: SnapshotFetchScope) async {
         for delay in snapshotRetryDelays.dropFirst() {
             try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
             if Task.isCancelled { return }
-            guard gen == generation, subscribers[vehicleId] != nil, !isStopped else { return }
-            if await attemptSnapshot(vehicleId: vehicleId, generation: gen) { return }
+            guard isCurrent(scope), subscribers[vehicleId] != nil, !isStopped else { return }
+            if await attemptSnapshot(vehicleId: vehicleId, scope: scope) { return }
         }
     }
 
@@ -446,7 +564,13 @@ public actor TelemetrySocket {
     /// last-known snapshot (NFR-3.12/3.13).
     public func refreshSnapshot(vehicleId: String) async {
         guard subscribers[vehicleId] != nil else { return }
-        await fetchAndEmitSnapshot(vehicleId: vehicleId, generation: generation)
+        // MYR-387 — `.standalone`, for the same reason `subscribe` is: this is a
+        // REST read on behalf of a SUBSCRIPTION, and both of its callers (the
+        // foreground resume and the owner's §7.15 wake) are situations in which
+        // the socket may well be exactly what is broken. Gating it on the
+        // connection generation would make the recovery unavailable precisely
+        // when it is needed.
+        await fetchAndEmitSnapshot(vehicleId: vehicleId, scope: .standalone)
     }
 
     private func routeVehicleUpdate(_ payload: VehicleUpdatePayload) {

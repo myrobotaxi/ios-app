@@ -581,6 +581,107 @@ SIMCTL_CHILD_MRT_SCENE=ownerOffboardingDone xcrun simctl launch <udid> app.myrob
 
 **Loading ≠ unavailable** (MYR-326) — skeletons render only from genuinely-in-flight branches. The honest end states keep their quiet one-liners and must never be skeletonized: "No drives yet", "No vehicles linked to this account", "Sign-in required to load vehicles", and the new cold-read timeout. That timeout is what makes the rest safe: `LiveVehicleFleet` now bounds the cold `/snapshot` wait to `ColdSnapshotLoad.budget()` (the Kit's whole retry schedule + per-attempt slack, ~21s) and then renders "Can't reach <car> right now" instead of loading forever. Before it, a car that never answered left `isConnecting` true for the whole session — survivable as a spinner, a lie as a shimmering placeholder. Recovery is the existing low-friction one (a resume re-asks; a late snapshot clears the timeout by itself), not a retry button.
 
+**THE HONEST END STATE WAS UNREACHABLE, AND THE MAP WENT TO NULL ISLAND**
+(MYR-387, client defect, build `202607311129`) — scenes `ownerColdReadFailed` /
+`ownerNoFixMap`. TestFlight, Jul 31: owner Vehicle tab with the Lunar chip up, a
+**completely black map area** and the sheet stuck on skeleton rows. *"Nothing
+loading, what happened?"* His car was `in_service` and NOT STREAMING; `GET
+/api/vehicles` and `/snapshot` both answered fine from the backend, and a
+Share-tab screenshot from the same minute proves the device had network and a
+session. Three defects, each of which alone produces part of that frame.
+
+- **1. THE COLD SNAPSHOT WAS GATED ON THE WEBSOCKET.**
+  `TelemetrySocket.fetchAndEmitSnapshot` had exactly two callers and both
+  required a live, AUTHENTICATED connection — `activateSubscription` (reached
+  from `auth_ok`) and `refreshSnapshot` (which needs a subscription that was
+  already activated). So a socket that failed to connect meant the REST snapshot
+  was **never even attempted**, on a device whose REST client had just answered
+  a fleet list. A terminal `auth_failed` is the sharpest form (`supervise()`
+  breaks out of its loop for the whole session); any transient failure inside
+  the backoff produces the same silence for as long as it lasts, which is why
+  the symptom is INTERMITTENT on a client who uses the app daily.
+  The fix is a **GRACE-DELAYED FALLBACK** (`standaloneSnapshotGrace`, 2s), and
+  the grace is what keeps the healthy path byte-identical: a socket that is
+  going to work authenticates long before it elapses and
+  `activateSubscription` **cancels** the pending fallback, so a healthy boot
+  still makes exactly ONE `/snapshot` request from exactly the caller it always
+  did, with CG-SM-4's ordering guarantee intact. The fallback carries `.standalone`
+  scope, **not** the connection generation: a subscribe issued before the first
+  `runConnection()` captures generation 0, which the connect then bumps to 1, so
+  a generation-gated fetch would have its emit dropped as "superseded" in
+  precisely the case it exists for.
+- **2. MYR-326's HONEST END STATE COULD NOT BE RENDERED**, and this is the
+  MYR-369 `VehicleRideShare.display` lesson repeating — **a pure rule with good
+  tests and the wrong consumer.** `ColdSnapshotLoad` bounds the wait and
+  publishes "Can't reach Lunar right now"; `ColdSnapshotLoadTests` proves it
+  four ways at fleet level. `HomeScreen.body` then asked
+  `selectedVehicle != nil && selectedTelemetry != nil && !isConnecting` and took
+  the CONTENT branch — because `isConnecting` is correctly `false` once a
+  `statusMessage` exists, and the fleet **LIST** had succeeded, so a vehicle row
+  was present. The honest branch was reachable only when the LIST itself failed,
+  which is the one case it was NOT written for. Home therefore went from a black
+  skeleton to a full map + sheet drawn on a snapshot that does not exist —
+  "Locating…", 0%, camera on the equator. **A name is not a position.**
+  `OwnerHomePresentation.resolve` is that decision as ONE pure function over four
+  facts, and its rule 1 is that a settled failure with NOTHING behind it outranks
+  a vehicle row — gated on `hasLiveSnapshotForActiveVehicle` so a failure landing
+  BEHIND real data still never blanks the sheet (NFR-3.12/3.13). A screen cannot
+  forget an arm of an enum the way it can forget the third leg of an `if`/`else
+  if`/`else`.
+- **3. THE CAMERA WENT TO NULL ISLAND.** `VehicleContractMapping
+  .placeholderActivity` parks a car at `(0, 0)` with the label "Locating…", the
+  `.driving` arm's empty route resolves to `(0, 0)` too, and `recenter` wrote
+  `centerOverride ?? vehiclePosition.coordinate` verbatim. **§2.3 makes `(0, 0)`
+  the NO-FIX SENTINEL**, and `position(from:)`'s own doc comment already promised
+  callers would never treat it as "a valid Gulf-of-Guinea location". The RIDER
+  side kept that promise — MYR-336's `RiderVehicleProjection.hasFix` is the gate
+  — and **the owner side never had the equivalent.** On a dark, muted, POI-free
+  `.standard` style the Gulf of Guinea renders as a plain black rectangle, which
+  is why the client read it as "nothing loading" rather than as a wrong place.
+  `OwnerMapCamera` is the owner's gate: override → live fix → **cached
+  last-known position** (widened ×4, because where the car WAS is not where it
+  is) → `.unpositioned`, which writes NO region and leaves MapKit's own wide
+  framing up. Deliberately **not** a fabricated default city — that is a lie with
+  better lighting. The **vehicle MARKER is a separate question** and is withheld
+  whenever there is no fix, even while the camera is positioned from cache: a
+  camera is context, a gold pin is a claim that the car is there right now.
+  `LastKnownVehiclePositionStore` is the cache (`AccountStorage`/
+  `RecentDestinations` precedent — reverse-DNS key, `Codable`, `init(defaults:)`,
+  30-day expiry, 12-entry cap) and it **refuses to store `(0, 0)`**, since
+  poisoning the fallback from inside would be silent.
+
+**The retry button is a DELIBERATE, CLIENT-DIRECTED DEVIATION** from MYR-326/
+MYR-343's "a resume re-asks, no retry button". That recovery is real and still
+runs — `LiveVehicleFleet.retry()` walks the SAME ladder `handleForeground` does,
+in the same order, because a retry and a resume are the same request — but it is
+invisible, and *"Nothing loading, what happened?"* is a question the screen has
+to answer where it is asked. Only `.unavailable` carries it
+(`OwnerHomePresentation.offersRetry`); **a skeleton must never grow one**,
+because something is already running behind it.
+
+Both scenes are live-path-only by construction (`SimulatedVehicleFleet
+.statusMessage` is `nil`, its `isConnecting` is `false`, and the protocol default
+`hasLiveSnapshotForActiveVehicle` is `true`, so every simulated input resolves
+`.content`), and every fixture vehicle carries a real San Francisco coordinate,
+so **every drift-gate capture is byte-identical**. `ownerColdReadFailed` is
+`ownerConnecting` twenty-one seconds later — the same list row, no snapshot, the
+budget spent — and `ownerNoFixMap` is a snapshot that ARRIVED carrying the `(0,
+0)` sentinel, seeding no cached position so the capture is the `.unpositioned`
+arm. A DEBUG scene gets its own in-memory position store
+(`TelemetryComposition.debugScopedLastKnownPositions`), the same reason
+`RootView.recentDestinationsStore()` does: a position left behind by hand-driving
+a live scene must not frame a later capture.
+
+```sh
+SIMCTL_CHILD_MRT_SCENE=ownerColdReadFailed xcrun simctl launch <udid> app.myrobotaxi.ios
+SIMCTL_CHILD_MRT_SCENE=ownerNoFixMap xcrun simctl launch <udid> app.myrobotaxi.ios
+```
+
+**A pure test could not have caught defect 2**, which is why
+`App/UITests/OwnerColdReadFailureUITests.swift` exists alongside
+`OwnerColdLaunchHonestyTests`: the pure suite proves the RULE, and only a real
+launch proves the rule is what the screen consults.
+
 Booking/pending/tracking scenes are seeded WITHOUT arming any timers, so they hold still for a screenshot instead of auto-advancing.
 
 **Owner sheet peek band** (MYR-315 → MYR-345) — the peek band is the prototype's 210/280 **plus** the room each LIVE-ONLY qualifier line the hero actually renders costs: `MRTHomePeekQualifier.freshnessStamp` (25) and `.serviceCompletion` (16). The prototype's hero has neither line, so appending them to a fixed band spent the clearance `BottomSheet` reserves above the floating nav (`components.jsx:542` `padding: '6px 24px 100px'`; the nav's own top edge is 86pt from the physical edge) — the client's "the stamp crowds the menu". Simulated scenes render zero such lines, so they land on 210/280 exactly and stay byte-identical; the in-service and freshness scenes sit 16–41pt taller by design (and their map `bottomContentInset` follows).

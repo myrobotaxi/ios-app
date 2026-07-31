@@ -133,6 +133,13 @@ struct VehicleMapView: View {
     /// going, and the store's cooldown retries until real geometry lands. Empty at
     /// every other call site.
     var pickupRoute: [CLLocationCoordinate2D] = []
+    /// MYR-387 — the last position this device observed this car at, off
+    /// `LastKnownVehiclePositionStore`. Used ONLY when the vehicle has no fix
+    /// (§2.3's `(0, 0)` sentinel), so the map opens somewhere real instead of on
+    /// Null Island. `nil` everywhere but the owner Home map, and `nil` there too
+    /// until the car has been seen once — in which case `OwnerMapCamera` writes
+    /// no region at all rather than inventing a city.
+    var lastKnownCenter: CLLocationCoordinate2D? = nil
 
     // MYR-222 — token accounting for the legacy (non-pin-drop) writers,
     // replacing the wall-clock `programmaticCameraUntil` window. The window
@@ -178,6 +185,17 @@ struct VehicleMapView: View {
     /// `onAppear`). `nil` for the owner map (no override) — never fires.
     private var centerOverrideKey: String? {
         centerOverride.map { "\($0.latitude),\($0.longitude)" }
+    }
+
+    /// MYR-387 — whether the gold vehicle pin may be drawn this frame.
+    ///
+    /// Deliberately NOT the same question as "where does the camera point": a
+    /// last-known camera is honest context, a pin is a claim that the car is
+    /// THERE right now. With no fix there is no such claim, and the pin is
+    /// withheld rather than planted in the Gulf of Guinea. Every fixture vehicle
+    /// carries a real coordinate, so every simulated capture is byte-identical.
+    private var drawsVehicleMarker: Bool {
+        OwnerMapCamera.drawsVehicleMarker(vehicle: vehiclePosition.coordinate)
     }
 
     /// Whether pin-drop mode is on (MYR-215): the trigger for the entry re-frame
@@ -532,13 +550,13 @@ struct VehicleMapView: View {
                     }
                 }
             }
-            if showVehicle {
+            if showVehicle, drawsVehicleMarker {
                 Annotation(vehicle.name, coordinate: vehiclePosition.coordinate) {
                     VehicleMarker(heading: vehiclePosition.headingDegrees, label: vehicle.name)
                 }
             }
         case .parked:
-            if showVehicle {
+            if showVehicle, drawsVehicleMarker {
                 Annotation(vehicle.name, coordinate: vehiclePosition.coordinate) {
                     VehicleMarker(heading: 0, label: vehicle.name)
                 }
@@ -553,14 +571,28 @@ struct VehicleMapView: View {
         // writer firing mid-pin-drop (fix stream, follow re-engage, progress
         // tick) can never mutate the camera underneath the owner again.
         guard Self.cameraWritePermitted(source: .legacyRecenter, isPinDropActive: isPinDropActive) else { return }
-        let region = MKCoordinateRegion(
-            center: centerOverride ?? vehiclePosition.coordinate,
-            span: MKCoordinateSpan(latitudeDelta: regionSpanDelta, longitudeDelta: regionSpanDelta)
+        // MYR-387 — THE CAMERA MAY NEVER OPEN ON NULL ISLAND. This used to be a
+        // bare `centerOverride ?? vehiclePosition.coordinate`, and on the live
+        // path before a snapshot exists that coordinate is `(0, 0)` — §2.3's
+        // "no fix" sentinel, rendered as a uniform near-black Gulf of Guinea.
+        // See `OwnerMapCamera` for the whole rule and its precedence.
+        let target = OwnerMapCamera.resolve(
+            vehicle: vehiclePosition.coordinate,
+            override: centerOverride,
+            lastKnown: lastKnownCenter,
+            spanDelta: regionSpanDelta
         )
+        guard let region = OwnerMapCamera.region(for: target) else {
+            // Nothing true to say about where the car is. Leave MapKit's own wide
+            // framing up rather than writing a fabricated centre — and register
+            // NO expected settle, since we issued no write.
+            mrtCameraTrace("WRITE recenter SKIPPED — no fix and no last-known position (unpositioned)")
+            return
+        }
         // MYR-222: register the expected settle (token classification — the
         // wall-clock window misclassified every gesture under a 1Hz fix stream).
-        settleLedger.expect(center: region.center, spanDelta: regionSpanDelta)
-        mrtCameraTrace("WRITE recenter center=\(region.center.latitude),\(region.center.longitude) span=\(regionSpanDelta) animated=\(animated)")
+        settleLedger.expect(center: region.center, spanDelta: target.spanDelta)
+        mrtCameraTrace("WRITE recenter center=\(region.center.latitude),\(region.center.longitude) span=\(target.spanDelta) source=\(String(describing: target.source)) animated=\(animated)")
         if animated, !reduceMotion {
             // screens.jsx:417 vehicle-marker transition — `left .8s linear, top .8s linear`.
             withAnimation(.linear(duration: 0.8)) {

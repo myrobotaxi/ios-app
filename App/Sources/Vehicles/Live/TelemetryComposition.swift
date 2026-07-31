@@ -78,7 +78,27 @@ enum TelemetryComposition {
         }
         return LiveVehicleFleet.Config(
             environment: live.environment,
-            tokenProvider: tokenProvider
+            tokenProvider: tokenProvider,
+            // MYR-387 — a DEBUG capture scene gets its OWN in-memory position
+            // cache, following `RootView.recentDestinationsStore()`'s precedent
+            // exactly: a persistent store means a position left behind by
+            // hand-driving a live scene on the same simulator could frame a later
+            // capture's map. A cold install has nothing cached either way, so
+            // production is unaffected and every scene stays reproducible.
+            lastKnownPositions: debugScopedLastKnownPositions()
         )
+    }
+
+    /// `nil` in production and in every normal launch (→ the shared `.standard`
+    /// store); a throwaway in-memory store under a DEBUG capture scene.
+    private static func debugScopedLastKnownPositions() -> LastKnownVehiclePositionStore? {
+        #if DEBUG
+        guard DebugScene.current != nil else { return nil }
+        let suite = "app.myrobotaxi.ios.debugScene.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else { return nil }
+        return LastKnownVehiclePositionStore(defaults: defaults)
+        #else
+        return nil
+        #endif
     }
 }
