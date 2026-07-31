@@ -356,68 +356,145 @@ A `-MRT_SCENE <name>` launch **argument** is accepted as a fallback for tooling 
 
   **"{Owner}'s {Vehicle}" is conditional, not concatenated** — `VehicleSummary.name` is the owner's OWN nickname and owners name cars after themselves (the canonical server fixture is literally `"Alex's Model 3"`), so prefixing §7.5.5's `ownerFirstName` onto it produced **"Alex's Alex's Model 3"**, which the first `riderInviteJoined` capture showed verbatim. `SharedVehicleTitle.compose` prefixes the owner only when the nickname is not already about them. The §7.0 catalog rows carry **no owner name at all** — only the redeem response does, and only at join time — so "Shared with me" titles on the vehicle nickname alone rather than persisting a name that can go stale.
 
-- Account deletion (MYR-355, App Store Guideline 5.1.1(v)): `ownerDeleteAccount` /
-  `riderDeleteAccount` (the FIRST dialog, per role — the title is shared and the
+- Account deletion (MYR-355, App Store Guideline 5.1.1(v)) and the **VISUAL
+  OFFBOARDING FLOW** (MYR-366, **CLIENT-DIRECTED**): `ownerDeleteAccount` /
+  `riderDeleteAccount` (the ONE dialog, per role — the title is shared and the
   consequence sentence is not, which is the whole reason the copy is role-split),
-  `ownerDeleteAccountConfirm` / `riderDeleteAccountConfirm` (the SECOND dialog,
-  "This can't be undone" — identical copy for both roles by design, captured on
-  both so the claim is verified rather than asserted), and `deleteAccountFailed`
-  (the `DELETE /api/users/me` refused with a scripted `500`: the alert up, the user
-  STILL SIGNED IN, the Delete row still there to retry). All five drive the
-  SHIPPING `AccountDeletionFlow` through `debugDrive`, which calls the same three
-  methods a thumb does in the same order — the stand-in-for-a-tap precedent of
-  `ownerFreshnessWaking` / `ownerServiceWindowEditor`, and a stand-in for the TAPS
-  only. `deleteAccountFailed` injects `DebugAccountDeletionEndpoint` and has **no
-  other capture route at all**: reaching it for real means getting a live server to
-  fail a delete on purpose, and if it succeeded instead the account would be gone.
-  All five carry `ownerSettings`/`riderSettings`'s own DEBUG identity
-  (`showsLiveSettings`) and start at each list's bottom anchor, because the Account
-  section is the last thing above Sign out and a top-of-list capture would frame
-  everything except the subject. `riderSettings` itself is deliberately NOT given
-  that anchor, so it stays framed where the drift gate has always framed it.
+  `ownerOffboarding` (the STEPPER: capture at t≈1.4s mid-narration and t≈5s at the
+  honesty gate), `offboardingFailed` (the delete refused, the narration stopped
+  where it stood), `ownerOffboardingDone` / `riderOffboardingDone` (the two
+  endings; the owner's illustrations LOOP on 3s, so take two frames ~1.5s apart).
+  All six drive the SHIPPING `AccountDeletionFlow` through `debugDrive`, which
+  calls the same methods a thumb does in the same order — the stand-in-for-a-tap
+  precedent of `ownerFreshnessWaking` / `ownerServiceWindowEditor`, and a stand-in
+  for the TAPS only. **Which state an offboarding scene lands on is decided by the
+  WIRE it injects, never by a flag**: all four run `.offboarding` and differ only in
+  what `DebugScene.accountDeletionEndpoint` hands them (a call that never answers, a
+  delayed scripted `500`, or the simulator's own absent endpoint, which IS the
+  `204`), so a capture shows the shipping state machine reconciling a real answer
+  rather than a hand-set phase. All six carry `ownerSettings`/`riderSettings`'s own
+  DEBUG identity (`showsLiveSettings`) and start at each list's bottom anchor.
+  `riderSettings` itself is deliberately NOT given that anchor.
 
-  **The section is in MYR-354's card grammar on BOTH pages**, and had to be
-  adapted to get there: it was written against the pre-#139 owner page (a
-  `.label()` header over bare rows on the page ground, plus a hand-rolled card of
-  inline 16/13/22 literals on the rider page), which is the divider-list idiom
-  #139 converged away from. A merge that simply appended it would have re-forked
-  the page at its last section. It is now a `SettingsSectionLabel` over a
-  `SettingsCard` holding two rows at the converged style — 32pt leading circle,
-  14pt title, the inter-row hairline, a 44pt floor — and the hand-rolled
-  literals resolve to `MRTSettingsGrammar.rowHorizontalPadding` /
-  `.rowVerticalPadding` / `.sectionSpacing`. Two grammar additions carry it,
-  both in `SettingsGrammar.swift` so neither page can grow its own: the glyph's
-  **`.danger` tone** (`mrtDangerFillSoft` + `mrtDialogRed` — the confirm
-  dialog's OWN destructive icon-circle, whose gold twin `mrtGoldFillSoft` the
-  tokens file already names, so it is the same construction at the same two
-  alphas), and **`SettingsDestructiveRow`** — `SettingsActionRow`'s exact shape
-  with the gold swapped for red and **no chevron**, because a chevron promises a
-  destination and this row raises a dialog in place. **It is a row and not a
-  second `SettingsSignOutButton`**: the outlined full-width button is PAGE
-  furniture below every card (shared-screens.jsx:518-523), and repeating that
-  treatment inside a card would put two identically-weighted red controls on one
-  screen and claim they are the same kind of thing. The name row is a
-  `SettingsDetailRow` with **no `action`**, which is the grammar's own spelling
-  of display-only: it renders bare rather than in a `Button`, so it has no press
-  state and no tap target to promise the rename this backend cannot perform.
+  **MYR-366 RETIRED three MYR-355 scenes ON PURPOSE** — `ownerDeleteAccountConfirm`
+  / `riderDeleteAccountConfirm` went with the second dialog they captured, and
+  `deleteAccountFailed` is superseded by `offboardingFailed`, which shows the same
+  refusal on the surface it now happens on.
 
 ```sh
 SIMCTL_CHILD_MRT_SCENE=ownerDeleteAccount xcrun simctl launch <udid> app.myrobotaxi.ios
-SIMCTL_CHILD_MRT_SCENE=riderDeleteAccountConfirm xcrun simctl launch <udid> app.myrobotaxi.ios
-SIMCTL_CHILD_MRT_SCENE=deleteAccountFailed xcrun simctl launch <udid> app.myrobotaxi.ios
+SIMCTL_CHILD_MRT_SCENE=ownerOffboarding xcrun simctl launch <udid> app.myrobotaxi.ios
+SIMCTL_CHILD_MRT_SCENE=offboardingFailed xcrun simctl launch <udid> app.myrobotaxi.ios
+SIMCTL_CHILD_MRT_SCENE=ownerOffboardingDone xcrun simctl launch <udid> app.myrobotaxi.ios
 ```
 
-  **A failed delete leaves you SIGNED IN**, and that is the client rule this
-  feature turns on. `DELETE /api/users/me` is re-runnable by contract — a partial
-  failure leaves a state where calling it again finishes the job — so the honest
-  resting state after a failure is exactly where the user started, with a notice
-  that says retrying is safe. Signing someone out of an account that may still
-  exist would strand them outside the only surface that can finish the job. The
-  confirmation is **two explicit dialogs, not a type-to-confirm**: the guideline
-  wants deletion discoverable and confirmable, and a labyrinth is its own review
-  risk. **There is no rename affordance** and there must not be one — the backend
-  has no profile-update endpoint at all, so an Edit control here would be the
-  MYR-342 gate lesson in miniature (asserted by `AccountDeletionUITests`).
+  **The client's report, Jul 30**: *"the delete account is weird. It shows the
+  email again even though its displayed at the top of the settings — follow a more
+  clean design for delete account and it needs to be a visual offboarding flow with
+  visually showing the user as they are offboarded all the steps to offboard them.
+  Kind of like a clean vertical stepper where each circle animates as a check mark
+  … and animated visuals in the end to demonstrate how to unpair the tesla virtual
+  key, etc anything else manual required."* His stated priority for this surface,
+  verbatim: **"security, transparency, and trust is top of mind."**
+
+  **THE EMAIL WAS SHOWN THREE TIMES, AND THE CAUSE IS A FALLBACK NOBODY LOOKS AT.**
+  `UserProfile.settingsDisplayName` is `name ?? email ?? "Your account"`, and Apple
+  hands the NAME over **only on the FIRST authorization** — so for any account
+  signed in before that (his, and every re-installed tester's) the display name IS
+  the email address. `SettingsProfileCard` then rendered it as the name AND as the
+  email, and MYR-355's Account-section name row rendered it a third time. The row is
+  **deleted on both pages** and the section is now exactly one thing, the way out of
+  the product; identity heads the page, once, in the card built for it
+  (`AccountDeletionUITests.testTheAccountSectionNoLongerRepeatsTheIdentity` is the
+  guard). `nameProvenanceCaption` went with it. **The lesson generalizes: a display
+  fallback that substitutes one field for another makes every surface that renders
+  both a duplicate, and no call site shows it.**
+
+  **THE HONESTY GATE IS THE WHOLE DESIGN.** There is exactly ONE network call and
+  it either answers `204` or it does not; six server events do not exist. So the
+  stepper **NARRATES** the teardown sequence the endpoint is documented to perform,
+  and the gate is drawn where it can be verified — in `OffboardingStepperState`,
+  as one expression:
+
+  - Every step EXCEPT the last may check on the clock alone (`narrationLimit` is
+    `stepCount - 1`, so adding a step extends the NARRATED part and leaves the gate
+    where it is).
+  - The LAST step ("Account deleted") and the "done" state check **only** after the
+    real `204` — `checkedCount` returns the full count solely when the server
+    succeeded AND the narration has caught up.
+  - A `204` that lands EARLY cannot jump the final check forward; a narration that
+    finishes early holds a real `SpinnerRing` on the last step.
+  - A failure STOPS the narration where it stood (`canNarrate` is false the moment
+    a failure is recorded). **An all-checked stepper over a failed delete is
+    unreachable by construction rather than by care**, which is what
+    `testAFailureAtAnyPhaseRendersHonestlyAndNeverAllChecked` sweeps — every phase,
+    both roles.
+
+  **A failed delete leaves you SIGNED IN**, unchanged from MYR-355 and now with the
+  retry ON the offboarding screen, beside the stepper that shows how far it got.
+  `DELETE /api/users/me` is re-runnable by contract, so **retry RESUMES**: the steps
+  already checked are not un-checked, because un-checking would claim the previous
+  attempt undid itself.
+
+  **The wipe moved from the `204` to Done.** The two manual Tesla steps are the last
+  thing an owner will ever be told about this account; wiping the shell the instant
+  the server answered would take that screen away before it was read.
+
+  **The confirmation is ONE dialog now, not two.** It absorbed the second's
+  permanence sentence and dropped the half that repeated the consequences already
+  listed ("…and deletes your account" one tap above "Your account … will be
+  permanently deleted"). The confirm button is MYR-355's own `"Delete permanently"`
+  and the dismiss its `"Keep my account"` — that tap IS the point of no return. The
+  ROW keeps "Delete account", so the row opens a question and the button answers it
+  (MYR-355 made them identical deliberately; with one dialog that reasoning
+  inverts). Still **not a type-to-confirm**: the guideline wants deletion
+  discoverable and confirmable, and a labyrinth is its own review risk. **There is
+  no rename affordance** and there must not be one — the backend has no
+  profile-update endpoint at all (asserted by `AccountDeletionUITests`).
+
+  **Motion is the design kit's own grammar, not new numbers.** Each circle
+  OUTLINE-DRAWS (`Circle().trim` from 12 o'clock, 0.22s) then CHECK-DRAWS
+  (`MRTCheckDrawShape`, 0.18s) — `mrtCheckDraw`'s stroke-dashoffset,
+  onboarding.jsx:225 — summing to the client's **0.4s per step**. `CheckDrawShape`
+  was `private` inside `AddTeslaFlow`; it is promoted to DesignSystem as
+  `MRTCheckDrawShape` and both consumers read it, because a second hand-transcribed
+  copy of a path from a jsx file is a second place to transcribe it wrongly. The
+  stagger is the narration's own interval, which is **derived** from
+  `narrationDuration` (3.2s) rather than fixed per step — so an owner sees six steps
+  in the same time a rider sees four, and `stepInterval ≥ checkDuration` is asserted
+  so the beats can never pile up. **Reduce Motion → instant checks.**
+
+  **The endings are pure SwiftUI shapes on the token palette — no assets.** The
+  owner's two illustrations (a car touchscreen losing the MyRoboTaxi key row; a
+  third-party-apps list whose MyRoboTaxi switch turns off) are per-frame
+  `TimelineView(.animation)` renders on ONE shared 3s period — **not**
+  `offset`-animated masked layers, per MYR-326/MYR-337's lesson that a masked band
+  can composite once and never re-render. **Reduce Motion renders the static
+  END-STATE frame** (key gone, toggle off), because the end state is what the reader
+  has to recognise on their own screen. Proven by frame-diff, never by a still:
+  **7 distinct illustration renderings across 12 frames with motion on, 1 of 12 with
+  it off** (`simctl spawn <udid> defaults write com.apple.Accessibility
+  ReduceMotionEnabled -bool true`). A RIDER has neither step — nothing of theirs was
+  enrolled in a car and they never authorized Tesla — so their ending is the
+  check-hero and stops; an "optional next steps" section with nothing in it is the
+  MYR-347 empty-section defect on a screen someone reads once.
+
+  **Vehicle-removal parity.** Removing the owner's LAST/only car leaves exactly the
+  state deleting the account leaves, so MYR-258's confirm gains the same two manual
+  steps as a **compact static** card in the MYR-360 content slot —
+  `CompactManualOffboardingSteps`, reading the same `ManualOffboardingStep` values
+  the ceremony does, so the menu paths are one fact in one place. It is deliberately
+  not the animated version: a confirm dialog is a question, and a looping animation
+  inside one competes with the buttons. The confirm's prose summary of the two steps
+  was DELETED with the move — a summary directly above the thing it summarises is
+  the stacked chrome MYR-347 was about. **TWO PRESENTATIONS, NOT ONE WITH AN `if`
+  INSIDE THE SLOT**: a conditional inside the `@ViewBuilder` types the slot as
+  `Optional<…>`, which is not `EmptyView`, so the card would spend the slot's 14pt
+  top padding even on the nil branch and move MYR-258's dialog — exactly what
+  MYR-360 documented that type check for. Splitting on the BINDING keeps the
+  not-last-car dialog byte-identical. It has **no headless capture route** (it needs
+  the live teardown seam behind an open vehicle-detail sheet); the guard is a
+  `UIHostingController` measurement that the card fits `dialogMaxWidth - 40`.
 
   **`requesterName` absent now means the account was DELETED.** The server omits
   the key if and only if the rider has no identity row in any of the three

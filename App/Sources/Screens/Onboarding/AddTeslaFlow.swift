@@ -484,12 +484,19 @@ private struct LinkedTransitionView: View {
                 .strokeBorder(Color.white.opacity(0.45), lineWidth: 1)
                 .mask(LinearGradient(colors: [.white, .clear], startPoint: .top, endPoint: .center))
             // mrtCheckDraw: dash 24→0, 0.5s ease-out, 0.36s delay
-            CheckDrawShape()
+            // MYR-366 — the path itself now lives in DesignSystem
+            // (`MRTCheckDrawShape`), because the offboarding stepper draws the
+            // same check. Same three points, same 24-unit box, same stroke ratio.
+            MRTCheckDrawShape()
                 .trim(from: 0, to: checkDrawn || reduceMotion ? 1 : 0)
                 .stroke(
                     Color.mrtLinkedCheckStroke,
                     // strokeWidth 2.6 in the 24-unit viewBox, drawn at 46pt
-                    style: StrokeStyle(lineWidth: 2.6 * 46.0 / 24.0, lineCap: .round, lineJoin: .round)
+                    style: StrokeStyle(
+                        lineWidth: MRTCheckDrawShape.lineWidth(at: 46),
+                        lineCap: .round,
+                        lineJoin: .round
+                    )
                 )
                 .frame(width: 46, height: 46)
                 .animation(.easeOut(duration: 0.5).delay(0.36), value: checkDrawn)
@@ -523,20 +530,6 @@ private struct OneShotRing: View {
                     }
                 }
         }
-    }
-}
-
-/// jsx check path `M5 12.5l4.5 4.5L19 6.5` in a 24×24 viewBox.
-private struct CheckDrawShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-            CGPoint(x: rect.minX + x / 24 * rect.width, y: rect.minY + y / 24 * rect.height)
-        }
-        path.move(to: point(5, 12.5))
-        path.addLine(to: point(9.5, 17))
-        path.addLine(to: point(19, 6.5))
-        return path
     }
 }
 
