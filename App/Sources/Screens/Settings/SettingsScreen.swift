@@ -249,10 +249,35 @@ struct SettingsScreen: View {
             isPresented: $confirmSignOut,
             config: ShareDialogs.signOutOwner(action: onSignOut)
         )
+        // MYR-366 — vehicle-removal parity. Removing the owner's LAST/only car
+        // leaves exactly the state deleting the account leaves (the key still on
+        // the touchscreen, the grant still in the Tesla account), so the same two
+        // manual steps ride in the confirm's MYR-360 content slot — the compact
+        // static version, because a question is not the place for the ceremony.
+        //
+        // **Two presentations, not one with an `if` inside the slot.** A
+        // conditional inside the `@ViewBuilder` types the slot as
+        // `Optional<CompactManualOffboardingSteps>`, which is not `EmptyView`, so
+        // `MRTConfirmDialogCard` would spend the slot's 14pt top padding even on
+        // the nil branch and move MYR-258's dialog by 14pt (that type check is
+        // exactly what MYR-360 documented it for). Splitting on the BINDING keeps
+        // the not-last-car dialog on the no-slot overload and byte-identical.
         .mrtConfirmDialog(
-            isPresented: Binding(get: { confirmUnlink != nil }, set: { if !$0 { confirmUnlink = nil } }),
+            isPresented: Binding(
+                get: { confirmUnlink != nil && !showsManualStepsInUnlinkConfirm },
+                set: { if !$0 { confirmUnlink = nil } }
+            ),
             config: unlinkDialogConfig
         )
+        .mrtConfirmDialog(
+            isPresented: Binding(
+                get: { confirmUnlink != nil && showsManualStepsInUnlinkConfirm },
+                set: { if !$0 { confirmUnlink = nil } }
+            ),
+            config: unlinkDialogConfig
+        ) {
+            CompactManualOffboardingSteps()
+        }
         .mrtConfirmDialog(
             isPresented: Binding(get: { confirmRevoke != nil }, set: { if !$0 { confirmRevoke = nil } }),
             config: revokeDialogConfig
@@ -291,31 +316,21 @@ struct SettingsScreen: View {
         // sim. A failed read is an honest state, not a silent fall-through — see
         // `LivePushPrefsService.load()`.
         .task { await pushPrefs.load() }
-        // MYR-355 — the two-step account-deletion dialogs + its notice + its busy
-        // overlay. All four read ONE flow object (see `AccountDeletionFlow`).
+        // MYR-355 — the account-deletion confirm. MYR-366 reduced it to ONE
+        // dialog: the second one is now the full-screen offboarding flow below,
+        // and the failure alert went with it (the retry lives on that screen,
+        // beside the stepper that shows how far the teardown got).
         .mrtConfirmDialog(
             isPresented: $deletion.isPresentingFirstConfirm,
             config: deletion.firstConfirmConfig
         )
-        .mrtConfirmDialog(
-            isPresented: $deletion.isPresentingSecondConfirm,
-            config: deletion.secondConfirmConfig
-        )
-        // The SAME alert grammar the §7.12 teardown failure uses — Settings'
-        // existing destructive-failure surface. A calm, honest end state; never a
-        // fake success, and never a sign-out (the account may still exist).
-        .alert(
-            AccountDeletionDialog.failureNoticeTitle,
-            isPresented: $deletion.isPresentingErrorNotice
-        ) {
-            SwiftUI.Button("OK", role: .cancel) { deletion.errorNotice = nil }
-        } message: {
-            // The second half of the ONE locked notice string — see
-            // `AccountDeletionDialog.failureNoticeBody`. `deletion.errorNotice`
-            // carries that string whole and is what raises this alert.
-            Text(AccountDeletionDialog.failureNoticeBody)
+        // MYR-366 — the visual offboarding flow. A `fullScreenCover` because the
+        // stepper is the whole surface for the duration and must cover the tab
+        // bar; it carries no interactive dismissal, since by the time it is up the
+        // `DELETE` is running and there is nothing left to cancel.
+        .fullScreenCover(isPresented: $deletion.isPresentingOffboarding) {
+            AccountOffboardingScreen(flow: deletion)
         }
-        .overlay { AccountDeletionBusyOverlay(isDeleting: deletion.isDeleting) }
         .task { await prepareAccountDeletion() }
     }
 
@@ -627,16 +642,24 @@ struct SettingsScreen: View {
     //
     // Self-contained and appended at the END of the list, and — since MYR-354
     // (#139) — in the SHARED card grammar every other section on this page now
-    // wears: a `SettingsSectionLabel` over a `SettingsCard` holding two rows at
-    // the converged row style (32pt leading circle, 14pt title, the inter-row
-    // hairline, a 44pt floor). It was written against the pre-#139 owner page —
-    // a `.label()` header over bare rows on the page ground — which is exactly
-    // the divider-list idiom that issue converged AWAY from, so keeping it would
-    // have re-forked the page at its last section.
+    // wears: a `SettingsSectionLabel` over a `SettingsCard` at the converged row
+    // style (32pt leading circle, 14pt title, a 44pt floor).
     //
-    // Exactly two things: who is signed in, and the way out of the product.
-    // Sign out stays terminal BELOW it — that button is page furniture, not a
-    // section row (see `SettingsDestructiveRow`).
+    // **MYR-366 removed the identity row this section opened with**, which is the
+    // first half of the client's report: *"It shows the email again even though
+    // its displayed at the top of the settings."* He is describing a real
+    // duplication, and one with a cause worth writing down —
+    // `UserProfile.settingsDisplayName` is `name ?? email ?? "Your account"`, and
+    // Apple hands the NAME over only on the FIRST authorization. For an account
+    // signed in before that (his, and every re-installed tester's) the display
+    // name IS the email address, so the profile card at the top of this page
+    // showed it as both the name and the email, and this section then showed it a
+    // THIRD time. Deleting the row is the fix for all three: identity heads the
+    // page, once, in the card built for it.
+    //
+    // The section is now exactly one thing — the way out of the product — and
+    // Sign out stays terminal BELOW it, because that button is page furniture and
+    // not a section row (see `SettingsDestructiveRow`).
 
     private var accountLabel: some View {
         SettingsSectionLabel(AccountDeletionDialog.sectionTitle)
@@ -644,49 +667,18 @@ struct SettingsScreen: View {
 
     private var accountCard: some View {
         SettingsCard {
-            accountNameRow
             deleteAccountRow
         }
     }
 
-    /// The signed-in person's name, DISPLAY-ONLY.
-    ///
-    /// There is deliberately NO rename affordance and no edit chevron: the backend
-    /// has no profile-update endpoint at all (nothing in `RestClient` or the
-    /// contracts the Kit consumes writes to `/api/users`), and an affordance that
-    /// cannot reach a server is the MYR-342 gate lesson in miniature — it would
-    /// appear to change the owner's name and do nothing. The caption says where
-    /// the name came from instead, which is the honest answer to the question a
-    /// rename button would have been asked.
-    ///
-    /// A `SettingsDetailRow` with **no `action`** is the grammar's own way to say
-    /// display-only: it renders the content bare rather than in a `Button`, so the
-    /// row has no press state and no tap target of its own to promise anything.
-    ///
-    /// Reads the SAME `profileName` the Profile section at the top does — the real
-    /// `settingsDisplayName` on live, the fixture persona in SIM — so the two can
-    /// never disagree and the simulated capture is unchanged by this row's
-    /// existence.
-    private var accountNameRow: some View {
-        SettingsDetailRow(
-            glyph: SettingsRowGlyph(systemName: "person"),
-            title: profileName,
-            caption: AccountDeletionDialog.nameProvenanceCaption,
-            isFirst: true
-        )
-        // ONE combined element: a name and its provenance are one fact, not two
-        // stops for a screen reader (asserted in `AccountDeletionUITests`).
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("mrt.accountNameRow")
-    }
-
     /// The destructive row, in the shared danger grammar — `SettingsActionRow`'s
     /// shape with `mrtDialogRed` where the gold goes, and the confirm dialog's own
-    /// destructive icon-circle for the glyph.
+    /// destructive icon-circle for the glyph. `isFirst` now that it opens the card.
     private var deleteAccountRow: some View {
         SettingsDestructiveRow(
             icon: "trash",
             title: AccountDeletionDialog.deleteRowLabel,
+            isFirst: true,
             accessibilityID: "mrt.deleteAccountRow"
         ) {
             deletion.begin(role: .owner)
@@ -1081,6 +1073,15 @@ struct SettingsScreen: View {
 
     // MARK: Dialogs
 
+    /// MYR-366 — whether this confirm is the LAST/only car's, i.e. the one that
+    /// clears the whole Tesla link and therefore leaves the same two manual steps
+    /// account deletion leaves. Live path only: the simulated unlink clears
+    /// nothing on Tesla's side, so guidance about Tesla's UI there would be about
+    /// a link that was never made.
+    private var showsManualStepsInUnlinkConfirm: Bool {
+        teardown != nil && (linkedVehicles?.vehicles.count ?? 0) <= 1
+    }
+
     private var unlinkDialogConfig: MRTConfirmDialogConfig {
         let vehicle = confirmUnlink
         // MYR-258 — on the LIVE path the destructive action runs the authoritative
@@ -1088,8 +1089,13 @@ struct SettingsScreen: View {
         // owner's LAST linked car, the whole Tesla link clears (tokens + settings).
         if let teardown {
             let isLastVehicle = (linkedVehicles?.vehicles.count ?? 0) <= 1
+            // MYR-366 — the last-car message no longer PARAPHRASES the two owner
+            // steps ("Two owner-only steps (revoking access on Tesla and removing
+            // the car's key) come next"), because the dialog now SHOWS them, in
+            // the same words the offboarding ending uses. A summary directly above
+            // the thing it summarises is the stacked chrome MYR-347 was about.
             let message = isLastVehicle
-                ? "This removes \(vehicle?.name ?? "your Tesla") from MyRoboTaxi and clears your whole Tesla connection — our access and everyone you've shared it with. Two owner-only steps (revoking access on Tesla and removing the car's key) come next. You can re-link anytime."
+                ? "This removes \(vehicle?.name ?? "your Tesla") from MyRoboTaxi and clears your whole Tesla connection — our access and everyone you've shared it with. You can re-link anytime."
                 : "This removes \(vehicle?.name ?? "this Tesla") from MyRoboTaxi and everyone you've shared it with. You can re-link it anytime."
             return MRTConfirmDialogConfig(
                 kind: .destructive,

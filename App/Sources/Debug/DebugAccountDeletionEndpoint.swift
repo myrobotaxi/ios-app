@@ -24,11 +24,32 @@ import MyRobotaxiContracts
 // Release builds never compile this file.
 struct DebugAccountDeletionEndpoint: AccountDeletionEndpoint {
     /// When set, every call fails with this error instead of succeeding (drives
-    /// the notice capture). `nil` is the `204 No Content` success the contract
-    /// documents — which, run through the flow, signs the app out.
+    /// the failure capture). `nil` is the `204 No Content` success the contract
+    /// documents.
     var failure: RestError?
+    /// MYR-366 — seconds to wait before answering. The offboarding stepper
+    /// reconciles a narration and a network call, so WHEN the answer lands is
+    /// half of what a capture is about: a failure that returned instantly would
+    /// stop the narration at step zero and show nothing of the "stopped part-way"
+    /// state the treatment exists for.
+    var delay: Double = 0
+    /// MYR-366 — never answer at all. This is the ONLY way to capture the honesty
+    /// gate: the narration finished, the last step still spinning, because no
+    /// `204` has arrived. Against a real backend that window is milliseconds
+    /// wide, and it is precisely the window in which the client's trust question
+    /// ("is this screen telling me the truth?") is decided.
+    var hangs = false
 
     func deleteAccount() async throws {
+        if delay > 0 {
+            try? await Task.sleep(for: .seconds(delay))
+        }
+        if hangs {
+            // Sleeps until the task is cancelled (the screen going away), which
+            // throws `CancellationError` — a cancelled capture, never a rendered
+            // failure.
+            try await Task.sleep(for: .seconds(60 * 60))
+        }
         if let failure { throw failure }
     }
 

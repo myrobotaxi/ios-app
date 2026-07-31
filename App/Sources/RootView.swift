@@ -291,9 +291,10 @@ struct RootView: View {
             sessionTokenProvider: auth.sessionTokenProvider
         )
         // MYR-355 — the live account-deletion endpoint (nil in sim / static-token
-        // dev). The two DEBUG dialog scenes leave it exactly as composed; only
-        // `deleteAccountFailed` overrides it, with a scripted 500 behind the
-        // PRODUCTION flow, so every other scene is byte-identical.
+        // dev). The DEBUG dialog + ending scenes leave it exactly as composed;
+        // only MYR-366's `ownerOffboarding` (a call that never answers) and
+        // `offboardingFailed` (a delayed scripted 500) override it, both behind
+        // the PRODUCTION flow, so every other scene is byte-identical.
         var deletionEndpoint = AccountDeletionComposition.makeEndpoint(
             mode: mode,
             sessionTokenProvider: auth.sessionTokenProvider

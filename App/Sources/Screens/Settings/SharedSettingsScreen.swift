@@ -161,31 +161,18 @@ struct SharedSettingsScreen: View {
             isPresented: $confirmSignOut,
             config: ShareDialogs.signOutGuest(action: onSignOut)
         )
-        // MYR-355 — the two-step account-deletion dialogs + its notice + its busy
-        // overlay, identical to the owner screen's (one flow, one copy factory).
+        // MYR-355 — the account-deletion confirm; MYR-366 — the visual offboarding
+        // flow that replaced the second dialog. Identical to the owner screen's
+        // (one flow object, one copy factory, one screen), and the ROLE is the
+        // only difference: this shell narrates the rider's four steps and ends on
+        // the check-hero, since a rider has no manual Tesla steps to perform.
         .mrtConfirmDialog(
             isPresented: $deletion.isPresentingFirstConfirm,
             config: deletion.firstConfirmConfig
         )
-        .mrtConfirmDialog(
-            isPresented: $deletion.isPresentingSecondConfirm,
-            config: deletion.secondConfirmConfig
-        )
-        // The SAME alert grammar the §7.12 teardown failure uses — Settings'
-        // existing destructive-failure surface. A calm, honest end state; never a
-        // fake success, and never a sign-out (the account may still exist).
-        .alert(
-            AccountDeletionDialog.failureNoticeTitle,
-            isPresented: $deletion.isPresentingErrorNotice
-        ) {
-            SwiftUI.Button("OK", role: .cancel) { deletion.errorNotice = nil }
-        } message: {
-            // The second half of the ONE locked notice string — see
-            // `AccountDeletionDialog.failureNoticeBody`. `deletion.errorNotice`
-            // carries that string whole and is what raises this alert.
-            Text(AccountDeletionDialog.failureNoticeBody)
+        .fullScreenCover(isPresented: $deletion.isPresentingOffboarding) {
+            AccountOffboardingScreen(flow: deletion)
         }
-        .overlay { AccountDeletionBusyOverlay(isDeleting: deletion.isDeleting) }
         // MYR-184 — refresh on arrival so a grant revoked by its owner stops
         // being listed here. No-op in sim.
         .task { await catalog.load() }
@@ -366,7 +353,11 @@ struct SharedSettingsScreen: View {
     // `MRTSettingsGrammar.rowHorizontalPadding` / `.rowVerticalPadding` /
     // `.sectionSpacing`, so the pixels are the same and the fork is gone.
     //
-    // Exactly two things: who is signed in, and the way out of the product.
+    // **MYR-366 removed the identity row this section opened with** — the
+    // client's "it shows the email again". See `SettingsScreen`'s copy of this
+    // comment for the cause (`settingsDisplayName` falls through to the email for
+    // any account Apple never named). The section is now exactly one thing: the
+    // way out of the product.
 
     private var accountLabel: some View {
         SettingsSectionLabel(AccountDeletionDialog.sectionTitle)
@@ -374,26 +365,8 @@ struct SharedSettingsScreen: View {
 
     private var accountCard: some View {
         SettingsCard {
-            accountNameRow
             deleteAccountRow
         }
-    }
-
-    /// DISPLAY-ONLY, with no rename affordance — see
-    /// `SettingsScreen.accountNameRow` for why (there is no profile-update
-    /// endpoint to reach, and a `SettingsDetailRow` with no `action` is the
-    /// grammar's own spelling of display-only). Reads the same `displayFullName`
-    /// the profile card at the top does: the real identity on live, the fixture
-    /// persona in SIM.
-    private var accountNameRow: some View {
-        SettingsDetailRow(
-            glyph: SettingsRowGlyph(systemName: "person"),
-            title: displayFullName,
-            caption: AccountDeletionDialog.nameProvenanceCaption,
-            isFirst: true
-        )
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("mrt.accountNameRow")
     }
 
     /// The destructive row, in the shared danger grammar — see
@@ -403,6 +376,7 @@ struct SharedSettingsScreen: View {
         SettingsDestructiveRow(
             icon: "trash",
             title: AccountDeletionDialog.deleteRowLabel,
+            isFirst: true,
             accessibilityID: "mrt.deleteAccountRow"
         ) {
             deletion.begin(role: .shared)

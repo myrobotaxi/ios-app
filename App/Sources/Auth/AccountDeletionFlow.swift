@@ -11,20 +11,26 @@ import MyRoboTaxiKit
 //
 // Two things shape everything below.
 //
-// **It is a TWO-STEP DIALOG, not a type-to-confirm.** The guideline's own
-// framing is that deletion must be *discoverable* and *confirmable*, not
-// laborious — a labyrinth is its own review risk. Two explicit destructive
-// dialogs is the app's existing confirm grammar used twice: the first states
-// what is lost in the reader's own role's terms, the second states that it is
-// permanent and offers "Keep my account" as the way out. A text field asking
-// someone to type DELETE would add friction without adding a decision.
+// **It is ONE dialog and then a SCREEN** (MYR-366 — client-directed). MYR-355
+// shipped two stacked destructive dialogs: the first stated the consequences in
+// the reader's role's terms, the second stated permanence. The client's verdict
+// on the result was that the whole surface reads "weird", and asked for the
+// second step to become a **visual offboarding flow** instead — a vertical
+// stepper that shows the teardown happening. So dialog #2 is GONE and
+// `AccountOffboardingScreen` stands where it stood; the ONE remaining dialog
+// absorbed its permanence sentence, minus the half of it that repeated the
+// consequences it already listed. A text field asking someone to type DELETE
+// would still add friction without adding a decision, and the guideline still
+// wants deletion discoverable and confirmable rather than laborious.
 //
 // **A FAILED DELETE LEAVES YOU SIGNED IN.** `DELETE /api/users/me` is
 // RE-RUNNABLE by contract — a partial failure leaves a state where calling it
 // again finishes the job — so the honest resting state after a failure is
 // exactly where the user started, with a notice that says retrying is safe.
 // Signing someone out of an account that may still exist would strand them
-// outside the only surface that can finish the job.
+// outside the only surface that can finish the job. MYR-366 keeps that rule and
+// moves the retry ONTO the offboarding screen, where the stepper is already
+// showing exactly how far the teardown got.
 
 // MARK: - The copy
 //
@@ -34,43 +40,60 @@ import MyRoboTaxiKit
 // own (`AccountDeletionCopyTests`).
 
 enum AccountDeletionDialog {
-    // MARK: First dialog — what deletion actually does, per role
+    // MARK: The ONE dialog — what deletion does, per role, and that it is final
 
     /// The subject is the account, so the title is identical for both roles; what
     /// differs is the list of things that go with it.
     static let title = "Delete your account?"
 
-    /// The OWNER's consequences: their cars leave the product, every viewer they
-    /// invited loses access, and the account goes.
-    static let ownerMessage = "Removes your Tesla(s) from MyRoboTaxi, revokes everyone\u{2019}s access, and deletes your account. Ride history you were part of stays with the other party."
+    /// MYR-366 — the permanence sentence, which used to be the second dialog's
+    /// whole body (`"Your account and its data will be permanently deleted.
+    /// You'll be signed out."`). With that dialog replaced by the offboarding
+    /// screen, this is now the LAST question asked before the `DELETE` runs, so
+    /// the fact has to be on it.
+    ///
+    /// **The redundancy is what was dropped, not the meaning.** The role
+    /// sentences below already end by naming the account, and the old pair said
+    /// "…and deletes your account" and then "Your account … will be permanently
+    /// deleted" one tap apart. The role sentences now stop at the consequences
+    /// and this one sentence carries permanence + sign-out for both roles —
+    /// deliberately role-INDEPENDENT, because a second sentence that varied by
+    /// role would imply the permanence does.
+    static let permanenceSentence = "This can\u{2019}t be undone \u{2014} you\u{2019}ll be signed out."
+
+    /// The OWNER's consequences: their cars leave the product and every viewer
+    /// they invited loses access.
+    static let ownerConsequences = "Removes your Tesla(s) from MyRoboTaxi and revokes everyone\u{2019}s access."
 
     /// The RIDER's consequences: the shares pointed AT them stop working and their
     /// open requests are cancelled.
-    static let riderMessage = "Removes your access to every Tesla shared with you, cancels any rides you\u{2019}ve requested, and deletes your account. Ride history you were part of stays with the other party."
+    static let riderConsequences = "Removes your access to every Tesla shared with you and cancels any rides you\u{2019}ve requested."
 
-    /// Names the action, not the severity — the severity is the second dialog's
-    /// whole job.
-    static let actionLabel = "Delete account"
-    /// The plain way out of a first step that has decided nothing yet.
-    static let dismissLabel = "Cancel"
-    /// The first dialog's glyph: what the action does.
+    /// The one line that survives from MYR-355 unchanged, because it answers the
+    /// question both roles actually ask: what happens to the rides someone ELSE
+    /// was part of.
+    static let historyClause = "Ride history you were part of stays with the other party."
+
+    /// The composed owner / rider body: consequences → permanence → history.
+    /// Composed rather than written twice so the shared halves are one string
+    /// (`AccountDeletionCopyTests` pins the composition).
+    static let ownerMessage = "\(ownerConsequences) \(permanenceSentence) \(historyClause)"
+    static let riderMessage = "\(riderConsequences) \(permanenceSentence) \(historyClause)"
+
+    /// MYR-366 — the confirm label is MYR-355's own `"Delete permanently"`,
+    /// promoted from the (now absent) second dialog. This tap IS the point of no
+    /// return, so the button that performs it has to say so; "Delete account"
+    /// stays on the SETTINGS ROW, where it opens a question rather than answering
+    /// one.
+    static let actionLabel = "Delete permanently"
+    /// MYR-355's own second-dialog dismiss, for the same reason the action label
+    /// moved: this is the terminal decision, and naming what STAYS true is this
+    /// app's grammar for backing out of one ("Keep access" / "Keep invite" /
+    /// "Keep linked" / "Keep sharing").
+    static let dismissLabel = "Keep my account"
+    /// The dialog's glyph: what the action does. It matches the Settings row's
+    /// own `trash`, so the row and the dialog read as one action.
     static let icon = "trash"
-
-    // MARK: Second dialog — permanence, identical for both roles
-
-    /// The one fact the first dialog deliberately does not lead with.
-    static let confirmTitle = "This can\u{2019}t be undone"
-    /// Both consequences of confirming, in the order they happen.
-    static let confirmMessage = "Your account and its data will be permanently deleted. You\u{2019}ll be signed out."
-    /// The confirm label carries the permanence too, so a mis-tap on a stack of
-    /// two red buttons is still a mis-tap on a labelled one.
-    static let confirmActionLabel = "Delete permanently"
-    /// Names what STAYS true rather than "Cancel" — the same grammar as "Keep
-    /// access" / "Keep invite" / "Keep linked" / "Keep sharing".
-    static let confirmDismissLabel = "Keep my account"
-    /// The second dialog's glyph: the CONSEQUENCE rather than the action, which is
-    /// the difference between the two steps.
-    static let confirmIcon = "exclamationmark.triangle.fill"
 
     // MARK: Failure
 
@@ -103,24 +126,19 @@ enum AccountDeletionDialog {
 
     // MARK: The Account section itself
     //
-    // The section's own three strings live here too rather than inline in two
-    // views, for the same reason the dialogs' do: they are the same copy on both
+    // The section's own strings live here too rather than inline in two views,
+    // for the same reason the dialog's do: they are the same copy on both
     // screens, and two literals is two places for them to drift.
 
     static let sectionTitle = "Account"
-    /// The row label. Identical to `actionLabel` on purpose — the tap that opens
-    /// the first dialog and the tap that advances it say the same words, so they
-    /// read as one action rather than two decisions.
+    /// The row label. Deliberately NOT the dialog's `actionLabel` any more
+    /// (MYR-366): the row opens a question and the dialog's button answers it, so
+    /// the row says what it is FOR and the button says what it DOES.
     static let deleteRowLabel = "Delete account"
-    /// The caption under the display-only name: the whole answer to "why can't I
-    /// change this?", which is the question a name with no edit control provokes.
-    /// Naming Apple is the truth — SIWA hands the name over once, on the FIRST
-    /// authorization, and nothing in this product can change it afterwards.
-    static let nameProvenanceCaption = "Set by Apple when you signed in"
 
     // MARK: Factories
 
-    /// The role-specific first dialog.
+    /// The role-specific dialog — the ONE confirmation (MYR-366).
     static func first(role: UserRole, onConfirm: @escaping () -> Void) -> MRTConfirmDialogConfig {
         MRTConfirmDialogConfig(
             kind: .destructive,
@@ -132,64 +150,67 @@ enum AccountDeletionDialog {
             action: onConfirm
         )
     }
-
-    /// The second dialog. Deliberately role-INDEPENDENT: "permanent" and "signed
-    /// out" are true of both, and a second sentence that varied by role would
-    /// imply the permanence does.
-    static func second(onConfirm: @escaping () -> Void) -> MRTConfirmDialogConfig {
-        MRTConfirmDialogConfig(
-            kind: .destructive,
-            icon: confirmIcon,
-            title: confirmTitle,
-            message: confirmMessage,
-            actionLabel: confirmActionLabel,
-            dismissLabel: confirmDismissLabel,
-            action: onConfirm
-        )
-    }
 }
 
 // MARK: - The flow
 
 /// Owns the account-deletion interaction end to end: which role is asking, which
-/// of the two dialogs is up, the in-flight write, and the two ways it can end.
+/// surface is up, the in-flight write, the stepper's state, and the two ways it
+/// can end.
 ///
 /// It is a small `@Observable` object rather than a scattering of `@State` across
 /// the two settings screens for the same reason `RideSharePauseFlow` is: every
 /// assertion worth making here is about the WIRE and the ORDER — that cancelling
-/// at either step calls nothing, that confirming calls the endpoint exactly once,
-/// that a failure does NOT sign anybody out — and none of that should need a view
-/// to run. The screens keep exactly one job: raise it, and render its two dialogs.
+/// calls nothing, that confirming calls the endpoint exactly once, that a failure
+/// does NOT sign anybody out, that a failed delete never renders an all-checked
+/// stepper — and none of that should need a view to run. The screens keep exactly
+/// one job: raise it, and render what it says.
 @MainActor
 @Observable
 final class AccountDeletionFlow {
 
-    /// Which dialog is presented. Three states rather than two booleans, because
+    /// Which surface is presented. Three states rather than two booleans, because
     /// two booleans have a fourth state ("both up") that must never exist.
     enum Step: Equatable {
         case none
+        /// The ONE confirm dialog.
         case firstConfirm
-        case secondConfirm
+        /// MYR-366 — the full-screen visual offboarding flow, which REPLACED
+        /// MYR-355's second dialog. Entering it starts the `DELETE`.
+        case offboarding
     }
 
-    /// The role the dialogs speak to. Set by `begin(role:)` and never guessed —
-    /// the two screens know which shell they are, and the copy differs.
+    /// The role the copy speaks to. Set by `begin(role:)` and never guessed —
+    /// the two screens know which shell they are, and both the dialog body and
+    /// the narrated sequence differ.
     private(set) var role: UserRole = .owner
     private(set) var step: Step = .none
-    /// True while the `DELETE` is in flight. Drives the busy overlay AND guards
-    /// re-entry, so a double-tap cannot send two deletes.
+    /// True while the `DELETE` is in flight. Guards re-entry, so a double-tap
+    /// cannot send two deletes.
     private(set) var isDeleting = false
-    /// The failure notice, or `nil`. Settable so the toast's binding can clear it.
-    var errorNotice: String?
+    /// MYR-366 — everything the stepper renders. Sized to the role's sequence the
+    /// moment the offboarding screen is raised.
+    private(set) var stepper = OffboardingStepperState(stepCount: 0)
 
-    /// The account-deletion seam. `nil` off the live path — see `runDelete()` for
-    /// what that case does and why it is not a failure.
+    /// The account-deletion seam. `nil` off the live path — see `performDelete()`
+    /// for what that case does and why it is not a failure.
     var endpoint: (any AccountDeletionEndpoint)?
 
-    /// The local sign-out + wipe, run on success. Owned by `RootView`, which wires
-    /// it to the SAME helper the Sign out row's closure calls, so a deleted
-    /// account and a signed-out one leave the app in exactly one state.
+    /// The local sign-out + wipe. Owned by `RootView`, which wires it to the SAME
+    /// helper the Sign out row's closure calls, so a deleted account and a
+    /// signed-out one leave the app in exactly one state.
+    ///
+    /// MYR-366 — it now runs on the ending screen's **Done**, not on the `204`.
+    /// The two manual Tesla steps are the last thing the owner will ever be told
+    /// about this account, and wiping the shell out from under them the instant
+    /// the server answers would take that screen away before it was read.
     var onDeleted: (() -> Void)?
+
+    /// The narration's pacing, injectable so tests run instantly instead of in
+    /// real seconds. Production is a plain sleep.
+    var narrationSleep: @Sendable (Double) async -> Void = { seconds in
+        try? await Task.sleep(for: .seconds(seconds))
+    }
 
     init(
         endpoint: (any AccountDeletionEndpoint)? = nil,
@@ -201,84 +222,123 @@ final class AccountDeletionFlow {
 
     // MARK: Presentation bindings
     //
-    // Computed bindings rather than raw `Binding(get:set:)` at each of the four
-    // call sites, so both screens present the pair identically.
+    // Computed bindings rather than raw `Binding(get:set:)` at each call site, so
+    // both screens present the surface identically.
     //
-    // The setters are GUARDED on the step they belong to, and that guard is
+    // The setter is GUARDED on the step it belongs to, and that guard is
     // load-bearing rather than defensive: `MRTConfirmDialogCard` runs
-    // `config.action()` and THEN `dismiss()`, so the first dialog's confirm has
-    // already moved the flow to `.secondConfirm` by the time its own binding is
-    // set false. An unguarded setter would immediately close the dialog it just
-    // opened.
+    // `config.action()` and THEN `dismiss()`, so the dialog's confirm has already
+    // moved the flow to `.offboarding` by the time its own binding is set false.
+    // An unguarded setter would immediately close the surface it just opened.
 
     var isPresentingFirstConfirm: Bool {
         get { step == .firstConfirm }
         set { if !newValue, step == .firstConfirm { step = .none } }
     }
 
-    var isPresentingSecondConfirm: Bool {
-        get { step == .secondConfirm }
-        set { if !newValue, step == .secondConfirm { step = .none } }
+    /// MYR-366 — the full-screen cover. It has NO user-driven dismissal: by the
+    /// time it is up the `DELETE` is running, and the only exits are the ending
+    /// screen's Done and the failure treatment's "Not now".
+    var isPresentingOffboarding: Bool {
+        get { step == .offboarding }
+        set { if !newValue, step == .offboarding { step = .none } }
     }
 
-    var isPresentingErrorNotice: Bool {
-        get { errorNotice != nil }
-        set { if !newValue { errorNotice = nil } }
-    }
-
-    /// The presented dialog's config, for whichever step is up.
+    /// The dialog's config.
     var firstConfirmConfig: MRTConfirmDialogConfig {
         AccountDeletionDialog.first(role: role) { [weak self] in self?.confirmFirstStep() }
     }
 
-    var secondConfirmConfig: MRTConfirmDialogConfig {
-        AccountDeletionDialog.second { [weak self] in
-            guard let self else { return }
-            Task { await self.confirmDeletion() }
-        }
-    }
+    /// The role's narrated sequence, for the screen to render.
+    var offboardingSteps: [String] { OffboardingSequence.steps(for: role) }
 
     // MARK: Entry
 
-    /// The ONE entry point the "Delete account" row calls. Raises the FIRST
-    /// dialog; nothing is written and nothing is asked of the server yet.
-    ///
-    /// Clears any previous failure notice: the user is answering the question
-    /// again, and a stale "try again" line beneath a fresh dialog would be reading
-    /// about the wrong attempt.
+    /// The ONE entry point the "Delete account" row calls. Raises the dialog;
+    /// nothing is written and nothing is asked of the server yet.
     func begin(role: UserRole) {
         guard !isDeleting else { return }
         self.role = role
-        errorNotice = nil
         step = .firstConfirm
     }
 
-    /// The FIRST dialog's confirm: present the SECOND dialog. Still nothing
-    /// written — this step's entire product is the next question.
+    /// The dialog's confirm: raise the offboarding screen. Still nothing written
+    /// HERE — the screen's `.task` starts the `DELETE` when it appears, which is
+    /// what makes the narration and the network call start together rather than
+    /// the call trailing a screen that is already narrating.
     func confirmFirstStep() {
         guard step == .firstConfirm else { return }
-        step = .secondConfirm
+        stepper = OffboardingStepperState(stepCount: offboardingSteps.count)
+        step = .offboarding
     }
 
-    /// Cancelling at EITHER step. Nothing was written at either one, so there is
-    /// nothing to undo and no notice to raise: the account is exactly as it was.
+    /// Cancelling the dialog. Nothing was written, so there is nothing to undo and
+    /// no notice to raise: the account is exactly as it was.
     func cancel() {
         step = .none
     }
 
-    // MARK: The delete
+    // MARK: The offboarding run
 
-    /// The SECOND dialog's confirm: the only path that touches the network.
+    /// The offboarding screen's `.task`. Starts the ONE `DELETE` and the narration
+    /// TOGETHER, then lets `OffboardingStepperState` reconcile whichever finishes
+    /// first.
     ///
-    /// On success (`204`) the local sign-out + wipe runs and the app lands on Sign
-    /// In. On failure the user is LEFT SIGNED IN with a notice — the endpoint is
-    /// re-runnable, so tapping again is safe and finishes the job.
-    func confirmDeletion() async {
-        guard !isDeleting else { return }
-        step = .none
+    /// Both orderings are real and both are handled by the state machine rather
+    /// than here: a `204` that lands early cannot jump the last check forward
+    /// (`checkedCount` requires the narration to have caught up), and a narration
+    /// that finishes early leaves the last step spinning until the answer comes.
+    func runOffboarding() async {
+        guard step == .offboarding, !isDeleting else { return }
         isDeleting = true
         defer { isDeleting = false }
+        async let narration: Void = narrate()
+        await performDelete()
+        await narration
+    }
 
+    /// "Try again" on the failure treatment. The endpoint is re-runnable by
+    /// contract, so this RESUMES: the steps already checked stay checked and the
+    /// narration continues from where the failure stopped it.
+    func retryOffboarding() async {
+        guard step == .offboarding, stepper.hasFailed, !isDeleting else { return }
+        stepper.retry()
+        isDeleting = true
+        defer { isDeleting = false }
+        async let narration: Void = narrate()
+        await performDelete()
+        await narration
+    }
+
+    /// The ending screen's **Done** — the ONLY place the local wipe runs.
+    func finish() {
+        step = .none
+        onDeleted?()
+    }
+
+    /// The failure treatment's "Not now": back to Settings, STILL SIGNED IN. The
+    /// account may still exist and the row is still there to try again from.
+    func dismissAfterFailure() {
+        guard stepper.hasFailed else { return }
+        step = .none
+    }
+
+    // MARK: Pieces
+
+    /// Walks the narrated steps on the clock. Stops the moment the state machine
+    /// says it may not narrate — which a recorded FAILURE makes true, so a failure
+    /// stops the narration rather than merely hiding its output.
+    private func narrate() async {
+        let interval = OffboardingMotion.stepInterval(stepCount: stepper.stepCount)
+        while stepper.canNarrate {
+            await narrationSleep(interval)
+            guard stepper.canNarrate else { return }
+            stepper.narrateOneStep()
+        }
+    }
+
+    /// The ONE network call this whole feature makes.
+    private func performDelete() async {
         do {
             // No seam at all is NOT the same as a seam that failed — the same
             // distinction `RideSharePauseFlow.setEnabled` draws. `endpoint` is
@@ -287,11 +347,11 @@ final class AccountDeletionFlow {
             // is the complete and honest execution of what was asked, not a
             // pretend one. On the live path the composition always supplies one.
             try await endpoint?.deleteAccount()
-            onDeleted?()
+            stepper.recordSuccess()
         } catch {
             // Deliberately NOT `session.signOut()`. The account may still exist;
             // the user must stay where the retry is.
-            errorNotice = AccountDeletionDialog.failureNotice
+            stepper.recordFailure()
         }
     }
 
@@ -299,52 +359,26 @@ final class AccountDeletionFlow {
     /// How far a DEBUG capture scene drives this flow. Release builds never
     /// compile it.
     enum DebugStage {
-        /// The FIRST dialog, up.
-        case first
-        /// The SECOND dialog, up.
-        case second
-        /// Both confirmed and the delete RUN — against whatever endpoint the scene
-        /// injected, which for `deleteAccountFailed` is a scripted 500.
-        case deleted
+        /// The confirm dialog, up.
+        case dialog
+        /// Confirmed, and the offboarding screen RUNNING against whatever endpoint
+        /// the scene injected — a hang (mid-flight / spinner held on the last
+        /// step), a scripted 500 (the failure treatment), or nothing at all
+        /// (simulated success → the ending screen).
+        case offboarding
     }
 
     /// Stand in for the taps headless capture tooling cannot perform, and NOTHING
-    /// else: this calls the same three shipping methods a thumb does, in the same
-    /// order, so the copy, the endpoint call and the notice in a capture are all
-    /// the production path's.
+    /// else: this calls the same shipping methods a thumb does, in the same order,
+    /// so the copy, the endpoint call, the stepper and the ending in a capture are
+    /// all the production path's.
     func debugDrive(to stage: DebugStage, role: UserRole) async {
         begin(role: role)
-        guard stage != .first else { return }
+        guard stage != .dialog else { return }
         confirmFirstStep()
-        guard stage != .second else { return }
-        await confirmDeletion()
+        await runOffboarding()
     }
     #endif
-}
-
-// MARK: - Busy overlay
-
-/// The in-flight overlay for the account `DELETE`, shared verbatim by both
-/// settings screens rather than written twice — the same shape (scrim + gold
-/// `SpinnerRing` + one line) `SettingsScreen`'s teardown overlay uses, so the two
-/// destructive waits in Settings look like one thing.
-struct AccountDeletionBusyOverlay: View {
-    let isDeleting: Bool
-
-    var body: some View {
-        if isDeleting {
-            ZStack {
-                Color.mrtScrim.ignoresSafeArea()
-                VStack(spacing: 14) {
-                    SpinnerRing(diameter: 34, lineWidth: 3, trackColor: .mrtBorder, color: .mrtGold, period: 0.8)
-                    Text("Deleting your account\u{2026}")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(Color.mrtText)
-                }
-            }
-            .transition(.opacity)
-        }
-    }
 }
 
 // MARK: - Composition point
