@@ -123,7 +123,17 @@ struct InvitesScreen: View {
                         case .empty:
                             ShareEmptyHero(sharesByCode: shareService.sharesByCode, action: openSend)
                         case .populated(let sections):
+                            // MYR-380 — the tab's standard inter-card gap, which
+                            // this one card was missing. Every other card on the
+                            // page (the ride-sharing card above it, each roster
+                            // section below) carries `shareSectionGap`; the action
+                            // row carried none, so it sat flush against the RIDE
+                            // SHARING card that MYR-369 moved in above it — the
+                            // client's "Looks sloppy". The `.empty` arm is
+                            // untouched: its hero owns the only CTA there and
+                            // renders no action row at all.
                             ShareRosterCard { ShareInviteActionRow(action: openSend) }
+                                .padding(.top, MRTMetrics.shareSectionGap)
                             ForEach(sections) { section in
                                 sectionView(section)
                             }
