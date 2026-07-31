@@ -35,8 +35,10 @@ import Observation
 final class LiveShareService: ShareService {
     private(set) var viewers: [Viewer] = []
     private(set) var pending: [PendingInvite] = []
-    private(set) var isLoading = false
-    private(set) var statusMessage: String?
+    /// MYR-386 — `.idle` until something asks. See ``ShareRosterLoadPhase``: the
+    /// `isLoading` / `statusMessage` pair this replaces could not express it, and
+    /// the screen read neither anyway.
+    private(set) var rosterPhase: ShareRosterLoadPhase = .idle
 
     /// The owner's fleet, read live from the SAME started fleet the Home map uses
     /// (`OwnerHomeState`), so the send-invite sheet's picker offers the account's
@@ -56,6 +58,12 @@ final class LiveShareService: ShareService {
     /// composes exactly one client.
     @ObservationIgnored private let rideShareAPI: any VehicleRideShareEndpoint
     @ObservationIgnored private let ownedVehicles: @MainActor () -> [Vehicle]
+    /// MYR-386 — what the fleet behind `ownedVehicles` is DOING, so an empty
+    /// vehicle list can be told apart from a vehicle list that has not answered.
+    /// See ``ShareFleetState``. A CLOSURE for the same reason `ownedVehicles` is
+    /// one: this service does not own the fleet and cannot refresh it, and the
+    /// answer changes underneath the screen as the list loads.
+    @ObservationIgnored private let fleetState: @MainActor () -> ShareFleetState
     @ObservationIgnored private let now: () -> Date
 
     /// Screen-row id → the server invite ids it stands for. Rebuilt on every load;
@@ -92,11 +100,17 @@ final class LiveShareService: ShareService {
         api: any VehicleSharingEndpoint,
         rideShareAPI: any VehicleRideShareEndpoint,
         ownedVehicles: @escaping @MainActor () -> [Vehicle],
+        // MYR-386 — defaulted to `.resolved` so every existing construction site
+        // (tests, DEBUG scenes) is unchanged and keeps its old meaning: their
+        // vehicle lists are literals, in hand before the service exists, so there
+        // is genuinely nothing resolving behind them.
+        fleetState: @escaping @MainActor () -> ShareFleetState = { .resolved },
         now: @escaping () -> Date = Date.init
     ) {
         self.api = api
         self.rideShareAPI = rideShareAPI
         self.ownedVehicles = ownedVehicles
+        self.fleetState = fleetState
         self.now = now
     }
 
@@ -247,19 +261,31 @@ final class LiveShareService: ShareService {
     private func performLoad() async {
         let vehicles = ownedVehicles()
         guard !vehicles.isEmpty else {
-            // Nothing to ask about. Not an error and not "loading" — an account
-            // with no linked car simply has nothing shared, and the screen's
-            // existing "No one has access yet." is the honest render.
+            // Nothing to ask about — §7.5.2 is per-vehicle and there is no
+            // vehicle. But an empty fleet is TWO situations (MYR-386), and this
+            // branch used to answer both of them with "nothing is shared":
+            //
+            //  • the list has not answered yet — the Share tab opened during a
+            //    cold boot, which is the client's flash. A fetch IS genuinely
+            //    running (the fleet's), and the roster is blocked on it, so the
+            //    skeleton is honest and `InvitesScreen` re-asks when it lands.
+            //  • the list answered and the account owns no cars — then the empty
+            //    hero is the honest render, exactly as before.
+            //
+            // A fleet that FAILED is neither: "no one has access yet" is a claim
+            // about the account, and a list that did not answer cannot support it.
             viewers = []
             pending = []
             inviteIDs = [:]
-            statusMessage = nil
-            isLoading = false
+            switch fleetState() {
+            case .resolving: rosterPhase = .loading
+            case .resolved: rosterPhase = .loaded
+            case .unreachable: rosterPhase = .failed(Self.unreadableMessage)
+            }
             return
         }
 
-        isLoading = true
-        defer { isLoading = false }
+        rosterPhase = .loading
 
         var rows: [ShareInvite] = []
         var failures = 0
@@ -278,12 +304,24 @@ final class LiveShareService: ShareService {
         if Task.isCancelled { return }
 
         if failures == vehicles.count {
-            statusMessage = "Can\u{2019}t load sharing right now"
+            // MYR-386 — a settled FAILURE, not a lingering "loading". The
+            // published lists are deliberately left as they were: rows already in
+            // hand outrank this phase in `ShareRosterState.resolve`, so a
+            // transient failure on a re-read never blanks a roster the owner is
+            // reading. It is only when there is nothing in hand that this reaches
+            // the screen, and then it says so instead of claiming an empty list.
+            rosterPhase = .failed(Self.unreadableMessage)
             return
         }
-        statusMessage = nil
         apply(rows: rows, vehicles: vehicles)
+        // Set AFTER `apply`, so the one frame in which the phase says "loaded"
+        // is never a frame in which the lists are still the previous answer.
+        rosterPhase = .loaded
     }
+
+    /// The quiet one-line sentence a failed read shows. `static` so the screen's
+    /// failure state and this service's phase are provably the same string.
+    static let unreadableMessage = "Can\u{2019}t load sharing right now"
 
     /// Regroup the merged wire rows into screen rows. Pure given its inputs —
     /// `ShareRowGrouping` holds the actual rule so it is unit-testable without a

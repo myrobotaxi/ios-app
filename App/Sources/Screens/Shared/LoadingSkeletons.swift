@@ -280,6 +280,196 @@ struct RiderVehiclesLoadingSkeleton: View {
     }
 }
 
+// MARK: - Owner Share tab (MYR-386)
+//
+// THE CLIENT'S REPORT (TestFlight, build 202607311129): *"Need to add the
+// skeleton loading to this page. It flashes no one added then appears."*
+//
+// A fourth surface in this app that can be genuinely BUSY for a beat, and the
+// only one that answered with a DEFINITIVE STATE rather than a spinner: the
+// Share tab resolved its whole render from two arrays that start `[]`, so an
+// in-flight §7.5.2 fetch was indistinguishable from an account that has shared
+// with nobody, and "No one has access yet" — icon, explainer and gold CTA —
+// rendered over the wait. See `ShareRosterLoadPhase` for the state model that
+// makes that unreachable; these are what it renders instead.
+//
+// Shaped like the roster it is waiting for, at the real card's own radius,
+// gutters, separator inset and row height, so the rows land INTO the layout
+// rather than replacing it. LIVE-PATH ONLY, structurally:
+// `SimulatedShareService.rosterPhase` is `.loaded` from the first frame, so no
+// simulated or DEBUG capture can reach any branch below and every existing
+// Share-tab capture is byte-identical (`ownerShareLoading` exists to capture
+// them).
+
+/// The Share tab's roster while the invite list is genuinely in flight — one
+/// section header and a card of person-shaped placeholder rows.
+///
+/// ONE section, not two. The screen cannot know yet whether this account has
+/// accepted grants, pending invites or both, and drawing two headed cards would
+/// promise a shape the answer may not have — the same reasoning that makes an
+/// empty section not exist in `ShareRosterState`. A single unlabelled group says
+/// only what is true: people are coming.
+struct ShareRosterSkeleton: View {
+    /// Three rows fills the band the roster occupies without promising a count.
+    /// Indexed widths, not random, so the capture scene is deterministic.
+    static let rowCount = 3
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // The section header's own slot — `ShareSectionHeader` is an
+            // `.mrtTextStyle(.label())` line at the page gutter with
+            // `shareSectionHeaderGap` beneath it. No count badge: a badge over a
+            // list nobody has counted would be the "VIEWERS · 0" MYR-347 removed.
+            HStack {
+                MRTSkeletonBar(width: 74, height: 11, radius: 4)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, MRTMetrics.pageGutter)
+            .padding(.bottom, MRTMetrics.shareSectionHeaderGap)
+
+            ShareSkeletonCard {
+                ForEach(0..<Self.rowCount, id: \.self) { index in
+                    if index > 0 { ShareRowSeparator() }
+                    ShareRosterRowSkeleton(index: index)
+                }
+            }
+        }
+        .padding(.top, MRTMetrics.shareSectionGap)
+        .mrtSkeletonAccessibility("Loading who this car is shared with")
+    }
+}
+
+/// The Share tab's grouped card, as a PLACEHOLDER — the real card's radius and
+/// page gutter with the skeleton row fill instead of `mrtSurface`.
+///
+/// **IT MAY NOT WEAR THE REAL FILL, AND THIS COST A ROUND.** MYR-326's rule is
+/// that a skeleton wears the real chrome so the surface does not move when the
+/// data lands (`OwnerHomeSheetSkeleton` takes the real `.mrtSurface(.sheet)`).
+/// That works there because the sheet's ground is `mrtBgSecondary`. `ShareRosterCard`'s
+/// ground is `mrtSurface`, and `Color.mrtSkeletonFill` **IS** `surface` — so a
+/// `.regular` block inside the real card is invisible, and the first build of
+/// this skeleton rendered three lonely `.strong` name bars with no avatars and no
+/// detail lines. `mrtSkeletonRowFill` exists for exactly this and says so in its
+/// own doc comment ("deliberately DARKER than `mrtSkeletonFill` so the blocks
+/// inside the card still read against it").
+///
+/// Only the FILL differs; the radius, the gutter and the row geometry are the
+/// real card's, so nothing moves when the roster lands — and a placeholder card
+/// reading one step quieter than a real one is correct rather than a compromise.
+private struct ShareSkeletonCard<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(spacing: 0) { content() }
+            .background(
+                Color.mrtSkeletonRowFill,
+                in: RoundedRectangle(cornerRadius: MRTMetrics.shareSectionRadius, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: MRTMetrics.shareSectionRadius, style: .continuous)
+                    .strokeBorder(Color.mrtSkeletonRowBorder, lineWidth: MRTMetrics.hairline)
+            )
+            .padding(.horizontal, MRTMetrics.pageGutter)
+    }
+}
+
+/// One `ShareRosterRow`-shaped placeholder: the avatar's circle, the name line
+/// and the muted detail line, at that row's own gutters and minimum height.
+///
+/// The overflow menu's slot is deliberately left EMPTY rather than given a
+/// placeholder. A skeleton stands in for content that is coming; the ellipsis is
+/// a CONTROL, and a block where a button will be reads as a tappable thing that
+/// does nothing.
+private struct ShareRosterRowSkeleton: View {
+    let index: Int
+
+    /// Names and detail lines vary per row so a stack reads as a list of
+    /// different people rather than a repeated graphic — `DriveRowSkeleton`'s own
+    /// rule.
+    private static let nameWidths: [CGFloat] = [96, 118, 82]
+    private static let detailWidths: [CGFloat] = [148, 126, 162]
+
+    var body: some View {
+        HStack(spacing: MRTMetrics.shareRowContentGap) {
+            // `Avatar`'s own circle at `shareRowAvatarSize`.
+            MRTSkeletonBar(
+                width: MRTMetrics.shareRowAvatarSize,
+                height: MRTMetrics.shareRowAvatarSize,
+                radius: MRTMetrics.shareRowAvatarSize / 2
+            )
+            VStack(alignment: .leading, spacing: 2) {
+                // The name — 15pt medium.
+                MRTSkeletonBar(
+                    width: Self.nameWidths[index % Self.nameWidths.count],
+                    height: 15, radius: 5, emphasis: .strong
+                )
+                // The detail line — 12pt.
+                MRTSkeletonBar(
+                    width: Self.detailWidths[index % Self.detailWidths.count],
+                    height: 12
+                )
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, MRTMetrics.shareRowGutter)
+        .padding(.trailing, MRTMetrics.shareRowGutter - 10)
+        .padding(.vertical, MRTMetrics.shareRowVerticalPadding)
+        .frame(minHeight: MRTMetrics.shareRowMinHeight)
+    }
+}
+
+/// The relocated ride-sharing card (MYR-369) while the owner's FLEET is still in
+/// flight — the card's header, one row-shaped placeholder and a placeholder in
+/// the switch's own slot.
+///
+/// It is here because that card renders off the very same vehicle list: with no
+/// cars in hand it drew NOTHING, so the page's first card popped into existence
+/// under the header and shoved the roster down when the fleet landed. Nothing it
+/// said was false, but it is the same flash for the same reason.
+///
+/// **The switch's slot gets a placeholder even though a switch is a control**,
+/// unlike the roster row's overflow above. The distinction is what the element
+/// IS: the ellipsis is an affordance that exists regardless of the data, so a
+/// block there invents a button; a toggle's whole content is the value being
+/// fetched, and leaving its slot empty would draw a settings row that has no
+/// setting in it.
+struct ShareVehicleRideShareSkeleton: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                MRTSkeletonBar(width: 88, height: 11, radius: 4)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, MRTMetrics.pageGutter)
+            .padding(.bottom, MRTMetrics.shareSectionHeaderGap)
+
+            ShareSkeletonCard {
+                HStack(spacing: MRTMetrics.shareRowContentGap) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        // The vehicle name — 15pt medium.
+                        MRTSkeletonBar(width: 92, height: 15, radius: 5, emphasis: .strong)
+                        // `VehicleRideShare.rowCaption` — 12pt.
+                        MRTSkeletonBar(width: 176, height: 12)
+                    }
+                    Spacer(minLength: 12)
+                    // `MRTToggle`'s own track.
+                    MRTSkeletonBar(
+                        width: MRTMetrics.toggleTrackWidth,
+                        height: MRTMetrics.toggleTrackHeight,
+                        radius: MRTMetrics.toggleTrackHeight / 2
+                    )
+                }
+                .padding(.horizontal, MRTMetrics.shareRowGutter)
+                .padding(.vertical, MRTMetrics.shareRowVerticalPadding)
+                .frame(minHeight: MRTMetrics.shareRowMinHeight)
+            }
+        }
+        // The real card's own top gap, so nothing under it moves when it lands.
+        .padding(.top, MRTMetrics.shareSectionGap)
+        .mrtSkeletonAccessibility("Loading ride sharing")
+    }
+}
+
 // MARK: - Settings ⇢ Tesla Account
 
 /// A placeholder for one linked-vehicle row in the read-only live Tesla Account

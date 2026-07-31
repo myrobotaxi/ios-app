@@ -55,13 +55,20 @@ protocol ShareService: AnyObject, Observable {
     /// a celebration to the share sheet. SIM keeps every prototype pixel.
     var sharesByCode: Bool { get }
 
-    /// True while the first load is in flight. Always `false` in sim (nothing to
-    /// load), so no simulated capture can reach a loading branch.
-    var isLoading: Bool { get }
-
-    /// A quiet one-line status when the list could not be read — never a dialog
-    /// (design minimalism, same convention as `VehicleFleet.statusMessage`).
-    var statusMessage: String? { get }
+    /// Where the invite-list fetch stands (MYR-386).
+    ///
+    /// This REPLACES the `isLoading: Bool` + `statusMessage: String?` pair this
+    /// protocol carried from MYR-184 to MYR-386. Two booleans have no arm for
+    /// "nobody has asked yet" — `isLoading == false, statusMessage == nil` was
+    /// both that and "loaded, genuinely empty" — and, more to the point, **no
+    /// screen ever read either of them**, so the Share tab resolved its whole
+    /// state from two arrays that start `[]` and flashed the empty hero over
+    /// every live load. See ``ShareRosterLoadPhase``.
+    ///
+    /// Always `.loaded` in sim (nothing to load, nothing that can fail), so no
+    /// simulated or DEBUG capture can reach a skeleton or a failure branch and
+    /// every existing Share-tab capture is byte-identical.
+    var rosterPhase: ShareRosterLoadPhase { get }
 
     /// Fetch (or re-fetch) the owner's rows. Idempotent and safe to call on every
     /// appearance of the Share tab. No-op in sim.
@@ -281,8 +288,11 @@ final class SimulatedShareService: ShareService {
     var shareableVehicles: [Vehicle] { VehicleFixtures.vehicles }
     /// The prototype emails; it has no server to mint a code.
     var sharesByCode: Bool { false }
-    var isLoading: Bool { false }
-    var statusMessage: String? { nil }
+    /// `.loaded` FROM THE FIRST FRAME (MYR-386). The fixtures are in hand before
+    /// `init` returns, so there is never a moment on this path where an empty
+    /// roster means anything other than "the owner has shared with nobody" — and
+    /// no simulated or DEBUG capture can reach a skeleton.
+    var rosterPhase: ShareRosterLoadPhase { .loaded }
 
     /// MYR-347 — the roster is now an INPUT, defaulted to the fixtures.
     ///

@@ -247,6 +247,64 @@ struct ShareEmptyHero: View {
     }
 }
 
+// MARK: - Unreadable roster (MYR-386)
+
+/// The list did not answer, and nothing is in hand.
+///
+/// **Deliberately NOT `ShareEmptyHero`**, which is the whole of MYR-386's second
+/// half. "No one has access yet" is a CLAIM about the account and a failed fetch
+/// does not support it — the same reasoning `SharedVehiclesUnreachableScreen`
+/// applies on the rider's side, and the same reasoning that keeps
+/// `LiveShareService` from emptying its lists on a failed re-read. Told the empty
+/// hero's story, an owner whose network dropped would conclude that a share they
+/// sent yesterday never landed, and would send it again.
+///
+/// **And deliberately not a skeleton** (MYR-326: loading ≠ unavailable). Nothing
+/// is in flight behind this; a shimmer would promise content that is not coming.
+///
+/// **NO RETRY BUTTON**, by the standing MYR-326/343 ruling: recovery is the
+/// low-friction one the app already has — a resume re-asks, and a successful read
+/// clears this by itself. It also carries NO CTA of any kind: inviting someone
+/// while the roster is unknown would mint a code onto a list the app cannot see.
+struct ShareRosterUnavailable: View {
+    /// The service's own sentence, passed through rather than restated here, so
+    /// the phase and the pixels are provably the same string.
+    let message: String
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                Circle().fill(Color.mrtElevated)
+                Image(systemName: "antenna.radiowaves.left.and.right.slash")
+                    .font(.system(size: 22))
+                    .foregroundStyle(Color.mrtTextMuted)
+            }
+            .frame(width: MRTMetrics.shareHeroIconSize, height: MRTMetrics.shareHeroIconSize)
+
+            Text(message)
+                .font(.system(size: 19, weight: .semibold))
+                .tracking(-0.3)
+                .foregroundStyle(Color.mrtText)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: MRTMetrics.shareHeroTextWidth)
+                .padding(.top, 18)
+
+            // Byte-identical to `SharedVehiclesUnreachableScreen`'s second line —
+            // one fact, said the same way wherever this app admits it.
+            Text("We\u{2019}ll try again when you come back.")
+                .font(.system(size: 13.5))
+                .foregroundStyle(Color.mrtTextSec)
+                .multilineTextAlignment(.center)
+                .lineSpacing(2)
+                .frame(maxWidth: MRTMetrics.shareHeroTextWidth)
+                .padding(.top, 7)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, MRTMetrics.pageGutter)
+        .padding(.top, MRTMetrics.shareHeroTopGap)
+    }
+}
+
 // MARK: - Vehicle ride-share card (MYR-369)
 
 /// One owned vehicle's ride-share master switch, as the card at the TOP of the

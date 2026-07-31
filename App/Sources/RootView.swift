@@ -280,7 +280,19 @@ struct RootView: View {
         var share: any ShareService = ShareComposition.makeShareService(
             mode: mode,
             sessionTokenProvider: auth.sessionTokenProvider,
-            ownedVehicles: { [weak homeState] in homeState?.vehicles ?? [] }
+            ownedVehicles: { [weak homeState] in homeState?.vehicles ?? [] },
+            // MYR-386 — the SAME fleet, read for what it is doing rather than for
+            // what it holds. `isConnecting` is true from construction until the
+            // list lands (`!hasLoaded`) and is suppressed once a `statusMessage`
+            // is set, so the failure is checked first. A fleet that has not
+            // answered leaves the Share tab's roster genuinely in flight; before
+            // this the tab took its empty vehicle list as proof that nothing was
+            // shared, rendered the hero, and never re-asked.
+            fleetState: { [weak homeState] in
+                guard let homeState else { return .resolved }
+                if homeState.statusMessage != nil { return .unreachable }
+                return homeState.isConnecting ? .resolving : .resolved
+            }
         )
         var catalog: any SharedVehicleCatalog = ShareComposition.makeSharedVehicleCatalog(
             mode: mode,

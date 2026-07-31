@@ -22,25 +22,126 @@ import Foundation
 // `ShareService` seam already publishes — no service change (this issue is
 // presentation only), and the whole matrix is unit-testable without a screen.
 enum ShareRosterState: Equatable {
+    /// The list is genuinely being fetched and NOTHING is known yet — render
+    /// skeleton rows (MYR-386). See ``ShareRosterLoadPhase`` for why this is an
+    /// arm of the state rather than a `Bool` beside it.
+    case loading
     /// Nothing accepted AND nothing pending — the hero empty state. This is the
     /// ONLY arm that renders an explainer + CTA; every other arm is a list.
+    ///
+    /// **Reachable ONLY from a COMPLETED fetch.** That is the whole of MYR-386.
     case empty
     /// At least one row exists. Carries ONLY non-empty sections, in display
     /// order, which is what structurally forbids an orphaned header.
     case populated([ShareRosterSection])
+    /// The fetch FAILED and nothing is in hand. Carries the service's own quiet
+    /// sentence. Never `.empty`: "no one has access yet" is a CLAIM about the
+    /// account and a failed read does not support it (MYR-343's rule, applied
+    /// here).
+    case unavailable(String)
 
-    /// The one rule over the two published lists.
+    /// The one rule over the phase and the two published lists.
     ///
     /// Accepted sorts above pending deliberately: an accepted grant is live
     /// access to the owner's car and is the thing they came to audit; a pending
     /// invite is a piece of housekeeping. The prototype already ordered them this
     /// way and nothing about the client's complaint was the order.
-    static func resolve(viewers: [Viewer], pending: [PendingInvite]) -> ShareRosterState {
+    ///
+    /// **THE PHASE ONLY DECIDES WHAT AN EMPTY PAIR OF LISTS MEANS.** Rows in hand
+    /// win over both the loading and the failed phase, which is not a nicety:
+    /// `LiveShareService` re-reads the whole list after every mutation and on
+    /// every appearance of the tab, so a refresh that blanked the roster into a
+    /// skeleton — or into a failure screen — would make a revoke look like the
+    /// list falling over. This is the same rule `LiveSharedVehicleCatalog`
+    /// already applies when it leaves the last-known grants standing.
+    static func resolve(
+        phase: ShareRosterLoadPhase,
+        viewers: [Viewer],
+        pending: [PendingInvite]
+    ) -> ShareRosterState {
         var sections: [ShareRosterSection] = []
         if !viewers.isEmpty { sections.append(.accepted(viewers)) }
         if !pending.isEmpty { sections.append(.invited(pending)) }
-        return sections.isEmpty ? .empty : .populated(sections)
+        if !sections.isEmpty { return .populated(sections) }
+
+        switch phase {
+        // `.idle` shimmers with `.loading` DELIBERATELY. On this screen the two
+        // are one situation a frame apart — `InvitesScreen.task` calls `load()`
+        // unconditionally on appear, so "not asked yet" is always "about to
+        // ask", and splitting them would put the empty hero on screen for
+        // exactly the one frame the client photographed. The standing rule
+        // (shimmer only while a fetch genuinely runs) is kept by the SERVICE:
+        // `LiveShareService` leaves `.idle` for `.loaded` the moment it
+        // establishes there is nothing to fetch, so no skeleton here outlives a
+        // fetch.
+        case .idle, .loading: return .loading
+        case .loaded: return .empty
+        case .failed(let message): return .unavailable(message)
+        }
     }
+}
+
+// MARK: - Where the invite-list fetch stands (MYR-386)
+
+/// THE CLIENT'S REPORT (TestFlight, build 202607311129): *"Need to add the
+/// skeleton loading to this page. It flashes no one added then appears."*
+///
+/// `ShareService` has published `isLoading: Bool` and `statusMessage: String?`
+/// since MYR-184 and **`InvitesScreen` read neither**. So the screen resolved its
+/// whole state from two arrays that start `[]`, and an empty array in flight is
+/// indistinguishable from an empty array that came back empty: the tab rendered
+/// "No one has access yet" — the definitive, CTA-bearing hero — over a fetch that
+/// had not answered, then swapped it for the real rows.
+///
+/// This is MYR-343's lesson for the third time in this codebase (`hasLoaded &&
+/// grants.isEmpty`, then `RiderSettingsVehicleSection`, now here): **three
+/// genuinely different situations cannot be told apart by one flag, so one of them
+/// always borrows another's surface for a frame.** A phase has an arm for each,
+/// and the empty state becomes unreachable before a completed fetch rather than
+/// merely unlikely.
+///
+/// Two booleans were not enough either, which is why this replaces them rather
+/// than joining them: `isLoading == false, statusMessage == nil` is BOTH
+/// "loaded, and genuinely empty" and "nobody has asked yet".
+enum ShareRosterLoadPhase: Equatable, Sendable {
+    /// Nothing has been asked yet.
+    case idle
+    /// A fetch is genuinely running right now. The ONLY phase that may shimmer.
+    case loading
+    /// A fetch COMPLETED and the published lists are its answer. The only phase
+    /// from which the empty state is reachable.
+    case loaded
+    /// A fetch completed by failing, carrying the quiet one-line sentence the
+    /// screen shows. Never a dialog (design minimalism, same convention as
+    /// `VehicleFleet.statusMessage`).
+    case failed(String)
+}
+
+// MARK: - What the owner's FLEET is doing (MYR-386)
+
+/// The Share tab's per-vehicle invite fetches are keyed on the owner's vehicle
+/// list, so the roster cannot resolve before that list does.
+///
+/// `LiveShareService.performLoad` has always short-circuited on an empty fleet —
+/// correctly, since §7.5.2 is a per-vehicle endpoint and there is nothing to ask.
+/// But it could not tell "this account owns no cars" from "the fleet has not
+/// answered yet", and both left the roster empty with nothing in flight — i.e.
+/// the SECOND source of the client's flash, and the reason a Share tab opened
+/// during a cold boot used to sit on the empty hero permanently (nothing re-asked
+/// when the fleet landed).
+///
+/// It is a closure into the SAME started fleet `shareableVehicles` already reads,
+/// not a new fetch: the fleet is loaded once, by `OwnerHomeState`, and this screen
+/// only asks what it is doing.
+enum ShareFleetState: Equatable, Sendable {
+    /// `GET /api/vehicles` is in flight — a fetch IS genuinely running, and the
+    /// roster is blocked on it, so the skeleton is honest.
+    case resolving
+    /// The list answered. An empty fleet now genuinely means "no cars", and an
+    /// owner with no cars has nothing shared.
+    case resolved
+    /// The list did not answer. NOT "nothing is shared with you".
+    case unreachable
 }
 
 /// One rendered group of the roster. Non-empty by construction — `resolve` never
