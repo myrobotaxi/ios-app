@@ -305,6 +305,22 @@ enum RideRequestContractMapping {
             requestedAt: parseISO(ride.createdAt) ?? Date()
         )
         record.acceptedAt = ride.acceptedAt.flatMap(parseISO)
+        // MYR-376/377 — THE THREE RESERVATION FACTS.
+        //
+        // `record(from:)` folded `scheduledFor` into a pair of DISPLAY strings and
+        // dropped `dispatchStatus`/`dispatchedAt` on the floor — the app source had
+        // literally zero references to either — so no surface in this app could
+        // tell a reservation the server had dispatched from one it had not. That
+        // absence is the whole of the MYR-376 defect: the owner's dispatch card is
+        // gated on status alone, and `accepted` is `accepted` whether the ride is
+        // happening now or tomorrow at noon.
+        //
+        // Carried unconditionally rather than only for scheduled rides: an INSTANT
+        // ride is dispatched at accept time, and a client that can see that is a
+        // client that can stop guessing later.
+        record.scheduledFor = ride.scheduledFor.flatMap(parseISO)
+        record.dispatchStatus = ride.dispatchStatus
+        record.dispatchedAt = ride.dispatchedAt.flatMap(parseISO)
         // MYR-265: v1 has no per-second progress ticker (MYR-176/177), so each
         // live leg mounts the tracking sheet at a STATIC anchor that positions
         // `TrackingLeg`/`atPickup`/the leg-fit camera correctly for that leg:

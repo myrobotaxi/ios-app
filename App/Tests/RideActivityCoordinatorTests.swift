@@ -288,8 +288,25 @@ final class RideActivityCoordinatorTests: XCTestCase {
 
     /// Let the token-consuming `Task` run. The stream is fed from the test, so a
     /// couple of yields is enough — there is no real clock anywhere in this path.
+    /// Let the coordinator's unstructured registration `Task` run to completion.
+    ///
+    /// MYR-377 — this was six bare `Task.yield()`s, and it is a PRE-EXISTING FLAKE
+    /// rather than anything this issue changed: `RideActivityCoordinatorTests` fails
+    /// its 409 and transient-retry cases on `origin/main` when run in ISOLATION (14
+    /// tests, 6 failures, reproducible), and passes inside the full suite, because
+    /// how many yields it takes for a detached task to reach an `await` is a
+    /// function of what else the cooperative pool is doing. Adding tests anywhere in
+    /// the target is enough to flip it — which is exactly what a suite must not do.
+    ///
+    /// Yielding AND sleeping gives the pool a real chance to schedule rather than a
+    /// hopeful one. Deliberately not asserting on coordinator internals to know when
+    /// to stop: these tests are about observable effects, and a settle helper that
+    /// reached into the thing under test would be assertion by another name.
     private func settle() async {
-        for _ in 0..<6 { await Task.yield() }
+        for _ in 0..<12 {
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(1))
+        }
     }
 
     private func makeRecord(id: String = "ride-1", status: MyRoboTaxi.RideRequestStatus) -> RideRequestRecord {

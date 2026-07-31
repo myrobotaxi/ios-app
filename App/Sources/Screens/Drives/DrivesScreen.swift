@@ -34,6 +34,13 @@ struct DrivesScreen: View {
     private var feed: any DrivesFeed { homeState.selectedDrivesFeed }
 
     #if DEBUG
+    /// MYR-376 — boot on the UPCOMING segment for the one scene whose subject is
+    /// that list. Headless tooling cannot tap a segmented control, and the
+    /// reservation read is the whole capture. Every other scene keeps `.history`,
+    /// which is what leaves `ownerDrives` byte-identical.
+    private func selectUpcomingTabIfRequested() {
+        if DebugScene.current?.opensUpcomingDrivesTab == true { tab = .upcoming }
+    }
     /// Verification hook — see the `.onChange`/`.onAppear` call sites.
     private func autoOpenFirstDriveIfRequested() {
         guard DebugScene.autoOpenFirstDrive,
@@ -76,11 +83,21 @@ struct DrivesScreen: View {
             homeState.startTelemetry()
             feed.loadInitial()
             #if DEBUG
+            selectUpcomingTabIfRequested()
             autoOpenFirstDriveIfRequested()
             #endif
         }
         .onChange(of: homeState.selectedVehicleIndex) { _, _ in feed.loadInitial() }
         .onChange(of: homeState.selectedVehicle?.id) { _, _ in feed.loadInitial() }
+        // MYR-376 — the Upcoming list is the SERVER's on live. Read it on appear and
+        // whenever the selected car changes; a no-op in SIM, where no reservation
+        // source is composed and the fixture array stands. Re-read on every
+        // appearance (`force`) rather than once per vehicle, because a reservation
+        // that dispatched while the owner was on another tab has stopped being
+        // upcoming and the tab must not still be claiming it is.
+        .task(id: homeState.selectedVehicle?.id) {
+            await drivesState.loadUpcoming(vehicleID: homeState.selectedVehicle?.id, force: true)
+        }
         #if DEBUG
         // Verification-only (MRT_OPEN_FIRST_DRIVE=1): open the first loaded drive
         // so a Drive Summary can be captured full-frame headlessly (the Drives
@@ -101,6 +118,17 @@ struct DrivesScreen: View {
                 set: { if !$0 { confirmCancel = nil } }
             ),
             config: cancelDialogConfig
+        )
+        // MYR-376 — a REFUSED cancel says so. The row stays where it is (the state
+        // re-reads instead of removing it), and this is the sentence that stops the
+        // owner walking away believing a reservation is gone when it is not. Same
+        // quiet-toast grammar every other refused write in this app uses.
+        .mrtSuccessToast(
+            isPresented: Binding(
+                get: { drivesState.cancelFailureNotice != nil },
+                set: { if !$0 { drivesState.cancelFailureNotice = nil } }
+            ),
+            message: drivesState.cancelFailureNotice ?? ""
         )
     }
 
@@ -429,6 +457,10 @@ struct DrivesScreen: View {
 
     private var sortedUpcoming: [UpcomingRide] {
         drivesState.upcoming.sorted { a, b in
+            // MYR-376 — a row built from the server carries the reserved INSTANT,
+            // which is a total order and needs no table. The prototype's day-token
+            // order stands for the fixture rows, which is every row in SIM.
+            if let left = a.scheduledFor, let right = b.scheduledFor { return left < right }
             let dayA = Self.dayOrder.firstIndex(of: a.scheduleDay) ?? Self.dayOrder.count
             let dayB = Self.dayOrder.firstIndex(of: b.scheduleDay) ?? Self.dayOrder.count
             if dayA != dayB { return dayA < dayB }
@@ -454,7 +486,17 @@ struct DrivesScreen: View {
             dismissLabel: "Keep it"
         ) {
             guard let ride else { return }
-            drivesState.cancelUpcoming(id: ride.id)
+            // MYR-376 — the LIVE path declines on the server and re-syncs; only the
+            // simulated path removes the row locally. Splitting on
+            // `readsLiveReservations` rather than on `isLive` keeps the two from
+            // ever both running: a state with no reservation source has nothing to
+            // decline against, and a state with one must never remove a row the
+            // server has not agreed to.
+            if drivesState.readsLiveReservations {
+                Task { await drivesState.cancelReservation(id: ride.id, vehicleID: vehicle?.id) }
+            } else {
+                drivesState.cancelUpcoming(id: ride.id)
+            }
         }
     }
 }

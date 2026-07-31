@@ -54,6 +54,36 @@ enum RideRequestComposition {
     /// couple an owner availability control to the rider/owner RIDE pipelines
     /// (MYR-325) it has nothing to do with. It also means this feature composes
     /// with no socket at all, which is what lets a DEBUG scene drive the REAL fetch.
+    /// MYR-377 — the rider's Scheduled tab, or `nil` off the live path (where the
+    /// screen keeps the prototype's fixture reservations and every DEBUG capture
+    /// with them).
+    ///
+    /// Composed from its own `RestClient` for the same reason
+    /// `makeUpcomingReservations` is: a `RestClient` is a `Sendable` struct holding
+    /// a URL, a token provider and a session, so a second one opens no connection
+    /// and costs nothing, while reaching into the live ride-request service would
+    /// couple a LIST to the two role-scoped ride pipelines (MYR-325) it has nothing
+    /// to do with — and would deny a DEBUG scene the "real code path, injected
+    /// wire" route this feature's capture depends on.
+    ///
+    /// `vehicleNames` is how a row NAMES the car without inventing one: the rider's
+    /// own already-loaded fleet, joined on `vehicleId`. It is a closure rather than
+    /// a stored list because the fleet arrives asynchronously and a snapshot taken
+    /// at composition time would be empty for the whole session.
+    @MainActor
+    static func makeScheduledRides(
+        mode: AppMode,
+        sessionTokenProvider: SessionTokenProvider? = nil,
+        vehicleNames: @escaping @MainActor @Sendable (String) -> RiderScheduledRideVehicle?
+    ) -> LiveRiderScheduledRides? {
+        guard let config = TelemetryComposition.liveFleetConfig(mode: mode, sessionTokenProvider: sessionTokenProvider) else { return nil }
+        let http = config.http ?? URLSession(configuration: RestClient.defaultConfiguration())
+        return LiveRiderScheduledRides(
+            api: RestClient(environment: config.environment, tokenProvider: config.tokenProvider, http: http),
+            vehicleNames: vehicleNames
+        )
+    }
+
     @MainActor
     static func makeUpcomingReservations(
         mode: AppMode,

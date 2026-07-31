@@ -709,21 +709,35 @@ struct HomeScreen: View {
         let riderLabel = display.riderLabel
 
         if let schedule = request.input.schedule {
-            drivesState.addUpcoming(
-                UpcomingRide(
-                    id: "ou-" + request.id,
-                    rider: riderLabel,
-                    destination: .init(
-                        label: destination.label,
-                        subtitle: destination.subtitle ?? "",
-                        miles: destination.miles,
-                        mins: destination.minutes
-                    ),
-                    scheduleDay: schedule.day,
-                    scheduleTime: schedule.time,
-                    vehicleName: vehicleName ?? ""
+            // MYR-376 — on the LIVE path the Upcoming list is the server's, so an
+            // accept ASKS FOR IT AGAIN rather than fabricating a row.
+            //
+            // The local insert used a `"ou-" + rideID` key, which meant the row's X
+            // declined an id the server has never issued — and, being local, the
+            // row could never learn that the reservation had since dispatched. Both
+            // halves of the client's Drives report come from those two facts. The
+            // owner sees nothing different at this moment either way: the accept's
+            // feedback is the toast below, and Drives is another tab.
+            if drivesState.readsLiveReservations {
+                let vehicleID = request.input.fleetMemberID
+                Task { await drivesState.loadUpcoming(vehicleID: vehicleID, force: true) }
+            } else {
+                drivesState.addUpcoming(
+                    UpcomingRide(
+                        id: "ou-" + request.id,
+                        rider: riderLabel,
+                        destination: .init(
+                            label: destination.label,
+                            subtitle: destination.subtitle ?? "",
+                            miles: destination.miles,
+                            mins: destination.minutes
+                        ),
+                        scheduleDay: schedule.day,
+                        scheduleTime: schedule.time,
+                        vehicleName: vehicleName ?? ""
+                    )
                 )
-            )
+            }
             let reserved = vehicleName.map { "\(riderLabel) \u{00B7} \(destination.label) \u{00B7} \($0) reserved" }
                 ?? "\(riderLabel) \u{00B7} \(destination.label) reserved"
             routeSentToast = RouteSentToastContent(

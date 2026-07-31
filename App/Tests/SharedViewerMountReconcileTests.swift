@@ -16,7 +16,7 @@ final class SharedViewerMountReconcileTests: XCTestCase {
 
     func testAcceptedNowRideFromIdleEntersTracking() {
         XCTAssertEqual(
-            SharedViewerScreen.reconciledPhase(status: .accepted, hasSchedule: false, current: .idle),
+            SharedViewerScreen.reconciledPhase(status: .accepted, isDormantReservation: false, current: .idle),
             .tracking,
             "the client bug: accept landed while unmounted → mount lands on tracking, not idle"
         )
@@ -24,7 +24,7 @@ final class SharedViewerMountReconcileTests: XCTestCase {
 
     func testAcceptedNowRideFromBookingEntersTracking() {
         XCTAssertEqual(
-            SharedViewerScreen.reconciledPhase(status: .accepted, hasSchedule: false, current: .booking),
+            SharedViewerScreen.reconciledPhase(status: .accepted, isDormantReservation: false, current: .booking),
             .tracking
         )
     }
@@ -33,14 +33,14 @@ final class SharedViewerMountReconcileTests: XCTestCase {
 
     func testAcceptedAlreadyTrackingIsNoOp() {
         XCTAssertNil(
-            SharedViewerScreen.reconciledPhase(status: .accepted, hasSchedule: false, current: .tracking),
+            SharedViewerScreen.reconciledPhase(status: .accepted, isDormantReservation: false, current: .tracking),
             "an accepted ride already on tracking must not re-enter tracking on remount"
         )
     }
 
     func testAcceptedFromSummaryIsNoOp() {
         XCTAssertNil(
-            SharedViewerScreen.reconciledPhase(status: .accepted, hasSchedule: false, current: .summary),
+            SharedViewerScreen.reconciledPhase(status: .accepted, isDormantReservation: false, current: .summary),
             "a completed/arrived ride resting on summary is not dragged back to tracking"
         )
     }
@@ -48,29 +48,29 @@ final class SharedViewerMountReconcileTests: XCTestCase {
     // MARK: scheduled acceptance is a reservation, never a live trip
 
     func testScheduledAcceptanceNeverEntersTracking() {
-        XCTAssertNil(SharedViewerScreen.reconciledPhase(status: .accepted, hasSchedule: true, current: .idle))
-        XCTAssertNil(SharedViewerScreen.reconciledPhase(status: .accepted, hasSchedule: true, current: .booking))
+        XCTAssertNil(SharedViewerScreen.reconciledPhase(status: .accepted, isDormantReservation: true, current: .idle))
+        XCTAssertNil(SharedViewerScreen.reconciledPhase(status: .accepted, isDormantReservation: true, current: .booking))
     }
 
     // MARK: pending → no change (idle sheet shows the pending pill)
 
     func testPendingLeavesPhaseUnchanged() {
-        XCTAssertNil(SharedViewerScreen.reconciledPhase(status: .pending, hasSchedule: false, current: .idle))
-        XCTAssertNil(SharedViewerScreen.reconciledPhase(status: .pending, hasSchedule: false, current: .booking))
+        XCTAssertNil(SharedViewerScreen.reconciledPhase(status: .pending, isDormantReservation: false, current: .idle))
+        XCTAssertNil(SharedViewerScreen.reconciledPhase(status: .pending, isDormantReservation: false, current: .booking))
     }
 
     // MARK: declined → search (idempotent once already there)
 
     func testDeclinedFromIdleGoesToSearch() {
         XCTAssertEqual(
-            SharedViewerScreen.reconciledPhase(status: .declined, hasSchedule: false, current: .idle),
+            SharedViewerScreen.reconciledPhase(status: .declined, isDormantReservation: false, current: .idle),
             .search
         )
     }
 
     func testDeclinedAlreadyOnSearchIsNoOp() {
         XCTAssertNil(
-            SharedViewerScreen.reconciledPhase(status: .declined, hasSchedule: false, current: .search),
+            SharedViewerScreen.reconciledPhase(status: .declined, isDormantReservation: false, current: .search),
             "declined already reflected on search → no redundant phase write"
         )
     }

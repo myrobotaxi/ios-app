@@ -1,4 +1,5 @@
 import Foundation
+import MyRobotaxiContracts
 import Observation
 
 // MARK: - Ride request seam (MYR-171)
@@ -177,6 +178,21 @@ public protocol RideRequestService: AnyObject, Observable {
     /// the same adoption a cold launch already performs. Sim is a no-op.
     func refreshActiveRide() async
 
+    /// MYR-376/377 — re-sync any held reservation whose DUE MOMENT has arrived.
+    ///
+    /// Dispatch produces no WebSocket frame — the reservation sweeper stamps the
+    /// latch, pushes leg-1 navigation and sends the rider a `ride.due` APNs
+    /// notification, and that is the whole of the signal. The live service sleeps
+    /// to the due instant while it is running, but a suspended app's timer does not
+    /// fire, so a reservation that came due overnight is still dormant on this
+    /// device at breakfast. `RootView` calls this on every foreground, beside the
+    /// existing push re-arm and Live Activity re-evaluation.
+    ///
+    /// Costs nothing when nothing is held: it makes no request at all unless a
+    /// dormant reservation's moment has actually passed. Sim is a no-op (no
+    /// server, and its reservations never dispatch).
+    func refreshDueReservations() async
+
     /// Ride Summary's "See you soon" — builds the completed-ride record for
     /// `RideHistoryStore` and resets `activeRequest` to `nil`. Returns `nil`
     /// if there's no request or it hasn't reached `trackProgress >= 0.999`.
@@ -202,10 +218,21 @@ public extension RideRequestService {
         return request
     }
 
+    /// MYR-376 — the dormancy gate applies HERE TOO, and deliberately so. The
+    /// simulated service has no dispatch latch to read (its records carry none),
+    /// so `RideReservation.isLiveRide` answers `true` for every instant ride and
+    /// `false` for an accepted reservation — which is the correct simulated
+    /// answer: a reservation accepted in the simulator is reserved into Drives →
+    /// Upcoming and does not dispatch either. Putting the rule in the default
+    /// rather than only in the live override keeps ONE model of what a reservation
+    /// is; a second, more permissive definition living in the shared path is
+    /// exactly how the live gate would be quietly re-opened later.
     var ownerDispatch: RideRequestRecord? {
-        switch activeRequest?.status {
-        case .accepted, .arrived, .enroute, .completed: return activeRequest
-        case .pending, .declined, nil: return nil
+        guard let request = activeRequest else { return nil }
+        switch request.status {
+        case .accepted, .arrived, .enroute, .completed:
+            return RideReservation.isLiveRide(request) ? request : nil
+        case .pending, .declined: return nil
         }
     }
 
@@ -254,6 +281,12 @@ public extension RideRequestService {
     /// (MYR-186), so a simulated run's behaviour is unchanged.
     func refreshIncoming() async {}
     func refreshActiveRide() async {}
+
+    /// Default: no-op. A simulated reservation is reserved into Drives → Upcoming
+    /// and never dispatches (there is no sweeper and no clock to run one), so there
+    /// is no due moment to re-read. Only `LiveRideRequestService` overrides this
+    /// (MYR-376/377).
+    func refreshDueReservations() async {}
 
     /// Default: no-op. The simulated service has no server ride to advance — its
     /// tracking is driven by the `trackProgress` ticker, and the dispatch v2 CTAs
@@ -415,6 +448,34 @@ public struct RideRequestRecord: Identifiable, Sendable, Equatable {
     /// `nil` until `.accepted`. `>= 0.999` is "arrived" (ride-request.jsx:
     /// 1125,1245 `isSummary`).
     public var trackProgress: Double?
+
+    // MARK: MYR-376/377 — the reservation's own three wire facts
+    //
+    // `input.schedule` is a pair of DISPLAY strings ("Tomorrow" / "12:00 PM"),
+    // which is all any surface needed while a reservation was a row in a list.
+    // The dormancy model needs the INSTANT (to know when the ride becomes live)
+    // and the DISPATCH LATCH (to know whether it already has), so all three
+    // travel on the record now. They are `nil` on every SIM/fixture record and
+    // on a live INSTANT ride, so nothing that does not carry a schedule changes.
+
+    /// The reserved pickup INSTANT (`RideRequest.scheduledFor`), in absolute
+    /// time. `nil` for an on-demand ride and for every simulated record.
+    ///
+    /// Distinct from `input.schedule`, which is the pair of display strings the
+    /// picker committed: a day token and a wall clock cannot be compared with
+    /// `Date()`, and the due-time flip has to be.
+    public var scheduledFor: Date?
+
+    /// The outcome of the server's nav-dispatch push (`RideRequest.dispatchStatus`).
+    /// Absent until dispatch resolves — and for a RESERVATION that is the
+    /// reservation sweeper firing at due time, which is the moment the ride stops
+    /// being dormant.
+    public var dispatchStatus: DispatchStatus?
+
+    /// When the nav-dispatch was CLAIMED (`RideRequest.dispatchedAt`) — the
+    /// server's exactly-once latch, and the client's single clearest evidence
+    /// that a reservation has gone live.
+    public var dispatchedAt: Date?
 
     public init(id: String = UUID().uuidString, input: RideRequestInput, status: RideRequestStatus = .pending, requestedAt: Date = Date()) {
         self.id = id

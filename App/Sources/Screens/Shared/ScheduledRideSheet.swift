@@ -25,6 +25,16 @@ struct ScheduledRideSheet: View {
     /// standard device height, so the cap only matters on the very smallest
     /// screens).
     var screenHeight: CGFloat?
+    /// MYR-377 — whether the RESCHEDULE affordance can actually do anything.
+    ///
+    /// `true` on the simulated path, where the local array is the whole world and
+    /// "Move to…" genuinely moves the ride. `false` on the live path: the Kit
+    /// exposes no reschedule call (MYR-192's endpoints are not built) and the
+    /// picker's day/date table is a hard-coded June-2026 literal, so opening it
+    /// would offer a rider seven days from last year and then drop the answer. The
+    /// button stays visible — the affordance is real, it is the plumbing that is
+    /// missing — dimmed, inert, with one honest line beneath it.
+    var rescheduleAvailable: Bool = true
 
     private enum Mode: Equatable {
         case details
@@ -37,6 +47,11 @@ struct ScheduledRideSheet: View {
     @State private var day = "Today"
     @State private var time = "5:30 PM"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// MYR-377 — the one honest line under a disabled Reschedule. It states what
+    /// the rider CAN do instead, because a dead-end is the thing MYR-233 spent a
+    /// whole issue removing.
+    static let rescheduleUnavailableNote = "Rescheduling isn\u{2019}t available yet \u{00B7} cancel and book a new time."
 
     private static let schedDays = ["Today", "Tomorrow", "Thu", "Fri", "Sat", "Sun", "Mon"]
     private static let schedDates: [String: String] = [
@@ -188,10 +203,16 @@ struct ScheduledRideSheet: View {
                 .padding(.bottom, 16)
             HStack(spacing: 10) {
                 cancelButton { mode = .confirmCancel }
-                MRTButton("Reschedule", variant: .outlineDraw, fullWidth: true) { mode = .reschedule }
+                MRTButton("Reschedule", variant: .outlineDraw, fullWidth: true) {
+                    guard rescheduleAvailable else { return }
+                    mode = .reschedule
+                }
+                // The same 0.5 `ShareVehicleToggleRow` dims an inert control to.
+                .opacity(rescheduleAvailable ? 1 : 0.5)
+                .allowsHitTesting(rescheduleAvailable)
             }
             .padding(.bottom, 11)
-            Text("Changes notify \(ride.driver) to re-confirm.")
+            Text(rescheduleAvailable ? ScheduledRideDisplay.changeNote(ride) : Self.rescheduleUnavailableNote)
                 .font(.system(size: 11.5))
                 .foregroundStyle(Color.mrtTextMuted)
                 .tracking(0.1)
@@ -225,7 +246,7 @@ struct ScheduledRideSheet: View {
 
     private func mapPreview(_ ride: ScheduledRide) -> some View {
         ZStack(alignment: .bottomLeading) {
-            RideRouteMap(route: ride.route)
+            RideRouteMap(route: ride.route, drawsLine: ScheduledRideDisplay.drawsRouteLine(ride))
             LinearGradient(
                 stops: [.init(color: .clear, location: 0.32), .init(color: .mrtRideMapScrim, location: 1)],
                 startPoint: .top, endPoint: .bottom
@@ -330,15 +351,23 @@ struct ScheduledRideSheet: View {
     private func peopleCard(_ ride: ScheduledRide) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 11) {
+                // MYR-377 — see `ScheduledRideDisplay`: a live reservation has no
+                // owner name to print, and inventing one is the MYR-184 leak.
                 Circle().fill(Color.mrtElevated).frame(width: 34, height: 34)
-                    .overlay(Text(ride.driver.prefix(1)).font(.system(size: 13.5, weight: .semibold)).foregroundStyle(Color.mrtText))
+                    .overlay {
+                        if let initial = ScheduledRideDisplay.avatarInitial(ride) {
+                            Text(initial).font(.system(size: 13.5, weight: .semibold)).foregroundStyle(Color.mrtText)
+                        } else {
+                            Image(systemName: "car.fill").font(.system(size: 13)).foregroundStyle(Color.mrtTextSec)
+                        }
+                    }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(ride.driver)\u{2019}s \(ride.vehicle)")
+                    Text(ScheduledRideDisplay.vehicleTitle(ride))
                         .font(.system(size: 14, weight: .semibold))
                         .tracking(-0.2)
                         .foregroundStyle(Color.mrtText)
                         .lineLimit(1)
-                    Text("\(ride.relationship) \u{00B7} Shared with you")
+                    Text(ScheduledRideDisplay.relationshipLine(ride))
                         .font(.system(size: 11.5))
                         .foregroundStyle(Color.mrtTextSec)
                         .lineLimit(1)
@@ -598,6 +627,8 @@ struct ScheduledRideSheet: View {
 /// for the sheet's 104pt preview panel instead of the full-screen hero.
 private struct RideRouteMap: View {
     let route: [CLLocationCoordinate2D]
+    /// MYR-377 — see `ScheduledRideDisplay.drawsRouteLine`.
+    var drawsLine: Bool = true
 
     var body: some View {
         Map(initialPosition: .region(VehicleRoute.fittedRegion(for: route, paddingFactor: 1.8)), interactionModes: []) {
@@ -613,7 +644,10 @@ private struct RideRouteMap: View {
 
     @MapContentBuilder
     private var mapContent: some MapContent {
-        if route.count > 1 {
+        // MYR-377 — the LINE is the caller's decision (`drawsRouteLine`); the
+        // PINS are unconditional. A pickup and a destination are facts; a road
+        // between them that nobody fetched is not.
+        if drawsLine, route.count > 1 {
             MapPolyline(coordinates: route)
                 .stroke(Color.mrtGoldGlowSoft, style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))
             MapPolyline(coordinates: route)

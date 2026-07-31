@@ -29,31 +29,53 @@ import DesignSystem
 struct RideHistoryScreen: View {
     @Binding var sharedTab: String
     @Bindable var historyStore: RideHistoryStore
-    /// MYR-228 — LIVE seeds the scheduled list empty (no scheduled-ride backend);
-    /// the Scheduled tab then shows its honest "No scheduled rides" empty state
-    /// rather than the fixture reservations. SIM keeps the fixtures so every
-    /// simulated/DEBUG scene (scheduledDetails/Reschedule/…) stays pixel-identical.
+    /// MYR-228 — LIVE seeds the SCREEN-LOCAL scheduled list empty; SIM keeps the
+    /// fixtures so every simulated/DEBUG scene (scheduledDetails/Reschedule/…)
+    /// stays pixel-identical.
     var isLive: Bool = false
+
+    /// MYR-377 — the LIVE Scheduled tab, or `nil` in SIM / static-token dev.
+    ///
+    /// The live branch used to be the literal `[]`, under a comment claiming there
+    /// was no scheduled-ride backend. There has been one since MYR-174, so the
+    /// client's accepted reservation for the next day rendered as "0 scheduled · 0
+    /// confirmed / No scheduled rides" while it sat in the database, confirmed.
+    var scheduledStore: RiderScheduledRidesStore?
 
     private enum Tab: String { case completed, scheduled }
 
     @State private var tab: Tab = .completed
+    /// The SIMULATED list. Screen-local and mutable exactly as the jsx's own
+    /// `ssS(SCHEDULED_RIDES)` is — see this file's header. The live list is the
+    /// store's and is never written here.
     @State private var scheduled: [ScheduledRide]
     @State private var activeRideID: String?
 
-    init(sharedTab: Binding<String>, historyStore: RideHistoryStore, isLive: Bool = false) {
+    init(
+        sharedTab: Binding<String>,
+        historyStore: RideHistoryStore,
+        isLive: Bool = false,
+        scheduledStore: RiderScheduledRidesStore? = nil
+    ) {
         _sharedTab = sharedTab
         self.historyStore = historyStore
         self.isLive = isLive
+        self.scheduledStore = scheduledStore
         _scheduled = State(initialValue: isLive ? [] : RideHistoryFixtures.scheduledRides)
     }
 
     private var completedRides: [RequestedRide] { historyStore.completedRides }
     private var completedCount: Int { completedRides.count }
     private var totalMiles: Double { completedRides.reduce(0) { $0 + $1.miles } }
-    private var scheduledCount: Int { scheduled.count }
-    private var confirmedCount: Int { scheduled.filter { $0.status == .confirmed }.count }
-    private var activeRide: ScheduledRide? { scheduled.first { $0.id == activeRideID } }
+    /// The ONE list this screen renders: the server's when there is a store, the
+    /// screen-local fixture array otherwise. Every count, the segment badge, the
+    /// rows and the sheet all read through here, so the header can never disagree
+    /// with what is under it — which is precisely what "0 scheduled" over a real
+    /// reservation was.
+    private var scheduledRides: [ScheduledRide] { scheduledStore?.rides ?? scheduled }
+    private var scheduledCount: Int { scheduledRides.count }
+    private var confirmedCount: Int { scheduledRides.filter { $0.status == .confirmed }.count }
+    private var activeRide: ScheduledRide? { scheduledRides.first { $0.id == activeRideID } }
 
     /// shared-screens.jsx:40-44 `grouped` — day → rides, first-seen order.
     private var groupedCompleted: [(day: String, rides: [RequestedRide])] {
@@ -93,12 +115,32 @@ struct RideHistoryScreen: View {
                     onClose: { activeRideID = nil },
                     onReschedule: reschedule,
                     onCancel: cancel,
-                    screenHeight: geo.size.height
+                    screenHeight: geo.size.height,
+                    // MYR-377 — MYR-192's reschedule endpoints do not exist in the
+                    // Kit, so the live sheet disables the button and says why rather
+                    // than opening a picker whose "Move to…" resolves to nothing.
+                    rescheduleAvailable: scheduledStore == nil
                 )
             }
+            // MYR-377 — read the rider's own reservations. A no-op in SIM (no store
+            // is composed there), so every simulated and DEBUG capture is unchanged.
+            .task { await scheduledStore?.load() }
+            // A refused cancel says so, in the app's quiet-toast grammar, and the
+            // row stays where it is.
+            .mrtSuccessToast(
+                isPresented: Binding(
+                    get: { scheduledStore?.failureNotice != nil },
+                    set: { if !$0 { scheduledStore?.failureNotice = nil } }
+                ),
+                message: scheduledStore?.failureNotice ?? ""
+            )
             #if DEBUG
             .onAppear { // MYR-200 scheduled* scenes: auto-open the sheet
                 if activeRideID == nil, let id = DebugScene.current?.scheduledRideID { activeRideID = id }
+                // MYR-377 — and land on the SCHEDULED segment for the one scene whose
+                // subject is that list. Headless tooling cannot tap a segmented
+                // control; every other scene keeps the `.completed` default.
+                if DebugScene.current?.opensScheduledTab == true { tab = .scheduled }
             }
             #endif
         }
@@ -198,10 +240,16 @@ struct RideHistoryScreen: View {
 
     @ViewBuilder
     private var scheduledContent: some View {
-        if scheduled.isEmpty {
-            emptyScheduledState
+        if scheduledRides.isEmpty {
+            // MYR-326's rule: a list still in flight is NOT "you have none". The
+            // honest empty state waits for an answer rather than asserting one.
+            if scheduledStore?.isLoading == true {
+                Color.clear.frame(height: MRTMetrics.rideMapPreviewHeight)
+            } else {
+                emptyScheduledState
+            }
         } else {
-            ForEach(scheduled) { ride in
+            ForEach(scheduledRides) { ride in
                 ScheduledRideRow(ride: ride) { activeRideID = ride.id }
             }
             Text("Tap a ride to view details or make changes")
@@ -238,6 +286,17 @@ struct RideHistoryScreen: View {
 
     // MARK: Mutations (shared-screens.jsx:50-57)
 
+    /// MYR-377 — RESCHEDULE IS SIMULATED-ONLY, AND THE UI SAYS SO ON LIVE.
+    ///
+    /// The wire has the shape for it (`RideRequest.rescheduleProposedFor` /
+    /// `rescheduleStatus`), but the Kit's `RestClient` exposes NO reschedule call —
+    /// grepped, and there is none: the endpoints are MYR-192 and are not built. The
+    /// prototype's picker is also a hard-coded June-2026 day/date table
+    /// (`ScheduledRideSheet.schedDates`), so wiring it against nothing would offer
+    /// a rider a set of days from last June and then silently do nothing with the
+    /// one they chose. The affordance stays where the prototype puts it and is
+    /// DISABLED on the live path with an honest caption — see
+    /// `ScheduledRideSheet.rescheduleAvailable`.
     private func reschedule(id: String, day: String, time: String, date: String) {
         guard let index = scheduled.firstIndex(where: { $0.id == id }) else { return }
         scheduled[index].day = day
@@ -246,7 +305,18 @@ struct RideHistoryScreen: View {
         scheduled[index].status = .pending
     }
 
+    /// MYR-377 — the live cancel is the REAL `POST /{id}/cancel`, surfaced honestly
+    /// and followed by a re-read. Never an optimistic removal: a rider who believes
+    /// a ride is cancelled when it is not simply will not be there when the car
+    /// arrives. The simulated path keeps the prototype's local removal exactly.
     private func cancel(id: String) {
+        if let scheduledStore {
+            Task {
+                await scheduledStore.cancel(id: id)
+                if scheduledStore.rides.contains(where: { $0.id == id }) == false { activeRideID = nil }
+            }
+            return
+        }
         scheduled.removeAll { $0.id == id }
         if activeRideID == id { activeRideID = nil }
     }
@@ -396,10 +466,26 @@ struct ScheduledRideRow: View {
                         .foregroundStyle(Color.mrtGoldRowChevron)
                 }
                 HStack(spacing: 10) {
+                    // MYR-377 — a LIVE reservation names no owner (the wire carries
+                    // none anywhere), so the avatar falls back to a car glyph and
+                    // the line to the vehicle alone. Every fixture row has a driver,
+                    // so the simulated render is byte-identical.
                     Circle().fill(Color.mrtElevated).frame(width: 26, height: 26)
-                        .overlay(Text(ride.driver.prefix(1)).font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.mrtText))
-                    (Text("\(ride.driver)\u{2019}s ").foregroundStyle(Color.mrtText).fontWeight(.medium)
-                        + Text(ride.vehicle).foregroundStyle(Color.mrtTextSec))
+                        .overlay {
+                            if let initial = ScheduledRideDisplay.avatarInitial(ride) {
+                                Text(initial).font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.mrtText)
+                            } else {
+                                Image(systemName: "car.fill").font(.system(size: 10)).foregroundStyle(Color.mrtTextSec)
+                            }
+                        }
+                    Group {
+                        if ride.driver.isEmpty {
+                            Text(ride.vehicle).foregroundStyle(Color.mrtText).fontWeight(.medium)
+                        } else {
+                            Text("\(ride.driver)\u{2019}s ").foregroundStyle(Color.mrtText).fontWeight(.medium)
+                                + Text(ride.vehicle).foregroundStyle(Color.mrtTextSec)
+                        }
+                    }
                         .font(.system(size: 12.5))
                         .lineLimit(1)
                         .truncationMode(.tail)

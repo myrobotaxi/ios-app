@@ -33,6 +33,39 @@ struct UpcomingReservation: Identifiable, Equatable, Sendable {
     /// The pickup instant (`scheduledFor`). A reservation with no parseable one is
     /// not represented at all — see the mapping.
     let scheduledFor: Date
+    /// MYR-376 — which car this reservation is against. The pause dialog never
+    /// needed it (it asks about ONE vehicle by construction); Drives → Upcoming
+    /// does, because a row has to name the car it is about.
+    let vehicleID: String
+    /// MYR-376 — the whole mapped record, so a second consumer does not re-read the
+    /// same wire row a second way.
+    ///
+    /// This type began as the three facts the pause DIALOG states. Drives →
+    /// Upcoming needs the destination, the trip estimate and the day/time strings
+    /// as well, and every one of them is already computed by
+    /// `RideRequestContractMapping.record(from:)` on the way past. Carrying the
+    /// record is strictly cheaper than a second mapping and — more to the point —
+    /// makes it impossible for the two owner surfaces to disagree about one ride.
+    ///
+    /// OPTIONAL, and the default below is what says why: the pause dialog's three
+    /// facts are the type's contract, and the record is an ADDITION for one
+    /// consumer. A test (or a future caller) that only cares about the dialog
+    /// should not have to construct a whole ride to say so.
+    let record: RideRequestRecord?
+
+    init(
+        id: String,
+        riderFirstName: String?,
+        scheduledFor: Date,
+        vehicleID: String = "",
+        record: RideRequestRecord? = nil
+    ) {
+        self.id = id
+        self.riderFirstName = riderFirstName
+        self.scheduledFor = scheduledFor
+        self.vehicleID = vehicleID
+        self.record = record
+    }
 }
 
 /// The seam the pause warning reads and writes through.
@@ -81,7 +114,7 @@ struct LiveUpcomingReservations: UpcomingReservationSource {
                 cursor: cursor,
                 limit: Self.pageLimit
             )
-            collected.append(contentsOf: page.items.compactMap(Self.reservation(from:)))
+            collected.append(contentsOf: page.items.compactMap { Self.reservation(from: $0) })
             guard page.hasMore, let next = page.nextCursor, !next.isEmpty else { break }
             cursor = next
         }
@@ -96,7 +129,7 @@ struct LiveUpcomingReservations: UpcomingReservationSource {
     /// use, so a reservation named in this dialog is named exactly as the incoming
     /// card would name it.
     ///
-    /// Two deliberate drops, both honest rather than defensive:
+    /// Three deliberate drops, all honest rather than defensive:
     ///  • a record the mapping refuses (a terminal/cancelled status) is not a
     ///    reservation this pause can strand;
     ///  • a row with no parseable `scheduledFor` cannot be stated as a pickup TIME,
@@ -104,8 +137,21 @@ struct LiveUpcomingReservations: UpcomingReservationSource {
     ///    blank stamp over a name is worse than one fewer row, and the server's own
     ///    predicate is `scheduled_for` being non-null and future, so this is a shape
     ///    it does not emit.
-    static func reservation(from wire: MyRobotaxiContracts.RideRequest) -> UpcomingReservation? {
-        guard let record = RideRequestContractMapping.record(from: wire),
+    ///  • **MYR-376 — a reservation that is no longer UPCOMING.** The predicate is
+    ///    `RideReservation.isUpcomingReservation`: accepted, scheduled, and NOT yet
+    ///    dispatched. The client's own screenshot is the reason it exists — his ride
+    ///    had reached `arrived`, with a passenger in the car, and Drives → Upcoming
+    ///    still listed it as something that had not happened yet, offering an X that
+    ///    the server refuses at that status. It matters for the pause warning too:
+    ///    "you are about to strand this rider" is false about a rider who is already
+    ///    aboard, and the endpoint's own future-only predicate is not something the
+    ///    client should assume rather than check.
+    static func reservation(
+        from wire: MyRobotaxiContracts.RideRequest,
+        now: Date = Date()
+    ) -> UpcomingReservation? {
+        guard RideReservation.isUpcomingReservation(wire, now: now),
+              let record = RideRequestContractMapping.record(from: wire),
               let scheduledFor = wire.scheduledFor.flatMap(RideRequestContractMapping.parseISO)
         else { return nil }
         // `isLive: true` unconditionally, and that is correct rather than a shortcut:
@@ -124,6 +170,12 @@ struct LiveUpcomingReservations: UpcomingReservationSource {
         // deletion sweep is the server's), so it keeps the dialog's neutral
         // plain-English fallback and lets the server's own list stand.
         let display = IncomingRequestDisplay.resolve(request: record, isLive: true, liveVehicle: nil)
-        return UpcomingReservation(id: wire.id, riderFirstName: display.riderName, scheduledFor: scheduledFor)
+        return UpcomingReservation(
+            id: wire.id,
+            riderFirstName: display.riderName,
+            scheduledFor: scheduledFor,
+            vehicleID: wire.vehicleId,
+            record: record
+        )
     }
 }

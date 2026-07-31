@@ -373,6 +373,62 @@ enum DebugScene: String, CaseIterable {
     /// `OwnerHomeState` (not view state), so it stays gone across a `HomeScreen`
     /// remount. Capture at t≈1s and t≈7s to see both halves.
     case ownerDispatchedCompleted
+    // MARK: MYR-376/377 — the reservation lifecycle
+    /// MYR-376 — owner Home holding an ACCEPTED RESERVATION FOR TOMORROW.
+    ///
+    /// THE PAIR'S OTHER HALF IS `ownerDispatched`, and the diff is the whole issue:
+    /// the same accepted record, the same owner Home, and NO DISPATCH CARD — no "En
+    /// route to pickup", no "Picked up" button, because the ride is not happening
+    /// yet. On TestFlight r13 this scene's frame was `ownerDispatched`'s, a day
+    /// early, over a car parked in the client's driveway.
+    ///
+    /// Deliberately SIMULATED. What it captures is the shipping `ownerDispatch`
+    /// gate — `RideReservation.isLiveRide` — refusing a record, and that refusal is
+    /// identical whichever service holds it; a live scene would add a clock and
+    /// prove nothing extra. The record carries a real future `scheduledFor`, so the
+    /// TIME half of dormancy is genuinely exercised rather than assumed.
+    case ownerReservationDormant
+    /// MYR-376 — Drives → Upcoming reading the SERVER, and the row's honest X.
+    ///
+    /// Live-path-only by construction: `OwnerDrivesState` reads reservations only
+    /// when a source is composed, which in SIM never happens. It injects the
+    /// PRODUCTION `LiveUpcomingReservations` over a scripted `DebugRideRequestEndpoint`
+    /// — the same "real code path, injected wire" precedent `DebugShareEndpoint` and
+    /// `DebugServiceWindowEndpoint` set — so the row in the capture came through the
+    /// real fetch, the real `RideReservation.isUpcomingReservation` filter and the
+    /// real contract fold.
+    ///
+    /// The endpoint carries THREE rows and the list renders ONE. The other two are
+    /// the filter's evidence: an `arrived` reservation (the client's own — a ride
+    /// with a passenger in it, still listed as upcoming before this issue) and a
+    /// dispatched-but-still-`accepted` one. `ownerDrives` composes no source and
+    /// keeps the fixture reservations, so it is byte-identical.
+    case ownerReservationUpcoming
+    /// MYR-377 — the rider's Scheduled tab, alive.
+    ///
+    /// The client's own state: an accepted reservation for the next day that the
+    /// tab reported as "0 scheduled · 0 confirmed / No scheduled rides". Injects
+    /// wire rows behind the PRODUCTION `LiveRiderScheduledRides`, so the day/time
+    /// grammar, the timezone resolution, the confirmed/pending split and the header
+    /// counts are all the shipping mapping's. Two rows — one `accepted` (Confirmed)
+    /// and one `requested` (Pending) — because the header counts both and the pair
+    /// is what makes "N scheduled · M confirmed" readable as two different numbers.
+    ///
+    /// Live-path-only by construction: no store is composed in SIM, so
+    /// `scheduledDetails` and its three siblings keep the fixtures and every
+    /// existing capture is byte-identical.
+    case riderScheduledLive
+    /// MYR-377 — the rider AFTER the reservation dispatched: tracking + "Start ride".
+    ///
+    /// The deadlock this closes: the ride reached `arrived` (car at the kerb), the
+    /// rider's map stayed on the idle in-service banner, and "Start ride" — the ONLY
+    /// control that moves `arrived → enroute` — was never rendered, so the flow
+    /// could not be completed at all. The seeded record is a reservation whose due
+    /// moment has PASSED and whose dispatch latch is stamped, so what the capture
+    /// shows is `RideReservation.isDormant` answering `false` and the shipping
+    /// `reconciledPhase` letting the sheet through. `trackingArrived` is the
+    /// instant-ride twin and is unchanged.
+    case riderReservationLive
     /// MYR-315 — the owner sheet's freshness stamp, which exists only on the live
     /// path (the prototype has no such element and a simulated snapshot carries no
     /// freshness signals to be honest with). Both scenes inject
@@ -1166,7 +1222,8 @@ enum DebugScene: String, CaseIterable {
 
     static var initialOwnerTab: String {
         switch current {
-        case .ownerDrives, .ownerDrivesLoading: return "drives"
+        // MYR-376 — the live Upcoming read is the Drives tab.
+        case .ownerDrives, .ownerDrivesLoading, .ownerReservationUpcoming: return "drives"
         // MYR-354 adds `ownerSettingsTop`; MYR-347 adds the five Share scenes.
         case .ownerSettings, .ownerSettingsTop, .ownerSettingsLoading: return "settings"
         // MYR-355 / MYR-366 — the owner-shell deletion + offboarding scenes are
@@ -1400,9 +1457,103 @@ enum DebugScene: String, CaseIterable {
                     )
                 )
             ]))
+        case .ownerReservationUpcoming:
+            // MYR-376 — THREE rows in, ONE row out. The two that are filtered away
+            // are the evidence, not padding: the `arrived` one is the client's own
+            // screenshot (a ride with a passenger in it, still listed as "upcoming"
+            // before this issue), and the dispatched-`accepted` one is the same
+            // defect one status earlier. Everything about the exclusion is the
+            // shipping `RideReservation.isUpcomingReservation` running for real.
+            //
+            // Stamped with the SIM fleet's first car, because this scene boots the
+            // owner shell on the fixture fleet and `DrivesScreen` asks for the
+            // SELECTED vehicle's reservations.
+            let drivesVehicleID = VehicleFixtures.vehicles[0].id
+            return LiveUpcomingReservations(api: DebugRideRequestEndpoint(reservations: [
+                DebugRideRequestEndpoint.reservation(
+                    id: "clride0000000000000041",
+                    vehicleID: drivesVehicleID,
+                    requesterName: Self.sampleProfile.firstName,
+                    scheduledFor: Self.sampleDormantReservationDate
+                ),
+                DebugRideRequestEndpoint.reservation(
+                    id: "clride0000000000000042",
+                    vehicleID: drivesVehicleID,
+                    requesterName: "Mira",
+                    scheduledFor: Date().addingTimeInterval(-30 * 60),
+                    status: .arrived,
+                    dispatchedAt: Date().addingTimeInterval(-30 * 60),
+                    dispatchStatus: .sent
+                ),
+                DebugRideRequestEndpoint.reservation(
+                    id: "clride0000000000000043",
+                    vehicleID: drivesVehicleID,
+                    requesterName: "Jonas",
+                    scheduledFor: Date().addingTimeInterval(-5 * 60),
+                    dispatchedAt: Date().addingTimeInterval(-5 * 60),
+                    dispatchStatus: .sent
+                ),
+            ]))
         default:
             return nil
         }
+    }
+
+    /// MYR-376 — boot `DrivesScreen` on its UPCOMING segment. Exactly one scene, so
+    /// `ownerDrives` and `ownerDrivesLoading` keep the History default and stay
+    /// byte-identical. Headless tooling cannot tap a segmented control, so without
+    /// this the reservation read has no capture route at all — the same
+    /// stand-in-for-a-tap precedent as `ownerFreshnessWaking`.
+    var opensUpcomingDrivesTab: Bool { self == .ownerReservationUpcoming }
+
+    /// MYR-377 — the rider twin of the above, for `RideHistoryScreen`'s Scheduled
+    /// segment. Exactly one scene, so the four MYR-200 `scheduled*` scenes (which
+    /// open the SHEET over whichever tab is behind it) are untouched.
+    var opensScheduledTab: Bool { self == .riderScheduledLive }
+
+    /// MYR-377 — the scripted rider Scheduled-tab seam, behind the PRODUCTION
+    /// `LiveRiderScheduledRides`.
+    ///
+    /// Same "real code path, injected wire" precedent as every other endpoint stub
+    /// in this file: the scene supplies wire rows and the shipping mapping does the
+    /// day/time grammar, the timezone resolution, the dormancy filter and the
+    /// confirmed/pending split. `nil` for every other scene, so `scheduledDetails`
+    /// and its three siblings keep the fixtures and stay byte-identical.
+    @MainActor
+    var scheduledRideSource: (any RiderScheduledRideSource)? {
+        guard self == .riderScheduledLive else { return nil }
+        let vehicleID = VehicleFixtures.vehicles[0].id
+        return LiveRiderScheduledRides(
+            api: DebugRideRequestEndpoint(rides: [
+                // ACCEPTED — the client's own reservation, and the one the tab
+                // reported as not existing. Renders "Confirmed".
+                DebugRideRequestEndpoint.reservation(
+                    id: "clride0000000000000051",
+                    vehicleID: vehicleID,
+                    requesterName: Self.sampleProfile.firstName,
+                    scheduledFor: Self.sampleDormantReservationDate
+                ),
+                // REQUESTED — nobody has answered it. Renders "Pending", which is
+                // what makes the header's two counts read as two numbers.
+                DebugRideRequestEndpoint.reservation(
+                    id: "clride0000000000000052",
+                    vehicleID: vehicleID,
+                    requesterName: Self.sampleProfile.firstName,
+                    scheduledFor: DebugRideRequestEndpoint.sampleReservationDate(hour: 8, minute: 30),
+                    status: .requested
+                ),
+            ]),
+            // The car is named from the rider's own fleet, exactly as the live path
+            // names it. A literal here would be the MYR-228 leak this scene exists
+            // partly to prove the absence of.
+            vehicleNames: { id in
+                guard id == vehicleID else { return nil }
+                return RiderScheduledRideVehicle(
+                    name: VehicleFixtures.vehicles[0].name,
+                    relationship: "Your Tesla"
+                )
+            }
+        )
     }
 
     /// MYR-316 — the service window the owner scenes inject: the NEXT Saturday at
@@ -1452,6 +1603,8 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerServiceWindowManual || self == .ownerServiceWindowSaved
             || self == .ownerRideSharePending || self == .ownerRideShareInService
             || self == .ownerRideSharePauseWarning || self == .ownerRideSharePauseWarningMulti
+            // MYR-376 — both reservation-lifecycle owner scenes.
+            || self == .ownerReservationDormant || self == .ownerReservationUpcoming
             || self == .ownerCharging || self == .ownerChargeComplete
             || self == .ownerNoticeRejected || self == .ownerNoticeRejectedInService
             || self == .ownerVehicleEnriched
@@ -1664,6 +1817,8 @@ enum DebugScene: String, CaseIterable {
     private var isScheduled: Bool {
         switch self {
         case .scheduledDetails, .scheduledReschedule, .scheduledRequested, .scheduledConfirmCancel: return true
+        // MYR-377 — the live Scheduled tab is the same tab.
+        case .riderScheduledLive: return true
         default: return false
         }
     }
@@ -2066,9 +2221,43 @@ enum DebugScene: String, CaseIterable {
             // MYR-292 — the drop-off is done; the owner's banner reads "Dropped off ✓"
             // until its auto-dismiss acknowledges the ride on `OwnerHomeState`.
             return record(status: .completed, progress: 1.0)
+        case .ownerReservationDormant:
+            // MYR-376 — accepted, scheduled for TOMORROW at noon, NOT dispatched.
+            // Every input the gate reads is real: a future instant and two absent
+            // dispatch fields. `ownerDispatch` therefore answers nil and the card
+            // does not render — which is the whole capture.
+            return record(
+                status: .accepted,
+                schedule: RideSchedule(day: "Tomorrow", time: "12:00 PM"),
+                requesterName: Self.sampleProfile.firstName,
+                scheduledFor: Self.sampleDormantReservationDate
+            )
+        case .riderReservationLive:
+            // MYR-377 — the SAME reservation an hour after its moment, with the
+            // sweeper's latch stamped. `isDormant` is false on both counts, so the
+            // rider's tracking sheet and its "Start ride" CTA are reachable.
+            return record(
+                status: .arrived,
+                progress: RideRequestTiming.autoAcceptInitialProgress,
+                schedule: RideSchedule(day: "Today", time: "12:00 PM"),
+                scheduledFor: Date().addingTimeInterval(-15 * 60),
+                dispatchedAt: Date().addingTimeInterval(-15 * 60),
+                dispatchStatus: .sent
+            )
         default:
             return nil
         }
+    }
+
+    /// MYR-376 — tomorrow at noon, the client's own reservation shape, computed
+    /// relative to `now` for the same reason `DebugScene.sampleServiceEnd` is: a
+    /// literal drifts into the past and the scene would then photograph a PAST-DUE
+    /// reservation, which is a different state entirely (and, under the
+    /// time-bounded dormancy rule, the OPPOSITE one).
+    static var sampleDormantReservationDate: Date {
+        let calendar = Calendar.current
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: Date())) ?? Date()
+        return calendar.date(bySettingHour: 12, minute: 0, second: 0, of: tomorrow) ?? tomorrow
     }
 
     /// MYR-317 — the queue depth behind the seeded incoming card (0 = no badge).
@@ -2086,7 +2275,12 @@ enum DebugScene: String, CaseIterable {
         progress: Double? = nil,
         schedule: RideSchedule? = nil,
         fleetMemberID: String = RideRequestFixtures.fleet[0].id,
-        requesterName: String? = nil
+        requesterName: String? = nil,
+        // MYR-376/377 — the three reservation facts. All three default to `nil`, so
+        // every pre-existing scene seeds exactly the record it seeded before.
+        scheduledFor: Date? = nil,
+        dispatchedAt: Date? = nil,
+        dispatchStatus: DispatchStatus? = nil
     ) -> RideRequestRecord {
         let input = RideRequestInput(
             pickup: DebugScene.samplePickup,
@@ -2099,6 +2293,9 @@ enum DebugScene: String, CaseIterable {
         var rec = RideRequestRecord(input: input, status: status)
         rec.trackProgress = progress
         if status == .accepted { rec.acceptedAt = Date() }
+        rec.scheduledFor = scheduledFor
+        rec.dispatchedAt = dispatchedAt
+        rec.dispatchStatus = dispatchStatus
         return rec
     }
 
@@ -2142,6 +2339,14 @@ enum DebugScene: String, CaseIterable {
             // subject of this capture is drawn by the widget EXTENSION, started
             // separately in `startsSampleLiveActivity`.
             viewer.sheetPhase = .idle
+        case .riderReservationLive:
+            // MYR-377 — the reservation has dispatched, so the rider is on the
+            // ORDINARY tracking sheet. Same draft seeding as `trackingArrived`,
+            // because after dispatch a reservation is a live ride with no special
+            // case anywhere downstream — which is the point.
+            viewer.draftPickup = DebugScene.samplePickup
+            viewer.draftDestination = DebugScene.sampleDestination
+            viewer.sheetPhase = .tracking
         case .declined:
             viewer.sheetPhase = .search
             viewer.showDeclinedNotice = true
@@ -2234,6 +2439,12 @@ enum DebugScene: String, CaseIterable {
              .ownerNoticeRejectedInService,
              .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute,
              .ownerDispatchedCompleted,
+             // MYR-376 — the two owner reservation scenes seed nothing about the
+             // rider sheet; the dormant one's whole subject is a card that is NOT
+             // rendered, and the upcoming one is the Drives tab.
+             .ownerReservationDormant, .ownerReservationUpcoming,
+             // MYR-377 — the live Scheduled tab is a rider TAB, not the map sheet.
+             .riderScheduledLive,
              .ownerFreshnessStale, .ownerFreshnessWaking,
              .ownerDrivingNoNav, .ownerDrivingResolvingDestination,
              .ownerFreshnessInService, .ownerFreshnessRefused,
