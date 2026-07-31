@@ -180,6 +180,11 @@ struct DrivesScreen: View {
                 )
             }
             .ignoresSafeArea()
+            // The overlay spans the screen whether or not a sheet is up. A
+            // `GeometryReader` draws nothing and so takes no taps, but declaring it
+            // is the difference between "does not swallow the list's taps" being a
+            // property and being a side effect of what SwiftUI happens to hit-test.
+            .allowsHitTesting(openReservation != nil)
         }
     }
 
@@ -555,12 +560,11 @@ struct DrivesScreen: View {
             dismissLabel: "Keep it"
         ) {
             guard let ride else { return }
-            // MYR-376 — the LIVE path declines on the server and re-syncs; only the
-            // simulated path removes the row locally. Splitting on
-            // `readsLiveReservations` rather than on `isLive` keeps the two from
-            // ever both running: a state with no reservation source has nothing to
-            // decline against, and a state with one must never remove a row the
-            // server has not agreed to.
+            // MYR-376's rule now lives in `cancelReservation(id:)`, which BOTH owner
+            // entries call: the LIVE path declines on the server and re-syncs, only
+            // the simulated path removes the row locally, and the split is on
+            // `readsLiveReservations` rather than on `isLive` so the two can never
+            // both run.
             cancelReservation(id: ride.id) // MYR-378 — one commit path, two entries
         }
     }
