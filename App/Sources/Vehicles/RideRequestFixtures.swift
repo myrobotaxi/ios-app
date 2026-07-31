@@ -255,17 +255,6 @@ public struct FleetMember: Identifiable, Sendable, Equatable {
     }
 }
 
-/// Quick-pick "for someone else" contact (ride-request.jsx:36-39 `RECENT_PASSENGERS`).
-public struct RecentPassengerOption: Identifiable, Sendable, Equatable {
-    public let id: String
-    public let name: String
-    public let phone: String
-    public init(name: String, phone: String) {
-        self.id = name
-        self.name = name
-        self.phone = phone
-    }
-}
 
 public enum RideRequestFixtures {
     /// design/app/ride-request.jsx `SAVED_PLACES` — Home/Work/Equinox SoMa,
@@ -308,11 +297,6 @@ public enum RideRequestFixtures {
         FleetMember(id: "jordan", owner: "Jordan", relationship: "Friend", name: "Model 3", model: "2023 Tesla", colorName: "Midnight Silver", battery: 54, etaMin: 12, plate: "RBO-4419"),
     ]
 
-    /// design/app/ride-request.jsx:36-39 `RECENT_PASSENGERS`.
-    public static let recentPassengers: [RecentPassengerOption] = [
-        RecentPassengerOption(name: "Maya Chen", phone: "(415) 555-0142"),
-        RecentPassengerOption(name: "Dad", phone: "(415) 555-0193"),
-    ]
 
     /// **LEGACY — DO NOT WIRE THIS BACK INTO THE PICKER (MYR-370).**
     ///

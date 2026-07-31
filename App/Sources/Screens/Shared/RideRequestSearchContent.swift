@@ -34,7 +34,6 @@ struct RideRequestSearchContent: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var query = ""
-    @State private var forSomeoneElse = false
     @State private var scheduleSheetOpen = false
     @State private var schedDay = "Today"
     @State private var schedTime = "5:30 PM"
@@ -238,10 +237,6 @@ struct RideRequestSearchContent: View {
                     scheduleRow(schedule)
                         .padding(.bottom, 12)
                 }
-                if forSomeoneElse {
-                    passengerPicker
-                        .padding(.bottom, 12)
-                }
                 routeCard
                     .padding(.bottom, 10)
             }
@@ -394,7 +389,6 @@ struct RideRequestSearchContent: View {
             // (ride-request.jsx:157), which the round-4 discipline had dropped.
             destinationFieldFocused = false
             latchSchedulingAvailability() // MYR-361 — the COLD/remount arrival path
-            forSomeoneElse = viewerState.draftPassenger != nil
             if let schedule = viewerState.draftSchedule {
                 schedDay = schedule.day
                 schedTime = schedule.time
@@ -514,6 +508,27 @@ struct RideRequestSearchContent: View {
         }
     }
 
+    /// MYR-382 — the card's ONE exit, so its two doors cannot behave differently.
+    ///
+    /// `committed` is the whole distinction: setting a pickup time COMPLETES the
+    /// errand MYR-233's busy-vehicle CTA sent the rider on, so they go back where
+    /// they came from — Review, with the vehicle still selected and the
+    /// destination still in the draft, one tap from the CTA they were reaching for
+    /// when the car turned out to be unavailable. Dismissing the card ABANDONS that
+    /// errand, so it leaves them on the search sheet, which is where they now are.
+    ///
+    /// The return is cleared on BOTH doors either way: a Review return left armed
+    /// would make the NEXT commit — a Schedule chip tapped on the search sheet
+    /// minutes later — jump to a Review the rider never asked for.
+    @MainActor
+    private func closeScheduleCard(committed: Bool) {
+        scheduleSheetOpen = false
+        let destination = viewerState.scheduleReturn
+        viewerState.scheduleReturn = .search
+        guard committed, destination == .review else { return }
+        viewerState.sheetPhase = .review
+    }
+
     /// MYR-361 — re-resolve the entry-time availability behind the Now/Schedule
     /// default. Called on EVERY arrival at Search and nowhere else: the cold /
     /// remount path (`onAppear`) and the hosted idle→search phase change, the same
@@ -583,15 +598,12 @@ struct RideRequestSearchContent: View {
                 reconcileScheduleSelectionToFloor()
                 openScheduleCard() // MYR-353 — never OPEN under the keyboard
             }
-            Rectangle().fill(Color.mrtBorder).frame(width: MRTMetrics.hairline, height: 16)
-                .padding(.horizontal, 3)
-            RideChip(title: "Me", selected: !forSomeoneElse) {
-                forSomeoneElse = false
-                viewerState.draftPassenger = nil
-            }
-            RideChip(title: "Someone else", selected: forSomeoneElse) {
-                forSomeoneElse = true
-            }
+            // MYR-382 — THE "ME" / "SOMEONE ELSE" PAIR IS GONE, and with it the
+            // hairline that separated the two halves of this row. A segment with one
+            // option left is not a segment: every ride the rider books is theirs, so
+            // "Me" would be a permanently-lit chip that answers a question nobody is
+            // being asked. See the "Passenger — REMOVED" note below
+            // for why the feature went.
             Spacer(minLength: 0)
         }
     }
@@ -617,126 +629,34 @@ struct RideRequestSearchContent: View {
         .frame(minHeight: 30)
     }
 
-    // MARK: Passenger picker (ride-request.jsx:94-143)
-
-    private var passengerName: String { viewerState.draftPassenger?.name ?? "" }
-    private var passengerPhone: String { viewerState.draftPassenger?.phone ?? "" }
-
-    private var passengerNameBinding: Binding<String> {
-        Binding(
-            get: { passengerName },
-            set: { newValue in setPassenger(name: newValue, phone: passengerPhone) }
-        )
-    }
-
-    private var passengerPhoneBinding: Binding<String> {
-        Binding(
-            get: { passengerPhone },
-            set: { newValue in setPassenger(name: passengerName, phone: newValue) }
-        )
-    }
-
-    private func setPassenger(name: String, phone: String) {
-        viewerState.draftPassenger = (name.isEmpty && phone.isEmpty) ? nil : RidePassenger(name: name, phone: phone)
-    }
-
-    private var passengerPicker: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                RideEyebrowText(text: "Passenger")
-                Spacer(minLength: 0)
-                if !passengerName.isEmpty {
-                    Button("Clear") { viewerState.draftPassenger = nil }
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.mrtGold)
-                        .buttonStyle(.plain)
-                }
-            }
-            .padding(.bottom, 10)
-
-            // MYR-228 — the recent-passenger chips render fixture PEOPLE
-            // (`RideRequestFixtures.recentPassengers`). There is no contacts /
-            // recent-passengers backend, so in live mode hide the chip row
-            // entirely — the rider types a name + number manually below (the
-            // honest, backend-free path). SIM keeps the chips (pixel-identical).
-            if !viewerState.isLiveLocation {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(RideRequestFixtures.recentPassengers) { contact in
-                            let active = passengerPhone == contact.phone
-                            Button {
-                                setPassenger(name: contact.name, phone: contact.phone)
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Circle().fill(Color.mrtElevated).frame(width: 24, height: 24)
-                                        .overlay(Text(initials(contact.name)).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Color.mrtText))
-                                    Text(contact.name)
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .tracking(-0.1)
-                                        .foregroundStyle(active ? Color.mrtGold : Color.mrtText)
-                                }
-                                .padding(.leading, 6)
-                                .padding(.trailing, 12)
-                                .padding(.vertical, 6)
-                                .background(active ? Color.mrtGoldTileFaint : Color.mrtRideChipFill, in: Capsule())
-                                .overlay(Capsule().strokeBorder(active ? Color.mrtGold.opacity(Double(0x66) / 255.0) : Color.mrtBorder, lineWidth: MRTMetrics.hairline))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.bottom, 2)
-                }
-                .padding(.bottom, 11)
-            }
-
-            VStack(spacing: 8) {
-                TextField("Passenger name", text: passengerNameBinding)
-                    .font(.system(size: 14, weight: .medium))
-                    // MYR-363a — audited in the same pass, and unset for the same
-                    // reason the destination field was.
-                    .textContentType(RideRequestFieldContentType.passengerName)
-                    .foregroundStyle(Color.mrtText)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 11)
-                    .background(Color.mrtRequestCardFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline))
-                TextField("Mobile number", text: passengerPhoneBinding)
-                    .font(.system(size: 14, weight: .medium))
-                    .monospacedDigit()
-                    .keyboardType(.phonePad)
-                    // MYR-363a — `.phonePad` sets the KEYS; only the content type
-                    // gets the field its autofill row.
-                    .textContentType(RideRequestFieldContentType.passengerPhone)
-                    .foregroundStyle(Color.mrtText)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 11)
-                    .background(Color.mrtRequestCardFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline))
-            }
-
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "paperplane.fill").font(.system(size: 12)).foregroundStyle(Color.mrtGold)
-                notifyNote
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(Color.mrtTextSec)
-                    .lineSpacing(2)
-            }
-            .padding(.top, 11)
-        }
-        .padding(14)
-        .mrtSurface(.control, fill: .mrtElevated, radius: 16)
-    }
-
-    private var notifyNote: Text {
-        let first = passengerName.split(separator: " ").first.map(String.init) ?? "them"
-        return Text("We\u{2019}ll text ")
-            + Text(passengerName.isEmpty ? "them" : first).foregroundColor(Color.mrtText).fontWeight(.semibold)
-            + Text(" a live tracking link as soon as \(requesterName) accepts.")
-    }
-
-    private func initials(_ name: String) -> String {
-        name.split(separator: " ").prefix(2).compactMap { $0.first }.map(String.init).joined().uppercased()
-    }
+    // MARK: Passenger — REMOVED (MYR-382, CLIENT-DIRECTED)
+    //
+    // The "Someone else" flow is gone from the rider's booking surface: the
+    // Me/"Someone else" chips, the name + mobile fields, the recent-passenger
+    // quick-picks and the notify note.
+    //
+    // WHY IT WENT RATHER THAN GOT FIXED. Its central promise — "We'll text {name}
+    // a live tracking link as soon as {car} accepts" — was never true: nothing in
+    // this product sends an SMS, and the feature that would have (MYR-384) is
+    // cancelled. r14 also found two real defects INSIDE the flow (a number pad with
+    // no way to dismiss it; the schedule route rewinding two steps out of it). The
+    // client's decision was to remove the affordance rather than ship an
+    // honest-but-hollow version of it: a passenger field whose only downstream
+    // effect is a name on the owner's card is a form asking for a stranger's phone
+    // number in exchange for nothing. **Client outranks prototype** (standing
+    // precedent, MYR-346 / MYR-347), so SIM renders the removal too.
+    //
+    // WHAT DELIBERATELY STAYED, so restoring this is a UI change and not an
+    // archaeology dig:
+    //  • the WIRE — `RideRequestCreateRequest.passengerName` / `passengerPhone`,
+    //    `RideRequestContractMapping.passenger`, and `PassengerWireTests` are all
+    //    untouched. The fields are optional and the server still accepts them.
+    //  • `SharedViewerState.draftPassenger` and `RideRequestInput.passenger` — the
+    //    seam a restored picker would write to, and the seam a DEBUG scene seeds.
+    //  • every RENDER of a passenger: the owner's incoming card and reserved-ride
+    //    label, the "For {name}" pill on history/scheduled rows, `ScheduledRideSheet`'s
+    //    passenger row, Review's passenger line. Rides booked before this build
+    //    carry passengers, and they must still say so honestly.
 
     // MARK: Route card (pickup / destination)
     //
@@ -1154,8 +1074,8 @@ struct RideRequestSearchContent: View {
     // MARK: Schedule slide-up card (ride-request.jsx:296-346)
 
     private var scheduleSlideUpCard: some View {
-        RideSlideUpCard(onDismiss: { scheduleSheetOpen = false }) {
-            RideSlideUpCardTitle(title: "Schedule pickup") { scheduleSheetOpen = false }
+        RideSlideUpCard(onDismiss: { closeScheduleCard(committed: false) }) {
+            RideSlideUpCardTitle(title: "Schedule pickup") { closeScheduleCard(committed: false) }
 
             // MYR-316 — why the early slots are dimmed. Muted, one line, and shown
             // ONLY when the target vehicle actually has a known service window; a
@@ -1228,7 +1148,7 @@ struct RideRequestSearchContent: View {
             MRTButton("Set pickup \u{00B7} \(RideScheduleDisplay.phrase(day: schedDay, time: schedTime))", variant: .gold) {
                 guard isSelectedSlotBookable else { return }
                 viewerState.draftSchedule = RideSchedule(day: schedDay, time: schedTime)
-                scheduleSheetOpen = false
+                closeScheduleCard(committed: true)
             }
             // The last line of defence: with every slot in the picker's horizon
             // behind the floor there is nothing valid to commit, so the CTA is
