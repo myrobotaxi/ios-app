@@ -31,6 +31,11 @@ final class LivePlaceSearchTests: XCTestCase {
         func emit(_ suggestions: [AutocompleteSuggestion]) {
             onSuggestions?(suggestions)
         }
+        /// MYR-371 — the completer's error path, which had the same stale-publish
+        /// hole as the success path and pointed it at `[]` ("No results").
+        func fail() {
+            onFailure?()
+        }
     }
 
     /// Resolver mapping suggestion titles to fixed coordinates — no network.
@@ -399,6 +404,127 @@ final class LivePlaceSearchTests: XCTestCase {
         search.runNearbySearch(category: "Nonexistent", regionCenter: frisco)
         await eventually { search.results?.isEmpty == true }
         XCTAssertEqual(search.results, []) // [] ⇒ "No results", not the default sections
+    }
+
+    // MARK: - MYR-371 — clearing the field wins every race
+    //
+    // TestFlight, Jul 30: the destination field cleared to its "Where to?"
+    // placeholder with the PREVIOUS query's hits still listed under RESULTS.
+    //
+    // `update` already set `results = nil` on an empty query and already
+    // cancelled its own tasks — but the batch that produced the screenshot was
+    // inside MapKit, which cannot be cancelled and does not know the field was
+    // emptied. Every publish guard was `self.query == <captured at dispatch>`,
+    // and after a clear BOTH sides are `""`, so the guard passed and the list
+    // came back up. These four tests are the race from each direction.
+
+    /// THE CLIENT'S BUG. A batch is in flight, the rider clears the field, the
+    /// batch lands — the recents/saved state must survive it.
+    func testALateBatchCannotRepopulateAClearedQuery() async {
+        let engine = FakeEngine()
+        let gated = GatedResolver(["Coneflower Rd": dallasDowntown])
+        gated.blocked = ["Coneflower Rd"]
+        let search = LivePlaceSearch(engine: engine, resolveItem: gated.resolver, debounce: .milliseconds(1))
+
+        search.update(query: "coneflower", regionCenter: frisco)
+        await eventually { engine.updates.count == 1 }
+        engine.emit([AutocompleteSuggestion(title: "Coneflower Rd", subtitle: "Grayslake, IL")])
+        await eventually { gated.isBlocking("Coneflower Rd") }
+
+        // The rider taps the clear button.
+        search.update(query: "", regionCenter: frisco)
+        XCTAssertNil(search.results, "clearing resets to the recents/saved state immediately")
+
+        // The superseded batch finally resolves.
+        gated.release("Coneflower Rd")
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        XCTAssertNil(
+            search.results,
+            "a completion for a query the rider cleared must not repopulate the list"
+        )
+    }
+
+    /// The same race with the engine callback itself arriving after the clear —
+    /// i.e. MapKit delivering suggestions for a fragment nobody is looking at.
+    func testASuggestionCallbackArrivingAfterAClearIsDropped() async {
+        let engine = FakeEngine()
+        let search = LivePlaceSearch(
+            engine: engine,
+            resolveItem: { _ in MKMapItem(placemark: MKPlacemark(coordinate: self.dallasDowntown)) },
+            debounce: .milliseconds(1)
+        )
+
+        search.update(query: "coneflower", regionCenter: frisco)
+        await eventually { engine.updates.count == 1 }
+        search.update(query: "", regionCenter: frisco)
+        XCTAssertNil(search.results)
+
+        // MapKit answers the fragment it was last given, after the clear.
+        engine.emit([AutocompleteSuggestion(title: "Coneflower Rd", subtitle: "Grayslake, IL")])
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        XCTAssertNil(search.results, "the completer is not the authority on what the rider is asking for")
+    }
+
+    /// A completer FAILURE after a clear used to publish `matchingSavedPlaces("")`
+    /// — which is `[]`, and `[]` renders `No results for ""` over the recents.
+    func testAFailureArrivingAfterAClearPublishesNothing() async {
+        let engine = FakeEngine()
+        let search = LivePlaceSearch(engine: engine, debounce: .milliseconds(1))
+
+        search.update(query: "coneflower", regionCenter: frisco)
+        await eventually { engine.updates.count == 1 }
+        search.update(query: "", regionCenter: frisco)
+
+        engine.fail()
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        XCTAssertNil(
+            search.results,
+            "an empty field shows the default sections, never the empty-results state"
+        )
+    }
+
+    /// Clearing must also drop the CACHED batch, or the re-bias path (same
+    /// fragment, new GPS fix) can replay the stale list a second time.
+    func testClearingDropsTheCachedBatchSoARebiasCannotReplayIt() async {
+        let engine = FakeEngine()
+        let search = LivePlaceSearch(
+            engine: engine,
+            resolveItem: { _ in MKMapItem(placemark: MKPlacemark(coordinate: self.dallasDowntown)) },
+            debounce: .milliseconds(1)
+        )
+
+        search.update(query: "coneflower", regionCenter: frisco)
+        await eventually { engine.updates.count == 1 }
+        engine.emit([AutocompleteSuggestion(title: "Coneflower Rd", subtitle: "Grayslake, IL")])
+        await eventually { search.results?.isEmpty == false }
+
+        search.update(query: "", regionCenter: frisco)
+        XCTAssertNil(search.results)
+
+        // A fix arrives; the view re-runs the ACTIVE query, which is now empty.
+        search.update(query: "", regionCenter: dallasDowntown)
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        XCTAssertNil(search.results, "there is no active query to re-bias")
+    }
+
+    /// The guard that this did not simply break search: a NEWER query still
+    /// publishes normally after a clear.
+    func testAFreshQueryAfterAClearStillPublishes() async {
+        let engine = FakeEngine()
+        let search = LivePlaceSearch(
+            engine: engine,
+            resolveItem: { _ in MKMapItem(placemark: MKPlacemark(coordinate: self.dallasDowntown)) },
+            debounce: .milliseconds(1)
+        )
+
+        search.update(query: "coneflower", regionCenter: frisco)
+        await eventually { engine.updates.count == 1 }
+        search.update(query: "", regionCenter: frisco)
+        search.update(query: "klyde", regionCenter: frisco)
+        await eventually { engine.updates.count == 2 }
+        engine.emit([AutocompleteSuggestion(title: "Klyde Warren Park", subtitle: "Dallas, TX")])
+
+        await eventually { search.results?.map(\.label) == ["Klyde Warren Park"] }
     }
 
     // MARK: Center-key plumbing (what the view's onChange watches)

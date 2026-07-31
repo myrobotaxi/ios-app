@@ -156,6 +156,29 @@ final class LivePlaceSearch: PlaceSearching {
     @ObservationIgnored private var lastSuggestions: [AutocompleteSuggestion] = []
     @ObservationIgnored private var lastFragment: String?
 
+    // MARK: MYR-371 — the supersede token
+    //
+    // Every publish path was guarded by `self.query == <value captured at
+    // dispatch>`, which is a correct test for "did the rider type something
+    // else" and a BROKEN one for "did the rider CLEAR the field": clearing sets
+    // `query` to `""`, and `"" == ""` passes. So a completer batch still in
+    // flight when the field was emptied resolved against an empty query, found
+    // no saved matches, and published `[] + live` — a populated RESULTS list
+    // under a "Where to?" placeholder, which is exactly the client's screenshot.
+    // The `onFailure` arm had the same hole pointing at `[]`, i.e. `No results
+    // for ""`.
+    //
+    // A monotonic token fixes the whole class rather than that one case, and
+    // follows `TelemetrySocket.generation` / `LiveVehicleCommandExecutor
+    // .noticeGeneration` — the two places this app already does this.
+    // `generation` is bumped by EVERY state change the rider can cause (a
+    // keystroke, a clear, a nearby-category tap); `engineGeneration` records the
+    // one that was current when the fragment was handed to MapKit. A callback is
+    // answering a superseded fragment exactly when the two disagree, and a clear
+    // hands MapKit nothing, so it can never agree again.
+    @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var engineGeneration = -1
+
     /// Debounce window before a fragment reaches the engine, and the cap on
     /// how many suggestions get coordinate-resolved per update.
     private let debounce: Duration
@@ -177,16 +200,34 @@ final class LivePlaceSearch: PlaceSearching {
         self.maxResults = maxResults
         self.engine.onSuggestions = { [weak self] suggestions in
             guard let self else { return }
+            // MYR-371 — drop a batch answering a fragment the rider has moved
+            // on from. Without this the cached-batch bookkeeping below ALSO
+            // outlives the clear, so a later same-fragment re-bias could
+            // resurrect the stale list a second time.
+            guard self.isCurrentEngineBatch else { return }
             self.lastSuggestions = suggestions
             self.lastFragment = self.query
-            self.resolve(suggestions)
+            self.resolve(suggestions, generation: self.generation)
         }
         self.engine.onFailure = { [weak self] in
             guard let self else { return }
+            // MYR-371 — a failure for a superseded/cleared fragment publishes
+            // NOTHING. It used to publish `matchingSavedPlaces(query: "")`,
+            // i.e. `[]`, and `[]` is the "No results" state — so a completer
+            // that errored just after the field was emptied rendered
+            // `No results for ""` over the recents the rider should have seen.
+            guard self.isCurrentEngineBatch else { return }
             // Fall back to the saved-place matches alone rather than a hard
             // failure — the design's "No results" reads calmly either way.
             self.results = RidePlaceMapper.matchingSavedPlaces(query: self.query, in: self.savedPlaces)
         }
+    }
+
+    /// Whether an engine callback is answering the fragment currently in play.
+    /// False after a clear (which hands the engine nothing, so `engineGeneration`
+    /// can never catch up) and after any newer keystroke or nearby tap.
+    private var isCurrentEngineBatch: Bool {
+        engineGeneration == generation && !query.isEmpty
     }
 
     func update(query: String, regionCenter: CLLocationCoordinate2D) {
@@ -202,13 +243,25 @@ final class LivePlaceSearch: PlaceSearching {
         }
         activeNearbyCategory = nil
         self.query = query
+        // MYR-371 — every rider-caused change supersedes what is in flight.
+        generation &+= 1
         debounceTask?.cancel()
         // MYR-278 — a keystroke supersedes any in-flight nearby-category search.
         nearbyTask?.cancel()
 
         guard !query.isEmpty else {
-            // Empty query: back to the default sections immediately, no search.
+            // Empty query: back to the default sections IMMEDIATELY, no search.
+            //
+            // MYR-371 — `results = nil` was already here and was already right;
+            // what was missing is everything around it. The cancels below only
+            // stop work this object owns, and the batch that produced the
+            // client's screenshot was inside MapKit, which has no idea the field
+            // was emptied. The generation bump above is what makes that batch
+            // undeliverable when it lands. Clearing the cached batch as well
+            // means a later re-bias on the same fragment cannot replay it.
             resolveTask?.cancel()
+            lastSuggestions = []
+            lastFragment = nil
             results = nil
             return
         }
@@ -216,9 +269,13 @@ final class LivePlaceSearch: PlaceSearching {
         let fragment = query
         let center = regionCenter
         let debounce = self.debounce
+        let dispatched = generation
         debounceTask = Task { [weak self] in
             try? await Task.sleep(for: debounce)
-            guard !Task.isCancelled, let self else { return }
+            guard !Task.isCancelled, let self, self.generation == dispatched else { return }
+            // Record WHICH generation MapKit is now working on, so its callback
+            // can be matched against the rider's latest intent when it lands.
+            self.engineGeneration = dispatched
             self.engine.update(fragment: fragment, region: MKCoordinateRegion(
                 center: center,
                 span: MKCoordinateSpan(latitudeDelta: 0.5, longitudeDelta: 0.5)
@@ -228,7 +285,7 @@ final class LivePlaceSearch: PlaceSearching {
             // deterministically — a fresh (better-biased) engine callback
             // supersedes it when/if MapKit re-fires.
             if fragment == self.lastFragment, !self.lastSuggestions.isEmpty {
-                self.resolve(self.lastSuggestions)
+                self.resolve(self.lastSuggestions, generation: dispatched)
             }
         }
     }
@@ -249,6 +306,9 @@ final class LivePlaceSearch: PlaceSearching {
         // subsequent same-category re-bias (a fresh GPS fix) keeps these POIs
         // instead of resurrecting the autocomplete category-row list.
         self.activeNearbyCategory = category
+        // MYR-371 — a category tap supersedes every in-flight autocomplete batch,
+        // including one MapKit has not delivered yet.
+        generation &+= 1
         debounceTask?.cancel()
         resolveTask?.cancel()
         nearbyTask?.cancel()
@@ -256,11 +316,14 @@ final class LivePlaceSearch: PlaceSearching {
         let center = regionCenter
         let resolveNearby = self.resolveNearby
         let cap = maxResults
+        let dispatched = generation
         nearbyTask = Task { [weak self] in
             let items = await resolveNearby(category, center)
             guard !Task.isCancelled, let self else { return }
-            // Only publish if this is still the active category search.
-            guard self.query == category else { return }
+            // Only publish if this is still the active category search — by
+            // TOKEN as well as by term (MYR-371), so a clear followed by the
+            // same category being typed again cannot adopt this older batch.
+            guard self.generation == dispatched, self.query == category else { return }
             self.results = items.prefix(cap).map {
                 RidePlaceMapper.nearbyRidePlace(from: $0, fallbackTitle: category, regionCenter: center)
             }
@@ -274,7 +337,7 @@ final class LivePlaceSearch: PlaceSearching {
     /// `savedMatches + liveResults`. Distances come from the CURRENT
     /// `regionCenter` (guarantee 2 — never a stale captured center). Stale
     /// batches are cancelled when a newer one (or a new query) supersedes them.
-    private func resolve(_ suggestions: [AutocompleteSuggestion]) {
+    private func resolve(_ suggestions: [AutocompleteSuggestion], generation dispatched: Int) {
         resolveTask?.cancel()
         let center = regionCenter
         let queryAtDispatch = query
@@ -282,8 +345,11 @@ final class LivePlaceSearch: PlaceSearching {
         let top = Array(suggestions.prefix(maxResults))
 
         // No live suggestions: the saved matches (possibly empty → "No results").
+        // MYR-371 — this publish is SYNCHRONOUS but its caller need not be (the
+        // re-bias path re-resolves a cached batch from inside the debounce task),
+        // so it is stamped like every other.
         guard !top.isEmpty else {
-            results = savedMatches
+            if generation == dispatched { results = savedMatches }
             return
         }
 
@@ -356,7 +422,12 @@ final class LivePlaceSearch: PlaceSearching {
                 for (key, coordinate) in learnedPairs {
                     self.coordinateCache[key] = coordinate
                 }
-                guard self.query == queryAtDispatch else { return }
+                // MYR-371 — the generation is the load-bearing half of this
+                // guard. `query == queryAtDispatch` passes trivially when both
+                // are "" (the rider cleared the field while this batch was in
+                // flight), which is precisely how a stale list came back up
+                // under the "Where to?" placeholder. The token cannot collide.
+                guard self.generation == dispatched, self.query == queryAtDispatch else { return }
                 self.results = savedMatches + live
             }
         }

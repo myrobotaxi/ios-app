@@ -605,7 +605,7 @@ struct RideRequestSearchContent: View {
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: "calendar").font(.system(size: 13)).foregroundStyle(Color.mrtGold)
-                (Text("Pickup ") + Text("\(schedule.day) \u{00B7} \(schedule.time)").foregroundColor(Color.mrtText).fontWeight(.semibold))
+                (Text("Pickup ") + Text(RideScheduleDisplay.phrase(schedule)).foregroundColor(Color.mrtText).fontWeight(.semibold))
                     .font(.system(size: 12.5))
                     .foregroundStyle(Color.mrtTextSec)
                 Text("Edit")
@@ -1173,14 +1173,14 @@ struct RideRequestSearchContent: View {
             RideEyebrowText(text: "Day", size: 10.5).padding(.bottom, 9)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 7) {
-                    ForEach(RideRequestFixtures.scheduleDays, id: \.self) { day in
+                    ForEach(scheduleDays, id: \.token) { day in
                         // A day is only out when EVERY one of its times is out —
                         // the boundary day (car back at 2 PM) stays pickable.
                         let dayAllowed = !RideScheduleFloor.allowedTimes(
-                            on: day, times: RideRequestFixtures.scheduleTimes, floor: schedulingFloor
+                            on: day.token, times: RideRequestFixtures.scheduleTimes, floor: schedulingFloor
                         ).isEmpty
-                        RideChip(title: day, selected: schedDay == day, unavailable: !dayAllowed) {
-                            schedDay = day
+                        RideChip(title: day.token, selected: schedDay == day.token, unavailable: !dayAllowed) {
+                            schedDay = day.token
                             // Moving to a day whose earlier slots are blocked must
                             // not leave a blocked TIME selected — otherwise the CTA
                             // would silently disable itself with no visible cause.
@@ -1225,7 +1225,7 @@ struct RideRequestSearchContent: View {
             }
             .padding(.bottom, 20)
 
-            MRTButton("Set pickup \u{00B7} \(schedDay) \(schedTime)", variant: .gold) {
+            MRTButton("Set pickup \u{00B7} \(RideScheduleDisplay.phrase(day: schedDay, time: schedTime))", variant: .gold) {
                 guard isSelectedSlotBookable else { return }
                 viewerState.draftSchedule = RideSchedule(day: schedDay, time: schedTime)
                 scheduleSheetOpen = false
@@ -1264,12 +1264,19 @@ struct RideRequestSearchContent: View {
         )
     }
 
+    /// MYR-370 — the day chips, GENERATED from the device clock: strictly
+    /// chronological, one per calendar day, and dated from the third chip on.
+    /// This replaces `RideRequestFixtures.scheduleDays`, a hard-coded literal
+    /// that was only ever chronological on a Tuesday — see `RideScheduleDays`.
+    private var scheduleDays: [RideScheduleDay] { RideScheduleDays.days() }
+
     private var isSelectedSlotBookable: Bool {
         RideScheduleFloor.allows(day: schedDay, time: schedTime, floor: schedulingFloor)
     }
 
-    /// Pull the current selection forward to the first bookable slot when the
-    /// floor has put it out of reach.
+    /// Pull the current selection forward to the first bookable slot when it has
+    /// been put out of reach — by the service-window floor, or (MYR-370) by the
+    /// wall clock having passed the slot the chip names.
     ///
     /// Called when the picker OPENS and whenever the day changes, rather than
     /// continuously: it must not fight the rider mid-selection, and a slot that
@@ -1277,17 +1284,28 @@ struct RideRequestSearchContent: View {
     /// clears the floor it leaves the selection alone — the dimmed chips and the
     /// inert CTA then tell the truth, which is better than silently jumping the
     /// rider to a slot that is also invalid.
+    ///
+    /// MYR-370 drops the old `floor != nil` guard. Reconciliation is no longer
+    /// only about the service window: a selection can also be stranded by TIME
+    /// (a "Today" morning slot on a sheet still open at 10 PM) or by a day token
+    /// that has fallen off the row entirely — a schedule committed yesterday as
+    /// "Thu, Aug 6", or one carrying a legacy bare weekday. A token that is not
+    /// on the row cannot be reconciled in place, so the day is snapped back onto
+    /// it first and the slot search then runs normally.
     @MainActor
     private func reconcileScheduleSelectionToFloor() {
-        guard let floor = schedulingFloor,
-              !RideScheduleFloor.allows(day: schedDay, time: schedTime, floor: floor)
-        else { return }
+        let days = scheduleDays
+        if !days.contains(where: { $0.token == schedDay }), let first = days.first {
+            schedDay = first.token
+        }
+        let floor = schedulingFloor
+        guard !RideScheduleFloor.allows(day: schedDay, time: schedTime, floor: floor) else { return }
         if let first = RideScheduleFloor.allowedTimes(
             on: schedDay, times: RideRequestFixtures.scheduleTimes, floor: floor
         ).first {
             schedTime = first
         } else if let slot = RideScheduleFloor.firstAllowedSlot(
-            days: RideRequestFixtures.scheduleDays,
+            days: days.map(\.token),
             times: RideRequestFixtures.scheduleTimes,
             floor: floor
         ) {

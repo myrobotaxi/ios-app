@@ -228,7 +228,7 @@ struct IncomingRequestSheet: View {
 
     private func headerSubtitle(_ request: RideRequestRecord) -> String {
         if let schedule = request.input.schedule {
-            return "Scheduled \u{00B7} \(schedule.day) \(schedule.time)"
+            return "Scheduled \u{00B7} \(RideScheduleDisplay.phrase(schedule))"
         }
         // MYR-264 — SIM keeps the fixture literal (pixel-identical); LIVE derives an
         // honest relative time from the request's real `requestedAt` (no hardcoded

@@ -195,7 +195,7 @@ struct RideRequestReviewContent: View {
     private func scheduledBadge(_ schedule: RideSchedule) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "calendar").font(.system(size: 12)).foregroundStyle(Color.mrtGold)
-            Text("Scheduled \u{00B7} \(schedule.day) \(schedule.time)")
+            Text("Scheduled \u{00B7} \(RideScheduleDisplay.phrase(schedule))")
                 .font(.system(size: 11.5, weight: .semibold))
                 .foregroundStyle(Color.mrtGold)
         }
@@ -403,7 +403,27 @@ struct RideRequestReviewContent: View {
         RideRequestCTAGate(unavailability: fleetMember.unavailability, isScheduled: schedule != nil)
     }
 
+    /// MYR-370 — the reservation the service window has overtaken, if any. Pure,
+    /// so the matrix is asserted in `RideScheduleConflictTests` rather than
+    /// reasoned about here.
+    private var scheduleConflict: String? {
+        RideScheduleConflict.copy(
+            vehicleName: fleetMember.owner,
+            schedule: schedule,
+            serviceEstimatedEndAt: fleetMember.serviceEstimatedEndAt
+        )
+    }
+
     private var helperText: String {
+        // MYR-370 — a conflicted RESERVATION outranks the generic "must accept"
+        // line. It is deliberately checked AFTER the gate below only in the sense
+        // that a gated car has no submit at all; when the car is gated the reason
+        // sentence is the more useful one and this stays quiet. In the case this
+        // was written for — an in-service car, which MYR-313 EXEMPTS while
+        // scheduled, so `ctaGate.reason` is nil — the gate says nothing and this
+        // is the only line that explains the "In service" chip beside it.
+        if let conflict = scheduleConflict, ctaGate.reason == nil { return conflict }
+
         // MYR-233: honest, specific copy for a gated vehicle — say WHY and what
         // the rider can do instead. Never "must accept" for a request that can't
         // be submitted at all.

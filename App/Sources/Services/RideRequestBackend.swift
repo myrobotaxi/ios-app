@@ -128,8 +128,11 @@ enum RideRequestContractMapping {
     // (MYR-266), MYR-313's accept-gate exemption — silently never applied.
     //
     // The app's `RideSchedule` is a pair of DISPLAY strings straight off the
-    // picker (`RideRequestFixtures.scheduleDays` × `scheduleTimes`): a day token
-    // ("Today"/"Tomorrow"/"Thu"…"Mon") and a 12-hour wall clock ("5:30 PM").
+    // picker (`RideScheduleDays.days(now:)` × `RideRequestFixtures.scheduleTimes`):
+    // a day token and a 12-hour wall clock ("5:30 PM"). MYR-370 made the day
+    // token carry its DATE ("Thu, Aug 6") instead of a bare weekday; the bare
+    // weekdays below are the legacy shape, still resolved so a schedule
+    // committed by an older build stays readable.
     // Resolution therefore needs a calendar + an instant, both INJECTED so the
     // rule is deterministic under test (the `DriveContractMapping.dateGroup(…,
     // now:)` precedent) and correct at runtime, where the defaults are the
@@ -176,6 +179,15 @@ enum RideRequestContractMapping {
         case "tomorrow":
             day = calendar.date(byAdding: .day, value: 1, to: today) ?? today
             rollBy = 0 // tomorrow's wall clock is never in the past
+        case _ where RideScheduleDays.datedTokenDayStart(forToken: schedule.day, now: now, calendar: calendar) != nil:
+            // MYR-370 — an EXPLICIT DATE ("Thu, Aug 6"), which is what the picker
+            // mints from its third chip on. There is nothing to roll: the token
+            // names one calendar day, and that day is printed on the chip, on the
+            // "Set pickup ·" CTA and on the Review badge. Rolling it would move
+            // the reservation off the date the rider was shown — which is the
+            // MYR-370 defect itself, just arrived at from the other direction.
+            day = RideScheduleDays.datedTokenDayStart(forToken: schedule.day, now: now, calendar: calendar) ?? today
+            rollBy = 0
         case _ where weekdayIndex(token) != nil:
             // An EXPLICIT picked weekday: the next date carrying it (today counts).
             let target = weekdayIndex(token)!

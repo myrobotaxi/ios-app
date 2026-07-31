@@ -36,14 +36,43 @@ enum RideScheduleFloor {
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> Bool {
-        guard let floor else { return true }
         guard let slot = RideRequestContractMapping.scheduledDate(
             from: RideSchedule(day: day, time: time), now: now, calendar: calendar
         ) else { return true }
+
+        // MYR-370 — THE CHIP'S DATE IS BINDING. A cell is offered only when the
+        // instant it resolves to lands on the calendar day its chip names.
+        //
+        // This is what retires the roll-forward as a *visible* behaviour. The
+        // encoder still rolls (MYR-179: "a reservation is never in the past",
+        // and it is the authority on what reaches the wire) — but a slot that
+        // would roll is now simply never offered, so the roll can no longer fire
+        // from the picker at all. Concretely: "Today 7:00 AM" tapped at 10 PM
+        // used to book TOMORROW 7 AM under a chip that said Today. It is dimmed
+        // now, which is the honest answer, and the picker's remaining slots all
+        // mean exactly what they say. `RideScheduleDaysTests` asserts that
+        // invariant across the whole grid.
+        //
+        // Legacy bare-weekday tokens name no date, so `dayStart` is nil for them
+        // and they skip this check entirely — a schedule committed by an older
+        // build keeps resolving exactly as it did.
+        if let dayStart = RideScheduleDays.dayStart(forToken: day, now: now, calendar: calendar),
+           !calendar.isDate(slot, inSameDayAs: dayStart) {
+            return false
+        }
+
+        guard let floor else { return true }
         return VehicleServiceWindow.allows(slot, floor: floor)
     }
 
     /// The times bookable on `day`. Empty means the whole day is out.
+    ///
+    /// NOTE there is no `floor == nil` fast path any more. A nil floor still
+    /// allows everything the SERVICE WINDOW would have blocked — that guarantee
+    /// is untouched and is asserted — but the day-identity check above is not
+    /// about the service window, and short-circuiting past it is what let the
+    /// picker offer this morning's slots at ten tonight on every car that has no
+    /// window at all (i.e. the common case).
     static func allowedTimes(
         on day: String,
         times: [String],
@@ -51,8 +80,7 @@ enum RideScheduleFloor {
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> [String] {
-        guard floor != nil else { return times }
-        return times.filter { allows(day: day, time: $0, floor: floor, now: now, calendar: calendar) }
+        times.filter { allows(day: day, time: $0, floor: floor, now: now, calendar: calendar) }
     }
 
     /// The days with at least one bookable time.
@@ -68,8 +96,7 @@ enum RideScheduleFloor {
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> [String] {
-        guard floor != nil else { return days }
-        return days.filter {
+        days.filter {
             !allowedTimes(on: $0, times: times, floor: floor, now: now, calendar: calendar).isEmpty
         }
     }
@@ -93,5 +120,51 @@ enum RideScheduleFloor {
             }
         }
         return nil
+    }
+}
+
+// MARK: - RideScheduleConflict (MYR-370)
+
+/// The confirm screen's plain-language line for a reservation the service window
+/// has since overtaken.
+///
+/// A slot can be legal when it is picked and illegal by the time the rider
+/// reaches Review: the owner can enter (or Tesla can revise) a completion
+/// estimate at any point in between, and the picker is not re-run. Before this
+/// the only thing on that screen saying so was the muted **"In service"** chip on
+/// the vehicle row — a STATE badge, which says what the car is doing now and says
+/// nothing at all about the reservation the rider is one tap from placing. So the
+/// rider read "In service", read their own chosen time beside it, and had no way
+/// to connect the two.
+///
+/// This is a sentence about the RESERVATION, and it names both halves: the slot
+/// that is now unreachable and the moment the car is back.
+enum RideScheduleConflict {
+
+    /// `nil` when there is nothing to say — no reservation, NO KNOWN WINDOW, or a
+    /// slot that still clears the floor.
+    ///
+    /// The nil-window arm is the fail-open rule this whole feature is built on
+    /// (`VehicleServiceWindow.earliestSelectable` returns nil ⇒ no floor ⇒ no
+    /// conflict is knowable). Owner acceptance remains the real gate throughout:
+    /// this line is advisory and never blocks the submit, because a client that
+    /// refused a ride on a stale estimate would be wrong more often than the
+    /// estimate is.
+    static func copy(
+        vehicleName: String,
+        schedule: RideSchedule?,
+        serviceEstimatedEndAt end: Date?,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> String? {
+        let name = vehicleName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              let schedule,
+              let floor = VehicleServiceWindow.earliestSelectable(serviceEstimatedEndAt: end),
+              let slot = RideRequestContractMapping.scheduledDate(from: schedule, now: now, calendar: calendar),
+              !VehicleServiceWindow.allows(slot, floor: floor),
+              let back = VehicleServiceWindow.completionLabel(for: end, now: now, calendar: calendar)
+        else { return nil }
+        return "\(name) is still in service at \(RideScheduleDisplay.phrase(schedule)) \u{2014} back \(back). Pick a later time."
     }
 }
