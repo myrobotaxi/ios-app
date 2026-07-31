@@ -145,6 +145,21 @@ public struct UpcomingRide: Identifiable, Equatable, Sendable {
     /// ordering has never known how to place.
     public let scheduledFor: Date?
 
+    /// MYR-378 — the WHOLE reservation, for the detail sheet the row now opens.
+    ///
+    /// *"Need to see pick up to drop off. Ensure owner schedule ride uses same
+    /// component"* / *"Owner should also have the same ability to see card for
+    /// cancel or reschedule with rider as well."* The owner's row carried a
+    /// destination, a day, a time and a rider's name — everything a LIST needs and
+    /// nothing a DETAIL does: no pickup, no coordinates, no passenger. So the
+    /// detail is not re-derived from the row; the row simply carries the same
+    /// `ScheduledRide` the rider's sheet has always taken, built by the SAME wire
+    /// mapping on the live path.
+    ///
+    /// Optional because the row is also the accept-time optimistic insert and the
+    /// prototype's fixtures, and a row with no detail is honestly not tappable.
+    public let detail: ScheduledRide?
+
     public init(
         id: String,
         rider: String,
@@ -152,7 +167,8 @@ public struct UpcomingRide: Identifiable, Equatable, Sendable {
         scheduleDay: String,
         scheduleTime: String,
         vehicleName: String,
-        scheduledFor: Date? = nil
+        scheduledFor: Date? = nil,
+        detail: ScheduledRide? = nil
     ) {
         self.id = id
         self.rider = rider
@@ -161,6 +177,7 @@ public struct UpcomingRide: Identifiable, Equatable, Sendable {
         self.scheduleTime = scheduleTime
         self.vehicleName = vehicleName
         self.scheduledFor = scheduledFor
+        self.detail = detail
     }
 }
 
@@ -213,7 +230,17 @@ public enum DriveFixtures {
             destination: .init(label: "SFO · Terminal 2", subtitle: "San Francisco International", miles: 18.4, mins: 32),
             scheduleDay: "Tomorrow",
             scheduleTime: "6:40 AM",
-            vehicleName: "Cybercab"
+            vehicleName: "Cybercab",
+            // MYR-378 — the fixture row's own detail, so the owner's shared sheet
+            // has something real to render in SIM and in the DEBUG capture. The
+            // ROW renders none of these fields, so `ownerDrives` is unchanged.
+            detail: ScheduledRide(
+                id: "ou1", day: "Tomorrow", date: "Jun 17", time: "6:40 AM",
+                from: "Home", to: "SFO · Terminal 2",
+                driver: "", relationship: "", vehicle: "Cybercab",
+                miles: 18.4, status: .confirmed,
+                route: [home, financialDistrict, sanFrancisco]
+            )
         ),
         UpcomingRide(
             id: "ou2",
@@ -221,7 +248,14 @@ public enum DriveFixtures {
             destination: .init(label: "Tahoe Donner", subtitle: "Truckee", miles: 184, mins: 215),
             scheduleDay: "Sat",
             scheduleTime: "7:00 AM",
-            vehicleName: "Cybercab"
+            vehicleName: "Cybercab",
+            detail: ScheduledRide(
+                id: "ou2", day: "Sat", date: "Jun 20", time: "7:00 AM",
+                from: "Embarcadero Center", to: "Tahoe Donner",
+                driver: "", relationship: "", vehicle: "Cybercab",
+                miles: 184, status: .confirmed,
+                route: [embarcaderoCenter, sanFrancisco]
+            )
         ),
     ]
 

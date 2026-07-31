@@ -383,7 +383,12 @@ struct RequestedRideRow: View {
                 HStack(spacing: 10) {
                     Circle().fill(Color.mrtElevated).frame(width: 26, height: 26)
                         .overlay(Text(ride.driver.prefix(1)).font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.mrtText))
-                    (Text("\(ride.driver)\u{2019}s ").foregroundStyle(Color.mrtText).fontWeight(.medium)
+                    // MYR-382 — the same possessive sweep as the cancel dialog's.
+                    // A completed row is fixture-fed today, so this renders
+                    // byte-identically; it is guarded because the composition is
+                    // the one that produced "with 's Lunar" and a second unguarded
+                    // copy is how that comes back on the next surface to go live.
+                    (Text(ride.driver.isEmpty ? "" : "\(ride.driver)\u{2019}s ").foregroundStyle(Color.mrtText).fontWeight(.medium)
                         + Text(ride.vehicle).foregroundStyle(Color.mrtTextSec))
                         .font(.system(size: 12.5))
                         .lineLimit(1)

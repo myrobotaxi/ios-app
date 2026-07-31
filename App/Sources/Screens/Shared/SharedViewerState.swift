@@ -38,6 +38,27 @@ public enum PinDropReturn: Equatable, Sendable {
     case review
 }
 
+/// MYR-382 — where the SCHEDULE CARD returns to once a pickup time is committed.
+///
+/// *"When I select schedule with lunar we go back 2 steps to the schedule button
+/// again!"* MYR-233's busy-vehicle CTA sends the rider from Review to the search
+/// sheet with the picker armed, which is right — the picker lives on that sheet —
+/// but the journey ENDED there: setting a time closed the card and left the rider
+/// on Search, with a destination already chosen, a vehicle already picked, and two
+/// taps (Continue → Review) between them and the CTA they had been about to press.
+/// The route out of Review was one-way.
+///
+/// It is a round trip now, modelled exactly like `PinDropReturn` above — the same
+/// shape of problem (leave a sheet to pick one value, come back with it) already
+/// solved once in this flow. `.review` is set ONLY by `routeToScheduling()`; the
+/// two entries that are already ON the search sheet (the Schedule chip and the
+/// "Pickup {day} · {time}" summary row's Edit) leave it `.search` and behave
+/// exactly as they did.
+public enum ScheduleCardReturn: Equatable, Sendable {
+    case search
+    case review
+}
+
 // MARK: - Shared viewer state (MYR-191, extended MYR-171)
 //
 // Owns the rider's live-map telemetry + sheet phase + in-progress request
@@ -176,6 +197,12 @@ public final class SharedViewerState {
     /// `RideRequestSearchContent` consumes it once on appear and opens the card.
     /// One-shot — cleared by the consumer, and by `resetDraftToIdle()`.
     public var opensScheduleOnSearch = false
+
+    /// MYR-382 — where the schedule card hands the rider back to. See
+    /// `ScheduleCardReturn`. One-shot in practice: the card clears it to `.search`
+    /// on both of its exits (commit and dismiss), so a later chip-tap on the search
+    /// sheet can never inherit a Review return from a route the rider abandoned.
+    public var scheduleReturn: ScheduleCardReturn = .search
 
     // MARK: MYR-356 — recent destinations
     //
@@ -1161,6 +1188,7 @@ public final class SharedViewerState {
         draftSchedule = nil
         showDeclinedNotice = false
         opensScheduleOnSearch = false // MYR-233 — one-shot, never outlives the draft
+        scheduleReturn = .search // MYR-382 — and neither does where it returns to
     }
 
     /// MYR-233 — leave Review for the SCHEDULING flow because the vehicle can't
@@ -1169,6 +1197,8 @@ public final class SharedViewerState {
     /// search sheet's schedule card so the next thing they see IS that picker.
     public func routeToScheduling() {
         opensScheduleOnSearch = true
+        // MYR-382 — THE ROUTE IS A ROUND TRIP NOW. See `scheduleReturn`.
+        scheduleReturn = .review
         sheetPhase = .search
     }
 }

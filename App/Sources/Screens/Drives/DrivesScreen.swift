@@ -25,6 +25,8 @@ struct DrivesScreen: View {
     @State private var tab: Tab = .history
     @State private var sort: SortKey = .date
     @State private var confirmCancel: UpcomingRide?
+    /// MYR-378 — the reservation whose shared detail sheet is up, if any.
+    @State private var openReservation: UpcomingRide?
 
     private var vehicle: Vehicle? { homeState.selectedVehicle }
 
@@ -40,6 +42,14 @@ struct DrivesScreen: View {
     /// which is what leaves `ownerDrives` byte-identical.
     private func selectUpcomingTabIfRequested() {
         if DebugScene.current?.opensUpcomingDrivesTab == true { tab = .upcoming }
+    }
+    /// MYR-378 — stand-in for the row TAP the `ownerReservationDetail` capture
+    /// cannot perform. Everything past this point is the shipping presentation.
+    private func openFirstReservationIfRequested() {
+        guard DebugScene.current?.opensFirstReservationDetail == true,
+              openReservation == nil,
+              let first = sortedUpcoming.first(where: { $0.detail != nil }) else { return }
+        openReservation = first
     }
     /// Verification hook — see the `.onChange`/`.onAppear` call sites.
     private func autoOpenFirstDriveIfRequested() {
@@ -97,6 +107,9 @@ struct DrivesScreen: View {
         // upcoming and the tab must not still be claiming it is.
         .task(id: homeState.selectedVehicle?.id) {
             await drivesState.loadUpcoming(vehicleID: homeState.selectedVehicle?.id, force: true)
+            #if DEBUG
+            openFirstReservationIfRequested() // MYR-378 — after the rows exist
+            #endif
         }
         #if DEBUG
         // Verification-only (MRT_OPEN_FIRST_DRIVE=1): open the first loaded drive
@@ -132,6 +145,58 @@ struct DrivesScreen: View {
             ),
             message: drivesState.cancelFailureNotice ?? ""
         )
+        // MYR-378 — THE OWNER'S RESERVATION DETAIL IS THE RIDER'S SHEET.
+        //
+        // Not a copy of it, not a variant of it: the same `ScheduledRideSheet`,
+        // given the same `ScheduledRide` (built by the same wire mapping) and a
+        // ROLE. Everything the client asked to see — pickup → drop-off, the map
+        // preview, distance and drive time, the vehicle card, Cancel, and the
+        // honest disabled Reschedule — is that component's, and the owner now gets
+        // all of it because they are looking at the same object.
+        //
+        // Reschedule is unavailable for BOTH roles on the live path for the same
+        // reason (MYR-192's endpoints do not exist), so the flag is not
+        // role-dependent: it follows whether this list is the server's.
+        .overlay {
+            GeometryReader { geo in
+                ScheduledRideSheet(
+                    ride: openReservation?.detail,
+                    role: .owner(
+                        vehicleName: vehicle?.name ?? openReservation?.vehicleName ?? "",
+                        requesterName: openReservation?.rider ?? ""
+                    ),
+                    onClose: { openReservation = nil },
+                    // Reschedule is inert on this surface (below), so nothing can
+                    // reach this. It stays a real parameter rather than an optional
+                    // because the sheet is ONE component and its shape is not the
+                    // caller's to narrow.
+                    onReschedule: { _, _, _, _ in },
+                    onCancel: { id in
+                        openReservation = nil
+                        cancelReservation(id: id)
+                    },
+                    screenHeight: geo.size.height,
+                    rescheduleAvailable: !drivesState.readsLiveReservations
+                )
+            }
+            .ignoresSafeArea()
+            // The overlay spans the screen whether or not a sheet is up. A
+            // `GeometryReader` draws nothing and so takes no taps, but declaring it
+            // is the difference between "does not swallow the list's taps" being a
+            // property and being a side effect of what SwiftUI happens to hit-test.
+            .allowsHitTesting(openReservation != nil)
+        }
+    }
+
+    /// MYR-378 — the ONE commit path both owner entries end in: the row's X
+    /// (through its confirm dialog) and the detail sheet's own "Cancel ride".
+    /// Splitting it would be how one of them comes to skip the honest live decline.
+    private func cancelReservation(id: String) {
+        if drivesState.readsLiveReservations {
+            Task { await drivesState.cancelReservation(id: id, vehicleID: vehicle?.id) }
+        } else {
+            drivesState.cancelUpcoming(id: id)
+        }
     }
 
     // MARK: Header (screens.jsx:631-634)
@@ -415,7 +480,14 @@ struct DrivesScreen: View {
             emptyUpcomingState
         } else {
             ForEach(sortedUpcoming) { ride in
-                UpcomingRow(ride: ride) { confirmCancel = ride }
+                // MYR-378 — the row OPENS now. Its X keeps the prototype's
+                // one-tap decline; tapping the row itself opens the detail the
+                // client asked for, which is the rider's own sheet.
+                UpcomingRow(
+                    ride: ride,
+                    onOpen: ride.detail == nil ? nil : { openReservation = ride },
+                    onCancel: { confirmCancel = ride }
+                )
             }
         }
     }
@@ -488,17 +560,12 @@ struct DrivesScreen: View {
             dismissLabel: "Keep it"
         ) {
             guard let ride else { return }
-            // MYR-376 — the LIVE path declines on the server and re-syncs; only the
-            // simulated path removes the row locally. Splitting on
-            // `readsLiveReservations` rather than on `isLive` keeps the two from
-            // ever both running: a state with no reservation source has nothing to
-            // decline against, and a state with one must never remove a row the
-            // server has not agreed to.
-            if drivesState.readsLiveReservations {
-                Task { await drivesState.cancelReservation(id: ride.id, vehicleID: vehicle?.id) }
-            } else {
-                drivesState.cancelUpcoming(id: ride.id)
-            }
+            // MYR-376's rule now lives in `cancelReservation(id:)`, which BOTH owner
+            // entries call: the LIVE path declines on the server and re-syncs, only
+            // the simulated path removes the row locally, and the split is on
+            // `readsLiveReservations` rather than on `isLive` so the two can never
+            // both run.
+            cancelReservation(id: ride.id) // MYR-378 — one commit path, two entries
         }
     }
 }
@@ -658,6 +725,12 @@ private struct DriveRow: View {
 
 private struct UpcomingRow: View {
     let ride: UpcomingRide
+    /// MYR-378 — tapping the row opens the shared detail sheet. `nil` for a row
+    /// with no detail to open (the accept-time optimistic insert, before the
+    /// server's own row replaces it), which is why this is an optional rather
+    /// than a closure that sometimes does nothing: a row that cannot open must
+    /// not offer the tap.
+    let onOpen: (() -> Void)?
     let onCancel: () -> Void
 
     var body: some View {
@@ -703,6 +776,15 @@ private struct UpcomingRow: View {
                 .strokeBorder(Color.mrtGoldRowBorder, lineWidth: MRTMetrics.hairline)
         )
         .shadow(color: .black.opacity(0.28), radius: 10, y: 6)
+        // MYR-378 — the row itself opens the detail. A `contentShape` + tap
+        // gesture rather than wrapping the row in a `Button`, because the row
+        // already CONTAINS a button (the X): nesting them makes the whole card the
+        // cancel's hit region on some tap paths, and the one control on this row
+        // that must never be hit by accident is the destructive one.
+        .contentShape(RoundedRectangle(cornerRadius: MRTMetrics.cardRadius, style: .continuous))
+        .onTapGesture { onOpen?() }
+        .accessibilityAddTraits(onOpen == nil ? [] : .isButton)
+        .accessibilityHint(onOpen == nil ? "" : "Opens the reservation details")
         .padding(.horizontal, MRTMetrics.pageGutter)
         .padding(.bottom, 11)
     }

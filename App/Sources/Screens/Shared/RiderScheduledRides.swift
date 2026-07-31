@@ -147,7 +147,30 @@ enum RiderScheduledRideMapping {
               let record = RideRequestContractMapping.record(from: wire),
               RideReservation.isDormant(record)
         else { return nil }
+        return row(for: record, scheduledFor: scheduledFor, vehicle: vehicle, now: now, calendar: calendar)
+    }
 
+    /// MYR-378 — the COMPOSITION, split from the rider's dormancy GUARD above so
+    /// the owner's Drives → Upcoming can build the identical row.
+    ///
+    /// The guard and the composition were one function, and they answer different
+    /// questions: "does this belong on the rider's Scheduled tab" (dormant, still
+    /// open, not dispatched) versus "what does this reservation look like". The
+    /// owner's list has already applied its OWN predicate
+    /// (`RideReservation.isUpcomingReservation`) by the time it gets here, and
+    /// running the rider's on top of it would be a second, differently-worded
+    /// filter on a row that is already in a list — the shape by which two surfaces
+    /// come to disagree about one ride.
+    ///
+    /// Everything a reservation SAYS is decided here, once, so the two roles cannot
+    /// print a different pickup, distance, day or time for the same ride.
+    static func row(
+        for record: RideRequestRecord,
+        scheduledFor: Date,
+        vehicle: RiderScheduledRideVehicle?,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> ScheduledRide {
         // The DAY and TIME are rendered in the READER's calendar, from a UTC
         // instant. `scheduledFor` travels the wire as RFC 3339 UTC and is written
         // by whichever device booked it; printing it in anything but the rider's
@@ -157,7 +180,7 @@ enum RiderScheduledRideMapping {
         let time = RideScheduleDays.timeLabel(for: scheduledFor, calendar: calendar)
 
         return ScheduledRide(
-            id: wire.id,
+            id: record.id,
             day: day,
             // The sheet's secondary date line. `day` already carries the date for
             // everything past tomorrow, so this is only ever ADDING information for
@@ -210,9 +233,44 @@ enum RiderScheduledRideMapping {
 /// and DEBUG capture is byte-identical.
 enum ScheduledRideDisplay {
     /// "Mom's Model Y" — or just "Lunar" when nobody is named.
+    ///
+    /// MYR-382 — composed by `SharedVehicleTitle.compose`, the app's ONE
+    /// owner-possessive rule, rather than a second `\(name)'s \(thing)` of its own.
+    /// TestFlight r14 found the cost of having two: the cancel dialog spelled its
+    /// own and rendered **"with 's Lunar"** for a reservation whose owner has no
+    /// name (which, per MYR-377, is EVERY live reservation — the wire carries no
+    /// owner name anywhere). Absence must drop the possessive whole, never leave
+    /// the apostrophe behind, and now exactly one function decides that. The
+    /// non-empty result is byte-identical, so every fixture row renders as before.
     static func vehicleTitle(_ ride: ScheduledRide) -> String {
-        guard !ride.driver.isEmpty else { return ride.vehicle }
-        return "\(ride.driver)\u{2019}s \(ride.vehicle)"
+        SharedVehicleTitle.compose(owner: ride.driver, vehicle: ride.vehicle)
+    }
+
+    /// "with Mom's Model Y" / "with Lunar" — the fragment the cancel dialog's
+    /// sentence embeds. Named here so the sentence cannot re-spell the possessive.
+    static func withVehiclePhrase(_ ride: ScheduledRide) -> String {
+        "with \(vehicleTitle(ride))"
+    }
+
+    /// "Mom will be asked to re-confirm the new time." — or the ownerless form.
+    static func rescheduleNote(_ ride: ScheduledRide) -> String {
+        guard !ride.driver.isEmpty else { return "The owner will be asked to re-confirm the new time." }
+        return "\(ride.driver) will be asked to re-confirm the new time."
+    }
+
+    /// "Waiting for Mom to confirm the new pickup time."
+    static func awaitingConfirmationNote(_ ride: ScheduledRide) -> String {
+        guard !ride.driver.isEmpty else { return "Waiting for the owner to confirm the new pickup time." }
+        return "Waiting for \(ride.driver) to confirm the new pickup time."
+    }
+
+    /// The reschedule-requested footer, with or without a passenger.
+    static func rescheduleFooterNote(_ ride: ScheduledRide) -> String {
+        let responder = ride.driver.isEmpty ? "the owner" : ride.driver
+        if let passenger = ride.passenger {
+            return "You and \(passenger.firstName) get the updated time once \(responder) responds."
+        }
+        return "You\u{2019}ll be notified once \(responder) responds."
     }
 
     /// The avatar glyph. A named owner keeps the prototype's initial; a nameless

@@ -60,7 +60,8 @@ final class RiderSearchSheetDragUITests: XCTestCase {
         return last
     }
 
-    /// The chip row (`Now` / `Schedule` / `Me` / `Someone else`) is the topmost
+    /// The chip row (`Now` / `Schedule` — MYR-382 removed the Me / "Someone
+    /// else" pair) is the topmost
     /// INTERACTIVE band the client drags on, and the first thing the keyboard
     /// shift pushed off the surface — so it is the probe for "is what I see
     /// still what I can grab".

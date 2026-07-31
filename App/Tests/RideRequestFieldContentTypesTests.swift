@@ -38,15 +38,12 @@ final class RideRequestFieldContentTypesTests: XCTestCase {
         XCTAssertEqual(RideRequestFieldContentType.destination, .fullStreetAddress)
     }
 
-    func testThePassengerFieldsAreANameAndATelephoneNumber() {
-        XCTAssertEqual(RideRequestFieldContentType.passengerName, .name)
-        XCTAssertEqual(RideRequestFieldContentType.passengerPhone, .telephoneNumber)
-    }
-
-    /// Three fields, three distinct declarations — a copy-pasted modifier would show
-    /// up here as a duplicate.
-    func testTheThreeDeclarationsAreDistinct() {
-        XCTAssertEqual(Set(RideRequestFieldContentType.all.map(\.rawValue)).count, 3)
+    /// MYR-382 — the passenger name/number pair went with the "Someone else" flow.
+    /// The rider's booking surface has ONE text field now, and this enum is still
+    /// the exhaustive list of them rather than a sample of them.
+    func testTheFlowDeclaresExactlyItsOneRemainingField() {
+        XCTAssertEqual(RideRequestFieldContentType.all, [RideRequestFieldContentType.destination])
+        XCTAssertEqual(Set(RideRequestFieldContentType.all.map(\.rawValue)).count, 1)
     }
 }
 #endif
