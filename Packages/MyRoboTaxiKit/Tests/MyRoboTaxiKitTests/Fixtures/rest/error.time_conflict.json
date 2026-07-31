@@ -1,0 +1,12 @@
+{
+  "_meta": {
+    "description": "REST 409 vehicle_unavailable / subCode time_conflict (rest-api.md §7.8, MYR-383). Emitted when a reservation create or accept lands strictly inside the per-vehicle conflict window of a ride the car is already committed to. The refusal names the conflicting instant, which is the same disclosure §7.22's read surface makes. Consumers MUST NOT auto-retry the same mutation — the identical POST refuses again.",
+    "anchoredFRs": ["FR-7.1", "FR-9.1", "FR-9.3"],
+    "scenario": "error"
+  },
+  "error": {
+    "code": "vehicle_unavailable",
+    "message": "vehicle already has a ride around 2026-08-01T19:00:00Z",
+    "subCode": "time_conflict"
+  }
+}

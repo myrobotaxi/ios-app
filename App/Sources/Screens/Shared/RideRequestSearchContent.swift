@@ -510,8 +510,20 @@ struct RideRequestSearchContent: View {
     // first two are tapped on a sheet whose destination field is auto-focused by
     // design (`scheduleSearchFocus`), i.e. keyboard-up is the DEFAULT state they
     // are reached in, not an edge case.
+    //
+    // MYR-385 — that same funnel is the ONE place the §7.22 conflict read is kicked
+    // off, and for the same reason: all three entry points come through here, so
+    // "the picker fetches when it opens" cannot be half-implemented. The read is
+    // UNCONDITIONAL rather than `ensureCovered`, because windows appear and vanish
+    // between two openings and the active-instant arm slides with the server's
+    // clock — a cached answer from the last time this card was up is precisely the
+    // stale thing the rider would then be shown. It is fired BEFORE the keyboard
+    // settle so the request overlaps the 0.25s beat instead of following it, and
+    // NOTHING waits on it: the card presents on its own schedule and adopts windows
+    // whenever they land, or never.
     @MainActor
     private func openScheduleCard() {
+        viewerState.refreshBookedWindows()
         focusTask?.cancel()
         focusTask = nil
         destinationFieldFocused = false
@@ -1099,7 +1111,12 @@ struct RideRequestSearchContent: View {
             // ONLY when the target vehicle actually has a known service window; a
             // car that is not in service (or one whose visit has no estimate — the
             // common case) renders this card exactly as it always has.
-            if let caption = serviceCaption {
+            //
+            // MYR-385 gives that ONE slot a second thing it can say (see
+            // `scheduleCaption`) rather than adding a second line: the card's copy
+            // region is one muted sentence by design, and stacking two of them is
+            // the chrome-for-its-own-sake MYR-347 was about.
+            if let caption = scheduleCaption {
                 Text(caption)
                     .font(.system(size: 11.5))
                     .foregroundStyle(Color.mrtTextMuted)
@@ -1113,9 +1130,14 @@ struct RideRequestSearchContent: View {
                 HStack(spacing: 7) {
                     ForEach(scheduleDays, id: \.token) { day in
                         // A day is only out when EVERY one of its times is out —
-                        // the boundary day (car back at 2 PM) stays pickable.
+                        // the boundary day (car back at 2 PM) stays pickable. MYR-385
+                        // makes that matter more, not less: booked windows are
+                        // SCATTERED rather than a prefix, so a day holding one noon
+                        // reservation still has a perfectly bookable morning and
+                        // evening and must stay lit.
                         let dayAllowed = !RideScheduleFloor.allowedTimes(
-                            on: day.token, times: RideRequestFixtures.scheduleTimes, floor: schedulingFloor
+                            on: day.token, times: RideRequestFixtures.scheduleTimes,
+                            floor: schedulingFloor, windows: scheduleBookedWindows
                         ).isEmpty
                         RideChip(title: day.token, selected: schedDay == day.token, unavailable: !dayAllowed) {
                             schedDay = day.token
@@ -1123,6 +1145,11 @@ struct RideRequestSearchContent: View {
                             // not leave a blocked TIME selected — otherwise the CTA
                             // would silently disable itself with no visible cause.
                             reconcileScheduleSelectionToFloor()
+                            // MYR-385 — top up the §7.22 range only if this day fell
+                            // outside it. The open-time read already spans every chip,
+                            // so this is a no-op in the shipping horizon and exists so
+                            // a longer horizon needs no second policy.
+                            viewerState.ensureBookedWindowsCovered()
                         }
                     }
                 }
@@ -1141,8 +1168,12 @@ struct RideRequestSearchContent: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 7) {
                         ForEach(RideRequestFixtures.scheduleTimes, id: \.self) { time in
+                            // MYR-385 — the SAME predicate the day chips, the CTA
+                            // gate and the reconciler read, so a dimmed chip and a
+                            // refused CTA can never disagree about one slot.
                             let allowed = RideScheduleFloor.allows(
-                                day: schedDay, time: time, floor: schedulingFloor
+                                day: schedDay, time: time,
+                                floor: schedulingFloor, windows: scheduleBookedWindows
                             )
                             RideChip(
                                 title: time, selected: schedTime == time,
@@ -1173,6 +1204,28 @@ struct RideRequestSearchContent: View {
             // honestly inert rather than sending a request the server would refuse.
             .opacity(isSelectedSlotBookable ? 1 : 0.4)
             .allowsHitTesting(isSelectedSlotBookable)
+            // MYR-385 — and it has to SAY it is inert, not only look it. This is
+            // MYR-361's `RideChip(announcesWhenUnavailable:)` reasoning on the
+            // control directly below those chips: an `allowsHitTesting(false)` view
+            // is untappable but still announces as an ordinary ENABLED button, so a
+            // VoiceOver rider double-taps it and nothing happens, with no
+            // explanation — and the caption that explains it sits above the two chip
+            // rows they just walked past.
+            //
+            // The gap predates this issue but was close to unreachable: before
+            // MYR-385 the CTA only went inert when the vehicle's ENTIRE seven-day
+            // grid was behind a service floor. A booked window makes it an ordinary
+            // state, reached every time the §7.22 read lands on the slot the card
+            // opened on.
+            //
+            // `.disabled()` is exactly what `RideChip(announcesWhenUnavailable:)`
+            // uses, and it is PIXEL-SAFE here for the same reason it was there:
+            // `MRTButton` renders through the custom `MRTPressScaleButtonStyle`, and
+            // a custom `ButtonStyle` owns all of its own drawing — SwiftUI applies
+            // no automatic dimming over it. So the 0.4 opacity above remains the
+            // only visual signal, `riderScheduleFloored` stays byte-identical, and
+            // the accessibility tree gains the one fact it was missing.
+            .disabled(!isSelectedSlotBookable)
         }
     }
 
@@ -1202,6 +1255,50 @@ struct RideRequestSearchContent: View {
         )
     }
 
+    // MARK: MYR-385 — the booked-window conflict read (§7.22)
+
+    /// The target vehicle's blocked intervals, or `[]`.
+    ///
+    /// Empty is the answer whenever the read has not landed, FAILED, the path is
+    /// simulated, or the draft has been re-pointed at another car — and empty dims
+    /// nothing. That is the fail-open rule with no branch spelling it: there is no
+    /// error state to render, no spinner to show and no arm of this view that
+    /// behaves differently when the read is in flight, so a picker whose §7.22 call
+    /// is slow or dead is byte-identical to the pre-MYR-385 picker. The server's
+    /// create-time `409 time_conflict` is what makes that safe.
+    private var scheduleBookedWindows: [RideBookedWindow] { viewerState.draftBookedWindows }
+
+    /// The window blocking the CURRENT selection, or `nil`.
+    ///
+    /// Non-nil is reachable in one situation the reconciler cannot pre-empt, and it
+    /// is the important one: the read LANDS while the card is already open, on the
+    /// slot the rider is looking at. Moving their selection out from under them at
+    /// that moment would be the picker fighting the rider mid-selection — the thing
+    /// `reconcileScheduleSelectionToFloor`'s own doc comment refuses to do. So the
+    /// chip dims, the CTA goes inert, and the caption below says why.
+    private var scheduleConflict: RideBookedWindow? {
+        RideBookedWindows.conflict(day: schedDay, time: schedTime, windows: scheduleBookedWindows)
+    }
+
+    /// The ONE muted line under the card title.
+    ///
+    /// **THE CONFLICT WINS WHEN BOTH APPLY**, and the reason is that they answer
+    /// different questions at different scopes. The service line is about the whole
+    /// GRID ("Lunar is in service until Sat, Aug 1 · 2:00 PM" — that is why the
+    /// early chips are dim) and stays true whether or not the rider has moved;
+    /// the conflict line is about the slot named on the CTA one thumb-width below
+    /// it. When the CTA is inert, the sentence beside it has to be the one that
+    /// explains the CTA.
+    ///
+    /// In practice they rarely collide: the service floor and the windows are
+    /// folded into one grid predicate, so the reconciler lands the selection on a
+    /// slot clearing BOTH, and a conflicted selection therefore means the read
+    /// arrived afterwards.
+    private var scheduleCaption: String? {
+        RideBookedWindows.caption(vehicleName: targetVehicle.owner, conflict: scheduleConflict)
+            ?? serviceCaption
+    }
+
     /// MYR-370 — the day chips, GENERATED from the device clock: strictly
     /// chronological, one per calendar day, and dated from the third chip on.
     /// This replaces `RideRequestFixtures.scheduleDays`, a hard-coded literal
@@ -1209,7 +1306,9 @@ struct RideRequestSearchContent: View {
     private var scheduleDays: [RideScheduleDay] { RideScheduleDays.days() }
 
     private var isSelectedSlotBookable: Bool {
-        RideScheduleFloor.allows(day: schedDay, time: schedTime, floor: schedulingFloor)
+        RideScheduleFloor.allows(
+            day: schedDay, time: schedTime, floor: schedulingFloor, windows: scheduleBookedWindows
+        )
     }
 
     /// Pull the current selection forward to the first bookable slot when it has
@@ -1237,15 +1336,23 @@ struct RideRequestSearchContent: View {
             schedDay = first.token
         }
         let floor = schedulingFloor
-        guard !RideScheduleFloor.allows(day: schedDay, time: schedTime, floor: floor) else { return }
+        // MYR-385 — reconciling against the floor ALONE would have moved the
+        // selection onto a slot the booked windows also refuse, i.e. the CTA would
+        // still be inert and the picker would have moved the rider for nothing. One
+        // predicate, one landing place.
+        let windows = scheduleBookedWindows
+        guard !RideScheduleFloor.allows(
+            day: schedDay, time: schedTime, floor: floor, windows: windows
+        ) else { return }
         if let first = RideScheduleFloor.allowedTimes(
-            on: schedDay, times: RideRequestFixtures.scheduleTimes, floor: floor
+            on: schedDay, times: RideRequestFixtures.scheduleTimes, floor: floor, windows: windows
         ).first {
             schedTime = first
         } else if let slot = RideScheduleFloor.firstAllowedSlot(
             days: days.map(\.token),
             times: RideRequestFixtures.scheduleTimes,
-            floor: floor
+            floor: floor,
+            windows: windows
         ) {
             schedDay = slot.day
             schedTime = slot.time

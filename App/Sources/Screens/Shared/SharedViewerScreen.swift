@@ -55,6 +55,12 @@ struct SharedViewerScreen: View {
     /// with the draft intact by `handleVehicleUnavailable()`, where the CTA now
     /// routes to scheduling.
     @State private var showVehicleUnavailableToast = false
+    /// MYR-385 — the NARROWER half of that same refusal: `409 vehicle_unavailable`
+    /// with `subCode: time_conflict`. Its own flag rather than a parameter on the
+    /// one above, because `mrtSuccessToast` binds a message per presentation and
+    /// two toasts that can never be up at once are cheaper than one whose text is
+    /// state.
+    @State private var showTimeConflictToast = false
     /// MYR-316 — a scheduled request was refused because the pickup precedes the
     /// vehicle's estimated return from service. Raised by
     /// `handleScheduleWindowFailure()`, which lands the rider back on Search with
@@ -362,7 +368,7 @@ struct SharedViewerScreen: View {
             // let it drive `DeclinedNotice`. Return the rider to Review (draft
             // intact) where the CTA now routes to scheduling, and raise the calm
             // notice. No retry is attempted anywhere on this path.
-            if failure != nil { handleVehicleUnavailable() }
+            if let failure { handleVehicleUnavailable(failure) }
         }
         .onChange(of: rideRequestService.scheduleWindowFailure) { _, failure in
             // MYR-316: a `400 invalid_request` on a SCHEDULED ride is NOT an owner
@@ -385,6 +391,19 @@ struct SharedViewerScreen: View {
             // and the way forward. Muted tone — this is not an error the rider
             // caused, and not a refusal.
             message: "That car just became unavailable. Your trip’s saved — try scheduling it.",
+            systemImage: "calendar",
+            tint: .mrtTextMuted
+        )
+        .mrtSuccessToast(
+            isPresented: $showTimeConflictToast,
+            // MYR-385 — the r15 sentence. Names WHAT is taken (the time, not the
+            // car), does not claim the car "became unavailable" (it did not), and
+            // does not tell somebody who was already scheduling to try scheduling.
+            // Deliberately does not say WHOSE ride it is: the picker's own caption
+            // has `own`/`pending` and the room to word it properly, and a toast
+            // that guessed would be asserting something this failure does not
+            // carry. Muted — nothing failed, a time is spoken for.
+            message: "That time is already taken on this car. Your trip’s saved — pick another slot.",
             systemImage: "calendar",
             tint: .mrtTextMuted
         )
@@ -1299,14 +1318,33 @@ struct SharedViewerScreen: View {
     // intact: the vehicle row now shows the muted Busy chip and the CTA routes to
     // scheduling, so the honest next step is one tap away. If the draft is
     // incomplete, fall back to the search sheet (same shape as MYR-220's).
-    private func handleVehicleUnavailable() {
+    //
+    // MYR-385 — TWO SENTENCES NOW, because `subCode: time_conflict` is a different
+    // fact and MYR-233's sentence is simply false of it. The ROUTE is untouched
+    // (Review, draft intact, no retry, no decline) and only the copy branches;
+    // rebuilding the handling was never the point, verifying it was still honest
+    // was.
+    //
+    // It also RE-READS §7.22. This is the one moment the picker's cached answer is
+    // known to be wrong — the server just refused a slot the picker either had no
+    // windows for or had stale ones for — so the read is re-issued here rather
+    // than left to the next open. It costs one request on a path the rider has
+    // already been made to wait on, and it means that if they go back to the
+    // picker the offending slot is dimmed rather than offered a second time,
+    // which is the r15 report happening twice in a row.
+    private func handleVehicleUnavailable(_ failure: RideVehicleUnavailableFailure) {
         viewerState.showDeclinedNotice = false
         if viewerState.draftPickup != nil, viewerState.draftDestination != nil {
             viewerState.sheetPhase = .review
         } else {
             viewerState.sheetPhase = .search
         }
-        showVehicleUnavailableToast = true
+        if failure.isTimeConflict {
+            viewerState.refreshBookedWindows()
+            showTimeConflictToast = true
+        } else {
+            showVehicleUnavailableToast = true
+        }
     }
 
     // MARK: MYR-316 — `400 invalid_request` on a scheduled ride is NOT a decline

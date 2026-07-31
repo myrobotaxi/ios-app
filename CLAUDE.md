@@ -76,7 +76,7 @@ xcrun simctl io booted screenshot search.png   # full-frame, never window automa
 
 A `-MRT_SCENE <name>` launch **argument** is accepted as a fallback for tooling that can't set the child env. **Scene names** (unset = normal Sign-In boot):
 
-- Rider request flow: `idle`, `search`, `searchFiltered`, `searchSelected` (destination chosen, "Continue" CTA), `pinDrop`, `pinDropRealPath` (MYR-217: boots to idle, then auto-drives the REAL idle→search→Continue→pinDrop transition with live updates flowing — use this, not cold `pinDrop`, to probe pin-drop entry camera behavior), `review`, `reviewPicker`, `booking`, `pending` (minimized "Request sent" pill), `trackingLeg1` (to pickup), `trackingLeg2` (in-ride), `trackingArriving`, `summary`, `declined`, `riderBusyVehicle` (MYR-233: the Review sheet with an UNAVAILABLE vehicle — muted Busy chip on the fleet row, gold instant CTA replaced by "Schedule with … instead". Select the state with `MRT_BUSY_REASON=busy|inService|offline|paused`, default `busy`; each is built from real wire inputs through `LiveFleetMemberMapping`, so the capture exercises the shipping predicate. **MYR-342 adds `paused`** — the owner's ride-share switch off (`rideShareEnabled: false`) on a car that is otherwise PARKED and healthy, which is the whole point of the state. It is the one reason whose CTA area holds **no button at all**: the muted "Paused" chip and the helper line "{Owner} has paused ride requests right now", and nothing else. The other three keep MYR-233's "Schedule with … instead" route because each ENDS on its own; an owner's pause is open-ended and the server refuses scheduled rides against it too, so offering scheduling would be a `409 vehicle_unavailable` with extra steps), `riderPlateChip` (MYR-286: the Booking sheet's plate chip carrying the REAL owner-entered plate instead of the `VIN ····xxxx` degrade — same live-shaped `VehicleSummary` path, with `licensePlate` set), `riderScheduleFloored` (MYR-316: the Schedule slide-up card with the SERVICE-WINDOW FLOOR applied — a muted "Lunar is in service until Sat, Aug 1 · 2:00 PM" caption, dimmed-but-visible day/time chips for every slot before the car is back, and a selection already pulled forward to the first bookable one. Injects a live-shaped in-service `VehicleSummary` carrying `serviceEstimatedEndAt` through the REAL `LiveFleetMemberMapping`, then opens the card via the existing one-shot `opensScheduleOnSearch` hook, so the capture exercises the shipping `RideScheduleFloor` grid rule rather than a hand-set flag. **A vehicle with NO window imposes NO floor** — that is the common case and every other rider scene is byte-identical).
+- Rider request flow: `idle`, `search`, `searchFiltered`, `searchSelected` (destination chosen, "Continue" CTA), `pinDrop`, `pinDropRealPath` (MYR-217: boots to idle, then auto-drives the REAL idle→search→Continue→pinDrop transition with live updates flowing — use this, not cold `pinDrop`, to probe pin-drop entry camera behavior), `review`, `reviewPicker`, `booking`, `pending` (minimized "Request sent" pill), `trackingLeg1` (to pickup), `trackingLeg2` (in-ride), `trackingArriving`, `summary`, `declined`, `riderBusyVehicle` (MYR-233: the Review sheet with an UNAVAILABLE vehicle — muted Busy chip on the fleet row, gold instant CTA replaced by "Schedule with … instead". Select the state with `MRT_BUSY_REASON=busy|inService|offline|paused`, default `busy`; each is built from real wire inputs through `LiveFleetMemberMapping`, so the capture exercises the shipping predicate. **MYR-342 adds `paused`** — the owner's ride-share switch off (`rideShareEnabled: false`) on a car that is otherwise PARKED and healthy, which is the whole point of the state. It is the one reason whose CTA area holds **no button at all**: the muted "Paused" chip and the helper line "{Owner} has paused ride requests right now", and nothing else. The other three keep MYR-233's "Schedule with … instead" route because each ENDS on its own; an owner's pause is open-ended and the server refuses scheduled rides against it too, so offering scheduling would be a `409 vehicle_unavailable` with extra steps), `riderPlateChip` (MYR-286: the Booking sheet's plate chip carrying the REAL owner-entered plate instead of the `VIN ····xxxx` degrade — same live-shaped `VehicleSummary` path, with `licensePlate` set), `riderScheduleFloored` (MYR-316: the Schedule slide-up card with the SERVICE-WINDOW FLOOR applied — a muted "Lunar is in service until Sat, Aug 1 · 2:00 PM" caption, dimmed-but-visible day/time chips for every slot before the car is back, and a selection already pulled forward to the first bookable one. Injects a live-shaped in-service `VehicleSummary` carrying `serviceEstimatedEndAt` through the REAL `LiveFleetMemberMapping`, then opens the card via the existing one-shot `opensScheduleOnSearch` hook, so the capture exercises the shipping `RideScheduleFloor` grid rule rather than a hand-set flag. **A vehicle with NO window imposes NO floor** — that is the common case and every other rider scene is byte-identical), `riderScheduleBooked` (MYR-385: the SAME Schedule card dimmed for the OTHER reason — §7.22's booked windows rather than MYR-316's service floor. The car is PARKED with no window, so every dimmed chip in the frame came from the conflict read; it injects the wire through `DebugBookedWindowsEndpoint` and runs the shipping store + `RideScheduleFloor`, and carries the rider's OWN noon reservation plus somebody else's PENDING 5:30 PM so both captions are reachable from one scene. Capture at t≈0.3s for the pre-arrival / fail-open frame and t≈1.5s for the settled one — see "A rule the picker cannot see is indistinguishable from a bug" below).
 `riderIdleETA` / `riderIdleETABusy` (MYR-341) — the rider idle sheet's ROTATING
   search placeholder carrying a real "A ride is 9 min away", and the same scene
   with the availability gate tripped (static "Where to?"). Both are
@@ -1148,6 +1148,137 @@ not re-ask; it clears only with `resetDraftToIdle`. It presents through the ship
 `openScheduleCard()`, so MYR-353's keyboard rule and MYR-316's floor reconciliation
 are the real ones — and this entry matters most for MYR-353, because it fires
 immediately after a result tap with the keyboard genuinely still up.
+
+**A rule the picker cannot see is indistinguishable from a bug** (MYR-385, contracts
+**0.26.0**) — scene `riderScheduleBooked`. r15, build `202607311129`: *"Still letting
+me schedule for noon even though I already have a ride scheduled for that time."*
+
+MYR-383 shipped the SERVER gate in r14 and it **does** refuse that booking —
+`409 vehicle_unavailable` / `subCode: time_conflict`, at SUBMIT, after the rider has
+picked a day, picked a time and tapped a CTA naming both. Nothing was broken; the
+refusal simply arrived after somebody had committed to a choice, which reads as a
+defect. `GET /api/vehicles/{id}/booked-windows` (rest-api.md §7.22) is the READ side
+of that same gate, and the picker now dims the slot instead.
+
+**THE INVARIANT** is the server's: a slot the picker dims is exactly a slot the gate
+would refuse, and a slot it leaves enabled is exactly one the gate would allow —
+both are assembled from the same SQL fragments and reach the window constant through
+the same bind parameter. Four client rules keep this side of it honest, and each is
+a way it could have broken quietly:
+
+- **THE ±45min HALF-WIDTH NEVER CROSSES THE WIRE, AND MUST NOT BE RE-DERIVED.** §7.22
+  emits **concrete instants** rather than an anchor plus a radius, deliberately: the
+  half-width is a PRODUCT GUESS living in one place on the server
+  (`store.RideConflictWindow`), passed to SQL as a bind parameter and encoded in no
+  schema, no enum and no client — so widening or narrowing it changes every picker on
+  the **next response**, with no client release and no contract bump. Nothing in
+  `RideBookedWindows.swift` adds, subtracts, re-centres, pads or rounds an instant,
+  and `testNothingInThisLayerKnowsTheHalfWidth` walks a deliberately WRONG half-width
+  (±3h and ±10min) to prove the dimming follows the emitted endpoints. The only place
+  in this repo that knows 45 minutes is `DebugBookedWindowsEndpoint`, a DEBUG stub
+  standing in for the server that owns the number.
+- **THE INTERVAL IS OPEN AT BOTH ENDS.** The gate compares strictly inside, so a
+  reservation at exactly `start` or exactly `end` is ACCEPTED — two rides that touch
+  at a boundary are a legal back-to-back booking. `contains` is `start < slot && slot
+  < end`; `<=` is the spelling a hand reaches for and it refuses slots the server
+  would have taken. On the shipped 30-minute grid a noon window takes exactly three
+  chips (11:30 / 12:00 / 12:30), which is what the test asserts.
+- **`items: []` MEANS "NO RESERVATIONS", NOT "WIDE OPEN".** §7.22 deliberately does
+  not consult the §7.18 ride-share pause or the §7.16 service window — both refuse a
+  create, neither describes a window — so a paused or in-service car answers with its
+  real, usually empty, list. Reading empty as "free" would undo two other gates.
+- **A WINDOW IS A SNAPSHOT, so the 409 stays the AUTHORITY.** Windows vanish (the
+  holder cancels — a refusal is a DEFERRAL, never a permanent hold on a slot) and the
+  ACTIVE-INSTANT arm anchors on the server's clock, so it SLIDES forward while the
+  response does not. This reduces how often a rider meets the refusal; it does not
+  replace it.
+
+**ONE GRID PREDICATE, NOT A PARALLEL SET.** The windows are threaded through
+`RideScheduleFloor`'s existing `allows` / `allowedTimes` / `allowedDays` /
+`firstAllowedSlot` (a `windows:` parameter defaulting to `[]`, so every pre-MYR-385
+caller and test is unchanged by construction) rather than given their own helpers.
+Five call sites in the card — day chips, time chips, the CTA gate, the reconciler and
+its fallback scan — would otherwise each have had to remember to consult both, and
+the first one to forget produces a chip the CTA refuses or a "first bookable slot"
+that is not bookable. The two rules are also **different in kind and neither may be
+expressed as the other**: the service floor is a monotone bound, windows are
+scattered intervals with bookable gaps, so folding windows into a "floor" would push
+the earliest slot past a perfectly free morning. A day chip stays lit while ANY of
+its times is free, which matters far more for scattered windows than it did for a
+floor.
+
+**FAIL OPEN, WITH NO BRANCH SAYING SO.** `RideBookedWindowsStore` has deliberately
+**no `isLoading`, no error state and no retry**: a spinner would gate the flow on an
+advisory read, and MYR-326's "honest end state" rule does not apply either — "we
+could not check" is not something a rider can act on. A failed read publishes nothing
+**and records no coverage** (adopting an empty result would say "checked, all clear"
+about a range nobody checked), an unparseable instant is dropped rather than guessed
+at, and `windows(for:)` answers `[]` for any vehicle but the covered one — so a draft
+re-pointed at another car can never be dimmed by the first car's calendar. Every
+degradation lands on "the picker behaves exactly as it did before MYR-385".
+
+**THE LIVE GATE IS AN ABSENCE, NOT AN `isLive` BRANCH.**
+`PlaceSearchComposition.Seams.bookedWindows` is `nil` in sim, and the store refuses to
+construct a read without a provider — so a simulated picker does not *skip* the fetch,
+it has nothing to fetch WITH. There is no `if isLive` inside the card to get
+backwards, and every simulated + DEBUG capture is byte-identical.
+`testTheSimulatedPathCannotConstructTheReadAtAll` is the sweep.
+
+**TWO ENTRY POINTS, and the difference is deliberate.** `refresh` is UNCONDITIONAL and
+fires from `openScheduleCard()` — the ONE funnel all three entry points already use
+for MYR-353's keyboard rule, so "the picker fetches when it opens" cannot be
+half-implemented. It is fired BEFORE the keyboard settle so the request overlaps the
+0.25s beat, and nothing waits on it. `ensureCovered` fires on a day-chip change and
+only reads outside the held range; the open-time request already spans every chip, so
+it is a no-op in the shipping horizon and exists so a longer horizon needs no second
+policy.
+
+**THE LATE ARRIVAL IS EXPLAINED, NOT RECONCILED.** When the read lands while the card
+is already open on a slot it turns out to block, the picker does **not** move the
+rider's selection — that would be fighting them mid-selection, which
+`reconcileScheduleSelectionToFloor`'s own doc comment refuses to do. The chip dims,
+the CTA goes inert, and the card's ONE muted caption slot explains, wording itself
+from `own` and `pending`: "You already have a ride around this time" / "…a ride
+requested around this time" / "Lunar is booked around this time" / "Lunar is already
+requested around this time". **"AROUND", NOT "AT", IN ALL FOUR** — the blocked
+interval is wider than the occupying ride, and "at this time" would both be false and
+come as close as copy can to leaking the half-width. **"BOOKED" IS RESERVED FOR A
+COMMITTED CLAIM**: `pending` changes the WORDS and never the availability, because
+the create path counts pending claims in full. When both a conflict and a service
+window apply, the CONFLICT wins the slot — the service line is about the whole grid,
+the conflict line is about the slot named on the inert CTA one thumb-width below it.
+
+**THE REVIEW-STAGE COPY WAS A REAL FINDING.** MYR-233's toast — *"That car just
+became unavailable. Your trip's saved — try scheduling it."* — is **two lies and a
+non-sequitur** when the refusal is a time conflict: the car did not become
+unavailable, the rider's own noon reservation is why, and "try scheduling it" is a
+strange instruction for somebody who was already scheduling. `RestError.isTimeConflict`
+is a STRICT NARROWING of `isVehicleUnavailable` (so MYR-233's routing is untouched and
+only the sentence branches) carried as a flag on the EXISTING
+`RideVehicleUnavailableFailure` rather than a second failure type — every routing
+decision is identical, and a second type would be a second `onChange`, a second
+handler and a second chance to drift. That handler also **re-reads §7.22**: it is the
+one moment the cached answer is known to be wrong, so going back to the picker shows
+the offending slot dimmed rather than offering it a second time.
+
+**`riderScheduleBooked` is the clean pair to `riderScheduleFloored`** — the same card,
+dimmed for the other reason entirely. Its car is PARKED with NO service window, so
+nothing in the frame is floored and every dimmed chip came from §7.22. It injects the
+WIRE only (`DebugBookedWindowsEndpoint` mints §7.22's exact shape — RFC 3339 UTC `Z`,
+resolved endpoints, range-filtered, `start`-ordered — through the shipping
+`LiveRideBookedWindows` / mapping / store / `RideScheduleFloor`), and its two
+bookings make both wordings reachable from one scene: the rider's OWN accepted
+reservation at Tomorrow · 12:00 PM (the client's own slot, anchored through the
+SHIPPING `RideRequestContractMapping.scheduledDate`, so the picker's instant and the
+stub's are the same instant by construction) and somebody else's PENDING request at
+5:30 PM. It also captures the late-arrival branch: the card opens on the conflicting
+noon slot and the windows land underneath it. **Capture at t≈0.3s** for the
+pre-arrival frame — which is also the FAIL-OPEN rendering, byte-identical to a picker
+with no windows at all — and **t≈1.5s** for the settled one.
+
+```sh
+SIMCTL_CHILD_MRT_SCENE=riderScheduleBooked xcrun simctl launch <udid> app.myrobotaxi.ios
+```
 
 **"Someone else" already reached the wire; nothing pinned it** (MYR-357) — the audit
 found the whole chain intact: `createBody` sends `passengerName` +

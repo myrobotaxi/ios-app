@@ -24,6 +24,15 @@ enum PlaceSearchComposition {
         /// True when the live seams were selected — gates the live-only pickup
         /// resolution + pin-drop coordinate in `SharedViewerState`.
         var isLive: Bool
+        /// MYR-385: the schedule picker's conflict read (§7.22).
+        ///
+        /// **`nil` IN SIM, AND THAT IS THE WHOLE LIVE-PATH GATE.** A simulated
+        /// picker does not decline to fetch, it has nothing to fetch WITH — the
+        /// store refuses to construct a read without a provider — so every
+        /// simulated and DEBUG capture is byte-identical without a single
+        /// `isLive` branch inside the picker. Inventing fixture windows here
+        /// would be a MYR-228 leak about a calendar nobody has.
+        var bookedWindows: (any RideBookedWindowsProviding)?
 
         /// Fresh simulated seams each access (computed, not shared) so previews
         /// / tests / multiple `SharedViewerState`s never cross-talk through a
@@ -45,7 +54,8 @@ enum PlaceSearchComposition {
                 userLocation: userLocation,
                 liveVehicleLocator: nil,
                 pinLabeler: SimulatedPinLabeler(),
-                isLive: false
+                isLive: false,
+                bookedWindows: nil // MYR-385 — SIM has no bookings and no endpoint
             )
         }
     }
@@ -68,7 +78,17 @@ enum PlaceSearchComposition {
                 // `PickupPointLabeler.swift`'s research record). The plain
                 // `LivePinLabeler` remains the geocode component inside it.
                 pinLabeler: LivePickupPointLabeler(),
-                isLive: true
+                isLive: true,
+                // MYR-385 — §7.22 through the same `RestClient` construction every
+                // other live seam in this app makes. The store owns the caching and
+                // the fail-open policy; this is only "where the bytes come from".
+                bookedWindows: LiveRideBookedWindows(
+                    endpoint: RestClient(
+                        environment: config.environment,
+                        tokenProvider: config.tokenProvider,
+                        http: config.http ?? URLSession(configuration: RestClient.defaultConfiguration())
+                    )
+                )
             )
         }
         return .simulated

@@ -409,7 +409,31 @@ public struct RideSessionFailure: Identifiable, Equatable, Sendable {
 /// consecutive refusals must not coalesce and drop the second notice.
 public struct RideVehicleUnavailableFailure: Identifiable, Equatable, Sendable {
     public let id: UUID
-    public init(id: UUID = UUID()) { self.id = id }
+
+    /// MYR-385 — the refusal's `subCode` was `time_conflict` (MYR-383's
+    /// per-vehicle window gate): the car is not unavailable at all, the TIME is
+    /// already spoken for.
+    ///
+    /// **A DISCRIMINATOR ON THE EXISTING FAILURE, NOT A NEW ONE**, and the choice
+    /// is deliberate. Every routing decision is identical — no ride was created,
+    /// nobody declined, the draft is intact and the rider goes back to Review — so
+    /// a second failure type would have meant a second `onChange`, a second
+    /// handler and a second chance for the two to drift. What differs is exactly
+    /// one sentence, because MYR-233's *"That car just became unavailable. Your
+    /// trip's saved — try scheduling it."* is **two lies and a non-sequitur** when
+    /// the refusal is a time conflict: the car did not become unavailable, the
+    /// rider's own noon reservation is why, and "try scheduling it" is a strange
+    /// instruction for somebody who was already scheduling. That sentence landing
+    /// on the r15 report is what MYR-385 is about.
+    ///
+    /// Defaults to `false`, so the broader `vehicle_unavailable` arm — a car in
+    /// service, offline, or already carrying a ride — is untouched.
+    public let isTimeConflict: Bool
+
+    public init(id: UUID = UUID(), isTimeConflict: Bool = false) {
+        self.id = id
+        self.isTimeConflict = isTimeConflict
+    }
 }
 
 /// MYR-316: a SCHEDULED ride mutation was refused `400 invalid_request` because

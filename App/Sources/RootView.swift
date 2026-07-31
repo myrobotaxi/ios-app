@@ -381,7 +381,17 @@ struct RootView: View {
         ))
         // MYR-211 — compose the rider's place-search + location seams (sim
         // fixtures by default; live MapKit/CoreLocation on device / when live).
-        let seams = PlaceSearchComposition.make(mode: mode, sessionTokenProvider: auth.sessionTokenProvider)
+        var seams = PlaceSearchComposition.make(mode: mode, sessionTokenProvider: auth.sessionTokenProvider)
+        #if DEBUG
+        // MYR-385 — `riderScheduleBooked` injects a §7.22 WIRE STUB at COMPOSITION
+        // time, the same shape `recentDestinationsStore()` below swaps its store
+        // with, rather than through a mutable hole on the shipping store. Every
+        // other scene leaves this `nil`, which for a simulated boot is what the
+        // seam already was — so no simulated capture can construct the read.
+        if let bookedWindows = DebugScene.current?.bookedWindowsProvider {
+            seams.bookedWindows = bookedWindows
+        }
+        #endif
         // MYR-184/228 fix (c) — the rider's watched vehicle is seeded from the
         // FIXTURES in sim and from NOTHING on live: the real one is adopted from
         // the shared-vehicle catalog (`.onChange`/`.task` in `body`). Passing the

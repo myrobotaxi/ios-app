@@ -771,6 +771,44 @@ enum DebugScene: String, CaseIterable {
     /// therefore proves `RideScheduleFloor` produced it — the same instant travels
     /// the shipping mapping, not a hand-set view flag.
     case riderScheduleFloored
+    /// MYR-385 — the RIDER's scheduling card with BOOKED SLOTS DIMMED, i.e. the
+    /// r15 screenshot with the defect removed: *"Still letting me schedule for noon
+    /// even though I already have a ride scheduled for that time."*
+    ///
+    /// The vehicle is PARKED and carries NO service window, so **nothing in this
+    /// frame is dimmed by MYR-316's floor** — every dimmed chip came from §7.22.
+    /// That is what makes it the clean pair to `riderScheduleFloored`, which is the
+    /// same card dimmed for the other reason entirely.
+    ///
+    /// It injects the WIRE and nothing else. `DebugBookedWindowsEndpoint` mints
+    /// §7.22's exact shape (RFC 3339 UTC `Z`, CONCRETE endpoints with the ±45min
+    /// half-width already resolved server-side, range-filtered, `start`-ordered)
+    /// and the scene runs the SHIPPING `LiveRideBookedWindows` provider, mapping,
+    /// store and `RideScheduleFloor` grid rule against it — the
+    /// `DebugServiceWindowEndpoint` precedent. A dimmed chip here is therefore
+    /// evidence the production chain produced it.
+    ///
+    /// **Two bookings, so both wordings are reachable from one scene**: the rider's
+    /// OWN accepted reservation at **Tomorrow · 12:00 PM** (the client's own slot,
+    /// anchored through the shipping `RideRequestContractMapping.scheduledDate` so
+    /// the picker's instant and the stub's are the same instant by construction),
+    /// and somebody else's still-undecided request at **Tomorrow · 5:30 PM**. Tap
+    /// across to the second to see "Lunar is already requested around this time"
+    /// where the first shows "You already have a ride around this time".
+    ///
+    /// **It also captures the LATE-ARRIVAL branch, which is the one no reconciler
+    /// can pre-empt.** The card is seeded with `draftSchedule` at the conflicting
+    /// noon slot, so it OPENS on that selection and the windows land underneath it
+    /// a moment later: the chip dims, the CTA goes inert, and the caption explains
+    /// — rather than the picker yanking the rider's selection out from under their
+    /// thumb. Capture at t≈0.3s for the pre-arrival frame (byte-identical to a
+    /// picker with no windows at all, which is also the FAIL-OPEN rendering) and at
+    /// t≈1.5s for the settled one.
+    ///
+    /// Live-path-only by construction: `PlaceSearchComposition.Seams.simulated`
+    /// carries no booked-windows provider at all, so a simulated picker cannot
+    /// construct the read and every other rider scene is byte-identical.
+    case riderScheduleBooked
     /// MYR-361 — the SEARCH sheet's Now/Schedule segment DEFAULTED TO SCHEDULE,
     /// which is the client's own screenshot AKwpPQIV… inverted: *"Even though no
     /// car is available right now it's still allowing me to request a ride right
@@ -2281,6 +2319,57 @@ enum DebugScene: String, CaseIterable {
         ))
     }
 
+    /// MYR-385 — the `riderScheduleBooked` car: live-SHAPED, PARKED, and carrying
+    /// NO service window, so MYR-316's floor imposes nothing and every dimmed chip
+    /// in that capture is attributable to §7.22 alone. Built through the REAL
+    /// `LiveFleetMemberMapping.fleetMember(from:)` like every other injected member.
+    private static var bookedFleetMember: FleetMember {
+        LiveFleetMemberMapping.fleetMember(from: VehicleSummary(
+            vehicleId: "debug-booked",
+            name: "Lunar",
+            model: "Model Y",
+            year: 2026,
+            color: "Quicksilver",
+            vinLast4: "2046",
+            status: .parked,
+            chargeLevel: 68,
+            estimatedRange: 240,
+            lastUpdated: "2026-07-31T12:00:00Z",
+            role: .owner,
+            hasActiveRide: false,
+            licensePlate: "RBO 2046"
+        ))
+    }
+
+    /// MYR-385 — the client's own r15 slot, resolved by the SHIPPING day/time →
+    /// instant rule rather than by arithmetic here.
+    ///
+    /// The stub's window has to be anchored on the very instant the picker will
+    /// resolve that chip pair to, or the capture would be a coincidence of two
+    /// calendars agreeing. `RideRequestContractMapping.scheduledDate` is the one
+    /// the create body is encoded with and the one `RideScheduleFloor` compares
+    /// against, so asking IT is what makes the dimmed chip provably the right chip.
+    private static func sampleBookedAnchor(day: String, time: String) -> Date? {
+        RideRequestContractMapping.scheduledDate(from: RideSchedule(day: day, time: time))
+    }
+
+    /// MYR-385 — the `riderScheduleBooked` wire. `nil` for every other scene, so
+    /// `RootView` leaves the composed seam (live) or `nil` (sim) exactly as it is.
+    @MainActor
+    var bookedWindowsProvider: (any RideBookedWindowsProviding)? {
+        guard self == .riderScheduleBooked else { return nil }
+        let bookings = [
+            // The rider's OWN accepted reservation — the r15 collision itself.
+            Self.sampleBookedAnchor(day: "Tomorrow", time: "12:00 PM")
+                .map { DebugBookedWindowsEndpoint.Booking(anchor: $0, pending: false, own: true) },
+            // Somebody else's still-UNDECIDED request. Dimmed exactly as hard (the
+            // create path counts pending claims in full), worded differently.
+            Self.sampleBookedAnchor(day: "Tomorrow", time: "5:30 PM")
+                .map { DebugBookedWindowsEndpoint.Booking(anchor: $0, pending: true, own: false) }
+        ].compactMap { $0 }
+        return LiveRideBookedWindows(endpoint: DebugBookedWindowsEndpoint(bookings: bookings))
+    }
+
     /// The `activeRequest` record to seed the service with (nil = no request).
     private var seededRecord: RideRequestRecord? {
         switch self {
@@ -2508,6 +2597,21 @@ enum DebugScene: String, CaseIterable {
             viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
             viewer.debugFleetMemberOverride = DebugScene.flooredFleetMember
+            viewer.opensScheduleOnSearch = true
+            viewer.sheetPhase = .search
+        case .riderScheduleBooked:
+            // MYR-385 — `riderScheduleFloored`'s entry path VERBATIM (the same
+            // one-shot `opensScheduleOnSearch` hook, so the card opens by the route
+            // a Busy-CTA route takes), with two differences and no third: the car is
+            // PARKED with no service window, so nothing is floored; and the draft
+            // carries the r15 slot itself, so the card OPENS on the conflict and the
+            // §7.22 read lands underneath it. Everything the capture shows about the
+            // dimming came from the shipping store + `RideScheduleFloor`; the wire
+            // is injected in `bookedWindowsProvider`.
+            viewer.draftPickup = DebugScene.samplePickup
+            viewer.draftDestination = DebugScene.sampleDestination
+            viewer.debugFleetMemberOverride = DebugScene.bookedFleetMember
+            viewer.draftSchedule = RideSchedule(day: "Tomorrow", time: "12:00 PM")
             viewer.opensScheduleOnSearch = true
             viewer.sheetPhase = .search
         case .riderPlateChip:

@@ -474,7 +474,10 @@ final class LiveRideRequestService: RideRequestService {
                 if case RestError.rideActive(let active) = error {
                     await self.adoptRideActive(active)
                 } else if Self.isVehicleUnavailable(error) {
-                    self.failCreateVehicleUnavailable()
+                    // MYR-385 — the same arm, carrying WHICH refusal it was, so the
+                    // rider's notice can name the time conflict instead of asserting
+                    // the car became unavailable. Routing is identical either way.
+                    self.failCreateVehicleUnavailable(timeConflict: Self.isTimeConflict(error))
                 } else if Self.isScheduleWindowRefusal(error, input: input) {
                     self.failCreateScheduleWindow()
                 } else if Self.isSessionFailure(error) {
@@ -523,6 +526,18 @@ final class LiveRideRequestService: RideRequestService {
         (error as? RestError)?.isVehicleUnavailable == true
     }
 
+    /// MYR-385: True when that same `409 vehicle_unavailable` carries `subCode:
+    /// time_conflict` — MYR-383's per-vehicle window gate, i.e. the car is free but
+    /// the HOUR is taken.
+    ///
+    /// A STRICT NARROWING of the predicate above, so the routing is unchanged and
+    /// only the copy gets to be specific. Branches on the Kit's typed helper
+    /// (`RestError.isTimeConflict`), never the human message (FR-7.1) — even though
+    /// that message is the only thing naming the conflicting instant.
+    private static func isTimeConflict(_ error: Error) -> Bool {
+        (error as? RestError)?.isTimeConflict == true
+    }
+
     /// MYR-316: True when the failure is a typed `400 invalid_request` on a ride
     /// that carries a SCHEDULE — i.e. the server's service-window refusal.
     ///
@@ -560,11 +575,11 @@ final class LiveRideRequestService: RideRequestService {
     /// DRAFT lives in `SharedViewerState` and is untouched, so the rider can
     /// schedule the very same trip in one tap. No-op if the request was
     /// cancelled or already moved on.
-    private func failCreateVehicleUnavailable() {
+    private func failCreateVehicleUnavailable(timeConflict: Bool = false) {
         guard let request = activeRequest, request.status == .pending else { return }
         activeRequest = nil
         riderServerRideID = nil
-        vehicleUnavailableFailure = RideVehicleUnavailableFailure()
+        vehicleUnavailableFailure = RideVehicleUnavailableFailure(isTimeConflict: timeConflict)
     }
 
     /// DEFINITIVE create failure: the optimistic pending describes a ride that
@@ -691,7 +706,9 @@ final class LiveRideRequestService: RideRequestService {
                 // route as the create path instead of a silent snap-back. Still no
                 // retry: the same POST would 409 again.
                 if Self.isVehicleUnavailable(error) {
-                    self?.vehicleUnavailableFailure = RideVehicleUnavailableFailure()
+                    self?.vehicleUnavailableFailure = RideVehicleUnavailableFailure(
+                        isTimeConflict: Self.isTimeConflict(error) // MYR-385
+                    )
                 }
                 // MYR-316 — the ACCEPT half of the service-window refusal. An
                 // owner accepting a SCHEDULED request whose pickup precedes the

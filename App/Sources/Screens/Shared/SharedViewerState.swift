@@ -137,6 +137,20 @@ public final class SharedViewerState {
     /// coordinate (device/vehicle region) below.
     let isLiveLocation: Bool
 
+    /// MYR-385 — the schedule picker's §7.22 conflict read.
+    ///
+    /// Held HERE, not as `@State` on `RideRequestSearchContent`, for the reason
+    /// `rideRouteStore` and `recentDestinations` are: the round-4 engine keeps that
+    /// content mounted across the whole idle↔search range but `RootView` still
+    /// destroys the rider shell on a tab switch, and a per-mount cache would spend
+    /// a fresh request on every re-entry to a picker the rider already opened.
+    ///
+    /// Constructed on BOTH paths — with a `nil` provider in sim, which is a store
+    /// that cannot fetch (see `RideBookedWindowsStore`). One non-optional property
+    /// with a disabled interior beats an optional the picker has to unwrap: there
+    /// is no `if isLive` in the card, so there is no `if isLive` to get backwards.
+    let bookedWindows: RideBookedWindowsStore
+
     /// MYR-191 extension point — see `RiderSheetPhase`.
     public var sheetPhase: RiderSheetPhase = .idle
 
@@ -258,6 +272,8 @@ public final class SharedViewerState {
         liveVehicleLocator = seams.liveVehicleLocator
         pinLabeler = seams.pinLabeler
         isLiveLocation = seams.isLive
+        // MYR-385 — `nil` in sim, so this store exists and can never fetch.
+        bookedWindows = RideBookedWindowsStore(provider: seams.bookedWindows)
         // MYR-177 (client-approved): the tracking map draws REAL Apple Maps
         // driving routes in BOTH sim and live — "the route should be calculated
         // by Apple Maps until the Tesla integration", not the straight-line
@@ -1152,6 +1168,48 @@ public final class SharedViewerState {
     /// live mode (single-vehicle join), else the fixture looked up by id.
     public func fleetMember(forID id: String) -> FleetMember {
         liveFleetMember ?? (RideRequestFixtures.fleet.first { $0.id == id } ?? RideRequestFixtures.fleet[0])
+    }
+
+    // MARK: MYR-385 — the schedule picker's conflict read
+    //
+    // WHICH vehicle and WHICH range are derived exactly once, here, because three
+    // callers need the answer and they must not be able to disagree: the picker
+    // OPENING (a fresh read), a DAY-CHIP change (top up the range if the chips
+    // ever outgrow one request), and a create refused `409 time_conflict` (the one
+    // moment the previous answer is known to be wrong). A `refresh` spelled at
+    // three call sites is three chances to name a different car than the one the
+    // draft targets.
+    //
+    // Both are no-ops on the simulated path — not by a branch here, but because
+    // `RideBookedWindowsStore` holds no provider there.
+
+    /// The vehicle the schedule is being picked FOR — the same `fleetMember(forID:)`
+    /// resolution `RideRequestSearchContent.targetVehicle` and MYR-316's floor use,
+    /// so the windows read and the floor applied describe one car.
+    private var scheduleTargetVehicleID: String { fleetMember(forID: draftFleetMemberID).id }
+
+    /// Re-read §7.22 unconditionally.
+    func refreshBookedWindows(now: Date = Date(), calendar: Calendar = .current) {
+        guard let range = RideBookedWindowsRange.range(
+            days: RideScheduleDays.days(now: now, calendar: calendar), now: now, calendar: calendar
+        ) else { return }
+        bookedWindows.refresh(vehicleID: scheduleTargetVehicleID, from: range.from, to: range.to)
+    }
+
+    /// Read §7.22 only when the picker's chip range is not already covered.
+    func ensureBookedWindowsCovered(now: Date = Date(), calendar: Calendar = .current) {
+        guard let range = RideBookedWindowsRange.range(
+            days: RideScheduleDays.days(now: now, calendar: calendar), now: now, calendar: calendar
+        ) else { return }
+        bookedWindows.ensureCovered(vehicleID: scheduleTargetVehicleID, from: range.from, to: range.to)
+    }
+
+    /// The windows held for the vehicle THIS draft targets — `[]` whenever nothing
+    /// has landed, the read failed, the path is simulated, or the draft has since
+    /// been re-pointed at another car. Empty dims nothing, which is the picker
+    /// exactly as it behaved before MYR-385.
+    var draftBookedWindows: [RideBookedWindow] {
+        bookedWindows.windows(for: scheduleTargetVehicleID)
     }
 
     // MARK: MYR-216 deliverable 2 — pin-drop back affordance

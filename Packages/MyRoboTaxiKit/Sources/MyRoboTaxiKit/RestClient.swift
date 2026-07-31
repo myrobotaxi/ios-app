@@ -17,7 +17,7 @@ public protocol SnapshotFetching: Sendable {
 ///
 /// Value type (`Sendable`): all dependencies are immutable, so it is free to
 /// share across tasks without a serialization bottleneck.
-public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleServiceWindowEndpoint, VehicleRideShareEndpoint, VehicleRefreshing, VehicleCommandSending, VehicleSharingEndpoint, PushDeviceEndpoint, RideActivityTokenEndpoint, PushPrefsEndpoint, AccountDeletionEndpoint {
+public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleServiceWindowEndpoint, VehicleRideShareEndpoint, VehicleBookedWindowsEndpoint, VehicleRefreshing, VehicleCommandSending, VehicleSharingEndpoint, PushDeviceEndpoint, RideActivityTokenEndpoint, PushPrefsEndpoint, AccountDeletionEndpoint {
     private let environment: BackendEnvironment
     private let tokenProvider: any TokenProvider
     private let http: any HTTPPerforming
@@ -246,6 +246,51 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
     /// Empty JSON body sentinel for the action POSTs that take no payload
     /// (`/cancel`, `/accept`, `/decline`). Encodes to `{}`.
     private struct Empty: Encodable {}
+
+    // MARK: - Booked windows (rest-api.md §7.22, MYR-385)
+
+    /// `GET /api/vehicles/{vehicleId}/booked-windows?from=&to=` — the vehicle's
+    /// blocked intervals, so a rider's schedule picker can dim conflicting slots
+    /// BEFORE submitting. See ``VehicleBookedWindowsEndpoint`` for the five
+    /// properties of this surface that shape every consumer.
+    ///
+    /// Returns the `VehicleBookedWindowsResponse` envelope WHOLE rather than
+    /// unwrapping to `[BookedWindow]`, matching `drives` / `rideRequests`: the
+    /// schema says in as many words that "the envelope is part of the wire
+    /// contract: consumers MUST NOT strip it silently".
+    ///
+    /// Both bounds are formatted as UTC `Z`. §7.22 recommends it, and it is what
+    /// makes the `+`-in-a-numeric-offset trap (a literal `+` decodes to a space
+    /// server-side → `400`) unreachable rather than merely documented:
+    /// `URLComponents` does not escape `+` in a query value.
+    public func bookedWindows(
+        vehicleID: String,
+        from: Date,
+        to: Date
+    ) async throws -> VehicleBookedWindowsResponse {
+        try await get(
+            ["vehicles", vehicleID, "booked-windows"],
+            query: [
+                URLQueryItem(name: "from", value: Self.bookedWindowsInstant(from)),
+                URLQueryItem(name: "to", value: Self.bookedWindowsInstant(to))
+            ]
+        )
+    }
+
+    /// RFC 3339 UTC, seconds precision, always `Z`-suffixed — never a numeric
+    /// offset. See the note on ``bookedWindows(vehicleID:from:to:)``.
+    ///
+    /// Built PER CALL rather than cached in a `static let`, following `RFC3339`'s
+    /// own reasoning: `ISO8601DateFormatter` is not `Sendable`, so a shared
+    /// instance needs `nonisolated(unsafe)` in the Kit's Swift 6 language mode —
+    /// a data-race hazard bought to save two allocations on a path that runs once
+    /// per picker opening.
+    private static func bookedWindowsInstant(_ instant: Date) -> String {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        return f.string(from: instant)
+    }
 
     // MARK: - Vehicle commands (rest-api.md §7.9, MYR-249 / P11 — owner actuation)
 
