@@ -72,6 +72,37 @@ struct AppleRideRouteProvider: RideRouteProvider {
     }
 }
 
+// MARK: - What counts as a ROUTE (MYR-237 client rule, named once — MYR-293)
+
+/// The client's standing rule, as one predicate: **a straight line is not a
+/// route.** `RideRouteProvider` is deliberately TOTAL — it always answers with a
+/// polyline, degrading to the straight `[from, to]` pair on any failure — so the
+/// honesty decision is not "did the fetch succeed" but "is what came back real
+/// road geometry".
+///
+/// MYR-237 shipped this predicate inline on the rider's review map
+/// (`RideRequestRouteMap.isRealRoute`) and MYR-293 found the two OWNER surfaces
+/// drawing straight 2-point lines with no predicate at all — the owner's leg-1
+/// tracking route and the incoming-request card's mini-map. It lives here now so
+/// every surface that can draw a ride route spells the rule the same way, and a
+/// new one cannot quietly invent a looser test.
+///
+/// **Two points is the tell, not a heuristic.** MKDirections returns a decoded
+/// `MKPolyline` whose vertices follow the roads; a real automobile route between
+/// two distinct places has never been two points. The only two-point polylines in
+/// this app are the ones the provider synthesizes itself when it has nothing.
+enum RideRoutePolyline {
+    /// Real road geometry (many vertices) — safe to draw as a route.
+    static func isReal(_ route: [CLLocationCoordinate2D]) -> Bool { route.count > 2 }
+
+    /// The polyline a surface may DRAW: the route itself when it is real, and
+    /// EMPTY otherwise. Callers render nothing (pins only) for the empty case
+    /// rather than etching the provider's straight fallback.
+    static func drawable(_ route: [CLLocationCoordinate2D]) -> [CLLocationCoordinate2D] {
+        isReal(route) ? route : []
+    }
+}
+
 // MARK: - Route geometry (pure, unit-tested — MYR-177 deviation logic)
 
 enum RideRouteGeometry {
@@ -135,12 +166,35 @@ final class RideRouteStore {
     /// must not lock the straight fallback in forever).
     @ObservationIgnored private var leg2AttemptAt: Date?
     @ObservationIgnored private var leg1Origin: CLLocationCoordinate2D?
+    /// The PICKUP the cached `leg1` was fetched against (MYR-293). Leg 1's origin
+    /// moves with the car, so the pair key `leg2` uses would never match; its
+    /// identity is the destination alone. Without it a dispatch handed to a
+    /// different pickup would keep drawing the previous ride's road geometry —
+    /// real road geometry, to the wrong place, which is worse than a straight line.
+    @ObservationIgnored private var leg1Pickup: String?
+    /// When the last leg-1 attempt for `leg1Pickup` STARTED — the same fallback
+    /// retry clock `leg2AttemptAt` is (MYR-293). Leg 1 could previously rely on
+    /// the car's own deviation to force a retry, but a car driving straight down
+    /// the fallback line never deviates from it, so a throttled first fetch left
+    /// the owner map with pins and nothing to bring the route back.
+    @ObservationIgnored private var leg1AttemptAt: Date?
     @ObservationIgnored private var leg1Task: Task<Void, Never>?
     @ObservationIgnored private var leg2Task: Task<Void, Never>?
 
-    init(provider: RideRouteProvider, deviationThresholdMeters: Double = MRTMetrics.rideRouteDeviationThresholdMeters) {
+    /// The cooldown THIS store applies before re-asking for a leg whose last
+    /// answer was the straight fallback. Defaults to `fallbackRetryCooldown`;
+    /// injectable so tests can exercise the retry without an 8-second sleep —
+    /// the same reason `deviationThresholdMeters` is a parameter.
+    @ObservationIgnored private let retryCooldown: TimeInterval
+
+    init(
+        provider: RideRouteProvider,
+        deviationThresholdMeters: Double = MRTMetrics.rideRouteDeviationThresholdMeters,
+        fallbackRetryCooldown: TimeInterval = RideRouteStore.fallbackRetryCooldown
+    ) {
         self.provider = provider
         self.deviationThresholdMeters = deviationThresholdMeters
+        self.retryCooldown = fallbackRetryCooldown
     }
 
     private static func key(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> String {
@@ -162,7 +216,7 @@ final class RideRouteStore {
             // Same pair: done if a REAL route is cached or a fetch is running;
             // a cached 2-point fallback retries after the cooldown.
             guard leg2Task == nil, leg2.count <= 2 else { return }
-            if let last = leg2AttemptAt, Date().timeIntervalSince(last) < Self.fallbackRetryCooldown { return }
+            if let last = leg2AttemptAt, Date().timeIntervalSince(last) < retryCooldown { return }
         }
         leg2Key = l2Key
         leg2AttemptAt = Date()
@@ -178,17 +232,51 @@ final class RideRouteStore {
     /// (Re)fetch the car → pickup route on first entry or a MATERIAL deviation
     /// (the car took a different road — `RideRouteGeometry.shouldRefetch`),
     /// never on a timer. Called only while heading to pickup (leg 1).
+    ///
+    /// MYR-293 adds the two guards leg 2 already had. (1) A NEW PICKUP drops the
+    /// cached polyline immediately, so nothing can render a prior ride's route
+    /// under a new destination while the refetch is in flight. (2) A cached
+    /// 2-POINT fallback — MKDirections throttled, offline, or failed — retries
+    /// after `fallbackRetryCooldown`, because the caller now draws NOTHING for a
+    /// fallback (the client's no-straight-lines rule) and deviation alone cannot
+    /// be relied on to bring the route back: a car following the fallback line
+    /// never strays from it.
     func ensureLeg1(carPosition: CLLocationCoordinate2D, pickup: CLLocationCoordinate2D) {
-        let needsLeg1 = leg1.isEmpty
-            || RideRouteGeometry.shouldRefetch(carPosition: carPosition, cachedRoute: leg1, thresholdMeters: deviationThresholdMeters)
-        guard needsLeg1, leg1Task == nil else { return }
+        let key = Self.key(pickup, pickup)
+        if leg1Pickup != key {
+            // A different pickup entirely: this cache is about another ride.
+            leg1Task?.cancel(); leg1Task = nil
+            leg1 = []
+            leg1Pickup = key
+            leg1AttemptAt = nil
+        }
+        let deviated = !leg1.isEmpty
+            && RideRouteGeometry.shouldRefetch(carPosition: carPosition, cachedRoute: leg1, thresholdMeters: deviationThresholdMeters)
+        // A cached fallback is not a route — retry it on the cooldown, exactly as
+        // `ensureLeg2` does for the same shape of result.
+        let retriesFallback = !leg1.isEmpty
+            && !RideRoutePolyline.isReal(leg1)
+            && (leg1AttemptAt.map { Date().timeIntervalSince($0) >= retryCooldown } ?? true)
+        guard leg1.isEmpty || deviated || retriesFallback, leg1Task == nil else { return }
         leg1Origin = carPosition
+        leg1AttemptAt = Date()
         leg1Task = Task { [weak self, provider] in
             let route = await provider.route(from: carPosition, to: pickup)
             guard !Task.isCancelled else { return }
             self?.leg1 = route
             self?.leg1Task = nil
         }
+    }
+
+    /// The car → pickup polyline IFF it is currently cached for EXACTLY this
+    /// pickup (else `nil`) — the leg-1 twin of ``leg2Route(pickup:destination:)``,
+    /// and for the same reason: the store outlives one ride, so a caller must be
+    /// able to tell "no route yet" from "a route to somewhere else". Returns the
+    /// straight fallback too; the caller decides whether it is real enough to draw
+    /// (`RideRoutePolyline`).
+    func leg1Route(pickup: CLLocationCoordinate2D) -> [CLLocationCoordinate2D]? {
+        guard leg1Pickup == Self.key(pickup, pickup), leg1.count > 1 else { return nil }
+        return leg1
     }
 
     /// The pickup → destination polyline IFF it is currently cached for EXACTLY
@@ -211,6 +299,7 @@ final class RideRouteStore {
         leg1Task?.cancel(); leg1Task = nil
         leg2Task?.cancel(); leg2Task = nil
         leg1 = []; leg2 = []
-        leg1Origin = nil; leg2Key = nil; leg2AttemptAt = nil
+        leg1Origin = nil; leg1Pickup = nil; leg1AttemptAt = nil
+        leg2Key = nil; leg2AttemptAt = nil
     }
 }

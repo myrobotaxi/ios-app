@@ -19,6 +19,25 @@ import SwiftUI
 //     wider underlay polyline (lineWidth ≈ 10, gold at ~0.25) beneath the
 //     travelled segment.
 
+/// The gold alphas a LIVE ride route is stroked with on a real MapKit overlay.
+///
+/// `RouteLine`'s own 0.30 (above) is the prototype's number for a route being
+/// *illustrated* — a vignette, a story-deck tile, a static hero. MYR-234 found it
+/// far too faint for a route being *driven*: at trip start `progress ≈ 0`, so the
+/// whole line is the dim wash and there is nothing to read. The rider's tracking
+/// map has stroked its ACTIVE leg at 0.85 since then, and MYR-293 is the client
+/// reporting the same thing about the OWNER's map — *"Route poly line feels hard
+/// to see"* — which was still on 0.30.
+///
+/// Named here so the two live surfaces cannot drift apart again: they are one
+/// treatment for one thing, not two literals that happen to agree.
+public enum MRTRouteStroke {
+    /// The not-yet-travelled remainder of the leg being driven.
+    public static let aheadOpacity: Double = 0.85
+    /// The travelled portion, above its glow underlay.
+    public static let travelledOpacity: Double = 0.95
+}
+
 /// Open polyline through `points`, given in the view's local coordinates.
 public struct RoutePolylineShape: Shape {
     public var points: [CGPoint]

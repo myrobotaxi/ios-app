@@ -130,6 +130,66 @@ struct HomeScreen: View {
         return ride.input.pickup.coordinate
     }
 
+    // MARK: - MYR-293 — real road routes on the two owner surfaces
+    //
+    // Both surfaces read the ONE `RideRouteStore` on `OwnerHomeState` (see its
+    // declaration for why it lives there). Neither reconcile has any camera
+    // effect: the routes are map CONTENT, and the polyline arriving late changes
+    // what is drawn on the frame, never the frame — the MYR-237 overlay pattern.
+    // `VehicleMapView`'s camera writers are untouched by this issue.
+
+    /// The DISPATCHED vehicle's current coordinate — the origin leg 1 is fetched
+    /// from. Reuses `carPosition(for:)`, so it joins the ride to the fleet by id
+    /// and honours the same "0,0 = no fix" sentinel: a car with no fix has no
+    /// route to fetch, and the map shows the pickup marker alone.
+    private var dispatchedCarPosition: CLLocationCoordinate2D? {
+        dispatchedRide.flatMap { carPosition(for: $0) }
+    }
+
+    /// A ~11m-resolution key for the dispatched car's position. The simulated trip
+    /// ticks at 30Hz and a live device streams ~1Hz, so reconciling on the raw
+    /// coordinate would ask the store on every frame; the store's own guards would
+    /// absorb it, but the `.onChange` would not. Quantizing here keeps the ask at
+    /// human cadence — the store then decides whether the car has actually
+    /// DEVIATED enough to be worth a new MKDirections call.
+    private var dispatchedCarPositionKey: String? {
+        dispatchedCarPosition.map { String(format: "%.4f,%.4f", $0.latitude, $0.longitude) }
+    }
+
+    /// The resolved car → pickup road polyline for the dispatched leg, or empty.
+    /// Keyed on the CURRENT pickup, so a route cached for a previous ride can
+    /// never render under this one.
+    private var dispatchedLeg1Route: [CLLocationCoordinate2D] {
+        guard let pickup = leg1PickupCoordinate else { return [] }
+        return homeState.rideRouteStore.leg1Route(pickup: pickup) ?? []
+    }
+
+    /// The resolved pickup → destination road polyline for the card currently
+    /// awaiting a decision, or empty while it is in flight / after a failure.
+    private var incomingRequestRoute: [CLLocationCoordinate2D] {
+        guard let request = incomingRequest else { return [] }
+        return homeState.rideRouteStore.leg2Route(
+            pickup: request.input.pickup.coordinate,
+            destination: request.input.destination.coordinate
+        ) ?? []
+    }
+
+    /// Ask the store for whichever of the two routes this screen currently needs.
+    /// Cheap to call on every trigger — both `ensure` methods are no-ops once the
+    /// pair is cached with real geometry, and both retry a 2-point fallback only
+    /// after their shared cooldown.
+    private func reconcileOwnerRoutes() {
+        if let pickup = leg1PickupCoordinate, let car = dispatchedCarPosition {
+            homeState.rideRouteStore.ensureLeg1(carPosition: car, pickup: pickup)
+        }
+        if let request = incomingRequest {
+            homeState.rideRouteStore.ensureLeg2(
+                pickup: request.input.pickup.coordinate,
+                destination: request.input.destination.coordinate
+            )
+        }
+    }
+
     /// MYR-265 — the active DISPATCHED ride this owner is tracking (accepted →
     /// enroute → completed), or `nil` when there is none / it is still pending
     /// (the incoming sheet handles pending). The owner observes the live status
@@ -246,7 +306,17 @@ struct HomeScreen: View {
         // zIndex 30) and overlaps the sheet's bottom edge exactly like the
         // prototype.
         .mrtBottomNav(selection: $ownerTab, hidden: sheetCoversMap)
-        .onAppear { homeState.startTelemetry() }
+        .onAppear {
+            homeState.startTelemetry()
+            reconcileOwnerRoutes()
+        }
+        // MYR-293 — the three inputs either owner route depends on. A new incoming
+        // card is one fetch; the dispatched leg re-asks as the car moves (the store
+        // answers only on a material deviation) and drops its cache outright when
+        // the pickup changes.
+        .onChange(of: incomingRequest?.id) { _, _ in reconcileOwnerRoutes() }
+        .onChange(of: dispatchedCarPositionKey) { _, _ in reconcileOwnerRoutes() }
+        .onChange(of: leg1PickupCoordinate.map { "\($0.latitude),\($0.longitude)" }) { _, _ in reconcileOwnerRoutes() }
         .onChange(of: homeState.selectedVehicleIndex) { _, _ in
             isFollowing = true
             // Live fleet: narrow the socket subscription to the newly selected
@@ -308,6 +378,10 @@ struct HomeScreen: View {
                 // the NEXT request re-presents through this very same path when the
                 // current one resolves (no new sheet type, no list surface in v1).
                 waitingCount: rideRequestService.waitingIncomingCount,
+                // MYR-293 — the card's real pickup → destination road geometry;
+                // empty until MKDirections answers, and the map then draws its two
+                // pins with no line rather than a fabricated straight one.
+                route: incomingRequestRoute,
                 onAccept: handleAccept,
                 onDecline: { rideRequestService.decline() }
             )
@@ -422,10 +496,13 @@ struct HomeScreen: View {
         let snapshot = telemetry.snapshot
         // screens.jsx:400 — driving always uses the 280pt peek; parked uses the
         // 'floating' style's 210pt (the only `parkedStyle` this app ships).
+        //
+        // MYR-294 — a car driving with NO active navigation renders a hero the
+        // prototype has no band for (no destination headline, no arrival pair, no
+        // trip bar), so it takes its own measured base. Every fixture trip is
+        // navigating, so the simulated path never reaches it.
         let peekHeight = MRTMetrics.homePeekHeight(
-            base: snapshot.status == .driving
-                ? MRTMetrics.homePeekHeightDriving
-                : MRTMetrics.homePeekHeightParked,
+            base: Self.peekBase(vehicle: vehicle, snapshot: snapshot),
             qualifiers: peekQualifiers(snapshot: snapshot)
         )
 
@@ -438,9 +515,12 @@ struct HomeScreen: View {
             // (now physically flush) sheet below — see `VehicleMapView`'s
             // doc comment and MYR-196 punch-list #2.
             bottomContentInset: mapBottomInset(peekHeight: peekHeight),
-            // MYR-277 B — draw the dispatched car→pickup route (leg 1) while the
-            // owner's active ride is heading to the pickup (accepted/arrived).
-            pickupCoordinate: leg1PickupCoordinate
+            // MYR-277 B — mark the dispatched ride's pickup while the owner's
+            // active ride is heading to it (accepted/arrived).
+            pickupCoordinate: leg1PickupCoordinate,
+            // MYR-293 — and draw the REAL road route to it. Empty (in flight, or
+            // only a straight fallback resolved) leaves the marker without a line.
+            pickupRoute: dispatchedLeg1Route
         )
         .id(vehicle.id) // fresh camera state per vehicle on switch
         .ignoresSafeArea()
@@ -591,6 +671,35 @@ struct HomeScreen: View {
     /// (`MRTHomePeekQualifier.reservedHeight`), so the clearance under the hero is
     /// the prototype's in every variant. `OwnerPeekBandTests` measures the real
     /// views against that rule.
+    /// MYR-294 — the band for the hero this vehicle actually renders.
+    ///
+    /// Three heroes now, not two: parked (210), driving-a-TRIP (280), and the
+    /// honest driving hero, which is shorter than either because it has no
+    /// destination line, no arrival pair and no trip progress bar.
+    ///
+    /// It switches on the SAME `DrivingHeroElement.location` the hero itself
+    /// gates that line on — "the hero has nothing to say but a speed" — rather
+    /// than on the navigation case. That is what keeps this to two driving bands:
+    /// a `.resolvingDestination` whose ETA and progress have landed renders the
+    /// full trip hero and takes 280, and one that has landed nothing yet renders
+    /// the same shape `.none` does and takes the short band with it. Deriving the
+    /// band from the navigation case instead would put a 40pt hole under the
+    /// second (measured), which is precisely the MYR-345 defect.
+    ///
+    /// Pure + static so `OwnerPeekBandTests` can measure the real views against it.
+    static func peekBase(vehicle: Vehicle, snapshot: VehicleTelemetrySnapshot) -> CGFloat {
+        guard snapshot.status == .driving else { return MRTMetrics.homePeekHeightParked }
+        guard case .driving(let trip) = vehicle.activity else { return MRTMetrics.homePeekHeightDriving }
+        let elements = DrivingHeroElement.resolve(
+            navigation: trip.navigation,
+            etaMinutes: snapshot.etaMinutes,
+            progress: snapshot.progress
+        )
+        return elements.contains(.location)
+            ? MRTMetrics.homePeekHeightDrivingNoNavigation
+            : MRTMetrics.homePeekHeightDriving
+    }
+
     private func peekQualifiers(snapshot: VehicleTelemetrySnapshot) -> [MRTHomePeekQualifier] {
         var qualifiers: [MRTHomePeekQualifier] = []
         // Rendered by the PARKED hero only (`ParkedSummary.serviceCompletion`);
@@ -826,7 +935,11 @@ struct HomeScreen: View {
                 vehicle: vehicle,
                 trip: trip,
                 snapshot: snapshot,
-                freshness: freshnessStamp(snapshot: snapshot)
+                freshness: freshnessStamp(snapshot: snapshot),
+                // MYR-294 — where the car is, for the no-navigation hero. Same
+                // value the Route section's origin leg carries, so the peek and
+                // the dense layer can never name two different places.
+                currentLocation: trip.originLabel
             )
         case .parked(let location):
             ParkedSummary(
@@ -863,7 +976,8 @@ struct HomeScreen: View {
                 isLive: isLive,
                 // The SAME model the peek layer gets — the crossfade dissolves the
                 // two summaries into each other, so they must match line for line.
-                freshness: freshnessStamp(snapshot: snapshot)
+                freshness: freshnessStamp(snapshot: snapshot),
+                currentLocation: trip.originLabel
             )
         case .parked(let location):
             ParkedHeroContent(

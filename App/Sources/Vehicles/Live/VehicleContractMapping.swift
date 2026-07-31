@@ -229,6 +229,47 @@ enum VehicleContractMapping {
         return .parked(parkedLocation(from: state))
     }
 
+    /// What the wire says about navigation, folded onto the ONE value the hero
+    /// switches on (MYR-294). THE place `"Navigating"` used to be invented.
+    ///
+    /// The test is the contract's own: the navigation **atomic group** is
+    /// all-or-nothing and its nullability is *"Null = no active navigation"*, so
+    /// this asks whether ANY member is present. It deliberately does not privilege
+    /// `destinationName` — that is precisely the field Tesla delivers LAST (the
+    /// client: *"Taking a long time to populate destination name even though route
+    /// appeared"*), and gating on it would classify the first ~60s of every real
+    /// trip as "not navigating".
+    ///
+    /// Every member is listed rather than sampling one or two. The group's
+    /// consistency predicates hold for the DB snapshot, but during the server's
+    /// 500ms accumulation window individual members may legitimately arrive
+    /// apart, so "navigation is on" is the union and nothing narrower.
+    static func navigation(from state: VehicleState) -> DrivingNavigation {
+        let active = state.destinationName != nil
+            || state.destinationAddress != nil
+            || state.destinationLatitude != nil
+            || state.destinationLongitude != nil
+            || state.originLatitude != nil
+            || state.originLongitude != nil
+            || state.etaMinutes != nil
+            || state.tripDistanceRemaining != nil
+            || state.navRouteCoordinates != nil
+        guard active else { return .none }
+        // Navigation IS on. A missing (or blank) name is a name that has not
+        // landed yet — never a reason to print a word Tesla did not send.
+        guard let name = nonEmpty(state.destinationName) else { return .resolvingDestination }
+        return .destination(
+            name: name,
+            // `destinationAddress` is SNAPSHOT-ONLY today: the telemetry writer
+            // persists it but does not put it on the nav atomic group's live
+            // broadcast, so on a WS-fed trip both of these stay nil while the name
+            // is present. Both consumers already omit their line for nil — see the
+            // enabler follow-up noted on MYR-294.
+            city: cityComponent(from: state.destinationAddress),
+            address: nonEmpty(state.destinationAddress)
+        )
+    }
+
     static func drivingTrip(from state: VehicleState) -> DrivingTrip {
         let route = routeCoordinates(from: state.navRouteCoordinates)
         let currentPosition = position(from: state)
@@ -244,11 +285,9 @@ enum VehicleContractMapping {
             resolvedRoute = [currentPosition]
         }
         return DrivingTrip(
-            destinationName: nonEmpty(state.destinationName) ?? "Navigating",
-            destinationCity: cityComponent(from: state.destinationAddress) ?? "",
+            navigation: navigation(from: state),
             originLabel: nonEmpty(state.locationName) ?? "Start",
-            originAddress: state.locationAddress,
-            destinationAddress: state.destinationAddress ?? "",
+            originAddress: nonEmpty(state.locationAddress),
             route: resolvedRoute
         )
     }
@@ -353,12 +392,14 @@ enum VehicleContractMapping {
     static func placeholderActivity(for summary: VehicleSummary) -> VehicleActivity {
         switch summary.status {
         case .driving:
+            // MYR-294 — `.none`, not the old `"Navigating"` literal. The lean list
+            // `VehicleSummary` carries no navigation fields AT ALL, so "we do not
+            // know of any navigation" is the only true statement available here;
+            // the real answer arrives with the first `VehicleState`, seconds later.
             return .driving(DrivingTrip(
-                destinationName: "Navigating",
-                destinationCity: "",
+                navigation: .none,
                 originLabel: "Start",
-                originAddress: "",
-                destinationAddress: "",
+                originAddress: nil,
                 route: []
             ))
         default:

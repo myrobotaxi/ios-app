@@ -97,14 +97,24 @@ final class OwnerPeekBandTests: XCTestCase {
         )
     }
 
-    private func drivingHero(stamp freshness: VehicleFreshnessStampModel?) -> some View {
+    private func drivingHero(
+        stamp freshness: VehicleFreshnessStampModel?,
+        // MYR-294 — the navigation state the hero is rendering. The default is
+        // the fixture's own named destination, so every pre-existing assertion
+        // below measures exactly the hero it always did.
+        navigation: DrivingNavigation? = nil
+    ) -> some View {
         let vehicle = VehicleFixtures.vehicles.first { $0.activity.isDriving }!
-        guard case .driving(let trip) = vehicle.activity else { preconditionFailure() }
+        guard case .driving(let fixtureTrip) = vehicle.activity else { preconditionFailure() }
+        let trip = navigation.map {
+            DrivingTrip(navigation: $0, originLabel: fixtureTrip.originLabel, originAddress: fixtureTrip.originAddress, route: fixtureTrip.route)
+        } ?? fixtureTrip
         return DrivingSummary(
             vehicle: vehicle,
             trip: trip,
             snapshot: snapshot(driving: true, live: freshness != nil),
-            freshness: freshness
+            freshness: freshness,
+            currentLocation: trip.originLabel
         )
     }
 
@@ -205,6 +215,88 @@ final class OwnerPeekBandTests: XCTestCase {
             XCTAssertGreaterThan(gap, 24, "driving=\(driving): the stamp would crowd the menu")
             XCTAssertLessThan(gap, 48, "driving=\(driving): that reads as a hole")
         }
+    }
+
+    // MARK: MYR-294 — the third hero
+
+    /// How far the honest hero's LAYOUT clearance sits below the navigating
+    /// hero's, at the ink-parity band — and why that is correct rather than a
+    /// shortfall.
+    ///
+    /// MYR-345's rule is that the reserve is tuned against INK, because the gap
+    /// the owner sees is measured from the last visible pixel. There the two
+    /// differed by ~2pt. Here they differ by ~5, because the two heroes END ON
+    /// DIFFERENT KINDS OF THING: the navigating hero's last element is
+    /// `TripProgressBar`, whose 15pt orb (plus a 2pt ring) OVERFLOWS the bar's own
+    /// 14pt frame, so its ink reaches ~2pt BELOW its layout box; the honest hero's
+    /// is a 12pt location line, whose glyphs stop ~2pt ABOVE its own.
+    ///
+    /// Full-frame ink measurements on iPhone 17 Pro, which is what the band was
+    /// actually tuned to: **42.7pt** of clearance for the navigating hero, 46.7pt
+    /// at a layout-parity band of 238, and **42.7pt at 234**.
+    ///
+    /// It is carried EXPLICITLY, and bounded below, rather than absorbed by
+    /// widening the tolerance — an offset a test states is one a reviewer can
+    /// argue with, and the bound is what stops a real hole hiding behind it.
+    private static let noNavigationInkOffset: CGFloat = 5
+
+    /// The HONEST DRIVING HERO must leave the same gap above the nav that the two
+    /// prototype heroes do.
+    ///
+    /// This is MYR-345's rule pointed the other way. That issue was about a
+    /// live-only LINE being reserved MORE room than it measures, so the surplus
+    /// landed in the one gap under a top-aligned hero. A car driving with no
+    /// navigation renders a hero with three fewer elements — no destination
+    /// headline, no "Arriving in N min · ETA h:mm" pair, no trip progress bar —
+    /// and holding it at the prototype's 280 would put ~46 points into that same
+    /// gap. A hero that gives lines back gives its room back.
+    func testTheNoNavigationHeroKeepsTheDrivingGap() {
+        let hero = heroHeight(drivingHero(stamp: nil, navigation: DrivingNavigation.none))
+        let measured = clearance(peek: MRTMetrics.homePeekHeightDrivingNoNavigation, hero: hero)
+        XCTAssertEqual(
+            measured,
+            baselineClearance(driving: true) - Self.noNavigationInkOffset,
+            accuracy: Self.tolerance
+        )
+    }
+
+    /// The same hero WITH the live-only freshness stamp — the realistic pairing,
+    /// since this state is live-path-only and a live snapshot always carries a
+    /// recency to be honest about.
+    func testTheNoNavigationHeroKeepsItsGapWithTheStampToo() {
+        let hero = heroHeight(drivingHero(stamp: stamp, navigation: DrivingNavigation.none))
+        let peek = MRTMetrics.homePeekHeight(
+            base: MRTMetrics.homePeekHeightDrivingNoNavigation,
+            qualifiers: [.freshnessStamp]
+        )
+        XCTAssertEqual(
+            clearance(peek: peek, hero: hero),
+            baselineClearance(driving: true) - Self.noNavigationInkOffset,
+            accuracy: Self.tolerance
+        )
+    }
+
+    /// The offset is a FONT-METRICS correction, not a licence to under-reserve.
+    /// The client's own complaint was worth ~7pt; anything approaching that is a
+    /// hole, not a correction.
+    func testTheInkOffsetStaysSmallEnoughToBeACorrection() {
+        XCTAssertGreaterThan(Self.noNavigationInkOffset, 0)
+        XCTAssertLessThan(
+            Self.noNavigationInkOffset, 8,
+            "an offset this large is a gap being explained away rather than a font-metrics difference"
+        )
+    }
+
+    /// A destination whose NAME is still coming keeps the FULL driving band:
+    /// the speed holds the headline line the name will take over. The two must
+    /// measure the same or the sheet visibly jumps the moment Tesla sends it.
+    func testTheResolvingHeroIsTheSameHeightAsTheNamedOne() {
+        XCTAssertEqual(
+            heroHeight(drivingHero(stamp: nil, navigation: .resolvingDestination)),
+            heroHeight(drivingHero(stamp: nil)),
+            accuracy: Self.tolerance,
+            "the speed occupies the headline line, so the block does not resize when the name lands"
+        )
     }
 
     // MARK: The drift gate

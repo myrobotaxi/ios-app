@@ -34,6 +34,94 @@ import DesignSystem
 // snaps shut at settle (bug (b) fixed). See `MRTDetentSheet`'s crossfade
 // initializer and `HomeScreen`'s peek/expanded builders.
 
+// MARK: - What the driving hero may render (MYR-294 — CLIENT-DIRECTED)
+//
+// The client, watching the first build of this issue on a simulator: *"why are
+// you skeleton loading when no route that looks so weird and useless"*, and then
+// the rule itself: *"if no route then no need to show a route, if a route is
+// about to arrive then sure thats fine bc we're loading something"*.
+//
+// The first cut rendered an `MRTSkeletonBar` in the destination slot whenever
+// navigation was on without a name, on the reasoning that Tesla usually sends
+// `DestinationName` within ~60s. He is right and that reasoning was wrong: **a
+// skeleton is a promise that something is arriving, and the client is not
+// fetching anything.** `DestinationName` is a value Tesla either pushes or does
+// not; there is no request in flight, no deadline, and nothing to time out — so
+// the shimmer had no honest end state and would sit there indefinitely on a car
+// whose name never came.
+//
+// THE RULE, as he stated it: the test is *"is a fetch actually running"*, not
+// "might we have a route someday".
+//   • Route/nav data ABSENT → render NO route UI at all. No progress bar, no leg
+//     rows, no placeholder lines, nothing that implies a route exists. Facts we
+//     genuinely hold (the speed, the car's own street) stay, as plain text.
+//   • A fetch GENUINELY IN FLIGHT may shimmer — and must still resolve or time
+//     out to an honest state.
+//
+// Nothing in this hero is in the second category, so **this type has no
+// placeholder case at all** and `DrivingHeroElementTests` asserts that it never
+// grows one. (The MYR-293 route fetch on the owner MAP is the second category and
+// is already bounded — `AppleRideRouteProvider.deadline` is 8s and the honest end
+// state is pins with no line. It draws no shimmer either, because "absent" and
+// "in flight" look the same from the map's side and the stricter rule is safe.)
+
+/// One element of the driving hero. The set is a pure function of the wire, so
+/// what the hero shows can be asserted without rendering it — and every element
+/// is a REAL statement about the car, with no stand-in for a missing one.
+enum DrivingHeroElement: CaseIterable, Sendable {
+    /// The destination's name, at hero size. Only when the wire actually named it.
+    case destinationTitle
+    /// The live speed. Always present; it is the headline when nothing else is.
+    case speed
+    /// "Arriving in N min" + "ETA h:mm".
+    case arrival
+    /// The car's own current street — the honest answer to "where is it" when
+    /// there is no journey to describe.
+    case location
+    /// The trip progress bar.
+    case progressBar
+    /// The dense layer's Route section (label + both legs).
+    case routeSection
+
+    /// The whole rule, in one place.
+    ///
+    /// - `destinationTitle` / `routeSection`: need a NAMED destination. The Route
+    ///   section is a two-ended statement and an unnameable second end leaves
+    ///   nothing to list, so the section goes rather than showing a dot with a
+    ///   placeholder beside it.
+    /// - `arrival`: needs active navigation AND a real `etaMinutes`. The
+    ///   snapshot's ETA is a non-optional `Int` collapsing an absent wire value to
+    ///   0 (`VehicleContractMapping`), which used to render as "Arriving in 0 min"
+    ///   beside an "ETA" of `Date() + 0` — i.e. now. 0 is reachable even with
+    ///   navigation genuinely on, because `etaMinutes` may arrive apart from its
+    ///   nav siblings inside the server's 500ms accumulation window.
+    /// - `progressBar`: needs active navigation AND a real progress fraction.
+    ///   `TripProgressBar` CLAMPS to 0.05, so a 0 progress draws its orb 5% along
+    ///   a journey — a fabricated position, and on a car with no navigation a
+    ///   fabricated journey as well.
+    /// - `location`: exactly when the hero would otherwise have nothing but a
+    ///   speed — no destination to name AND no arrival to state. It is the
+    ///   fallback subject, not an extra line: with a live trip the hero's subject
+    ///   IS the trip, and the car's own street is the Route section's origin leg.
+    ///   Stating it as "there is nothing else to say" rather than "navigation is
+    ///   off" is what keeps this to TWO peek bands — see
+    ///   ``HomeScreen/peekBase(vehicle:snapshot:)``, which switches on this very
+    ///   element.
+    static func resolve(navigation: DrivingNavigation, etaMinutes: Int, progress: Double) -> Set<DrivingHeroElement> {
+        var elements: Set<DrivingHeroElement> = [.speed]
+        if navigation.destinationName != nil {
+            elements.insert(.destinationTitle)
+            elements.insert(.routeSection)
+        }
+        if navigation.isActive, etaMinutes > 0 { elements.insert(.arrival) }
+        if navigation.isActive, progress > 0 { elements.insert(.progressBar) }
+        if !elements.contains(.destinationTitle), !elements.contains(.arrival) {
+            elements.insert(.location)
+        }
+        return elements
+    }
+}
+
 // MARK: - Summary heroes (the LOW crossfade layer / peek)
 
 /// screens.jsx:439-499 `DrivingSheetContent` summary — the status row +
@@ -47,6 +135,11 @@ struct DrivingSummary: View {
     /// the simulated path (and in previews), where the hero is unchanged.
     var freshness: VehicleFreshnessStampModel? = nil
 
+    /// MYR-294 — the car's current place, shown INSTEAD of a destination when
+    /// there is no navigation. `nil` in the simulated hero (which always has a
+    /// destination) and whenever the wire gave us no location name.
+    var currentLocation: String? = nil
+
     private var rangeMi: Int { Int(((snapshot.batteryPercent / 100) * 272).rounded()) }
 
     private var arrivalTime: String {
@@ -56,74 +149,131 @@ struct DrivingSummary: View {
         return formatter.string(from: date)
     }
 
+    private var elements: Set<DrivingHeroElement> {
+        DrivingHeroElement.resolve(
+            navigation: trip.navigation,
+            etaMinutes: snapshot.etaMinutes,
+            progress: snapshot.progress
+        )
+    }
+
     var body: some View {
+        // Every row below is present IFF `DrivingHeroElement.resolve` says the
+        // wire supports it. Nothing here has a placeholder arm: see that type's
+        // header for the client's rule.
+        let elements = elements
         VStack(alignment: .leading, spacing: 22) {
             VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    HStack(spacing: 7) {
-                        Circle()
-                            .fill(Color.mrtDriving)
-                            .frame(width: 7, height: 7)
-                            .shadow(color: .mrtDriving.opacity(2.0 / 3.0), radius: 3.5)
-                        Text("Driving")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color.mrtText)
-                        Text("· \(vehicle.name)")
-                            .font(.system(size: 13))
-                            .foregroundStyle(Color.mrtTextMuted)
-                    }
-                    Spacer()
-                    HStack(spacing: 6) {
-                        MiniBattery(pct: snapshot.batteryPercent)
-                        (Text("\(rangeMi)")
-                            .foregroundStyle(Color.mrtTextSec)
-                            + Text(" mi").foregroundStyle(Color.mrtTextMuted))
-                            .font(.system(size: 13, weight: .medium))
-                            .monospacedDigit()
-                    }
-                }
-
+                statusRow
                 VStack(spacing: 10) {
-                    HStack(alignment: .lastTextBaseline) {
-                        Text(trip.destinationName)
-                            .font(.system(size: 28, weight: .semibold))
-                            .tracking(-0.8)
-                            .foregroundStyle(Color.mrtText)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Spacer(minLength: 12)
-                        HStack(alignment: .firstTextBaseline, spacing: 3) {
-                            Text("\(snapshot.speedMPH)")
-                                .font(.system(size: 27, weight: .semibold))
-                                .tracking(-0.8)
-                                .monospacedDigit()
-                                .foregroundStyle(Color.mrtText)
-                            Text("mph")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(Color.mrtTextMuted)
-                        }
-                        .fixedSize()
-                    }
-                    HStack(alignment: .firstTextBaseline) {
-                        (Text("Arriving in ")
-                            .foregroundStyle(Color.mrtTextSec)
-                            + Text("\(snapshot.etaMinutes) min")
-                            .foregroundStyle(Color.mrtText)
-                            .fontWeight(.semibold))
-                            .font(.system(size: 15))
-                        Spacer()
-                        Text("ETA \(arrivalTime)")
-                            .font(.system(size: 14))
-                            .monospacedDigit()
-                            .foregroundStyle(Color.mrtTextMuted)
-                    }
+                    headlineRow(elements)
+                    if elements.contains(.arrival) { arrivalRow }
+                    if elements.contains(.location), let currentLocation { locationRow(currentLocation) }
                 }
             }
 
-            TripProgressBar(progress: snapshot.progress, compact: true)
+            if elements.contains(.progressBar) {
+                TripProgressBar(progress: snapshot.progress, compact: true)
+            }
         }
         .mrtFreshnessStamp(freshness)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Unchanged in every navigation state — "● Driving · {name}" plus range. It
+    /// is the one line that is true whatever the car is or isn't navigating to,
+    /// which is why the honest hero is built around it rather than replacing it.
+    private var statusRow: some View {
+        HStack {
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(Color.mrtDriving)
+                    .frame(width: 7, height: 7)
+                    .shadow(color: .mrtDriving.opacity(2.0 / 3.0), radius: 3.5)
+                Text("Driving")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.mrtText)
+                Text("· \(vehicle.name)")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.mrtTextMuted)
+            }
+            Spacer()
+            HStack(spacing: 6) {
+                MiniBattery(pct: snapshot.batteryPercent)
+                (Text("\(rangeMi)")
+                    .foregroundStyle(Color.mrtTextSec)
+                    + Text(" mi").foregroundStyle(Color.mrtTextMuted))
+                    .font(.system(size: 13, weight: .medium))
+                    .monospacedDigit()
+            }
+        }
+    }
+
+    /// The hero line: the destination when there IS one, otherwise the speed
+    /// promoted into the slot the design gives to the trip's most important fact.
+    /// The speed keeps its own 27/12 treatment either way — it is moved, never
+    /// restyled — and there is no third, placeholder rendering.
+    @ViewBuilder
+    private func headlineRow(_ elements: Set<DrivingHeroElement>) -> some View {
+        HStack(alignment: .lastTextBaseline) {
+            if elements.contains(.destinationTitle), let name = trip.destinationName {
+                Text(name)
+                    .font(.system(size: 28, weight: .semibold))
+                    .tracking(-0.8)
+                    .foregroundStyle(Color.mrtText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 12)
+                speedReadout
+            } else {
+                speedReadout
+                Spacer(minLength: 12)
+            }
+        }
+    }
+
+    private var speedReadout: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 3) {
+            Text("\(snapshot.speedMPH)")
+                .font(.system(size: 27, weight: .semibold))
+                .tracking(-0.8)
+                .monospacedDigit()
+                .foregroundStyle(Color.mrtText)
+            Text("mph")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.mrtTextMuted)
+        }
+        .fixedSize()
+    }
+
+    private var arrivalRow: some View {
+        HStack(alignment: .firstTextBaseline) {
+            (Text("Arriving in ")
+                .foregroundStyle(Color.mrtTextSec)
+                + Text("\(snapshot.etaMinutes) min")
+                .foregroundStyle(Color.mrtText)
+                .fontWeight(.semibold))
+                .font(.system(size: 15))
+            Spacer()
+            Text("ETA \(arrivalTime)")
+                .font(.system(size: 14))
+                .monospacedDigit()
+                .foregroundStyle(Color.mrtTextMuted)
+        }
+    }
+
+    /// Where the car is right now — the PARKED hero's own location line
+    /// (`ParkedSummary`, 12pt `mrtText`), reused rather than restyled, because it
+    /// is the same kind of statement about the same kind of fact.
+    private func locationRow(_ label: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 12))
+                .foregroundStyle(Color.mrtText)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 8)
+        }
     }
 }
 
@@ -332,6 +482,9 @@ struct DrivingHeroContent: View {
     /// mid-drag (MYR-236 round 5.3).
     var freshness: VehicleFreshnessStampModel? = nil
 
+    /// MYR-294 — see `DrivingSummary.currentLocation`.
+    var currentLocation: String? = nil
+
     var body: some View {
         // Outer gap 22 (screens.jsx:449 `gap: 22`) between the summary block and
         // the route/controls reveal block; the reveal block itself is gap 0 with
@@ -340,19 +493,51 @@ struct DrivingHeroContent: View {
             // Summary — rendered identically to the peek `DrivingSummary` so the
             // crossfade reads as a stationary summary with controls fading in
             // beneath it (MYR-236 round 5.3).
-            DrivingSummary(vehicle: vehicle, trip: trip, snapshot: snapshot, freshness: freshness)
+            DrivingSummary(
+                vehicle: vehicle,
+                trip: trip,
+                snapshot: snapshot,
+                freshness: freshness,
+                currentLocation: currentLocation
+            )
 
             VStack(alignment: .leading, spacing: 0) {
+                // MYR-294 (CLIENT-DIRECTED) — the ROUTE section is a statement
+                // about a journey with two ends, so it renders only when the wire
+                // NAMED the far one (`DrivingHeroElement.routeSection`). No
+                // navigation, or navigation whose destination has no name, and the
+                // whole block goes: the "Route" label and both legs.
+                //
+                // It emphatically does NOT degrade to a dot with a placeholder
+                // beside it. That is what the first cut did and what the client
+                // rejected on sight — *"if no route then no need to show a
+                // route"* — and it was also the stacked-chrome-for-no-content
+                // shape MYR-347 was about.
+                //
+                // The DIVIDER is outside the condition: it is the section break
+                // between the summary and the controls (the parked hero has one
+                // too), not part of the route block.
                 Divider().overlay(Color.mrtBorder).padding(.vertical, 8)
-                Text("Route").mrtTextStyle(.label()).foregroundStyle(Color.mrtTextMuted).padding(.bottom, 8)
-                RouteLeg(title: trip.originLabel, subtitle: trip.originAddress, color: .mrtDriving, isFirst: true, isLast: false)
-                RouteLeg(
-                    title: "\(trip.destinationCity) · \(trip.destinationName)",
-                    subtitle: trip.destinationAddress,
-                    color: .mrtGold,
-                    isFirst: false,
-                    isLast: true
-                )
+                if let destinationTitle = DrivingRouteLegTitle.compose(
+                    city: trip.destinationCity, name: trip.destinationName
+                ) {
+                    Text("Route").mrtTextStyle(.label()).foregroundStyle(Color.mrtTextMuted).padding(.bottom, 8)
+                    RouteLeg(title: trip.originLabel, subtitle: trip.originAddress, color: .mrtDriving, isFirst: true, isLast: false)
+                    RouteLeg(
+                        // MYR-294 — joined from the parts that EXIST. It was
+                        // `"\(city) · \(name)"` unconditionally, and `city` is
+                        // derived from `destinationAddress`, which is snapshot-only
+                        // and never live-broadcast — so on a real trip this row
+                        // read "· Local Creamery", a separator with nothing on its
+                        // left. The client: *"I don't like the dot next to the
+                        // destination."*
+                        title: destinationTitle,
+                        subtitle: trip.destinationAddress,
+                        color: .mrtGold,
+                        isFirst: false,
+                        isLast: true
+                    )
+                }
                 VehicleControls(
                     vehicle: vehicle,
                     driving: true,
@@ -468,13 +653,45 @@ struct ParkedHeroContent: View {
     }
 }
 
+/// MYR-294 — the destination leg's title, composed from the parts that exist.
+///
+/// The prototype interpolates `"{city} · {name}"` with two literals, so it never
+/// meets an absent half. The wire does, constantly: `destinationAddress` (which
+/// `city` is parsed out of) is snapshot-only — the telemetry writer persists it
+/// but does not put it on the navigation group's live broadcast — so on a
+/// WS-driven trip the name is present and the city is not, and the row rendered
+/// a leading separator over nothing.
+///
+/// Pure and public-to-tests so the join is asserted rather than eyeballed: a
+/// separator may exist only BETWEEN two present parts.
+enum DrivingRouteLegTitle {
+    static func compose(city: String?, name: String?) -> String? {
+        let parts = [city, name]
+            .compactMap { $0 }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
 /// screens.jsx:501-520 `RouteLeg` — a connected-dot timeline row.
 private struct RouteLeg: View {
+    /// Always a real label. A leg with nothing to name is not rendered at all —
+    /// its whole SECTION is dropped (MYR-294, client-directed), so this row has no
+    /// placeholder arm to reach.
     let title: String
-    let subtitle: String
+    /// `nil`/blank — no second line at all. It used to render unconditionally, so
+    /// a live leg with no address carried an empty 12pt line: a gap that looks
+    /// like a layout bug and reads as missing content (MYR-294).
+    let subtitle: String?
     let color: Color
     let isFirst: Bool
     let isLast: Bool
+
+    private var resolvedSubtitle: String? {
+        guard let subtitle, !subtitle.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        return subtitle
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -495,9 +712,11 @@ private struct RouteLeg: View {
                 Text(title)
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(Color.mrtText)
-                Text(subtitle)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.mrtTextSec)
+                if let resolvedSubtitle {
+                    Text(resolvedSubtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.mrtTextSec)
+                }
             }
             .padding(.bottom, 6)
         }
