@@ -162,6 +162,10 @@ struct RootView: View {
     /// switching to another tab and back. MYR-228 — seeded empty in live mode
     /// (no reservation backend); see `OwnerDrivesState`'s header comment.
     @State private var ownerDrivesState: OwnerDrivesState
+    /// MYR-377 — the rider's Scheduled tab against `GET /api/ride-requests`. `nil`
+    /// in SIM / static-token dev, where the screen keeps the prototype's fixture
+    /// reservations and every DEBUG scene with them.
+    @State private var riderScheduledRidesStore: RiderScheduledRidesStore?
     /// MYR-170 — shared between `InvitesScreen` and `SettingsScreen`; see
     /// `ShareService`'s header comment for why this is lifted+shared rather than
     /// forking the prototype's two independent copies. MYR-184 — it is now the
@@ -244,7 +248,9 @@ struct RootView: View {
         // never fixture data (see each state's `live:` init + CLAUDE.md's rule).
         let isLive = mode.live != nil
         isLiveMode = isLive
-        _ownerDrivesState = State(initialValue: OwnerDrivesState(live: isLive))
+        // (`_ownerDrivesState` is composed further down, once the MYR-360
+        // reservation seam exists — MYR-376 gave Drives → Upcoming a real server
+        // read and it takes that same instance.)
         _ownerVehiclesState = State(initialValue: OwnerVehiclesState(live: isLive))
         _rideHistoryStore = State(initialValue: RideHistoryStore(
             seed: isLive ? [] : RideHistoryFixtures.requestedRides
@@ -337,6 +343,12 @@ struct RootView: View {
         if let scripted = DebugScene.current?.upcomingReservationSource { reservations = scripted }
         #endif
         upcomingReservations = reservations
+        // MYR-376 — Drives → Upcoming takes the SAME reservation instance the
+        // Share tab's pause pre-flight reads. Two owner surfaces that name the
+        // same car's reservations must never be able to give different answers,
+        // which is exactly why MYR-369 made `HomeScreen` and `InvitesScreen`
+        // share one; this is that rule extended to the third.
+        _ownerDrivesState = State(initialValue: OwnerDrivesState(live: isLive, reservations: reservations))
         // MYR-186 — push device registration, bound to the same session.
         _pushCoordinator = State(initialValue: PushComposition.makeCoordinator(
             mode: mode,
@@ -410,6 +422,24 @@ struct RootView: View {
         }
         #endif
         _sharedViewerState = State(initialValue: viewer)
+        // MYR-377 — the rider's Scheduled tab. Composed AFTER `viewer`, because the
+        // car a row names is resolved through the rider's own already-loaded fleet
+        // (`SharedViewerState.liveFleetMembers`, MYR-352's whole-list publish) —
+        // joined on `vehicleId`, exactly as the owner's incoming card joins its own.
+        // A closure and not a snapshot: the fleet lands asynchronously, so a list
+        // captured here would be empty for the entire session.
+        var scheduledRides = RideRequestComposition.makeScheduledRides(
+            mode: mode,
+            sessionTokenProvider: auth.sessionTokenProvider,
+            vehicleNames: { [weak viewer] vehicleID in
+                guard let member = viewer?.liveFleetMembers.first(where: { $0.id == vehicleID }) else { return nil }
+                return RiderScheduledRideVehicle(name: member.owner, relationship: member.relationship)
+            }
+        ) as (any RiderScheduledRideSource)?
+        #if DEBUG
+        if let scripted = DebugScene.current?.scheduledRideSource { scheduledRides = scripted }
+        #endif
+        _riderScheduledRidesStore = State(initialValue: scheduledRides.map { RiderScheduledRidesStore(source: $0) })
         _rideRequestService = State(initialValue: service)
         _screen = State(initialValue: startScreen)
         _role = State(initialValue: startRole)
@@ -1185,11 +1215,17 @@ struct RootView: View {
                             rideHistoryStore.openRideID = nil
                         }
                     } else {
-                        // MYR-228 — scheduled rides are screen-local @State; seed
-                        // them empty in live mode (no scheduled-ride backend) so the
-                        // Scheduled tab shows its honest "No scheduled rides" state,
-                        // never the fixture reservations.
-                        RideHistoryScreen(sharedTab: $sharedTab, historyStore: rideHistoryStore, isLive: isLiveMode)
+                        // MYR-228 — the SIMULATED scheduled list is screen-local
+                        // @State seeded from the fixtures; live seeds it empty.
+                        // MYR-377 — and live now READS the rider's own reservations
+                        // through `scheduledStore`, which is what the "no
+                        // scheduled-ride backend" comment here used to stand in for.
+                        RideHistoryScreen(
+                            sharedTab: $sharedTab,
+                            historyStore: rideHistoryStore,
+                            isLive: isLiveMode,
+                            scheduledStore: riderScheduledRidesStore
+                        )
                     }
                 default:
                     // MYR-184 — a rider with NOTHING shared with them has no map
@@ -1333,6 +1369,13 @@ struct RootView: View {
                 // card is still sitting on the lock screen claiming a ride is
                 // running. Pushes are the primary channel; this is the backstop.
                 Task { await rideActivityCoordinator.handleRideChange(rideRequestService.activeRequest) }
+                // MYR-376/377 — a reservation that came DUE while the app was
+                // suspended is still dormant on this device: the sweeper's stamp
+                // arrives with no WS frame, and a sleeping `Task` does not fire.
+                // The service's timer covers a foregrounded app; this covers the
+                // one it cannot. Makes no request unless something dormant is held
+                // and its moment has actually passed.
+                Task { await rideRequestService.refreshDueReservations() }
                 // MYR-343 — a rider whose vehicle list never answered is sitting on
                 // the honest "can't reach" line with nothing in flight behind it.
                 // Recovery is the low-friction one MYR-326 settled on (a resume

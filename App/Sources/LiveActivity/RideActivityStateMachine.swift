@@ -82,14 +82,19 @@ enum RideActivityStateMachine {
     /// `record` is the rider's `activeRequest` — `nil` meaning the rider holds no
     /// open ride at all, which is a genuine and load-bearing input rather than a
     /// missing one.
+    /// `now` is injected for the same reason every other MYR-376/377 gate takes
+    /// one: reservation dormancy is TIME-BOUNDED, so "may this ride open an
+    /// Activity" is a question about the clock as well as the record. Defaulted, so
+    /// every existing call site is unchanged.
     static func action(
         phase: RideActivityPhase,
         record: RideRequestRecord?,
-        vehicleName: String
+        vehicleName: String,
+        now: Date = Date()
     ) -> RideActivityAction {
         switch phase {
         case .idle:
-            guard let record, let state = startState(for: record, vehicleName: vehicleName) else {
+            guard let record, let state = startState(for: record, vehicleName: vehicleName, now: now) else {
                 return .none
             }
             return .start(rideID: record.id, state: state)
@@ -112,7 +117,7 @@ enum RideActivityStateMachine {
                 // A different ride is open than the one on the lock screen. End the
                 // old one; start the new one if it is startable, otherwise just end.
                 let endingState = lastState.with(status: .cancelled)
-                guard let next = startState(for: record, vehicleName: vehicleName) else {
+                guard let next = startState(for: record, vehicleName: vehicleName, now: now) else {
                     return .end(rideID: liveID, state: endingState, dismissal: .immediate)
                 }
                 return .restart(
@@ -143,16 +148,29 @@ enum RideActivityStateMachine {
     /// Activity at all.
     private static func startState(
         for record: RideRequestRecord,
-        vehicleName: String
+        vehicleName: String,
+        now: Date = Date()
     ) -> RideActivityAttributes.ContentState? {
-        // A SCHEDULED ride is not a live ride, even once the owner has accepted it.
-        // MYR-313 lets a reservation be accepted days ahead, so an Activity started
-        // here would sit on the lock screen until Saturday. This mirrors
-        // `SharedViewerScreen.reconciledPhase`, which gates the tracking sheet on
-        // exactly `!hasSchedule` — the two must agree, or the rider gets a lock
-        // screen about a ride the app itself is not tracking. (What a scheduled
-        // ride does at DISPATCH time is MYR-313's handoff and is out of v1 scope.)
-        guard record.input.schedule == nil else { return nil }
+        // A DORMANT reservation is not a live ride, even once the owner has
+        // accepted it. MYR-313 lets a reservation be accepted days ahead, so an
+        // Activity started at accept time would sit on the lock screen until
+        // Saturday counting down to nothing.
+        //
+        // MYR-377 — but the gate is DORMANCY, not "carries a schedule", which is
+        // what MYR-172 shipped. Once the reservation sweeper dispatches it the ride
+        // is live in every way that matters — the car has the navigation, the rider
+        // has a tracking map and a "Start ride" button — and a lock-screen card is
+        // exactly as useful as it is for an instant ride. `go_live_activities` had
+        // ZERO rows in production, and this line is why: the client's only rides
+        // were reservations. §7.21 registers a token for any non-terminal ride
+        // including a reservation, so there was never a server-side gap to work
+        // around.
+        //
+        // This still mirrors `SharedViewerScreen.reconciledPhase` — the two must
+        // agree, or the rider gets a lock screen about a ride the app itself is not
+        // tracking — and both now read the same `RideReservation` predicate rather
+        // than each spelling the rule out.
+        guard RideReservation.isLiveRide(record, now: now) else { return nil }
 
         switch record.status {
         case .accepted, .arrived, .enroute:

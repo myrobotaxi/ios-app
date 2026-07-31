@@ -136,6 +136,14 @@ public struct UpcomingRide: Identifiable, Equatable, Sendable {
     /// e.g. "6:40 AM".
     public let scheduleTime: String
     public let vehicleName: String
+    /// MYR-376 — the reserved pickup INSTANT, for rows built from the server.
+    ///
+    /// `nil` on every fixture row, which is what keeps `DrivesScreen.sortedUpcoming`
+    /// on its existing day-token sort in SIM. A live list sorts on this instead: the
+    /// day token is a display string, `dayOrder` only knows the prototype's seven,
+    /// and MYR-370 made those tokens carry dates ("Sat, Aug 1") that the token
+    /// ordering has never known how to place.
+    public let scheduledFor: Date?
 
     public init(
         id: String,
@@ -143,7 +151,8 @@ public struct UpcomingRide: Identifiable, Equatable, Sendable {
         destination: Destination,
         scheduleDay: String,
         scheduleTime: String,
-        vehicleName: String
+        vehicleName: String,
+        scheduledFor: Date? = nil
     ) {
         self.id = id
         self.rider = rider
@@ -151,6 +160,7 @@ public struct UpcomingRide: Identifiable, Equatable, Sendable {
         self.scheduleDay = scheduleDay
         self.scheduleTime = scheduleTime
         self.vehicleName = vehicleName
+        self.scheduledFor = scheduledFor
     }
 }
 

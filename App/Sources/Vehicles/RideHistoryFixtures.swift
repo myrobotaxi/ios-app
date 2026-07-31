@@ -208,6 +208,13 @@ public struct ScheduledRide: Identifiable, Equatable, Sendable {
     /// Real-world route for `ScheduledRideSheet`'s map preview — see file
     /// header (not part of the jsx fixture, which has no geo data).
     public let route: [CLLocationCoordinate2D]
+    /// MYR-377 — the reserved pickup INSTANT, for rows built from the wire.
+    ///
+    /// `nil` on every fixture row: the prototype's `SCHEDULED_RIDES` are a day
+    /// token and a wall clock and were never an instant. A live row carries it, and
+    /// it is what the list SORTS on — the day token is a display string, and
+    /// MYR-370 gave it dates the old token ordering has no table for.
+    public let scheduledFor: Date?
 
     public init(
         id: String,
@@ -222,7 +229,8 @@ public struct ScheduledRide: Identifiable, Equatable, Sendable {
         miles: Double,
         status: ScheduledRideStatus,
         passenger: RidePassenger? = nil,
-        route: [CLLocationCoordinate2D]
+        route: [CLLocationCoordinate2D],
+        scheduledFor: Date? = nil
     ) {
         self.id = id
         self.day = day
@@ -237,6 +245,7 @@ public struct ScheduledRide: Identifiable, Equatable, Sendable {
         self.status = status
         self.passenger = passenger
         self.route = route
+        self.scheduledFor = scheduledFor
     }
 
     /// shared-screens.jsx:232 `Math.max(6, Math.round(ride.miles * 1.7))`.
@@ -259,6 +268,7 @@ public struct ScheduledRide: Identifiable, Equatable, Sendable {
             && lhs.miles == rhs.miles
             && lhs.status == rhs.status
             && lhs.passenger == rhs.passenger
+            && lhs.scheduledFor == rhs.scheduledFor
             && lhs.route.count == rhs.route.count
             && zip(lhs.route, rhs.route).allSatisfy {
                 $0.latitude == $1.latitude && $0.longitude == $1.longitude

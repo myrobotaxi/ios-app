@@ -58,18 +58,18 @@ final class RideDispatchStatusTests: XCTestCase {
 
     func testReconciledPhaseArrivedAndEnrouteEnterTrackingFromBookingOrIdle() {
         for status in [MyRoboTaxi.RideRequestStatus.arrived, .enroute] {
-            XCTAssertEqual(SharedViewerScreen.reconciledPhase(status: status, hasSchedule: false, current: .idle), .tracking)
-            XCTAssertEqual(SharedViewerScreen.reconciledPhase(status: status, hasSchedule: false, current: .booking), .tracking)
-            XCTAssertNil(SharedViewerScreen.reconciledPhase(status: status, hasSchedule: false, current: .tracking),
+            XCTAssertEqual(SharedViewerScreen.reconciledPhase(status: status, isDormantReservation: false, current: .idle), .tracking)
+            XCTAssertEqual(SharedViewerScreen.reconciledPhase(status: status, isDormantReservation: false, current: .booking), .tracking)
+            XCTAssertNil(SharedViewerScreen.reconciledPhase(status: status, isDormantReservation: false, current: .tracking),
                          "already tracking → the stage flips off the status, no phase change")
-            XCTAssertNil(SharedViewerScreen.reconciledPhase(status: status, hasSchedule: true, current: .idle),
+            XCTAssertNil(SharedViewerScreen.reconciledPhase(status: status, isDormantReservation: true, current: .idle),
                          "scheduled reservations never enter live tracking")
         }
     }
 
     func testReconciledPhaseCompletedGoesToSummaryFromTracking() {
-        XCTAssertEqual(SharedViewerScreen.reconciledPhase(status: .completed, hasSchedule: false, current: .tracking), .summary)
-        XCTAssertNil(SharedViewerScreen.reconciledPhase(status: .completed, hasSchedule: false, current: .idle))
+        XCTAssertEqual(SharedViewerScreen.reconciledPhase(status: .completed, isDormantReservation: false, current: .tracking), .summary)
+        XCTAssertNil(SharedViewerScreen.reconciledPhase(status: .completed, isDormantReservation: false, current: .idle))
     }
 
     // MARK: rider tracking STAGE (RiderTrackingStage.stage — start CTA gating)

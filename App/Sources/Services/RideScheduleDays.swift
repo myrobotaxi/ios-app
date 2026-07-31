@@ -82,6 +82,46 @@ enum RideScheduleDays {
         }
     }
 
+    /// The chip label for an ARBITRARY instant, in the reader's own calendar.
+    ///
+    /// MYR-377 — the rider's Scheduled tab renders reservations off the wire, whose
+    /// `scheduledFor` is a UTC instant rather than one of this generator's seven
+    /// offsets. It must print that instant in the SAME grammar the picker used when
+    /// the rider committed it, or a ride booked from a chip reading "Sat, Aug 1"
+    /// would come back listed some other way. So the offset is derived and the
+    /// existing `label(offset:date:)` does the writing — one grammar, one place.
+    ///
+    /// A day beyond the picker's horizon (a reservation ten days out, once the
+    /// reschedule flow can move one) takes the dated form, which is what every
+    /// offset past 1 already does. A day in the PAST takes it too: "Today"/
+    /// "Tomorrow" are the only relative words here and neither is ever true
+    /// backwards.
+    static func label(
+        for instant: Date,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> String {
+        let day = calendar.startOfDay(for: instant)
+        let offset = calendar.dateComponents([.day], from: calendar.startOfDay(for: now), to: day).day ?? 0
+        // `label(offset:date:)` already answers the dated form for everything that
+        // is not 0 or 1, negatives included, so no clamping is needed or wanted.
+        return label(offset: offset, date: day, calendar: calendar)
+    }
+
+    /// "6:30 AM" — the wall clock, in the reader's own calendar, in the picker's own
+    /// `en_US_POSIX` 12-hour grammar (`RideRequestContractMapping.clockParser`
+    /// reads exactly this shape back).
+    static func timeLabel(for instant: Date, calendar: Calendar = .current) -> String {
+        formatter(dateFormat: "h:mm a", calendar: calendar).string(from: instant)
+    }
+
+    /// "Aug 1" — the bare date, for the secondary line that sits beside a relative
+    /// day word. The prototype's `SCHED_DATES` table is exactly this, resolved
+    /// rather than transcribed.
+    static func shortDate(for instant: Date, calendar: Calendar = .current) -> String {
+        formatter(dateFormat: "MMM d", calendar: calendar).string(from: instant)
+    }
+
     /// The calendar day a committed `RideSchedule.day` token names, or `nil` when
     /// the token is not one this generator produces.
     ///

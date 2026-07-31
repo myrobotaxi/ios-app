@@ -117,10 +117,20 @@ final class LiveRideRequestService: RideRequestService {
     /// (`OwnerRideStatusLine.text` renders no line for it, so it is on no surface);
     /// the `completed`-until-acknowledged rule stays in the pure
     /// `OwnerRideStatusLine.dispatchCardVisible` resolver, unchanged.
+    ///
+    /// MYR-376 — AND EXCLUDES A DORMANT RESERVATION. A ride the owner accepted for
+    /// tomorrow is `accepted` today, so status alone put the live dispatch card up
+    /// the instant he tapped Accept: "En route to pickup · Thomas" over a parked
+    /// car, and a "Picked up" button that the server took, stranding the ride on
+    /// "waiting for Thomas to start" for a pickup that had not happened. The gate
+    /// is the shared `RideReservation.isLiveRide`, so the card and every other
+    /// surface answer this from one predicate.
     var ownerDispatch: RideRequestRecord? {
-        switch ownerRequest?.status {
-        case .accepted, .arrived, .enroute, .completed: return ownerRequest
-        case .pending, .declined, nil: return nil
+        guard let held = ownerRequest else { return nil }
+        switch held.status {
+        case .accepted, .arrived, .enroute, .completed:
+            return RideReservation.isLiveRide(held) ? held : nil
+        case .pending, .declined: return nil
         }
     }
 
@@ -218,6 +228,50 @@ final class LiveRideRequestService: RideRequestService {
     /// `SimulatedRideRequestService`'s timers).
     private nonisolated(unsafe) var eventTask: Task<Void, Never>?
 
+    // MARK: MYR-376/377 — the due-time flip
+    //
+    // THERE IS NO WS FRAME AT DISPATCH. The reservation sweeper stamps the latch,
+    // pushes leg-1 navigation and sends the rider's `ride.due` APNs notification —
+    // and that push is the ONLY thing that tells a client the ride went live.
+    // A party sitting in the app with notifications off, or simply not tapping the
+    // banner, would hold a dormant record until something else happened to refetch
+    // it: the owner's card would never appear and the rider's map would never leave
+    // the idle banner, which is precisely half of what the client photographed.
+    //
+    // The client already knows the wall-clock moment the server will act, so it
+    // does not poll — it sleeps until that instant and asks ONCE. One task, for the
+    // SOONEST due instant across both pipelines, re-armed after every refetch.
+    /// `nonisolated(unsafe)` for the same reason `eventTask` is: cancelled from the
+    /// nonisolated `deinit`, touched on the main actor everywhere else.
+    private nonisolated(unsafe) var dueTask: Task<Void, Never>?
+    /// What `dueTask` is currently waiting for, so a re-sync that changes nothing
+    /// (the common case — every WS frame calls it) does not cancel and rebuild the
+    /// same wait.
+    private var armedDue: (rideID: String, at: Date)?
+    /// How many more times the armed ride may be re-asked after its due instant has
+    /// already passed. Reset whenever `dueRetryKey` changes.
+    private var dueRetriesRemaining = 0
+    /// `rideID` + due instant, so a DIFFERENT reservation (or the same one moved by
+    /// a reschedule) starts with a full retry budget while the same one does not
+    /// silently refill its own.
+    private var dueRetryKey: String?
+    /// MYR-377 — the RIDER's soonest dormant reservation, which by design is in no
+    /// pipeline at all (adopting it would hand tomorrow's ride today's map). This
+    /// is the only reason the service remembers it: something has to know when to
+    /// look again.
+    private var riderDueReservation: (rideID: String, at: Date)?
+
+    /// Asked this long AFTER the due instant, so the sweeper's own write has landed
+    /// before the client reads.
+    static let dueRefetchGrace: TimeInterval = 5
+    /// A due instant that has already passed is re-asked on this interval — the
+    /// sweeper runs on its own schedule and can be a beat late.
+    static let dueRefetchRetryInterval: TimeInterval = 30
+    /// …at most this many times. A bounded retry, not a poll: after this the
+    /// `ride.due` push and the foreground resume (`refreshDueReservations`) are the
+    /// remaining channels, and both are cheaper than a timer that never stops.
+    static let dueRefetchMaxRetries = 4
+
     /// How the INDETERMINATE-create-failure reconcile polls the rider's own ride
     /// list before giving up and declaring a definitive failure (see
     /// `reconcileCreate`). Injected so tests can drive the window fast.
@@ -246,6 +300,7 @@ final class LiveRideRequestService: RideRequestService {
     deinit {
         sendTask?.cancel()
         eventTask?.cancel()
+        dueTask?.cancel()
         let socket = self.socket
         Task { await socket.disconnect() }
     }
@@ -816,6 +871,7 @@ final class LiveRideRequestService: RideRequestService {
         // for the cancellation frame, or the owner half of the client's own account
         // is left holding a phantom request whose Accept would 409.
         if let id { retireOwnerRide(id: id) }
+        armDueRefetch() // MYR-376 — nothing left to wait for on a cancelled ride
         guard let id else { return }
         let api = self.api
         Task { _ = try? await api.cancelRideRequest(id: id) }
@@ -876,8 +932,141 @@ final class LiveRideRequestService: RideRequestService {
             retireOwnerRide(id: ride.id)
             return
         }
-        if riderHolds(ride.id) { integrateRider(ride, mapped: mapped) }
+        if riderHolds(ride.id) {
+            integrateRider(ride, mapped: mapped)
+        } else if activeRequest == nil, RideReservation.isAdoptableLiveRide(ride) {
+            // MYR-377 — A RESERVATION THAT JUST WENT LIVE HAS NOBODY HOLDING IT.
+            //
+            // A dormant reservation is deliberately never in the rider's active
+            // slot (it would replace "Where to?" with a tracking map for a ride
+            // that is tomorrow), so when the sweeper dispatches it and the ride
+            // reaches `arrived`, the `ride_status_changed` frame arrives about a
+            // ride NEITHER pipeline holds — and, before this issue, was dropped on
+            // the floor. That is why the client's rider side showed the idle
+            // in-service banner with no tracking card and no "Start ride": the one
+            // control that can move `arrived → enroute` was never rendered, so the
+            // flow simply deadlocked.
+            //
+            // Adoption goes through `adoptOpenRiderRide`, i.e. through
+            // `GET /api/ride-requests` — the AUTHENTICATED RIDER'S OWN list — and
+            // not straight off the frame. The ride stream is account-wide and this
+            // device serves both roles, so a frame about a ride is not evidence
+            // that this device's RIDER is the one taking it; on an owner-only
+            // account, adopting off the frame would put someone else's ride on the
+            // owner's rider map. Asking the rider's own list answers exactly the
+            // question being asked, with the machinery cold launch already uses.
+            Task { @MainActor [weak self] in await self?.adoptOpenRiderRide() }
+        }
         integrateOwner(ride, mapped: mapped)
+        armDueRefetch()
+    }
+
+    // MARK: MYR-376/377 — arm the due-time refetch
+
+    /// Re-evaluate what (if anything) this service is waiting for.
+    ///
+    /// Idempotent and cheap: it runs after every fold and every adoption, and when
+    /// the answer has not changed it returns without touching the armed task. That
+    /// matters because a live dispatch's frames arrive several per minute, and
+    /// rebuilding a `Task.sleep` on each of them would be a timer that never
+    /// actually reaches its deadline.
+    ///
+    /// Deliberately ONE task for BOTH pipelines' soonest due instant rather than
+    /// one per pipeline: on the client's own account the two hold the SAME
+    /// reservation (`integrate`'s same-account duality), so a per-pipeline timer
+    /// would fire two refetches of one ride at the same second.
+    private func armDueRefetch(now: Date = Date()) {
+        let held = [activeRequest, ownerRequest]
+            .compactMap { $0 }
+            .compactMap { record in RideReservation.dueInstant(record).map { (rideID: record.id, at: $0) } }
+        let due = (held + [riderDueReservation].compactMap { $0 }).min { $0.at < $1.at }
+
+        guard let due else {
+            // Nothing dormant is held — the reservation dispatched, was declined,
+            // or was cancelled. Stop waiting.
+            dueTask?.cancel()
+            dueTask = nil
+            armedDue = nil
+            dueRetriesRemaining = 0
+            dueRetryKey = nil
+            return
+        }
+
+        if let armed = armedDue, armed.rideID == due.rideID, armed.at == due.at, dueTask != nil { return }
+
+        let key = "\(due.rideID)|\(due.at.timeIntervalSince1970)"
+        if key != dueRetryKey {
+            dueRetryKey = key
+            dueRetriesRemaining = Self.dueRefetchMaxRetries
+        }
+
+        dueTask?.cancel()
+        let lead = due.at.timeIntervalSince(now) + Self.dueRefetchGrace
+        guard lead <= 0 else {
+            // The ordinary case: the moment is ahead of us. Sleep to it and ask
+            // once, with the retry budget held in reserve for a late sweeper.
+            armedDue = due
+            scheduleDueRefetch(rideID: due.rideID, after: lead)
+            return
+        }
+        // The moment has PASSED and the ride is still dormant — the sweeper has not
+        // written yet (or this record predates its write). Re-ask on the bounded
+        // retry rather than immediately, which would be a tight poll wearing a
+        // timer's clothes.
+        armOverdueRetry(rideID: due.rideID, at: due.at)
+    }
+
+    /// Sleep, then ask the server for exactly one ride. The refetch routes through
+    /// `applyRemote` → `integrate` → `armDueRefetch`, so a reservation that HAS
+    /// dispatched disarms itself and one that has not is re-armed on the bounded
+    /// retry interval.
+    private func scheduleDueRefetch(rideID: String, after delay: TimeInterval) {
+        dueTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self else { return }
+            self.dueTask = nil
+            // Clear the arm BEFORE the refetch so the fold's own `armDueRefetch`
+            // sees a free slot; the retry decrement below is what stops it from
+            // re-arming forever on a sweeper that never runs.
+            self.armedDue = nil
+            self.applyRemote(rideID: rideID)
+        }
+    }
+
+    /// The bounded retry: called by `armDueRefetch` through `applyRemote`'s fold
+    /// when a ride whose due instant has PASSED is still dormant.
+    private func armOverdueRetry(rideID: String, at instant: Date) {
+        guard dueRetriesRemaining > 0 else { return }
+        dueRetriesRemaining -= 1
+        armedDue = (rideID, instant)
+        scheduleDueRefetch(rideID: rideID, after: Self.dueRefetchRetryInterval)
+    }
+
+    /// MYR-376/377 — the FOREGROUND half, and the one a suspended timer cannot do.
+    ///
+    /// A `Task.sleep` does not run while the app is suspended, so a reservation that
+    /// came due overnight is still dormant on this device when the owner opens the
+    /// app in the morning. `RootView` calls this on every `.active` transition,
+    /// beside the existing push re-arm and Live Activity re-evaluation: it refetches
+    /// every held reservation whose moment has arrived, and re-arms whatever is
+    /// still ahead. A no-op — no fetch at all — when nothing dormant is held, which
+    /// is every session that is not sitting on a reservation.
+    func refreshDueReservations() async {
+        let now = Date()
+        var ids = [activeRequest, ownerRequest]
+            .compactMap { $0 }
+            .filter { record in RideReservation.dueInstant(record).map { $0 <= now } == true }
+            .map(\.id)
+        // The rider's own next reservation is held OUTSIDE both pipelines by design
+        // (see `riderDueReservation`), so it needs naming here explicitly.
+        if let riderDue = riderDueReservation, riderDue.at <= now { ids.append(riderDue.rideID) }
+        for id in Set(ids) {
+            if let ride = try? await api.rideRequest(id: id) { integrate(ride) }
+        }
+        // Re-read the rider's own list too: a reservation booked on another device
+        // since this one went to sleep is invisible until somebody asks.
+        if activeRequest == nil { await adoptOpenRiderRide() }
+        armDueRefetch(now: now)
     }
 
     /// The RIDER arm: fold the server record onto the rider's tracked ride in place,
@@ -950,6 +1139,19 @@ final class LiveRideRequestService: RideRequestService {
         var current = held
         current.status = mapped
         current.acceptedAt = ride.acceptedAt.flatMap(RideRequestContractMapping.parseISO)
+        // MYR-376/377 — adopt the DISPATCH LATCH from the authoritative record.
+        //
+        // This is the line that ends dormancy. The sweeper's stamp arrives on a
+        // refetch (the due-time one below, a push tap, a `ride_status_changed`
+        // frame, a foreground resume), and if the fold dropped it the held record
+        // would stay dormant forever while the server considered the ride live —
+        // the same class of stale-read defect MYR-316 shipped and MYR-362 traced.
+        // Taken from `refetched` rather than re-parsed here so there is one
+        // wire→record rule (`RideRequestContractMapping.record(from:)`) and not a
+        // second reading of the same three keys.
+        current.scheduledFor = refetched.scheduledFor
+        current.dispatchStatus = refetched.dispatchStatus
+        current.dispatchedAt = refetched.dispatchedAt
         // MYR-277 A1: in the single-account demo the rider's optimistic draft
         // carries NO requesterName (the rider never stamps their own display
         // name) and may carry placeholder place labels; the refetched server
@@ -1168,10 +1370,35 @@ final class LiveRideRequestService: RideRequestService {
     /// (a create this session, or a WS frame already adopted one).
     private func adoptOpenRiderRide() async {
         guard activeRequest == nil, riderServerRideID == nil else { return }
-        guard let open = await fetchOpenRiderRide(),
-              let record = RideRequestContractMapping.record(from: open) else { return }
+        guard let page = try? await api.rideRequests(cursor: nil, limit: 20) else { return }
+        // MYR-377 — note the rider's soonest DORMANT reservation off the SAME page.
+        // It is not adopted (a ride that is tomorrow must not own the map), but the
+        // client still needs to know when to look again: dispatch produces no WS
+        // frame, only the `ride.due` push, so without this the rider's flip to
+        // tracking depends entirely on them tapping a notification.
+        noteRiderDueReservation(in: page.items)
+        guard let open = page.items.first(where: { RideReservation.isAdoptableLiveRide($0) }),
+              let record = RideRequestContractMapping.record(from: open) else {
+            armDueRefetch()
+            return
+        }
         activeRequest = record
         riderServerRideID = open.id
+        armDueRefetch()
+    }
+
+    /// MYR-377 — remember the SOONEST dormant reservation on the rider's own list,
+    /// purely so `armDueRefetch` has a due instant to sleep to. Cleared when the
+    /// list carries none.
+    private func noteRiderDueReservation(in items: [RideRequest]) {
+        let dormant = items.compactMap { ride -> (rideID: String, at: Date)? in
+            guard !RideReservation.isAdoptableLiveRide(ride),
+                  let record = RideRequestContractMapping.record(from: ride),
+                  let due = RideReservation.dueInstant(record)
+            else { return nil }
+            return (ride.id, due)
+        }
+        riderDueReservation = dormant.min { $0.at < $1.at }
     }
 
     /// 409 `ride_active` adoption (deliverable 3): the create was refused because
@@ -1199,27 +1426,22 @@ final class LiveRideRequestService: RideRequestService {
         activeRequest = record
     }
 
-    /// GET the rider's own list (newest first) and return the newest OPEN INSTANT
-    /// ride, or nil. Shared by cold-launch adoption and the 409 missing-sibling
-    /// fallback.
+    /// GET the rider's own list (newest first) and return the newest ADOPTABLE
+    /// ride, or nil. Shared by the 409 missing-sibling fallback; cold-launch
+    /// adoption reads the same page directly so it can also note the rider's next
+    /// dormant reservation from it (MYR-377) without a second request.
+    ///
+    /// MYR-377 renamed the predicate from `isOpenInstant` to
+    /// `RideReservation.isAdoptableLiveRide` and widened it: a reservation that has
+    /// GONE LIVE (dispatched, or already `arrived`/`enroute`) is a live ride and is
+    /// adopted like any other. A DORMANT one still is not. The `409 ride_active`
+    /// single-active-instant rule is untouched — that is a server-side uniqueness
+    /// index over INSTANT rides (`uq_go_ride_requests_active_instant_rider`,
+    /// rest-api.md §7.8, migration 0004) and reservations remain exempt from it.
     private func fetchOpenRiderRide() async -> RideRequest? {
         guard let page = try? await api.rideRequests(cursor: nil, limit: 20) else { return nil }
-        return page.items.first(where: { Self.isOpenInstant($0) })
-    }
-
-    /// A wire ride is an ADOPTABLE open instant ride when it carries no
-    /// `scheduledFor` (scheduled reservations are not a live ride to narrate and
-    /// are exempt from the single-active rule) and its status is non-terminal
-    /// (`requested`/`accepted`/`enroute`/`arrived`). `completed`/`declined`/
-    /// `cancelled` are terminal and never adopted. Matches the server's
-    /// `uq_go_ride_requests_active_instant_rider` open-state set (rest-api.md §7.8,
-    /// migration 0004).
-    static func isOpenInstant(_ ride: RideRequest) -> Bool {
-        guard ride.scheduledFor == nil else { return false }
-        switch ride.status {
-        case .requested, .accepted, .enroute, .arrived: return true
-        default: return false
-        }
+        noteRiderDueReservation(in: page.items)
+        return page.items.first(where: { RideReservation.isAdoptableLiveRide($0) })
     }
 
     /// Owner incoming feed seed (open requests already in flight at connect time).
@@ -1249,6 +1471,7 @@ final class LiveRideRequestService: RideRequestService {
         guard let page = try? await api.incomingRideRequests(cursor: nil, limit: 20) else { return }
         replaceQueue(with: page.items)
         adoptNextIncoming()
+        armDueRefetch() // MYR-376 — a newly adopted reservation may be due later today
     }
 
     // MARK: Helpers

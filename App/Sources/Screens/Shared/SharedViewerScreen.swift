@@ -1074,7 +1074,7 @@ struct SharedViewerScreen: View {
         // the reactive `.onChange` and the MYR-230 mount reconciliation stay in
         // lockstep).
         if status == .declined { viewerState.showDeclinedNotice = true }
-        if let phase = Self.reconciledPhase(status: status, hasSchedule: request.input.schedule != nil, current: viewerState.sheetPhase) {
+        if let phase = Self.reconciledPhase(status: status, isDormantReservation: RideReservation.isDormant(request), current: viewerState.sheetPhase) {
             viewerState.sheetPhase = phase
         }
     }
@@ -1086,25 +1086,30 @@ struct SharedViewerScreen: View {
     /// mounting the view and so both entry points can never drift.
     ///
     /// - `.accepted`: jump straight into the live tracking sheet — but only for a
-    ///   "now" acceptance (`!hasSchedule`; a scheduled acceptance is a reservation,
-    ///   not a live trip — `SimulatedRideRequestService.accept()` never seeds
-    ///   `trackProgress` for these and ride-request.jsx's scheduled path never
-    ///   shows `TrackingContent`) and only FROM `.booking`/`.idle` (already
-    ///   tracking / summary / mid-request-flow → leave it, so a remount over an
-    ///   accepted ride does not thrash the phase).
+    ///   LIVE ride (`!isDormantReservation`) and only FROM `.booking`/`.idle`
+    ///   (already tracking / summary / mid-request-flow → leave it, so a remount
+    ///   over an accepted ride does not thrash the phase).
     /// - `.declined`: drop back to `.search` (the `DeclinedNotice` overlays there).
     /// - `.pending`: no phase change — the idle sheet shows the pending pill.
-    static func reconciledPhase(status: RideRequestStatus, hasSchedule: Bool, current: RiderSheetPhase) -> RiderSheetPhase? {
+    ///
+    /// MYR-377 — the parameter was `hasSchedule`, which conflated "this ride is
+    /// booked for later" with "this ride is not happening". Those are the same
+    /// thing right up until the reservation sweeper dispatches, and then they are
+    /// opposites: the client's ride reached `arrived` — a car at his kerb — and
+    /// this gate still refused to leave the idle sheet, so there was no tracking
+    /// card and, fatally, no "Start ride" button, which is the ONLY control that
+    /// moves `arrived → enroute`. The flow could not be completed at all.
+    static func reconciledPhase(status: RideRequestStatus, isDormantReservation: Bool, current: RiderSheetPhase) -> RiderSheetPhase? {
         switch status {
         case .accepted:
-            guard !hasSchedule, current == .booking || current == .idle else { return nil }
+            guard !isDormantReservation, current == .booking || current == .idle else { return nil }
             return .tracking
         case .arrived, .enroute:
             // MYR-270 — the owner confirmed pickup (arrived) or the rider started
             // (enroute). From booking/idle (a cold-adopt of an in-progress ride) enter
             // tracking; already tracking → stay (the stage/leg flips within the
             // tracking sheet off the status itself).
-            guard !hasSchedule, current == .booking || current == .idle else { return nil }
+            guard !isDormantReservation, current == .booking || current == .idle else { return nil }
             return .tracking
         case .completed:
             // MYR-265 — dropped off: advance the live tracking sheet to the summary.

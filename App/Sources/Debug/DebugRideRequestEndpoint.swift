@@ -26,8 +26,12 @@ import MyRobotaxiContracts
 // this flow. Release builds never compile this file.
 struct DebugRideRequestEndpoint: RideRequestAPI {
     /// The wire rows the scene's vehicle has booked, soonest first — exactly as the
-    /// server orders them.
+    /// server orders them. Answers the OWNER-scoped incoming/upcoming endpoint.
     var reservations: [MyRobotaxiContracts.RideRequest] = []
+    /// MYR-377 — the RIDER-scoped list (`GET /api/ride-requests`), which is a
+    /// different endpoint answering a different question, so it is a different
+    /// array rather than the same one served twice.
+    var rides: [MyRobotaxiContracts.RideRequest] = []
 
     func upcomingReservations(vehicleID: String, cursor: String?, limit: Int) async throws -> RideRequestsListResponse {
         // ONE page, final: `hasMore: false` + a null cursor, the shape the endpoint
@@ -37,20 +41,22 @@ struct DebugRideRequestEndpoint: RideRequestAPI {
     }
 
     func declineRideRequest(id: String) async throws -> RideRequest {
-        guard let ride = reservations.first(where: { $0.id == id }) else {
+        guard let ride = (reservations + rides).first(where: { $0.id == id }) else {
             throw RestError.http(status: 404, code: nil, message: nil, subCode: nil)
         }
         return ride
     }
 
-    // MARK: Unused conformance (never reached from the pause flow)
+    /// MYR-377 — the rider's own list, one page, final.
+    func rideRequests(cursor: String?, limit: Int) async throws -> RideRequestsListResponse {
+        RideRequestsListResponse(items: rides, hasMore: false)
+    }
+
+    // MARK: Unused conformance (never reached from these flows)
 
     func vehicles() async throws -> [VehicleSummary] { [] }
     func createRideRequest(_ body: RideRequestCreateRequest) async throws -> RideRequest {
         throw RestError.http(status: 501, code: nil, message: nil, subCode: nil)
-    }
-    func rideRequests(cursor: String?, limit: Int) async throws -> RideRequestsListResponse {
-        RideRequestsListResponse(items: [], hasMore: false)
     }
     func rideRequest(id: String) async throws -> RideRequest { try await declineRideRequest(id: id) }
     func cancelRideRequest(id: String) async throws -> RideRequest { try await declineRideRequest(id: id) }
@@ -70,11 +76,20 @@ extension DebugRideRequestEndpoint {
     /// the server emits one. `requesterName` is the server-resolved FIRST name;
     /// passing `nil` produces the nameless case, which the client must render
     /// honestly rather than fill in.
+    ///
+    /// MYR-376/377 — `status` and the two DISPATCH fields are parameters now, all
+    /// defaulted to the pre-existing values (`accepted`, undispatched), so every
+    /// row the MYR-360 scenes build is byte-identical. They exist because the whole
+    /// point of the reservation-lifecycle captures is the difference between a
+    /// reservation the sweeper has fired for and one it has not.
     static func reservation(
         id: String,
         vehicleID: String,
         requesterName: String?,
-        scheduledFor: Date
+        scheduledFor: Date,
+        status: MyRobotaxiContracts.RideRequestStatus = .accepted,
+        dispatchedAt: Date? = nil,
+        dispatchStatus: MyRobotaxiContracts.DispatchStatus? = nil
     ) -> MyRobotaxiContracts.RideRequest {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -92,11 +107,16 @@ extension DebugRideRequestEndpoint {
                 label: "SFO \u{00B7} Terminal 2",
                 address: "San Francisco International"
             ),
-            status: .accepted,
+            status: status,
             scheduledFor: iso.string(from: scheduledFor),
             createdAt: created,
             updatedAt: created,
-            acceptedAt: created,
+            // A `requested` row has not been accepted, so it must not carry an
+            // `acceptedAt` — a wire shape the server does not emit is a stub that
+            // teaches the client something untrue (MYR-362).
+            acceptedAt: status == .requested ? nil : created,
+            dispatchStatus: dispatchStatus,
+            dispatchedAt: dispatchedAt.map { iso.string(from: $0) },
             requesterName: requesterName
         )
     }
