@@ -176,6 +176,16 @@ targets:
         # for the simulator SDK), so this never prompts for sim runs.
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: NFKX777598
+      configs:
+        # MYR-172 — RELEASE is FULL-MANUAL, per target, because the archive-time
+        # command-line override (PROVISIONING_PROFILE_SPECIFIER=...) applies to
+        # EVERY target at once and cannot name two profiles. Debug/simulator
+        # stays Automatic above, so tests never prompt. The archive command now
+        # passes only CURRENT_PROJECT_VERSION (RELEASING.md).
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "Apple Distribution: Thomas Nandola (NFKX777598)"
+          PROVISIONING_PROFILE_SPECIFIER: MyRoboTaxi App Store
 
   # MYR-172 — the widget extension. V1 renders exactly one thing: the rider's ride
   # Live Activity (home-screen / lock-screen / StandBy widgets are explicit
@@ -245,6 +255,15 @@ targets:
         # an entry for this bundle id too. See RELEASING.md §3b.
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: NFKX777598
+      configs:
+        # MYR-172 — same per-target Release manual signing as the app, with THIS
+        # target's own profile ("MyRoboTaxi Widgets App Store", zero capabilities
+        # — see RELEASING.md). Export still re-signs by UUID from
+        # ExportOptions-Manual.plist; this is what lets the ARCHIVE sign at all.
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "Apple Distribution: Thomas Nandola (NFKX777598)"
+          PROVISIONING_PROFILE_SPECIFIER: MyRoboTaxi Widgets App Store
 
   # MYR-201 — app-side unit tests (adapter/contract mapping). Hosted by the app
   # target so `@testable import MyRoboTaxi` can reach the App-target types
