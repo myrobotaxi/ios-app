@@ -98,9 +98,13 @@ public final class OwnerDrivesState {
 
     /// Read this vehicle's upcoming reservations. Idempotent per vehicle unless
     /// `force` is set (the pull a cancel does afterwards).
-    public func loadUpcoming(vehicleID: String?, force: Bool = false) async {
-        guard let reservations, let vehicleID else { return }
-        if !force, loadedVehicleID == vehicleID { return }
+    /// - Returns: whether the server ANSWERED (MYR-381 — the cancel path has to
+    ///   tell "the reservation left the list" apart from "the list did not
+    ///   answer"; from `upcoming` alone they are the same array).
+    @discardableResult
+    public func loadUpcoming(vehicleID: String?, force: Bool = false) async -> Bool {
+        guard let reservations, let vehicleID else { return false }
+        if !force, loadedVehicleID == vehicleID { return true }
         if loadedVehicleID != vehicleID { upcoming = [] }
         isLoadingUpcoming = upcoming.isEmpty
         defer { isLoadingUpcoming = false }
@@ -108,10 +112,15 @@ public final class OwnerDrivesState {
             // A read that did not answer is NOT evidence that nothing is booked
             // (MYR-326's rule). Leave whatever is held and try again on the next
             // appearance rather than emptying the list.
-            return
+            return false
         }
         loadedVehicleID = vehicleID
-        upcoming = rows.compactMap(UpcomingReservationRow.row(for:))
+        // MYR-381 — deduped by id for the same rendering reason
+        // `RiderScheduledRideMapping.rides` is: `ForEach` draws one row per id, so
+        // a duplicate across a cursor page boundary would be counted and not drawn.
+        var seen: Set<String> = []
+        upcoming = rows.compactMap(UpcomingReservationRow.row(for:)).filter { seen.insert($0.id).inserted }
+        return true
     }
 
     /// MYR-376 — the HONEST cancel: decline on the server FIRST, then re-read.
@@ -121,26 +130,37 @@ public final class OwnerDrivesState {
     /// list while the reservation it named carried on existing, the single most
     /// dangerous shape a failed write can take. A refusal keeps the row exactly
     /// where it is and says so.
+    ///
+    /// MYR-381 — and the refusal is now CLASSIFIED, RECONCILED and RECORDED
+    /// (`ReservationCancel.swift`). The re-read this method already performed is
+    /// what decides whether a refusal is worth a toast at all: a `409` on a
+    /// reservation that has since dispatched or been ended elsewhere comes back
+    /// with the row GONE, and a list that agrees with the tap is not a failure to
+    /// announce.
     public func cancelReservation(id: String, vehicleID: String?) async {
         guard let reservations else { return }
         cancellingID = id
         defer { cancellingID = nil }
+        var failure: ReservationCancelFailure?
         do {
             try await reservations.decline(reservationID: id)
         } catch {
-            cancelFailureNotice = Self.cancelFailureMessage
-            // Re-read anyway: a `409` usually means the ride has moved on, and the
-            // list saying so is more use than the list pretending otherwise.
-            await loadUpcoming(vehicleID: vehicleID, force: true)
-            return
+            failure = ReservationCancelFailure.classify(error)
+            ReservationCancelLog.record(failure!, action: "decline", rideID: id)
         }
-        await loadUpcoming(vehicleID: vehicleID, force: true)
+        // Re-read either way: a `409` usually means the ride has moved on, and the
+        // list saying so is more use than the list pretending otherwise.
+        let answered = await loadUpcoming(vehicleID: vehicleID, force: true)
+        let stillHeld = !answered || upcoming.contains { $0.id == id }
+        switch ReservationCancelOutcome.resolve(failure: failure, stillHeld: stillHeld, copy: .owner) {
+        case .cancelled: cancelFailureNotice = nil
+        case .refused(let notice): cancelFailureNotice = notice
+        }
     }
 
-    /// One sentence, deliberately not a reason code. The server refuses a decline
-    /// for exactly one family of reasons — the ride is no longer cancellable
-    /// because it has already started — and the honest instruction in every case is
-    /// the same: look at the list again.
+    /// MYR-376's original sentence. MYR-381 replaced its two USES with the
+    /// classified pair in `ReservationCancelCopy.owner`; it survives as the name a
+    /// caller with nothing more specific to say can still reach for.
     public static let cancelFailureMessage = "Couldn\u{2019}t cancel that reservation"
 }
 

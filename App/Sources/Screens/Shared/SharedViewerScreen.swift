@@ -175,8 +175,18 @@ struct SharedViewerScreen: View {
             if isSearch, viewerState.showDeclinedNotice {
                 DeclinedNoticeCard(
                     requesterName: declinedRequesterName,
-                    onDismiss: { viewerState.resetDraftToIdle() },
-                    onRebook: { viewerState.showDeclinedNotice = false }
+                    // MYR-381 — both answers ACKNOWLEDGE the ride, not just the
+                    // card. Before this, Dismiss reset the draft (which the
+                    // declined RECORD does not live in) and Rebook lowered a flag,
+                    // so the very next reconcile put the card back — the client's
+                    // *"I already dismissed the declined ride"*.
+                    onDismiss: {
+                        viewerState.acknowledgeDeclined(rideID: rideRequestService.activeRequest?.id)
+                        viewerState.resetDraftToIdle()
+                    },
+                    onRebook: {
+                        viewerState.acknowledgeDeclined(rideID: rideRequestService.activeRequest?.id)
+                    }
                 )
                 .transition(reduceMotion ? AnyTransition.opacity : AnyTransition.move(edge: .bottom).combined(with: .opacity))
             }
@@ -270,6 +280,14 @@ struct SharedViewerScreen: View {
         .onChange(of: rideRequestService.activeRequest?.status) { _, newStatus in
             handleStatusChange(newStatus)
         }
+        // MYR-381 — THE SLOT RELEASING IS ALSO A TERMINAL TRANSITION, and it is the
+        // one with no status to observe: `LiveRideRequestService.integrate` maps
+        // the wire's `cancelled` to NO app status and sets `activeRequest` to nil,
+        // so "cancelled" reaches this screen only as the record DISAPPEARING (the
+        // same erasure MYR-172's Live Activity had to be written around). A
+        // status-only observer sees `nil == nil` and never fires, which is how the
+        // client's cancelled reservation left its 1,000-mile etch on the map.
+        .onChange(of: rideRequestService.activeRequest?.id, releaseRouteIfSlotEmpty)
         .onChange(of: rideRequestService.activeRequest?.trackProgress) { _, progress in
             handleProgressChange(progress)
             // MYR-177: as the ride advances, keep the route cache reconciled
@@ -543,9 +561,13 @@ struct SharedViewerScreen: View {
     /// has been chosen). "Current location" pickup has NO draft — it resolves
     /// from the live fix, so the fix coordinate is the pickup fallback here
     /// (same coordinate the request would materialize at Continue).
+    ///
+    /// MYR-381 — through `liveRouteRequest`, so a TERMINAL record cannot supply the
+    /// destination that raises this preview. That is the whole of the stale-etch
+    /// defect: the draft was cleared and the declined ride answered in its place.
     private var draftRouteEndpointsKnown: Bool {
         searchPreviewPickup != nil
-            && (rideRequestService.activeRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate) != nil
+            && (liveRouteRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate) != nil
     }
 
     /// The route preview map's `loading` input: true while the real road route
@@ -561,7 +583,7 @@ struct SharedViewerScreen: View {
     /// The preview's pickup coordinate: explicit request/draft pickup, else
     /// the live "Current location" fix.
     private var searchPreviewPickup: CLLocationCoordinate2D? {
-        rideRequestService.activeRequest?.input.pickup.coordinate
+        liveRouteRequest?.input.pickup.coordinate
             ?? viewerState.draftPickup?.coordinate
             // The ANCHOR, never the live fix: GPS jitter must not re-key the
             // route (MYR-237 device trace — the collapse/refetch loop).
@@ -803,12 +825,41 @@ struct SharedViewerScreen: View {
         isPinDrop ? MRTMetrics.pinDropStreetSpanDelta : MRTMetrics.mapRegionSpanDelta
     }
 
+    // MARK: MYR-381 — NO ROUTE WITHOUT A LIVE RIDE OWNING IT
+    //
+    // THE DEFECT. After the client's double-booked reservation was declined, his
+    // rider Live Map kept the dead ride's leg etched across four states — a
+    // 1,000-mile Illinois → Dallas polyline behind the idle sheet, and again
+    // behind the search sheet under the declined card. *"Why is there some old
+    // route rendering in the background? It's creating a glitching experience."*
+    //
+    // THE CAUSE is one line of reach: every endpoint below took
+    // `rideRequestService.activeRequest` WITHOUT asking whether that ride is still
+    // happening. A `.declined` record stays in the rider's slot on purpose (the
+    // notice is built from it), so `routePreviewActive`'s
+    // `draftRouteEndpointsKnown` kept resolving a destination from a ride nobody
+    // was taking — the draft had been cleared and it made no difference, because
+    // the RECORD was answering. `resetDraftToIdle()` could not have fixed it;
+    // there was nothing left in the draft to reset.
+    //
+    // THE RULE, and it is structural rather than a cleanup: a route may only be
+    // drawn from a ride that is LIVE. `liveRouteRequest` is the ONE accessor every
+    // route-endpoint site reads, and it is `nil` for both terminal statuses, so a
+    // new surface cannot reach past it to a dead ride. The store is reset on the
+    // transition itself (`handleStatusChange`) so the cached geometry goes with
+    // it — the overlay and the cache can never disagree about whether a ride
+    // exists.
+    private var liveRouteRequest: RideRequestRecord? {
+        guard let request = rideRequestService.activeRequest else { return nil }
+        return RiderRouteLifetime.bearsRoute(status: request.status) ? request : nil
+    }
+
     /// Pickup → destination pair for the route-fitted phases — from the
     /// submitted `activeRequest` once it exists, else the still-in-progress
     /// draft (Review is reached before `submit(_:)` is ever called).
     private var requestRoute: [CLLocationCoordinate2D] {
         let pickup = searchPreviewPickup
-        let destination = rideRequestService.activeRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate
+        let destination = liveRouteRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate
         guard let pickup, let destination else {
             return [DriveFixtures.financialDistrict, DriveFixtures.embarcaderoCenter]
         }
@@ -857,7 +908,7 @@ struct SharedViewerScreen: View {
             return nil
         }
         let pickup = searchPreviewPickup
-        let destination = rideRequestService.activeRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate
+        let destination = liveRouteRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate
         guard let pickup, let destination else { return nil }
         return viewerState.rideRouteStore.leg2Route(pickup: pickup, destination: destination)
     }
@@ -1067,14 +1118,47 @@ struct SharedViewerScreen: View {
         }
     }
 
+    /// MYR-381 — the rider's active slot went empty, so whatever route was cached
+    /// for it is about a ride that no longer exists. See the call site's note: this
+    /// is the ONLY signal a cancelled ride gives this screen.
+    private func releaseRouteIfSlotEmpty(_ previousID: String?, _ id: String?) {
+        guard id == nil else { return }
+        viewerState.rideRouteStore.reset()
+    }
+
     private func handleStatusChange(_ status: RideRequestStatus?) {
         guard let status, let request = rideRequestService.activeRequest else { return }
         // A decline raises the small notice overlay in addition to moving to
         // `.search` (the phase decision itself lives in the pure mapping below, so
         // the reactive `.onChange` and the MYR-230 mount reconciliation stay in
         // lockstep).
-        if status == .declined { viewerState.showDeclinedNotice = true }
-        if let phase = Self.reconciledPhase(status: status, isDormantReservation: RideReservation.isDormant(request), current: viewerState.sheetPhase) {
+        //
+        // MYR-381 — unless the rider has already dismissed THIS ride's card. This
+        // method is the re-surfacing path the client hit: it runs on every mount
+        // reconciliation and on every status fold, and the declined record it
+        // reads is still in the slot, so before the acknowledgement each of those
+        // put the card back up.
+        if RiderDeclinedNotice.shouldRaise(
+            status: status,
+            rideID: request.id,
+            acknowledgedID: viewerState.acknowledgedDeclinedRideID
+        ) {
+            viewerState.showDeclinedNotice = true
+        }
+        // MYR-381 — A ROUTE DIES WITH ITS RIDE. Clearing the store ON THE
+        // TRANSITION is the other half of `liveRouteRequest`: the accessor stops
+        // new geometry being drawn for a dead ride, and this drops the geometry
+        // already fetched, so the overlay and the cache cannot disagree about
+        // whether the ride exists. (`.completed` keeps its route until the summary
+        // is dismissed — that map is ABOUT the ride that just happened — so only
+        // the refusal clears here; the slot-release path below covers the rest.)
+        if status == .declined { viewerState.rideRouteStore.reset() }
+        if let phase = Self.reconciledPhase(
+            status: status,
+            isDormantReservation: RideReservation.isDormant(request),
+            current: viewerState.sheetPhase,
+            isAcknowledgedDecline: request.id == viewerState.acknowledgedDeclinedRideID
+        ) {
             viewerState.sheetPhase = phase
         }
     }
@@ -1099,7 +1183,18 @@ struct SharedViewerScreen: View {
     /// this gate still refused to leave the idle sheet, so there was no tracking
     /// card and, fatally, no "Start ride" button, which is the ONLY control that
     /// moves `arrived → enroute`. The flow could not be completed at all.
-    static func reconciledPhase(status: RideRequestStatus, isDormantReservation: Bool, current: RiderSheetPhase) -> RiderSheetPhase? {
+    ///
+    /// MYR-381 — `isAcknowledgedDecline` is the second half of the dismissal. The
+    /// notice and the PHASE are two consequences of one record, so an
+    /// acknowledgement that lowered only the card would leave every reconcile
+    /// still yanking the rider from the idle sheet to `.search` for a ride they
+    /// have finished with — a card-less version of the same defect.
+    static func reconciledPhase(
+        status: RideRequestStatus,
+        isDormantReservation: Bool,
+        current: RiderSheetPhase,
+        isAcknowledgedDecline: Bool = false
+    ) -> RiderSheetPhase? {
         switch status {
         case .accepted:
             guard !isDormantReservation, current == .booking || current == .idle else { return nil }
@@ -1115,6 +1210,9 @@ struct SharedViewerScreen: View {
             // MYR-265 — dropped off: advance the live tracking sheet to the summary.
             return current == .tracking ? .summary : nil
         case .declined:
+            // MYR-381 — an acknowledged decline moves nothing. The rider dismissed
+            // it; the record is simply history now.
+            guard !isAcknowledgedDecline else { return nil }
             return current == .search ? nil : .search
         case .pending:
             return nil

@@ -1308,6 +1308,33 @@ struct RootView: View {
         // summary — none of those sites know a link is waiting, and none of them
         // need to.
         .onChange(of: inviteLinkContext) { _, _ in drainPendingInviteLink() }
+        // MYR-381 — THE RESERVATION SURFACES REACT TO THE SOCKET NOW.
+        //
+        // *"Took a long time for ride declined to appear on the rider side."* The
+        // rider's Scheduled tab and the owner's Drives → Upcoming are narrow read
+        // seams of their own (MYR-376/377) — deliberately, since a list of rides
+        // nobody is on has nothing to do with the two ride PIPELINES — and the
+        // price was that they refreshed on appearance and foreground and nothing
+        // else, while the frame that made them wrong was already in the app.
+        //
+        // It is wired HERE rather than in the two screens because the state both
+        // read outlives them: `RootView`'s own `switch` destroys `RideHistoryScreen`
+        // and `DrivesScreen` on every tab change, and the moment a reservation is
+        // declined is very often a moment the rider is looking at something else.
+        // Refreshing at the root means the list is already right when they arrive,
+        // rather than right one `.task` after they arrive.
+        //
+        // The tick is `0` forever on the simulated path, so this fires exactly zero
+        // times in SIM and in every DEBUG scene.
+        .onChange(of: rideRequestService.scheduledSurfaceTick) { _, _ in
+            Task { await riderScheduledRidesStore?.load() }
+            Task {
+                await ownerDrivesState.loadUpcoming(
+                    vehicleID: ownerHomeState.selectedVehicle?.id,
+                    force: true
+                )
+            }
+        }
         // MYR-184 — keep the rider's watched vehicle in step with the catalog.
         // MYR-343 — off the whole RESOLUTION, not off `grants` alone: the vehicle
         // the map watches is the owner's own car when they have one, and a change

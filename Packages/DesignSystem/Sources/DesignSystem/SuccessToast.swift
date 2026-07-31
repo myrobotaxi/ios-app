@@ -32,6 +32,48 @@ public extension View {
     }
 }
 
+// MARK: - The FAILURE variant (MYR-381)
+//
+// TestFlight r14: a refused cancel rendered "Couldn't cancel that ride" behind a
+// GOLD CHECKMARK. The pill has been parameterized since MYR-220, so nothing was
+// missing except a NAME for the other look — and an unnamed variant is one every
+// call site has to remember to spell, which is exactly how a failure came to wear
+// the success glyph. `MRTToastLook.failure` is that name, and
+// `mrtFailureToast` is the one-line way to ask for it.
+//
+// It is deliberately the SAME pill: a refusal here is a calm fact ("the server
+// would not do that"), not an alarm, and the app has one toast grammar. Only the
+// glyph and the hairline change.
+public enum MRTToastLook {
+    /// The success look — a gold checkmark. The pill's default, unchanged.
+    public static let successImage = "checkmark"
+    public static let successTint = Color.mrtGold
+    /// The failure look. `exclamationmark.circle.fill` over the design's own
+    /// destructive red: legible as "this did not happen" at a glance, and
+    /// impossible to read as a confirmation.
+    public static let failureImage = "exclamationmark.circle.fill"
+    public static let failureTint = Color.mrtDialogRed
+}
+
+public extension View {
+    /// Presents the shared toast in its FAILURE look (MYR-381) — same pill, same
+    /// motion, same dwell; a red `exclamationmark.circle.fill` instead of the gold
+    /// checkmark. For a write the server refused.
+    func mrtFailureToast(
+        isPresented: Binding<Bool>,
+        message: String,
+        bottomOffset: CGFloat = MRTMetrics.toastBottomOffset
+    ) -> some View {
+        mrtSuccessToast(
+            isPresented: isPresented,
+            message: message,
+            systemImage: MRTToastLook.failureImage,
+            tint: MRTToastLook.failureTint,
+            bottomOffset: bottomOffset
+        )
+    }
+}
+
 private struct MRTSuccessToastModifier: ViewModifier {
     @Binding var isPresented: Bool
     let message: String

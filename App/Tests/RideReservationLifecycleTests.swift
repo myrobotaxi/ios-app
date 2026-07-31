@@ -387,7 +387,9 @@ final class RideReservationLifecycleTests: XCTestCase {
         XCTAssertEqual(store.rides.map(\.id), ["s1"])
 
         await store.cancel(id: "s1")
-        XCTAssertEqual(store.failureNotice, RiderScheduledRidesStore.cancelFailureMessage)
+        // MYR-381 — the sentence is CLASSIFIED now (the server answered, and the
+        // reservation is still standing), not the one generic line.
+        XCTAssertEqual(store.failureNotice, ReservationCancelCopy.rider.refused)
         XCTAssertEqual(store.rides.map(\.id), ["s1"], "NEVER optimistically removed on a refused cancel")
     }
 
@@ -412,7 +414,7 @@ final class RideReservationLifecycleTests: XCTestCase {
         XCTAssertEqual(state.upcoming.map(\.id), ["r1"])
 
         await state.cancelReservation(id: "r1", vehicleID: "veh-live")
-        XCTAssertEqual(state.cancelFailureNotice, OwnerDrivesState.cancelFailureMessage)
+        XCTAssertEqual(state.cancelFailureNotice, ReservationCancelCopy.owner.refused) // MYR-381
         XCTAssertEqual(state.upcoming.map(\.id), ["r1"], "the row stays where it is")
     }
 

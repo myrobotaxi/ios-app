@@ -99,14 +99,26 @@ enum RiderScheduledRideMapping {
     /// has passed but which has not dispatched is exactly the state a rider most
     /// needs to see — it is the 30-minute window in which the server will expire it
     /// — and hiding it would reproduce MYR-360's defect from the rider's side.
+    ///
+    /// MYR-381 — DEDUPED BY ID, and that is a rendering guarantee rather than
+    /// tidiness. `ForEach` over an `Identifiable` collection renders ONE view per
+    /// id, so a list carrying the same ride twice — which a cursor page boundary
+    /// can produce (`LiveRiderScheduledRides` follows up to three pages and a row
+    /// created between two reads shifts the window) — draws fewer rows than it
+    /// counts, and the screen's "N scheduled · M confirmed" header, which counts
+    /// the array, then states a number the rider cannot see. Deduping HERE is what
+    /// makes the header derive from the rendered rows structurally: there is one
+    /// array, and every id in it renders.
     static func rides(
         from wire: [MyRobotaxiContracts.RideRequest],
         vehicles: [String: RiderScheduledRideVehicle],
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> [ScheduledRide] {
-        wire
+        var seen: Set<String> = []
+        return wire
             .compactMap { ride(from: $0, vehicle: vehicles[$0.vehicleId], now: now, calendar: calendar) }
+            .filter { seen.insert($0.id).inserted }
             .sorted { $0.scheduledFor ?? .distantFuture < $1.scheduledFor ?? .distantFuture }
     }
 
@@ -263,29 +275,52 @@ final class RiderScheduledRidesStore {
         self.source = source
     }
 
-    func load() async {
+    /// - Returns: whether the server ANSWERED. MYR-381 — the cancel path needs to
+    ///   tell "the ride is gone from the list" apart from "the list did not
+    ///   answer", and those are the same `rides` array from the outside.
+    @discardableResult
+    func load() async -> Bool {
         isLoading = rides.isEmpty
         defer { isLoading = false }
         // A read that did not answer is NOT "you have no reservations" (MYR-326):
         // hold whatever is on screen and let the next appearance ask again.
-        guard let rows = try? await source.scheduledRides(now: Date()) else { return }
+        guard let rows = try? await source.scheduledRides(now: Date()) else { return false }
         rides = rows
+        return true
     }
 
     /// Cancel for real, then re-read. Never an optimistic removal — the whole
     /// lesson of the owner's silent X (MYR-376) applies identically here, and a
     /// rider who believes a ride is cancelled when it is not will simply not be
     /// there when the car arrives.
+    ///
+    /// MYR-381 — the failure is CLASSIFIED, RECONCILED and RECORDED rather than
+    /// collapsed into one sentence (see `ReservationCancel.swift`'s header): the
+    /// re-read decides whether a refusal is worth saying out loud, and the reason
+    /// the server gave goes to os_log either way.
     func cancel(id: String) async {
         cancellingID = id
         defer { cancellingID = nil }
+        var failure: ReservationCancelFailure?
         do {
             try await source.cancel(rideID: id)
         } catch {
-            failureNotice = Self.cancelFailureMessage
+            failure = ReservationCancelFailure.classify(error)
+            ReservationCancelLog.record(failure!, action: "cancel", rideID: id)
         }
-        await load()
+        let reread = await load()
+        // A read that did not answer holds whatever was on screen, so the row is
+        // still "held" — never report a cancel we could not confirm.
+        let stillHeld = !reread || rides.contains { $0.id == id }
+        switch ReservationCancelOutcome.resolve(failure: failure, stillHeld: stillHeld, copy: .rider) {
+        case .cancelled: failureNotice = nil
+        case .refused(let notice): failureNotice = notice
+        }
     }
 
+    /// MYR-377's original sentence, kept as the name every existing consumer
+    /// reads. MYR-381 replaced its two USES with the classified pair above; it
+    /// survives as the generic fallback a future caller with nothing more specific
+    /// to say can still reach for.
     static let cancelFailureMessage = "Couldn\u{2019}t cancel that ride"
 }
