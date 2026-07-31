@@ -134,6 +134,17 @@ struct RootView: View {
     /// unchanged. Built in `init` from the resolved mode + session provider,
     /// mirroring `teslaAuthenticator` / `vehicleTeardownRemover`.
     @State private var pushCoordinator: PushRegistrationCoordinator
+    /// MYR-172 — the rider's ride Live Activity. Always present; INERT on the
+    /// simulated path (never calls ActivityKit, never calls the network), so the
+    /// fixture demo and every DEBUG capture scene are unchanged — a fixture ride
+    /// must never put a real card on a real lock screen.
+    ///
+    /// It lives HERE rather than in `SharedViewerScreen` because a Live Activity
+    /// outlives the screen that started it: the rider can switch to the owner tab,
+    /// or leave the app entirely, and the ride goes on. A coordinator owned by the
+    /// rider screen would be torn down at exactly the moments the Activity matters
+    /// most.
+    @State private var rideActivityCoordinator: RideActivityCoordinator
     /// MYR-349 — the ACCOUNT's per-category notification preferences (rest-api.md
     /// §7.19), read and written by BOTH Settings screens. Lifted here for the same
     /// reason every other account-scoped seam is: the owner and the rider shells
@@ -328,6 +339,12 @@ struct RootView: View {
         upcomingReservations = reservations
         // MYR-186 — push device registration, bound to the same session.
         _pushCoordinator = State(initialValue: PushComposition.makeCoordinator(
+            mode: mode,
+            sessionTokenProvider: auth.sessionTokenProvider
+        ))
+        // MYR-172 — the rider's Live Activity, bound to the same session. Inert in
+        // simulated mode, exactly like the push coordinator above.
+        _rideActivityCoordinator = State(initialValue: RideActivityComposition.makeCoordinator(
             mode: mode,
             sessionTokenProvider: auth.sessionTokenProvider
         ))
@@ -874,6 +891,11 @@ struct RootView: View {
     @MainActor
     private func unregisterPushOnSignOut() {
         pushCoordinator.handleSignOut()
+        // MYR-172 — and take the Live Activity down. The card names the rider's
+        // DESTINATION, which is P1 and scoped to that one rider; it must not
+        // outlive the session that was allowed to see it, and it certainly must not
+        // still be there when the next account signs in on this phone.
+        Task { await rideActivityCoordinator.handleSignOut() }
     }
 
     var body: some View {
@@ -1225,6 +1247,14 @@ struct RootView: View {
         .background(Color.mrtBg.ignoresSafeArea())
         // MYR-186 — hand this view's state to the UIKit push delegate.
         .onAppear { configurePushBridge() }
+        #if DEBUG
+        // MYR-172 — the `riderLiveActivity` capture scene. Unset for every other
+        // scene, so nothing else in the drift gate changes by a pixel.
+        .task {
+            guard let frame = DebugScene.current?.sampleLiveActivityFrame else { return }
+            await RideActivityDebugLauncher.start(state: frame.state, staleDate: frame.staleDate)
+        }
+        #endif
         // MYR-346 — same hand-off for universal links, and the drain of anything
         // the mailbox held through a cold launch.
         .onAppear { configureInviteLinkBridge() }
@@ -1273,6 +1303,16 @@ struct RootView: View {
                 screen = .signIn
             }
         }
+        // MYR-172 — the Live Activity follows the rider's own ride, wherever the
+        // rider happens to be in the app. Observing the WHOLE record (not just
+        // `status`, which is what `SharedViewerScreen` watches) is deliberate: a
+        // remotely CANCELLED ride is ERASED rather than transitioned, so
+        // `activeRequest` goes straight to `nil` and a status-only observer would
+        // see `nil == nil` and never fire — leaving a card up for a ride that no
+        // longer exists.
+        .onChange(of: rideRequestService.activeRequest) { _, record in
+            Task { await rideActivityCoordinator.handleRideChange(record) }
+        }
         .onChange(of: scenePhase) { _, phase in
             // MYR-222: the rider's location stream joins the owner fleet in
             // explicit suspend/resume handling — see `SharedViewerState
@@ -1285,6 +1325,14 @@ struct RootView: View {
                 // registration PUT that failed earlier. Inert unless the user has
                 // already authorized; never blocks anything on screen.
                 Task { await pushCoordinator.handleForeground() }
+                // MYR-172 — re-evaluate the Live Activity against whatever the ride
+                // looks like NOW. This is the local final-state fallback's other
+                // half: while the app was away the ride may have completed, been
+                // declined or been cancelled outright, and if the terminal PUSH was
+                // missed (prefs off, APNs dropped it, the phone was offline) the
+                // card is still sitting on the lock screen claiming a ride is
+                // running. Pushes are the primary channel; this is the backstop.
+                Task { await rideActivityCoordinator.handleRideChange(rideRequestService.activeRequest) }
                 // MYR-343 — a rider whose vehicle list never answered is sitting on
                 // the honest "can't reach" line with nothing in flight behind it.
                 // Recovery is the low-friction one MYR-326 settled on (a resume

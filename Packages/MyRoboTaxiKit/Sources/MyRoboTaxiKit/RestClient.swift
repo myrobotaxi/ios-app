@@ -17,7 +17,7 @@ public protocol SnapshotFetching: Sendable {
 ///
 /// Value type (`Sendable`): all dependencies are immutable, so it is free to
 /// share across tasks without a serialization bottleneck.
-public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleServiceWindowEndpoint, VehicleRideShareEndpoint, VehicleRefreshing, VehicleCommandSending, VehicleSharingEndpoint, PushDeviceEndpoint, PushPrefsEndpoint, AccountDeletionEndpoint {
+public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleServiceWindowEndpoint, VehicleRideShareEndpoint, VehicleRefreshing, VehicleCommandSending, VehicleSharingEndpoint, PushDeviceEndpoint, RideActivityTokenEndpoint, PushPrefsEndpoint, AccountDeletionEndpoint {
     private let environment: BackendEnvironment
     private let tokenProvider: any TokenProvider
     private let http: any HTTPPerforming
@@ -550,6 +550,56 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
             ["push", "devices"],
             method: "DELETE",
             body: body,
+            allowTokenRefresh: true
+        )
+    }
+
+    // MARK: - Live Activity token (rest-api.md §7.21, MYR-172)
+    //
+    // Ride-scoped, unlike the account-scoped device token above. See
+    // `RideActivityTokenEndpoint` for why the two are separate endpoints.
+
+    /// `POST /api/ride-requests/{id}/activity-token` — hand the server the
+    /// ActivityKit push token for the Live Activity just started for this ride.
+    ///
+    /// Unlike the push-device calls this one DOES decode its response: §7.21
+    /// answers a real two-key body (`{ registered, sandbox }`), and the `sandbox`
+    /// echo is the point — it lets the client confirm the server agrees about which
+    /// APNs gateway the token belongs to, rather than discovering the disagreement
+    /// later as a silent `BadDeviceToken` nobody sees.
+    ///
+    /// `sandbox` is sent unconditionally rather than omitted when false. The schema
+    /// makes it optional-defaulting-to-production, so omitting it would be correct
+    /// for a Release build — but it would also make "production" and "the client
+    /// did not say" the same bytes on the wire, and those two are worth telling
+    /// apart in a server log when a rider's lock screen is silent.
+    @discardableResult
+    public func registerRideActivityToken(
+        rideID: String,
+        token: String,
+        sandbox: Bool
+    ) async throws -> LiveActivityRegistrationResponse {
+        try await post(
+            ["ride-requests", rideID, "activity-token"],
+            body: RegisterLiveActivityRequest(activityToken: token, sandbox: sandbox)
+        )
+    }
+
+    /// `DELETE /api/ride-requests/{id}/activity-token` — report that the Live
+    /// Activity has ended on the phone.
+    ///
+    /// Carries NO body: the server keys the registration on `(ride, rider)` and
+    /// both are already known from the path and the JWT, so re-sending the token
+    /// would put a P1 capability in a request that has no use for it. (This is the
+    /// deliberate asymmetry with `unregisterPushDevice`, whose DELETE *does* carry
+    /// a body — there the token is the only thing identifying which of an account's
+    /// devices to forget.)
+    @discardableResult
+    public func endRideActivityToken(rideID: String) async throws -> EndLiveActivityResponse {
+        try await perform(
+            ["ride-requests", rideID, "activity-token"],
+            method: "DELETE",
+            body: nil,
             allowTokenRefresh: true
         )
     }

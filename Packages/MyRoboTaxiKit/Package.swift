@@ -114,7 +114,40 @@ let package = Package(
         //     keeps streaming until it reconnects (websocket-protocol.md §10 DV-09,
         //     server-side fix tracked as MYR-373), so the client must tolerate the
         //     car simply being gone on the next list read.
-        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.23.0")
+        //
+        // MYR-172 — 0.24.0 adds the Live Activity family (schemas/live-activity.
+        // schema.json, rest-api.md §7.21): `RegisterLiveActivityRequest`,
+        // `LiveActivityRegistrationResponse`, `EndLiveActivityResponse`,
+        // `LiveActivityEvent`, `LiveActivityRideStatus` and — the one that is NOT
+        // a REST body — `LiveActivityContentState`, the exact `aps.content-state`
+        // an ActivityKit remote update carries.
+        //
+        //   • `LiveActivityContentState` NEVER APPEARS ON AN ENDPOINT. It reaches
+        //     the device only over APNs, so no `RestClient` method returns it and
+        //     no fixture exercises it through the HTTP pipeline. It is imported
+        //     here for ONE purpose: to be the authority the app's own
+        //     `RideActivityAttributes.ContentState` is pinned against
+        //     (`RideActivityContentStateTests`). ActivityKit will not let the
+        //     generated type BE the ContentState — that protocol requires
+        //     `Hashable` and the generated type is only `Codable, Equatable,
+        //     Sendable` — so the app declares a mirror, and a mirror is exactly
+        //     the MYR-362 shape: two hand-kept-in-sync types that can drift while
+        //     every decode test passes. The pin is what closes that.
+        //   • `LiveActivityRideStatus` IS used directly (it is `Hashable`), so the
+        //     app's ContentState carries the generated enum rather than a second
+        //     copy — which also inherits its `unrecognized(String)` arm, and the
+        //     schema REQUIRES a client to tolerate an unknown member rather than
+        //     fail the decode. `reservation_expired` is the member with no
+        //     `RideRequestStatus` twin: the reservation sweeper leaves the ride row
+        //     at `accepted`, so without it a rider's lock screen would sit on "your
+        //     car is on its way" forever.
+        //   • `eta` is ABSOLUTE UNIX SECONDS and is OMITTED ENTIRELY when unknown —
+        //     never null, never zero, never a guess. It is optional on the wire, so
+        //     a MIS-KEYED mirror decodes it to `nil` silently and the lock screen
+        //     simply shows no countdown, with no throw anywhere. That is MYR-362's
+        //     defect in a new place, which is why the guard is a RAW-KEY assertion
+        //     rather than a round-trip.
+        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.24.0")
     ],
     targets: [
         .target(

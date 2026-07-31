@@ -82,6 +82,30 @@ the team account, or an App Store Connect API key without cloud-signing rights.
 It produces the same archive; it just names the profile instead of asking Xcode
 to fetch one.
 
+> **MYR-172 — THERE ARE TWO SIGNED BUNDLES NOW.** The `MyRoboTaxiWidgets` app
+> extension (`app.myrobotaxi.ios.widgets`, carrying the rider's Live Activity)
+> is embedded in `MyRoboTaxi.app/PlugIns/` and needs its OWN App Store
+> provisioning profile — an extension is never covered by its host's.
+>
+> `PROVISIONING_PROFILE_SPECIFIER` on the command line below applies to EVERY
+> target at once, so it cannot name two profiles. Until the widgets profile
+> exists, prefer the automatic path (§3a) which resolves both; when it does
+> exist, either drop the flag and set both profiles per-target in `project.yml`,
+> or archive per-target. The export step (§4) reads
+> `ExportOptions-Manual.plist`, which already has a `provisioningProfiles` entry
+> for the widgets bundle id — replace its `REPLACE-WITH-WIDGETS-PROFILE-UUID`
+> placeholder with the real UUID.
+>
+> **What the widgets profile must carry: NOTHING beyond a plain App Store
+> distribution profile.** No Push Notifications, no App Groups, no Associated
+> Domains. The extension declares no entitlements file at all. Live Activities
+> are switched on by the HOST app's `NSSupportsLiveActivities` Info.plist key
+> (not an entitlement), and the Live Activity APNs topic is the HOST's bundle id
+> with `.push-type.liveactivity` appended, so the host's existing
+> `aps-environment` authorises the push. Capabilities added here would put
+> entitlements in the profile that the binary never claims, which the export then
+> rejects.
+
 ```sh
 xcodebuild \
   -project MyRoboTaxi.xcodeproj \
