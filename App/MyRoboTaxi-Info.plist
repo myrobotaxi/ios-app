@@ -14,6 +14,31 @@
 	host); ASWebAuthenticationSession matches on the scheme, so no second entry is
 	needed.
 	-->
+	<!--
+	MYR-172 — Live Activities. This key is what lets the app call
+	`Activity.request` at all; without it ActivityKit reports Live Activities as
+	unavailable and every request fails, with no build-time signal.
+
+	It lives HERE rather than in project.yml's `INFOPLIST_KEY_*` block for the
+	same reason CFBundleURLTypes does: there is no `INFOPLIST_KEY_` spelling for
+	it, so the additive plist is the only place it can go.
+
+	It is NOT an entitlement and needs no portal capability — which is why the
+	widget extension's new provisioning profile carries nothing special. The
+	APNs side of Live Activities rides the app's EXISTING `aps-environment`
+	entitlement, because the push topic is the host app's bundle id with
+	`.push-type.liveactivity` appended.
+	-->
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<!--
+	Deliberately NOT declared: `NSSupportsLiveActivitiesFrequentUpdates`. That
+	key asks the system to relax the update budget, and MYR-194 already fixed the
+	cadence inside the ordinary budget — a push per lifecycle transition plus a
+	60–90s ETA tick. Asking for frequent updates we do not send would only expose
+	a Settings toggle the rider can disable, which is a new failure mode in
+	exchange for nothing.
+	-->
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

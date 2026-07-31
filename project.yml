@@ -37,7 +37,16 @@ packages:
     # longer a total order — see the Kit's `Package.swift` for the full note. The
     # app target names `ShareInvite`/`SharePermission` directly (`DebugShareEndpoint`,
     # `DebugScenes`), so this pin moves with the Kit's, same reason as 0.22.0.
-    from: 0.23.0
+    #
+    # MYR-172 — 0.24.0 adds the Live Activity family (rest-api.md §7.21). The full
+    # reasoning lives in the Kit's `Package.swift`; the short version for THIS pin
+    # is that the app target and the WIDGET EXTENSION both name generated types
+    # directly — `LiveActivityRideStatus` is carried inside
+    # `RideActivityAttributes.ContentState` (so it is in the extension's compiled
+    # surface, not just the app's), and `LiveActivityContentState` is the authority
+    # `RideActivityContentStateTests` pins that mirror against. Three targets now
+    # depend on this one version, so it must not rely on SPM's dedupe to carry it.
+    from: 0.24.0
 
 settings:
   base:
@@ -50,11 +59,26 @@ targets:
     platform: iOS
     sources:
       - App/Sources
+      # MYR-172 — the ActivityAttributes + the Activity's copy, compiled into BOTH
+      # this target and `MyRoboTaxiWidgets`. Shared as a source folder rather than
+      # as a fourth local SPM package: it is one value type and one copy table with
+      # no behaviour, so a package would add a module boundary, a
+      # `public`-everything surface and a second place to bump the contracts pin,
+      # and buy nothing two `sources:` entries do not. See
+      # `App/ActivityShared/RideActivityAttributes.swift`.
+      - App/ActivityShared
     dependencies:
       - package: DesignSystem
       - package: MyRoboTaxiKit
       - package: contracts
         product: MyRobotaxiContracts
+      # MYR-172 — the widget extension carrying the Live Activity presentation.
+      # `embed: true` puts it in the app's `PlugIns/` directory, which is what makes
+      # ActivityKit able to find a presentation for `RideActivityAttributes` at all;
+      # an extension that is built but not embedded fails at `Activity.request`
+      # rather than at build time.
+      - target: MyRoboTaxiWidgets
+        embed: true
     # MYR-164 — Sign In with Apple capability. XcodeGen writes/owns this
     # entitlements file and sets CODE_SIGN_ENTITLEMENTS. The `Default`
     # authorization scope is the standard native-app value.
@@ -150,6 +174,75 @@ targets:
         # managed profile carrying the Sign In with Apple entitlement. Simulator
         # builds do not require a provisioning profile (CODE_SIGNING_ALLOWED is NO
         # for the simulator SDK), so this never prompts for sim runs.
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: NFKX777598
+
+  # MYR-172 — the widget extension. V1 renders exactly one thing: the rider's ride
+  # Live Activity (home-screen / lock-screen / StandBy widgets are explicit
+  # follow-ups). It is a separate PROCESS from the app, which is why it links
+  # DesignSystem and contracts directly and links MyRoboTaxiKit NOT AT ALL — a
+  # process that renders a lock screen has no business carrying a REST client or an
+  # auth token provider.
+  MyRoboTaxiWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Widgets/Sources
+      - App/ActivityShared
+    dependencies:
+      - package: DesignSystem
+      - package: contracts
+        product: MyRobotaxiContracts
+    # The extension declares NO entitlements file. That is deliberate and is the
+    # answer to "what does the new provisioning profile need to carry": nothing
+    # beyond a plain App Store profile for the bundle id.
+    #
+    #   • Live Activities are enabled by the HOST app's `NSSupportsLiveActivities`
+    #     Info.plist key (see App/MyRoboTaxi-Info.plist), not by any entitlement.
+    #   • Push-to-update goes to the APNs topic `app.myrobotaxi.ios.push-type.
+    #     liveactivity` — built from the HOST app's bundle id — so the host's
+    #     existing `aps-environment` entitlement is what authorises it. The
+    #     extension needs no `aps-environment` of its own and must not declare one.
+    #   • No App Group: the Activity's content arrives over APNs and at
+    #     `Activity.request`, so the two processes share no container. Adding one
+    #     would be a capability on the profile with nothing behind it.
+    info:
+      path: Widgets/MyRoboTaxiWidgets-Info.plist
+      properties:
+        CFBundleDisplayName: MyRoboTaxi
+        # THESE TWO MUST BE SUBSTITUTIONS, NOT LITERALS. With
+        # GENERATE_INFOPLIST_FILE off, XcodeGen writes its own defaults for any
+        # version key this block omits — which produced `CFBundleShortVersionString
+        # = 1.0` against the app's `1.0.0`, a mismatch App Store Connect rejects at
+        # upload and which nothing catches at build time. Referencing the build
+        # settings instead means the extension tracks the app by construction,
+        # including when RELEASING.md overrides CURRENT_PROJECT_VERSION on the
+        # archive COMMAND LINE (which applies to every target at once, so a literal
+        # here would silently stop matching on the very first real release).
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.myrobotaxi.ios.widgets
+        # MUST track the app target's values exactly. App Store Connect rejects a
+        # bundle whose embedded extension disagrees with its host on either version
+        # — and RELEASING.md overrides CURRENT_PROJECT_VERSION at archive time on
+        # the COMMAND LINE, which applies to every target at once, so the committed
+        # baselines simply have to match.
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_KEY_UIUserInterfaceStyle: Dark
+        TARGETED_DEVICE_FAMILY: "1"
+        SKIP_INSTALL: YES
+        # Same automatic-signing posture as the app target, for the same reason:
+        # simulator builds need no profile (CODE_SIGNING_ALLOWED is NO for the
+        # simulator SDK) so tests never prompt, and a device/Debug build resolves a
+        # managed profile. The FULL-MANUAL release path does not set profiles here
+        # — it names them by UUID in ExportOptions-Manual.plist, which now carries
+        # an entry for this bundle id too. See RELEASING.md §3b.
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: NFKX777598
 

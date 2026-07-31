@@ -1592,6 +1592,69 @@ SIMCTL_CHILD_MRT_SCENE=ownerShareControls xcrun simctl launch <udid> app.myrobot
 SIMCTL_CHILD_MRT_SCENE=ownerShareVehiclePaused xcrun simctl launch <udid> app.myrobotaxi.ios
 ```
 
+**The Live Activity is the first surface this app does not draw** (MYR-172) —
+scene `riderLiveActivity`. The rider's ride card on the lock screen and in the
+Dynamic Island is rendered by a SEPARATE PROCESS, the new `MyRoboTaxiWidgets`
+app-extension target (`app.myrobotaxi.ios.widgets`), so booting a screen and
+screenshotting it captures nothing at all — the scene starts a REAL Activity
+through the shipping `SystemRideActivityPresenter` and the picture is of the
+system.
+
+- **The content state is a MIRROR of a generated type, and mirrors are the
+  MYR-362 shape.** `ActivityAttributes.ContentState` requires `Hashable` and the
+  generated `LiveActivityContentState` is only `Codable, Equatable, Sendable`, so
+  a hand-kept copy is unavoidable. The property NAMES are the wire keys —
+  ActivityKit decodes `aps.content-state` with a plain `JSONDecoder` and no key
+  strategy — so there are no `CodingKeys` and adding one is breaking while still
+  compiling. `eta` is the silent one: optional on the wire AND optional here, so a
+  wrong key decodes to `nil`, which is indistinguishable from the server's own
+  legitimate "ETA unknown, key omitted". No throw, no log, just a lock screen that
+  never counts down. The guard is `RideActivityContentStateTests`, which asserts
+  this type's RAW KEYS against the GENERATED type's raw keys — the check MYR-362
+  did not have. `LiveActivityRideStatus` is used DIRECTLY (it is `Hashable`) so the
+  `unrecognized` arm the schema mandates comes for free.
+- **`eta` is an ABSOLUTE unix-SECONDS instant, and that is what makes the
+  countdown honest.** A duration decays silently on a screen the server cannot
+  repaint; an instant stays true however late it is read, so `Text(timerInterval:)`
+  runs the countdown on the phone between the 60–90s pushes. The client therefore
+  NEVER computes one: a locally-started Activity opens with no countdown and gains
+  one when the first push lands, because the contract's ETA is the CAR'S OWN nav
+  ETA and `destination.minutes` is not it.
+- **CANCELLED IS AN ERASURE, NOT A STATUS.** `LiveRideRequestService.integrate`
+  maps the wire's `cancelled` to no app status at all and sets `activeRequest` to
+  `nil`, so the only signal the client gets that the ride is over is the record
+  DISAPPEARING. `RideActivityPhase.live` therefore carries the LAST CONTENT STATE:
+  at the moment a final frame is most needed there is no record left to build one
+  from. `RootView` observes the WHOLE record rather than `activeRequest?.status`
+  for the same reason — a status-only observer sees `nil == nil` and never fires.
+- **A 409 on token registration is an INSTRUCTION, not an error** (§7.21): the ride
+  is already terminal, so the Activity will never be pushed to, and the client is
+  the only thing that can still take it off the lock screen. It ends immediately
+  and does NOT guess which terminal state it reached — writing "You've arrived"
+  over a cancelled ride is worse than a card that goes away.
+- **Two capture traps, both found BY capturing rather than by reading.**
+  (1) `simctl terminate` does NOT end an app's Live Activities — that is the whole
+  point of the feature — so the second `MRT_ACTIVITY_STATE` run silently
+  photographs the FIRST run's Activity. The give-away was an `arrived` capture
+  (which carries no ETA at all) rendering a live countdown; `RideActivityDebugLauncher`
+  now sweeps `Activity.activities` before starting. (2) A stale-date already in the
+  PAST at `request` time is ignored or clamped, so the frame is never born stale.
+- **The STALE presentation has no headless capture route, and is not claimed as
+  one.** With a short future stale-date the system does mark the Activity
+  `state: stale` (visible in `log show --predicate 'subsystem ==
+  "com.apple.activitykit"'`), but the compact Dynamic Island kept rendering the
+  confident countdown, and iOS then DISCARDS a stale ephemeral Activity within
+  ~60s ("Ephemeral activity ended… no longer relevant"). The LOCK-SCREEN card has
+  no route at all: `simctl` has no lock command. Both need a device or a human at
+  the Simulator's Device menu.
+
+```sh
+SIMCTL_CHILD_MRT_SCENE=riderLiveActivity xcrun simctl launch <udid> app.myrobotaxi.ios
+# then background the app so the island shows it, and screenshot the SYSTEM:
+xcrun simctl launch <udid> com.apple.Preferences && xcrun simctl io <udid> screenshot di.png
+# MRT_ACTIVITY_STATE=enroute|accepted|arrived|completed|stale (default enroute)
+```
+
 **Invite links have an address** (MYR-346) — an invite is shared as
 `https://myrobotaxi.app/join/{CODE}`, a branded web page whose OG card renders in
 the thread and which, on a phone that has the app, opens it straight to the

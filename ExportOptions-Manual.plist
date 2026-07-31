@@ -28,10 +28,35 @@
 	<string>manual</string>
 	<key>signingCertificate</key>
 	<string>Apple Distribution</string>
+	<!-- MYR-172 — the widget extension is a SECOND signed bundle inside the .ipa,
+	     so a full-manual export needs its own profile here. An extension is not
+	     covered by the host app's profile: the bundle ids differ, and the export
+	     fails with "no profile matching app.myrobotaxi.ios.widgets" rather than
+	     silently reusing the app's — which is the behaviour we want.
+
+	     WHAT TO MINT (App ID app.myrobotaxi.ios.widgets):
+	       • an App Store distribution profile, Apple Distribution certificate;
+	       • NO capabilities. Not Push Notifications, not App Groups, not
+	         Associated Domains. The extension declares no entitlements file at
+	         all (see project.yml). Live Activities are switched on by the HOST
+	         app's NSSupportsLiveActivities Info.plist key, and the Live Activity
+	         APNs topic is the HOST's bundle id + ".push-type.liveactivity", so
+	         the host's existing aps-environment entitlement authorises the push.
+	         Adding capabilities here would put entitlements in the profile that
+	         the binary does not claim, which the export then rejects.
+
+	     Until that profile exists this placeholder makes the manual export fail
+	     LOUDLY and by name, which is the same choice the app's own UUID comment
+	     below documents — a wrong-but-plausible value is the outcome worth
+	     preventing. Replace the string with the profile UUID; do not delete the
+	     key, or the export will instead fail with a less obvious error about an
+	     unsigned nested bundle. -->
 	<key>provisioningProfiles</key>
 	<dict>
 		<key>app.myrobotaxi.ios</key>
 		<string>f466e22b-6d46-427e-8415-4dabaed9a7de</string>
+		<key>app.myrobotaxi.ios.widgets</key>
+		<string>a8b87331-1722-473f-8326-649800206f7c</string>
 	</dict>
 	<key>uploadSymbols</key>
 	<true/>

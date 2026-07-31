@@ -123,6 +123,24 @@ enum DebugScene: String, CaseIterable {
     /// which still allow scheduling — so the second line is present here and the
     /// pair with `riderNoRides MRT_BUSY_REASON=paused` isolates exactly that line.
     case riderNoRidesFleet
+    /// MYR-172 — the rider's ride LIVE ACTIVITY, started for real so the system can
+    /// render it.
+    ///
+    /// The only scene whose subject is not drawn by this app at all: the lock-screen
+    /// card and the Dynamic Island are rendered by the `MyRoboTaxiWidgets` process,
+    /// so booting a screen and screenshotting it captures nothing. This scene starts
+    /// a genuine Activity through the SHIPPING `SystemRideActivityPresenter` and
+    /// then gets out of the way; the picture is of the system, not of the app.
+    ///
+    /// `MRT_ACTIVITY_STATE=enroute|accepted|arrived|completed|stale` selects which
+    /// frame. `stale` is the honest-staleness arm and is seeded by handing
+    /// ActivityKit a stale-date in the PAST — there is no API to force staleness, so
+    /// the only way to photograph `context.isStale` is to actually be stale. Default
+    /// `enroute`.
+    ///
+    /// It boots the ordinary rider `idle` shell underneath, so the app itself is in
+    /// a known state and every other rider scene stays byte-identical.
+    case riderLiveActivity
     /// MYR-356 — the SEARCH sheet's pre-typing region carrying the rider's own
     /// RECENT DESTINATIONS.
     ///
@@ -1694,6 +1712,55 @@ enum DebugScene: String, CaseIterable {
     /// carries none), and a `live-unresolved|` id on one of them — the shape MYR-237
     /// stores when the rider chose a suggestion before its coordinate resolved,
     /// which selecting the row re-resolves exactly as a fresh search row would.
+    /// MYR-172 — whether this scene starts a real Live Activity on boot.
+    ///
+    /// Exactly one scene does. Everything else in the app is untouched, which is
+    /// what keeps every other capture byte-identical — an Activity is a system-wide
+    /// side effect, and starting one speculatively would leave a card on the lock
+    /// screen of whatever the next capture happened to be.
+    var startsSampleLiveActivity: Bool { self == .riderLiveActivity }
+
+    /// Which frame `riderLiveActivity` should show, from `MRT_ACTIVITY_STATE`.
+    ///
+    /// Returns the content state AND its stale-date, because the stale arm is not a
+    /// different content state at all — it is the SAME frame handed a stale-date
+    /// that has already passed. ActivityKit offers no way to force staleness, so
+    /// being genuinely stale is the only way to photograph `context.isStale`.
+    @MainActor
+    var sampleLiveActivityFrame: (state: RideActivityAttributes.ContentState, staleDate: Date?)? {
+        guard startsSampleLiveActivity else { return nil }
+
+        switch ProcessInfo.processInfo.environment["MRT_ACTIVITY_STATE"] ?? "enroute" {
+        case "accepted":
+            return (RideActivityDebugLauncher.sampleState(status: .accepted, etaMinutesFromNow: 6), nil)
+        case "arrived":
+            // A car that is HERE has nothing to count down to, so the frame carries
+            // no ETA — the same omission a real server sends.
+            return (RideActivityDebugLauncher.sampleState(status: .arrived, etaMinutesFromNow: nil), nil)
+        case "completed":
+            return (RideActivityDebugLauncher.sampleState(status: .completed, etaMinutesFromNow: nil), nil)
+        case "stale":
+            // A stale-date a few seconds in the FUTURE, which then passes.
+            //
+            // The obvious seeding — a stale-date in the PAST, so the frame is born
+            // stale — DOES NOT WORK, and this was established by capture rather
+            // than by reading: ActivityKit evidently ignores or clamps a stale-date
+            // that has already elapsed at `request` time, and the Dynamic Island
+            // kept rendering the confident gold countdown. There is no API to force
+            // staleness, so the only way to photograph `context.isStale` is to be
+            // genuinely stale, which means waiting for a real deadline to pass.
+            //
+            // CAPTURE AT t ≳ 15s after launch. Before that the card is correctly
+            // NOT stale and the capture is of the ordinary enroute frame.
+            return (
+                RideActivityDebugLauncher.sampleState(status: .enroute, etaMinutesFromNow: 4),
+                Date().addingTimeInterval(8)
+            )
+        default:
+            return (RideActivityDebugLauncher.sampleState(status: .enroute, etaMinutesFromNow: 4), nil)
+        }
+    }
+
     var seededRecentDestinations: [RecentDestination] {
         guard self == .riderRecentDestinations else { return [] }
         let now = Date()
@@ -2069,6 +2136,11 @@ enum DebugScene: String, CaseIterable {
             // MYR-352 — the MULTI-vehicle set, the input that selects the generic
             // headline. The whole list travels the real mapping.
             viewer.debugFleetMembersOverride = DebugScene.noRidesFleetMembers
+            viewer.sheetPhase = .idle
+        case .riderLiveActivity:
+            // MYR-172 — the app itself just sits on the ordinary idle sheet; the
+            // subject of this capture is drawn by the widget EXTENSION, started
+            // separately in `startsSampleLiveActivity`.
             viewer.sheetPhase = .idle
         case .declined:
             viewer.sheetPhase = .search
