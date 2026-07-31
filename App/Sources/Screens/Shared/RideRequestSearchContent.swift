@@ -16,13 +16,16 @@ private struct SearchResultsHeightKey: PreferenceKey {
 }
 
 // MARK: - RideRequestSearchContent (MYR-171, design/app/ride-request.jsx
-// SearchContent 150-346 + PassengerPicker 94-143)
+// SearchContent 150-346)
 //
-// Search phase: Now/Schedule + Me/Someone else chips, the pickup/destination
-// route card, and Saved/Recent/Nearby (or filtered Results) below. Schedule
-// picking opens a slide-up card (`RideSlideUpCard`) — the same recipe
-// `ScheduledRideSheet`'s reschedule mode uses for its day/time chips, reused
-// here rather than forked.
+// Search phase: the Now/Schedule chips, the pickup/destination route card, and
+// Saved/Recent/Nearby (or filtered Results) below. Schedule picking opens a
+// slide-up card (`RideSlideUpCard`) — the same recipe `ScheduledRideSheet`'s
+// reschedule mode uses for its day/time chips, reused here rather than forked.
+//
+// MYR-382 — the prototype's `PassengerPicker` (ride-request.jsx:94-143) and the
+// Me / "Someone else" chips beside it are NOT ported any more; see the
+// "Passenger — REMOVED" note below for what went, what stayed, and why.
 struct RideRequestSearchContent: View {
     @Bindable var viewerState: SharedViewerState
     /// MYR-236 round 4: rendered inside the `PanSheet` engine (rider idle↔search
@@ -294,9 +297,9 @@ struct RideRequestSearchContent: View {
         // `.frame(height: scrollRegionHeight)` and `proceedRegion` hugs
         // (`proceedRegionHeight` is `nil` in both modes) — so it reports its own
         // natural height and a floor cannot feed back. Using a floor means a header
-        // that ever grows past 712 (passenger picker + schedule row + reason
-        // caption together) is never CLIPPED, which a fixed frame would do
-        // silently.
+        // that ever grows past 712 (schedule row + reason caption together, and
+        // before MYR-382 the passenger picker alongside them) is never CLIPPED,
+        // which a fixed frame would do silently.
         .frame(minHeight: scheduleSheetOpen ? MRTMetrics.rideRequestSearchSheetHeight : nil, alignment: .topLeading)
         .onPreferenceChange(SearchHeaderHeightKey.self) { headerHeight = $0 }
         .onPreferenceChange(SearchResultsHeightKey.self) { resultsHeight = $0 }
