@@ -404,6 +404,24 @@ enum DebugScene: String, CaseIterable {
     /// dispatched-but-still-`accepted` one. `ownerDrives` composes no source and
     /// keeps the fixture reservations, so it is byte-identical.
     case ownerReservationUpcoming
+    /// MYR-378 — the OWNER'S RESERVATION DETAIL, which is the RIDER'S SHEET.
+    ///
+    /// `ownerReservationUpcoming` verbatim — same injected wire, same production
+    /// `LiveUpcomingReservations`, same single rendered row — with the row's new tap
+    /// already performed, because headless tooling cannot tap a list row (the same
+    /// stand-in-for-a-tap precedent as `ownerFreshnessWaking` and this scene's own
+    /// segment selection). The pair is therefore a clean before/after of exactly the
+    /// detail: the list, then the list with its sheet up.
+    ///
+    /// Everything in frame belongs to `ScheduledRideSheet` — the map preview,
+    /// pickup → drop-off, distance/drive, the vehicle card, Cancel and the disabled
+    /// Reschedule with its caption — which is the whole point of the issue: the
+    /// owner is not being shown a new component, they are being shown the rider's.
+    /// The two role-specific differences are visible here and nowhere else: the
+    /// vehicle card reads the CAR over "For {requester}" instead of the rider's
+    /// "{Owner}'s {car} / {relationship}", and the destructive button reads
+    /// "Cancel reservation".
+    case ownerReservationDetail
     /// MYR-377 — the rider's Scheduled tab, alive.
     ///
     /// The client's own state: an accepted reservation for the next day that the
@@ -1223,7 +1241,8 @@ enum DebugScene: String, CaseIterable {
     static var initialOwnerTab: String {
         switch current {
         // MYR-376 — the live Upcoming read is the Drives tab.
-        case .ownerDrives, .ownerDrivesLoading, .ownerReservationUpcoming: return "drives"
+        case .ownerDrives, .ownerDrivesLoading, .ownerReservationUpcoming,
+             .ownerReservationDetail: return "drives"
         // MYR-354 adds `ownerSettingsTop`; MYR-347 adds the five Share scenes.
         case .ownerSettings, .ownerSettingsTop, .ownerSettingsLoading: return "settings"
         // MYR-355 / MYR-366 — the owner-shell deletion + offboarding scenes are
@@ -1457,7 +1476,7 @@ enum DebugScene: String, CaseIterable {
                     )
                 )
             ]))
-        case .ownerReservationUpcoming:
+        case .ownerReservationUpcoming, .ownerReservationDetail:
             // MYR-376 — THREE rows in, ONE row out. The two that are filtered away
             // are the evidence, not padding: the `arrived` one is the client's own
             // screenshot (a ride with a passenger in it, still listed as "upcoming"
@@ -1504,7 +1523,12 @@ enum DebugScene: String, CaseIterable {
     /// byte-identical. Headless tooling cannot tap a segmented control, so without
     /// this the reservation read has no capture route at all — the same
     /// stand-in-for-a-tap precedent as `ownerFreshnessWaking`.
-    var opensUpcomingDrivesTab: Bool { self == .ownerReservationUpcoming }
+    var opensUpcomingDrivesTab: Bool { self == .ownerReservationUpcoming || self == .ownerReservationDetail }
+
+    /// MYR-378 — open the FIRST upcoming reservation's detail sheet on appear. A
+    /// stand-in for the row TAP only: the sheet, its role and everything it renders
+    /// are the shipping ones.
+    var opensFirstReservationDetail: Bool { self == .ownerReservationDetail }
 
     /// MYR-377 — the rider twin of the above, for `RideHistoryScreen`'s Scheduled
     /// segment. Exactly one scene, so the four MYR-200 `scheduled*` scenes (which
@@ -1605,6 +1629,8 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerRideSharePauseWarning || self == .ownerRideSharePauseWarningMulti
             // MYR-376 — both reservation-lifecycle owner scenes.
             || self == .ownerReservationDormant || self == .ownerReservationUpcoming
+            // MYR-378 — the detail sheet the Upcoming row now opens.
+            || self == .ownerReservationDetail
             || self == .ownerCharging || self == .ownerChargeComplete
             || self == .ownerNoticeRejected || self == .ownerNoticeRejectedInService
             || self == .ownerVehicleEnriched
@@ -2442,7 +2468,8 @@ enum DebugScene: String, CaseIterable {
              // MYR-376 — the two owner reservation scenes seed nothing about the
              // rider sheet; the dormant one's whole subject is a card that is NOT
              // rendered, and the upcoming one is the Drives tab.
-             .ownerReservationDormant, .ownerReservationUpcoming,
+             // MYR-378 adds the detail scene, which is the same Drives tab.
+             .ownerReservationDormant, .ownerReservationUpcoming, .ownerReservationDetail,
              // MYR-377 — the live Scheduled tab is a rider TAB, not the map sheet.
              .riderScheduledLive,
              .ownerFreshnessStale, .ownerFreshnessWaking,

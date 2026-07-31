@@ -32,26 +32,26 @@ import UIKit
 // a place NAME (a city, a region), so it offers no street addresses at all, and
 // this field's own subtitle line is an address.
 //
-// The passenger fields are audited in the same pass and were unset for the same
-// reason. `.telephoneNumber` also earns the phone field the number pad's autofill
-// row, which `.phonePad` alone never provided.
+// MYR-382 — THE PASSENGER PAIR IS GONE WITH ITS FIELDS. The "Someone else" flow
+// was removed from the rider's booking surface (client-directed — see
+// `RideRequestSearchContent`'s "Passenger — REMOVED" note), so the two constants
+// that declared its name/number fields have no fields left to declare. They are
+// DELETED rather than left standing: a content type with no text field is a
+// perfectly-tested value with zero call sites, which MYR-369 records as the
+// quietest kind of regression there is. `all` therefore now names exactly the one
+// field the flow has, and the `.oneTimeCode` guard is still over the whole set.
 
 #if canImport(UIKit)
 /// The declared content type of every text field in the rider's request flow.
-/// These four ARE the flow's text fields — the destination search field and the
-/// passenger name/number pair (MYR-353 enumerates the same set for the keyboard
-/// rule), so this enum is exhaustive rather than a sample.
+/// After MYR-382 that is exactly ONE field — the destination search field — so
+/// this enum is still exhaustive rather than a sample.
 enum RideRequestFieldContentType {
     /// The Search sheet's "Where to?" destination field.
     static let destination: UITextContentType = .fullStreetAddress
-    /// The "Someone else" passenger's name.
-    static let passengerName: UITextContentType = .name
-    /// The "Someone else" passenger's mobile number.
-    static let passengerPhone: UITextContentType = .telephoneNumber
 
     /// The types this flow declares. Asserted to exclude `.oneTimeCode` — the
     /// suggestion the client saw — so no future field in the flow can reintroduce
     /// it by copy-paste.
-    static let all: [UITextContentType] = [destination, passengerName, passengerPhone]
+    static let all: [UITextContentType] = [destination]
 }
 #endif

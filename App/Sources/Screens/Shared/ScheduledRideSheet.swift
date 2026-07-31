@@ -13,8 +13,54 @@ import DesignSystem
 // rings, "Reschedule requested"), `.confirmCancel` (destructive confirm).
 // Mutations are real local state threaded back through `onReschedule`/
 // `onCancel` — `RideHistoryScreen` owns the `ScheduledRide` array.
+// MARK: - MYR-378 — ONE sheet, two roles
+//
+// TestFlight r14, two items on the owner's Drives → Upcoming list: *"Need to see
+// pick up to drop off. Ensure owner schedule ride uses same component"* and
+// *"Owner should also have the same ability to see card for cancel or reschedule
+// with rider as well."*
+//
+// The owner had a ROW and no detail: a destination, a day, a time and a rider's
+// name, with an X that opened a confirm dialog. Everything else about the
+// reservation — where it starts, how far it is, how long it takes, who the
+// passenger is — existed only on the rider's side of the same booking.
+//
+// So the owner gets THIS sheet, not one of their own. The alternative was a second
+// component that renders the same reservation, which is how the two roles come to
+// disagree about one ride — and CLAUDE.md's "reuse, don't fork" exists for exactly
+// this shape. What differs between the roles is small and named here, so it cannot
+// spread: who the vehicle card is ABOUT, and what "cancel" is called on the wire.
+enum ScheduledRideSheetRole: Equatable {
+    /// The rider's own reservation. The vehicle card titles on the car (and its
+    /// owner, when one is named) and the cancel is `POST /{id}/cancel`.
+    case rider
+    /// The owner's view of a reservation someone booked against their car. The
+    /// vehicle card names the CAR — which the screen knows and the row's wire
+    /// mapping deliberately does not — over "For {requester}", because from this
+    /// side the useful fact is not whose car it is but whose ride it is. The
+    /// cancel is `POST /{id}/decline`.
+    case owner(vehicleName: String, requesterName: String)
+
+    var isOwner: Bool {
+        if case .owner = self { return true }
+        return false
+    }
+
+    /// The destructive button, in both places it appears (the details pair and the
+    /// confirm step). "ride" is what the RIDER is giving up; "reservation" is what
+    /// the OWNER is releasing, and it is the word the Drives dialog and the toast on
+    /// that screen already use.
+    var cancelLabel: String { isOwner ? "Cancel reservation" : "Cancel ride" }
+
+    /// The confirm step's question.
+    var confirmTitle: String { isOwner ? "Cancel this reservation?" : "Cancel this ride?" }
+}
+
 struct ScheduledRideSheet: View {
     let ride: ScheduledRide?
+    /// MYR-378 — see `ScheduledRideSheetRole`. Defaults to `.rider`, so every
+    /// existing call site and every DEBUG scene is unchanged.
+    var role: ScheduledRideSheetRole = .rider
     let onClose: () -> Void
     /// (id, day, time, date) — shared-screens.jsx:309 `onReschedule(ride.id, day, time, SCHED_DATES[day])`.
     let onReschedule: (String, String, String, String) -> Void
@@ -44,6 +90,8 @@ struct ScheduledRideSheet: View {
     }
 
     @State private var mode: Mode = .details
+    /// MYR-382 — the measured natural height of `sheetBody`, behind the 88% cap.
+    @State private var measuredContentHeight: CGFloat = 0
     @State private var day = "Today"
     @State private var time = "5:30 PM"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -52,6 +100,9 @@ struct ScheduledRideSheet: View {
     /// the rider CAN do instead, because a dead-end is the thing MYR-233 spent a
     /// whole issue removing.
     static let rescheduleUnavailableNote = "Rescheduling isn\u{2019}t available yet \u{00B7} cancel and book a new time."
+
+    /// shared-screens.jsx:247 `maxHeight: '88%'`.
+    static let maxHeightFraction: CGFloat = 0.88
 
     private static let schedDays = ["Today", "Tomorrow", "Thu", "Fri", "Sat", "Sun", "Mon"]
     private static let schedDates: [String: String] = [
@@ -122,13 +173,34 @@ struct ScheduledRideSheet: View {
     // normal device/mode; the `ScrollView` candidate only takes over (and
     // only then fills the 88% cap) on the rare case content actually
     // overflows it (huge Dynamic Type, the smallest devices).
+    //
+    // MYR-382 — AND THE CAP WAS INFLATING THE SHEET, which is the other half of
+    // the same defect and survived MYR-198 untouched. `.frame(maxHeight:)` does not
+    // mean "at most this tall": it makes the view FLEXIBLE up to that height, so it
+    // accepts the parent's proposal — here the whole screen — and the sheet stood a
+    // fixed 88% tall with its content CENTRED inside it, whatever the mode. That is
+    // the client's *"Strange gaps in top and bottom of sheet"*: ~230pt of empty
+    // sheet above the grab handle and ~360pt below the last line, measured on the
+    // `scheduledDetails` capture, in a sheet whose content is ~450.
+    //
+    // A cap has to be a HEIGHT, and a height has to be MEASURED. `sheetBody` is
+    // safe to measure for the reason MYR-352's banner was and its card was not: it
+    // contains no greedy vertical element anywhere (every candidate — the map
+    // preview, the route block's connector, the chip rows — is fixed or bounded),
+    // so its height is a pure function of its content and cannot feed back off the
+    // frame. `min(measured, 88%)` then proposes exactly the right thing to
+    // `ViewThatFits`: at or under the cap it proposes the content's own height, so
+    // the plain candidate fits and the sheet hugs; over the cap it proposes the cap,
+    // the plain candidate no longer fits, and the ScrollView takes over inside it —
+    // which is the only case that ever wanted a ScrollView.
     private func sheet(for ride: ScheduledRide) -> some View {
         ViewThatFits(in: .vertical) {
             sheetBody(for: ride)
             ScrollView { sheetBody(for: ride) }
         }
-        // shared-screens.jsx:247 `maxHeight: '88%'`.
-        .frame(maxHeight: screenHeight.map { $0 * 0.88 })
+        // shared-screens.jsx:247 `maxHeight: '88%'` — as a resolved HEIGHT.
+        .frame(height: cappedSheetHeight)
+        .onPreferenceChange(ScheduledSheetContentHeightKey.self) { measuredContentHeight = $0 }
         .background(
             UnevenRoundedRectangle(topLeadingRadius: MRTMetrics.modalRadius, topTrailingRadius: MRTMetrics.modalRadius, style: .continuous)
                 .fill(Color.mrtRideSheetFill)
@@ -160,6 +232,35 @@ struct ScheduledRideSheet: View {
             .padding(.bottom, 30)
         }
         .frame(maxWidth: .infinity)
+        // MYR-382 — the measurement the cap is resolved from. Written from whichever
+        // `ViewThatFits` candidate is on screen; both are this same body, so the
+        // number is the same either way.
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(key: ScheduledSheetContentHeightKey.self, value: geo.size.height)
+            }
+        )
+    }
+
+    /// The sheet's resolved height: its content's, capped at the prototype's 88%.
+    /// `nil` before the first measurement — the sheet hugs naturally in that frame,
+    /// so nothing flashes at full height on the way in.
+    private var cappedSheetHeight: CGFloat? {
+        Self.resolvedSheetHeight(content: measuredContentHeight, screen: screenHeight)
+    }
+
+    /// The arithmetic, pure and assertable: the sheet is its CONTENT's height, and
+    /// the prototype's 88% is a ceiling it reaches only when the content would
+    /// exceed it. `nil` before the first measurement (hug naturally, no flash) and
+    /// with no host height to take a fraction of.
+    ///
+    /// This is the whole of the r14 sheet-gap fix, and it is a `min` rather than a
+    /// `maxHeight` for the reason `sheet(for:)` records: `.frame(maxHeight:)` is
+    /// permission to GROW to that height, and the sheet took it.
+    static func resolvedSheetHeight(content: CGFloat, screen: CGFloat?) -> CGFloat? {
+        guard content > 0 else { return nil }
+        guard let screen else { return content }
+        return min(content, screen * maxHeightFraction)
     }
 
     /// 36×4 rounded handle (shared-screens.jsx:251) — `DesignSystem`'s
@@ -203,19 +304,40 @@ struct ScheduledRideSheet: View {
                 .padding(.bottom, 16)
             HStack(spacing: 10) {
                 cancelButton { mode = .confirmCancel }
-                MRTButton("Reschedule", variant: .outlineDraw, fullWidth: true) {
+                // MYR-382 — *"Reschedule button faint."* It was the ride-request
+                // CTA's own `outlineDraw` (a gold trace that ANIMATES, and which
+                // CLAUDE.md reserves for ride-request CTAs) at 0.5 opacity, which
+                // is two wrongs at once: a control that looks like the most active
+                // thing on the sheet, dimmed until it is hard to read.
+                //
+                // A disabled control should be LEGIBLE and OBVIOUSLY INERT, which
+                // is exactly what `.outlineMuted` already is — so the unavailable
+                // arm renders at FULL opacity in the muted variant, and only the
+                // available arm keeps the prototype's gold. Nothing is dimmed any
+                // more; the difference is stated in the variant instead.
+                MRTButton(
+                    "Reschedule",
+                    variant: rescheduleAvailable ? .outlineDraw : .outlineMuted,
+                    fullWidth: true
+                ) {
                     guard rescheduleAvailable else { return }
                     mode = .reschedule
                 }
-                // The same 0.5 `ShareVehicleToggleRow` dims an inert control to.
-                .opacity(rescheduleAvailable ? 1 : 0.5)
                 .allowsHitTesting(rescheduleAvailable)
+                .accessibilityAddTraits(rescheduleAvailable ? [] : .isStaticText)
             }
             .padding(.bottom, 11)
+            // MYR-382 — and the honest caption gets REAL PROMINENCE. It is the
+            // sentence that turns a dead button into an instruction ("cancel and
+            // book a new time"), and it was set two steps quieter than the note it
+            // replaces: 11.5pt in `mrtTextMuted`, the app's faintest text colour.
+            // The AVAILABLE note keeps both, so every simulated scene is unchanged.
             Text(rescheduleAvailable ? ScheduledRideDisplay.changeNote(ride) : Self.rescheduleUnavailableNote)
-                .font(.system(size: 11.5))
-                .foregroundStyle(Color.mrtTextMuted)
+                .font(.system(size: rescheduleAvailable ? 11.5 : 12.5, weight: rescheduleAvailable ? .regular : .medium))
+                .foregroundStyle(rescheduleAvailable ? Color.mrtTextMuted : Color.mrtTextSec)
                 .tracking(0.1)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity)
                 .multilineTextAlignment(.center)
         }
@@ -348,6 +470,21 @@ struct ScheduledRideSheet: View {
         }
     }
 
+    /// "Mom's Model Y" for a rider; the car's own name for an owner (who does not
+    /// need telling whose car it is).
+    private func vehicleCardTitle(_ ride: ScheduledRide) -> String {
+        guard case .owner(let vehicleName, _) = role else { return ScheduledRideDisplay.vehicleTitle(ride) }
+        return vehicleName
+    }
+
+    /// "Family · Shared with you" for a rider; "For {requester}" for an owner —
+    /// the same fact the Upcoming ROW leads with, so tapping a row opens a sheet
+    /// that agrees with it.
+    private func vehicleCardSubtitle(_ ride: ScheduledRide) -> String {
+        guard case .owner(_, let requesterName) = role else { return ScheduledRideDisplay.relationshipLine(ride) }
+        return "For \(requesterName)"
+    }
+
     private func peopleCard(_ ride: ScheduledRide) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 11) {
@@ -362,12 +499,15 @@ struct ScheduledRideSheet: View {
                         }
                     }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(ScheduledRideDisplay.vehicleTitle(ride))
+                    // MYR-378 — the ONE thing the vehicle card says differently per
+                    // role. From the rider's side the useful fact is whose car this
+                    // is; from the owner's it is whose ride it is.
+                    Text(vehicleCardTitle(ride))
                         .font(.system(size: 14, weight: .semibold))
                         .tracking(-0.2)
                         .foregroundStyle(Color.mrtText)
                         .lineLimit(1)
-                    Text(ScheduledRideDisplay.relationshipLine(ride))
+                    Text(vehicleCardSubtitle(ride))
                         .font(.system(size: 11.5))
                         .foregroundStyle(Color.mrtTextSec)
                         .lineLimit(1)
@@ -416,7 +556,7 @@ struct ScheduledRideSheet: View {
 
     private func cancelButton(action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text("Cancel ride")
+            Text(role.cancelLabel) // MYR-378
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(Color.mrtDialogRed)
                 .frame(maxWidth: .infinity)
@@ -479,7 +619,7 @@ struct ScheduledRideSheet: View {
                 }
             }
             .padding(.bottom, 12)
-            Text("\(ride.driver) will be asked to re-confirm the new time.")
+            Text(ScheduledRideDisplay.rescheduleNote(ride)) // MYR-382
                 .font(.system(size: 11.5))
                 .foregroundStyle(Color.mrtTextMuted)
                 .tracking(0.1)
@@ -545,7 +685,7 @@ struct ScheduledRideSheet: View {
                 .tracking(-0.3)
                 .foregroundStyle(Color.mrtText)
                 .padding(.bottom, 7)
-            Text("Waiting for \(ride.driver) to confirm the new pickup time.")
+            Text(ScheduledRideDisplay.awaitingConfirmationNote(ride)) // MYR-382
                 .font(.system(size: 13))
                 .foregroundStyle(Color.mrtTextSec)
                 .multilineTextAlignment(.center)
@@ -584,10 +724,23 @@ struct ScheduledRideSheet: View {
     }
 
     private func footerNote(_ ride: ScheduledRide) -> String {
-        if let passenger = ride.passenger {
-            return "You and \(passenger.firstName) get the updated time once \(ride.driver) responds."
+        ScheduledRideDisplay.rescheduleFooterNote(ride) // MYR-382
+    }
+
+    /// The confirm step's sentence, per role. The rider's is the prototype's own;
+    /// the owner's is the sentence their Drives dialog already asks (same facts,
+    /// same order), so the two ways into this decision read as one product.
+    private func confirmMessage(_ ride: ScheduledRide) -> Text {
+        if case .owner(_, let requesterName) = role {
+            let rider = requesterName.trimmingCharacters(in: .whitespaces)
+            return Text("This cancels ") + Text(ride.to).foregroundStyle(Color.mrtText).fontWeight(.semibold)
+                + Text(" on \(ride.day) \(ride.time)")
+                // MYR-382's absence rule, applied here too: no name, no "for" —
+                // never "for " with nothing after it.
+                + Text(rider.isEmpty ? "." : " for \(rider).")
         }
-        return "You\u{2019}ll be notified once \(ride.driver) responds."
+        return Text("Your reservation to ") + Text(ride.to).foregroundStyle(Color.mrtText).fontWeight(.semibold)
+            + Text(" on \(ride.day) \(ride.time) \(ScheduledRideDisplay.withVehiclePhrase(ride)) will be released.")
     }
 
     // MARK: Confirm cancel (shared-screens.jsx:261-274)
@@ -597,13 +750,19 @@ struct ScheduledRideSheet: View {
             Circle().fill(Color.mrtDangerFillSoft).frame(width: MRTMetrics.dialogIconSize, height: MRTMetrics.dialogIconSize)
                 .overlay(Image(systemName: "calendar").font(.system(size: 20, weight: .semibold)).foregroundStyle(Color.mrtDialogRed))
                 .padding(.bottom, 14)
-            Text("Cancel this ride?")
+            Text(role.confirmTitle) // MYR-378
                 .font(.system(size: 18, weight: .semibold))
                 .tracking(-0.3)
                 .foregroundStyle(Color.mrtText)
                 .padding(.bottom, 6)
-            (Text("Your reservation to ") + Text(ride.to).foregroundStyle(Color.mrtText).fontWeight(.semibold)
-                + Text(" on \(ride.day) \(ride.time) with \(ride.driver)\u{2019}s \(ride.vehicle) will be released."))
+            // MYR-382 — the possessive is COMPOSED, never spelled here. This line
+            // is the one the client photographed: with no owner name (which is
+            // every LIVE reservation — MYR-377) it read "with 's Lunar".
+            //
+            // MYR-378 — and the sentence is the ROLE's. "Your reservation … will be
+            // released" is true of the rider and false of the owner, who is
+            // releasing somebody else's.
+            confirmMessage(ride)
                 .font(.system(size: 13))
                 .foregroundStyle(Color.mrtTextSec)
                 .multilineTextAlignment(.center)
@@ -682,4 +841,16 @@ private struct MonospacedIf: ViewModifier {
     }
     .mrtSurfaceLook(.flat)
     .preferredColorScheme(.dark)
+}
+
+// MARK: - MYR-382 — the sheet's own content height
+
+/// The natural height of `ScheduledRideSheet`'s content, so the prototype's 88%
+/// can be applied as a real cap instead of as a `maxHeight` that inflates the
+/// sheet to it. See `sheet(for:)`.
+private struct ScheduledSheetContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
 }
