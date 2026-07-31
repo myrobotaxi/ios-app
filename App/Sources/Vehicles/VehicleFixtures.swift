@@ -148,7 +148,10 @@ public enum DrivingNavigation: Equatable, Sendable {
     case none
     /// Navigation IS active but `destinationName` has not arrived yet. The trip
     /// is real (its route usually already is); only its name is pending, so the
-    /// title SHIMMERS rather than showing a placeholder word.
+    /// hero renders the trip's REAL elements (arrival, progress) with the speed
+    /// as its headline — and NO stand-in for the name (client-directed: nothing
+    /// is being fetched, so nothing may promise to arrive; see
+    /// `DrivingHeroElement`).
     case resolvingDestination
     /// Navigation is active and named.
     case destination(name: String, city: String?, address: String?)

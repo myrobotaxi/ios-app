@@ -136,9 +136,10 @@ final class DrivingNavigationMappingTests: XCTestCase {
         }
     }
 
-    /// A BLANK name is a missing name, not a destination called "". It resolves to
-    /// the same shimmer, never to an empty 28pt headline.
-    func testABlankDestinationNameResolvesToTheShimmer() {
+    /// A BLANK name is a missing name, not a destination called "". It resolves
+    /// to the same `.resolvingDestination` state, never to an empty 28pt
+    /// headline.
+    func testABlankDestinationNameResolvesToResolvingDestination() {
         let state = drivingState(destinationName: "   ", navRouteCoordinates: [[-122.41, 37.77], [-122.40, 37.80]])
         XCTAssertEqual(VehicleContractMapping.navigation(from: state), .resolvingDestination)
     }
@@ -203,8 +204,8 @@ final class DrivingRouteLegTitleTests: XCTestCase {
         )
     }
 
-    /// Neither half ⇒ no title at all, which is what makes the row shimmer rather
-    /// than render an empty line or a bare separator.
+    /// Neither half ⇒ no title at all, which is what drops the whole Route
+    /// section rather than rendering an empty line or a bare separator.
     func testNoPartsAtAllMeansNoTitle() {
         XCTAssertNil(DrivingRouteLegTitle.compose(city: nil, name: nil))
         XCTAssertNil(DrivingRouteLegTitle.compose(city: "", name: "  "))

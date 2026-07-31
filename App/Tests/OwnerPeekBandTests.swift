@@ -287,15 +287,15 @@ final class OwnerPeekBandTests: XCTestCase {
         )
     }
 
-    /// A destination whose NAME is still coming keeps the FULL driving band,
-    /// because the skeleton stands exactly where the name will. The two must
+    /// A destination whose NAME is still coming keeps the FULL driving band:
+    /// the speed holds the headline line the name will take over. The two must
     /// measure the same or the sheet visibly jumps the moment Tesla sends it.
     func testTheResolvingHeroIsTheSameHeightAsTheNamedOne() {
         XCTAssertEqual(
             heroHeight(drivingHero(stamp: nil, navigation: .resolvingDestination)),
             heroHeight(drivingHero(stamp: nil)),
             accuracy: Self.tolerance,
-            "the skeleton occupies the destination line, so the block does not resize when the name lands"
+            "the speed occupies the headline line, so the block does not resize when the name lands"
         )
     }
 
