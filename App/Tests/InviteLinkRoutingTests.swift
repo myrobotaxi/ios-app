@@ -80,6 +80,50 @@ final class InviteLinkParsingTests: XCTestCase {
         )
     }
 
+    // MARK: MYR-368 — the SIGNED link the server now mints
+
+    /// THE VECTOR. A complete server-minted link — `k`, `from` and `to`, with the
+    /// 86-character Ed25519 signature in the middle — parses to its code exactly
+    /// as the bare link does.
+    ///
+    /// This is the test that matters most on the receiving end: from MYR-368
+    /// forward, EVERY link the product hands out looks like this, so "the parser
+    /// ignores the query" stopped being tolerance of other people's tracking
+    /// parameters and became the difference between a tapped invite opening the
+    /// app and opening Safari. The base64url alphabet is deliberately in frame —
+    /// `_` and `-` are code characters' neighbours, and a parser that scanned
+    /// rather than read the PATH would have plenty to choke on here.
+    func testTheFullSignedLinkParsesToItsCode() {
+        XCTAssertEqual(
+            code("https://myrobotaxi.app/join/RBO246?k=1.1785942245.fPkcqmLr2p_HezqZtbP6J1NC-jQA0nAOp7hiFqTKZHo9L2YGVkNDx162VsdromPEMSZaMvMhxRCBS_xfaRw0BQ&from=Alex&to=Mira"),
+            "RBO246"
+        )
+    }
+
+    /// The same link in the shapes it actually arrives in: lower-cased by a client
+    /// that rewrote it, with a trailing slash, with a fragment, and after a resend
+    /// re-signed it onto a different code. Nothing in `k` — a 60-character run of
+    /// base64url between two dots, longer than any code and full of code
+    /// characters — may influence the answer.
+    func testTheSignedLinksQueryNeverSuppliesOrDisturbsTheCode() {
+        let signature = "1.1785942245.fPkcqmLr2p_HezqZtbP6J1NC-jQA0nAOp7hiFqTKZHo9L2YGVkNDx162VsdromPEMSZaMvMhxRCBS_xfaRw0BQ"
+        XCTAssertEqual(code("https://myrobotaxi.app/join/rbo246?k=\(signature)&from=Alex&to=Mira"), "RBO246")
+        XCTAssertEqual(code("https://myrobotaxi.app/join/RBO246/?k=\(signature)&from=Alex&to=Mira"), "RBO246")
+        XCTAssertEqual(code("https://myrobotaxi.app/join/RBO246?k=\(signature)&from=Alex&to=Mira#top"), "RBO246")
+        XCTAssertEqual(
+            code("https://myrobotaxi.app/join/ZKQ913?k=1.1786006800.nTwfey5ahMYPsdJzkOSlGIxz8GIauU3lNwyPHqayXUPPgHFKLWuV6DH6DH0kuOVgk68cLXDkuKUfbDnQLotHoQ&from=Alex&to=Mira"),
+            "ZKQ913",
+            "a resend re-signs onto a new code"
+        )
+        // The server OMITS a name it could not sanitize rather than emitting an
+        // empty parameter — both grammars have to parse.
+        XCTAssertEqual(code("https://myrobotaxi.app/join/RBO246?k=\(signature)&to=Mira"), "RBO246")
+        XCTAssertEqual(code("https://myrobotaxi.app/join/RBO246?k=\(signature)"), "RBO246")
+        // And the code is still refused when the PATH does not carry one, however
+        // much the query looks like it does.
+        XCTAssertNil(code("https://myrobotaxi.app/join/?k=\(signature)&from=RBO246"))
+    }
+
     /// A hand-edited or hostile query changes nothing about the code — the two
     /// values never meet. (What the WEB does with such a value is guarded on the
     /// web side; here the point is that the app neither reads nor is confused by

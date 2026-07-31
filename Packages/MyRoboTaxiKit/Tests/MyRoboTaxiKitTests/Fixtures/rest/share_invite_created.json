@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "description": "201 body of POST /api/vehicles/{vehicleId}/invites (rest-api.md §7.5.1), transcribed verbatim from the spec example. The row is for the PATH vehicle; on a multi-vehicle create the sibling rows are NOT returned and this `code` is the one to hand out for all of them. `code` + `expiresAt` are present because the row is `pending`; `acceptedAt` is omitted for the same reason.",
+    "description": "201 body of POST /api/vehicles/{vehicleId}/invites (rest-api.md §7.5.1), transcribed verbatim from the spec example. The row is for the PATH vehicle; on a multi-vehicle create the sibling rows are NOT returned and this `code` is the one to hand out for all of them. `code` + `expiresAt` are present because the row is `pending`; `acceptedAt` is omitted for the same reason. MYR-368 — `shareUrl` is the contracts-0.22.0 example VERBATIM: the complete SIGNED join link, present exactly where `code` is. Its `k` expiry (1785942245) is `expiresAt` in UNIX seconds, which is the contract's own rule that the two agree.",
     "scenario": "happy-path",
     "addedBy": "MYR-184"
   },
@@ -10,6 +10,7 @@
   "permission": "live_history",
   "status": "pending",
   "code": "RBO246",
+  "shareUrl": "https://myrobotaxi.app/join/RBO246?k=1.1785942245.mHRTPwZlrUFqzQ9k1p8O_5xkzXQ9dHTh5rHhNaeJ0OQz3n0XmL4vJ8ptKQC1cO8bZ5MPKB6h0nlFmVLbUqEQAg&from=Alex&to=Mira",
   "createdAt": "2026-07-29T15:04:05Z",
   "expiresAt": "2026-08-05T15:04:05Z"
 }

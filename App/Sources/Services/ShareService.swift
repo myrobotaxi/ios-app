@@ -114,8 +114,31 @@ struct ShareHandout: Equatable, Sendable, Identifiable {
     /// Which vehicles it grants — for the confirmation copy, not for the message.
     let vehicleNames: [String]
 
+    /// The COMPLETE server-minted join link for this invite (MYR-368,
+    /// `ShareInvite.shareUrl`, contracts 0.22.0) — or `nil` from a server that
+    /// predates it, and from `SimulatedShareService`, which mints nothing.
+    ///
+    /// Carried as the RAW string the wire delivered rather than as a `URL`, so
+    /// this type stores exactly what the server said and the parse happens at the
+    /// one place that needs a `URL` (`ShareInviteMessage`). It is signed end to
+    /// end — the code, the expiry and both display names are inside `k` — so it is
+    /// forwarded verbatim or not used at all; there is no partial adoption.
+    ///
+    /// It CONTAINS the code, so it inherits the code's P1 classification: never
+    /// logged, never in an error message, never on a non-owner surface.
+    ///
+    /// Defaulted so every existing construction site is unchanged and a caller
+    /// that has no server link (sim, tests, an older server) simply gets the
+    /// MYR-359 fallback — which is the contract's own instruction for the case.
+    var shareUrl: String? = nil
+
     /// The share-sheet payload — ONE URL and nothing else (MYR-359), built by
     /// `ShareInviteMessage` so the create and resend paths cannot drift.
+    ///
+    /// MYR-368 — that URL is the SERVER's when it minted one, verbatim, because
+    /// the signature in `k` covers every part of it. The client-composed link
+    /// below is the documented fallback for a pre-0.22.0 server, and is byte-for
+    /// byte what shipped before this issue.
     ///
     /// This was a one-liner carrying the code (MYR-184), then a mini-onboarding
     /// paragraph (MYR-340) with the join link at its head (MYR-346). The
@@ -131,7 +154,9 @@ struct ShareHandout: Equatable, Sendable, Identifiable {
     /// business reading the signed-in profile. The screen that presents the sheet
     /// supplies it — see `InvitesScreen.liveProfile`.
     func shareURL(ownerFirstName: String?) -> URL {
-        ShareInviteMessage.shareURL(code: code, ownerFirstName: ownerFirstName)
+        ShareInviteMessage.shareURL(
+            serverURL: shareUrl, code: code, ownerFirstName: ownerFirstName
+        )
     }
 }
 

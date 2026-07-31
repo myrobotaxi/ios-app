@@ -167,6 +167,107 @@ final class VehicleSharingEndpointTests: XCTestCase {
         XCTAssertEqual(requests[0].url?.path, "/api/invites/csh0123456789abcdef0123456789abcd/resend")
     }
 
+    // MARK: - MYR-368 — `shareUrl`, the server-minted SIGNED join link
+
+    /// The create response's link, decoded and compared BYTE FOR BYTE against the
+    /// fixture's own string.
+    ///
+    /// It is asserted as one literal rather than by its parts because that is how
+    /// it is used: `k` is an Ed25519 signature over `join:{code}:{exp}:{from}:{to}`
+    /// and BOTH names are inside it, so a client that reassembled this URL from
+    /// components — reordering the query, re-encoding it, dropping a parameter it
+    /// had no use for — would produce a link the web join shell bounces. The only
+    /// correct handling is to carry the whole string, so the only meaningful
+    /// assertion is on the whole string.
+    func testCreateSurfacesTheSignedShareUrlVerbatim() async throws {
+        let (client, _) = client([.init(status: 201, body: try Fixture.data("rest/share_invite_created.json"))])
+
+        let invite = try await client.createShareInvite(
+            CreateShareInviteRequest(label: "Mira Chen", permission: .liveHistory),
+            vehicleID: "clxyz1234567890abcdef"
+        )
+
+        XCTAssertEqual(
+            invite.shareUrl,
+            "https://myrobotaxi.app/join/RBO246?k=1.1785942245.mHRTPwZlrUFqzQ9k1p8O_5xkzXQ9dHTh5rHhNaeJ0OQz3n0XmL4vJ8ptKQC1cO8bZ5MPKB6h0nlFmVLbUqEQAg&from=Alex&to=Mira"
+        )
+        // The link CONTAINS the code, which is why it inherits the code's P1
+        // classification whole rather than being treated as an ordinary URL.
+        XCTAssertEqual(invite.code, "RBO246")
+        XCTAssertTrue(try XCTUnwrap(invite.shareUrl).contains("RBO246"))
+    }
+
+    /// The contract's rule is that `shareUrl` is present EXACTLY WHERE `code` IS —
+    /// so it is on the pending row and absent from the accepted one, for the same
+    /// reason the code is: there is nothing left to redeem.
+    func testTheListCarriesTheShareUrlOnPendingRowsOnly() async throws {
+        let (client, _) = client([.init(status: 200, body: try Fixture.data("rest/share_invites_list.json"))])
+
+        let invites = try await client.shareInvites(vehicleID: "clxyz1234567890abcdef")
+        let pending = try XCTUnwrap(invites.first { $0.status == .pending })
+        let accepted = try XCTUnwrap(invites.first { $0.status == .accepted })
+
+        XCTAssertNotNil(pending.shareUrl)
+        XCTAssertEqual(pending.shareUrl?.contains("/join/RBO246"), true)
+        XCTAssertNil(accepted.shareUrl, "no code, no link — the two travel together")
+        XCTAssertNil(accepted.code)
+    }
+
+    /// A resend RE-SIGNS. The new code and the new expiry produce a whole new URL,
+    /// which is what makes "the previous link stops redeeming" true of the LINK
+    /// and not just of the six characters inside it.
+    func testAResendMintsAWholeNewSignedLink() async throws {
+        let (client, _) = client([.init(status: 200, body: try Fixture.data("rest/share_invite_resent.json"))])
+
+        let updated = try await client.resendShareInvite(inviteID: "csh0123456789abcdef0123456789abcd")
+        let url = try XCTUnwrap(updated.shareUrl)
+
+        XCTAssertTrue(url.contains("/join/ZKQ913"), "the new code is in the new link")
+        XCTAssertFalse(url.contains("RBO246"), "the dead code is not")
+        // The `k` expiry is `expiresAt` in a different encoding — the contract
+        // requires the two to agree, and a client finding them disagreeing must
+        // trust `expiresAt`.
+        XCTAssertEqual(updated.expiresAt, "2026-08-06T09:00:00Z")
+        XCTAssertTrue(url.contains("k=1.1786006800."), "1786006800 == 2026-08-06T09:00:00Z")
+    }
+
+    /// THE FALLBACK CASE, and the reason it needs a fixture of its own.
+    ///
+    /// `shareUrl` is optional, so a server that predates 0.22.0 — every deployed
+    /// server the day before this issue — answers with the key simply not there,
+    /// and it decodes to `nil` without a throw, a 4xx or a log. That is not a
+    /// defect to guard against; the contract instructs the consumer to fall back.
+    /// What this pins is that the ABSENCE is what reaches the client, so the
+    /// decision is made on a real `nil` rather than on a value nobody looked at.
+    func testAServerThatPredatesTheFieldDecodesToNilRatherThanFailing() async throws {
+        let (client, _) = client([.init(status: 201, body: try Fixture.data("rest/share_invite_created_legacy.json"))])
+
+        let invite = try await client.createShareInvite(
+            CreateShareInviteRequest(label: "Mira Chen", permission: .liveHistory),
+            vehicleID: "clxyz1234567890abcdef"
+        )
+
+        XCTAssertNil(invite.shareUrl, "absent means absent — the client composes its own link")
+        XCTAssertEqual(invite.code, "RBO246", "everything else about the row is unchanged")
+        XCTAssertEqual(invite.status, .pending)
+    }
+
+    /// The fixtures are evidence only to the extent they ARE the wire, so the raw
+    /// bytes are checked for the key itself — the MYR-362 lesson, where a
+    /// hand-authored fixture agreed with an invented key on an optional property
+    /// and kept a whole suite green about a body the server never sends.
+    func testTheFixturesCarryTheContractsOwnKeyName() throws {
+        let signed = try JSONSerialization.jsonObject(
+            with: try Fixture.data("rest/share_invite_created.json")
+        ) as? [String: Any]
+        XCTAssertNotNil(signed?["shareUrl"], "the key is `shareUrl`, not `share_url` or `url`")
+
+        let legacy = try JSONSerialization.jsonObject(
+            with: try Fixture.data("rest/share_invite_created_legacy.json")
+        ) as? [String: Any]
+        XCTAssertNil(legacy?["shareUrl"], "the pre-0.22.0 fixture must genuinely omit the key")
+    }
+
     /// §7.5.4: pending-only. Re-opening an ACCEPTED grant for redemption by a
     /// different person would be a quiet transfer of access, so the server 409s.
     func testResendOnAnAcceptedInviteIsAConflict() async {

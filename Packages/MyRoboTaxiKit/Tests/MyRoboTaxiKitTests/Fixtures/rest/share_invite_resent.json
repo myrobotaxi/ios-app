@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "description": "200 body of POST /api/invites/{inviteId}/resend (rest-api.md §7.5.4) — the PATH row after a re-mint. `inviteId` is UNCHANGED (a client holding it keeps working) and `createdAt` is UNCHANGED (the owner's 'sent {ago}' line still refers to the original send); only `code` and `expiresAt` move. Every sibling row sharing the previous code was re-minted in the SAME transaction and carries this same new code.",
+    "description": "200 body of POST /api/invites/{inviteId}/resend (rest-api.md §7.5.4) — the PATH row after a re-mint. `inviteId` is UNCHANGED (a client holding it keeps working) and `createdAt` is UNCHANGED (the owner's 'sent {ago}' line still refers to the original send); only `code` and `expiresAt` move. Every sibling row sharing the previous code was re-minted in the SAME transaction and carries this same new code. MYR-368 — A RESEND RE-SIGNS: the new code and the new expiry produce a whole new `shareUrl`, so the previous LINK stops redeeming along with the previous code. The shape here is the contract's (parameters in `k`, `from`, `to` order; `k` = keyId.expUnix.base64url-sig; 1786006800 is this row's `expiresAt` in UNIX seconds); the 86 signature characters are ILLUSTRATIVE, because §7.5.4 prints no example and no client key can produce a real one.",
     "scenario": "happy-path",
     "addedBy": "MYR-184"
   },
@@ -10,6 +10,7 @@
   "permission": "live_history",
   "status": "pending",
   "code": "ZKQ913",
+  "shareUrl": "https://myrobotaxi.app/join/ZKQ913?k=1.1786006800.nTwfey5ahMYPsdJzkOSlGIxz8GIauU3lNwyPHqayXUPPgHFKLWuV6DH6DH0kuOVgk68cLXDkuKUfbDnQLotHoQ&from=Alex&to=Mira",
   "createdAt": "2026-07-29T15:04:05Z",
   "expiresAt": "2026-08-06T09:00:00Z"
 }

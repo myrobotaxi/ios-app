@@ -1,0 +1,15 @@
+{
+  "_meta": {
+    "description": "MYR-368 — the SAME 201 body of POST /api/vehicles/{vehicleId}/invites (rest-api.md §7.5.1) as share_invite_created.json, from a server that PREDATES contracts 0.22.0: the row carries `code` and no `shareUrl` at all. This is not a malformed body, it is the state every deployed server was in the day before this issue, and the contract names the client's obligation for it outright — 'a consumer that finds `code` without `shareUrl` MUST fall back to sharing the bare code'. It exists so the fallback is asserted against an actual absent KEY rather than against a hand-set nil: `shareUrl` is optional, so a wrong key or a dropped projection also decodes to nil (the MYR-362 shape), and the only fixture that can tell the intended absence from an accidental one is one where the key is genuinely not there.",
+    "scenario": "pre-0.22.0-server",
+    "addedBy": "MYR-368"
+  },
+  "inviteId": "csh0123456789abcdef0123456789abcd",
+  "vehicleId": "clxyz1234567890abcdef",
+  "label": "Mira Chen",
+  "permission": "live_history",
+  "status": "pending",
+  "code": "RBO246",
+  "createdAt": "2026-07-29T15:04:05Z",
+  "expiresAt": "2026-08-05T15:04:05Z"
+}

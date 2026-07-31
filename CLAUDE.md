@@ -134,7 +134,7 @@ A `-MRT_SCENE <name>` launch **argument** is accepted as a fallback for tooling 
 
   All six of the ORIGINAL sharing scenes are **live-path-only and unreachable from a simulated capture by construction**: `SimulatedShareService` mints no code (so no share sheet, no code caption, no tier line) and `SimulatedSharedVehicleCatalog` always holds three `rides`-tier grants with a redeem that cannot fail (onboarding.jsx:421's forgiving check). They inject `DebugShareEndpoint` and run the **production** `LiveShareService` / `LiveSharedVehicleCatalog` against it — the same "real code path, injected wire" precedent as `DebugServiceWindowEndpoint` — so what the capture shows came from the shipping grouping, tier mapping and gates, not a hand-set flag. The two invite-code scenes also set `autoSubmitsSampleCode`, because headless tooling cannot type six characters into the hidden field (the same stand-in-for-a-tap precedent as `ownerFreshnessWaking`). Nothing consults these overrides unless the scene is one of the six, so every existing scene is byte-identical.
 
-  **The share payload is ONE LINK** (MYR-340 → MYR-346 → **MYR-359**) — scenes
+  **The share payload is ONE LINK** (MYR-340 → MYR-346 → MYR-359 → **MYR-368**) — scenes
   `ownerShareMessage` / `ownerShareMessageNoName`. MYR-184 handed the recipient
   the code and nothing else; MYR-340 wrapped it in a mini-onboarding paragraph
   (steps, TestFlight link, bare code line, expiry) after the client's *"Feels
@@ -189,6 +189,75 @@ A `-MRT_SCENE <name>` launch **argument** is accepted as a fallback for tooling 
   parser rather than scanned, because the token heuristic sees two six-character
   candidates on `?from=Thomas` and would lose the coin toss for an all-letter
   code.
+
+  **MYR-368 — THE LINK IS THE SERVER'S NOW, AND IT IS SIGNED.** Everything above
+  about the payload's SHAPE is unchanged and is why the card renders; what
+  changed is who WRITES the URL. contracts **0.22.0** puts `shareUrl` on the
+  pending `ShareInvite` — the complete link, minted and signed server-side as
+  `/join/{CODE}?k={kid}.{exp}.{sig}&from={Owner}&to={Recipient}`, where `k` is an
+  Ed25519 signature over `join:{code}:{exp}:{from}:{to}` that the web join shell
+  verifies **statically** against a compiled-in public key, with no database and
+  no round trip. An unsigned, forged or tampered link is bounced at the shell
+  before it can reach an endpoint that would act as a code oracle.
+
+  - **That makes the URL INDIVISIBLE, which is the whole client-side rule.** BOTH
+    display names are inside the signature, so there is no such thing as taking
+    the server's code and attaching our own `?from=` — the result carries no `k`
+    at all. `ShareInviteMessage.shareURL(serverURL:code:ownerFirstName:)` forwards
+    the string VERBATIM: not re-composed, not re-ordered, not re-encoded, not
+    host-checked, not stripped of parameters. The owner's local
+    `UserProfile.firstName` is **ignored** whenever a server link exists, and that
+    is asserted across the whole name matrix.
+  - **The fallback is the contract's instruction, not defensive coding** — "a
+    consumer that finds `code` without `shareUrl` MUST fall back". Here that is
+    MYR-359's client-composed unsigned link, byte for byte what shipped before,
+    so the transition is graceful in both directions (an old app against the new
+    server composes its own; a new app against the old server does too). The
+    shell only bounces a link that CLAIMS a signature and fails it.
+  - **`URL(string:)` SUCCEEDING IS NOT EVIDENCE THAT A STRING IS A LINK**, and
+    the first implementation believed it was. Foundation parses RFC 3986 RELATIVE
+    references, so `URL(string: "not a url at all")` returns a URL whose
+    `absoluteString` is `not%20a%20url%20at%20all` with a nil scheme and a nil
+    host — and handing that to `UIActivityViewController` puts percent-escaped
+    TEXT in the thread, which is MYR-359's defect wearing a `URL` type. The guard
+    is **absoluteness** (a scheme AND a host) and deliberately stops there: it
+    does not pin the host, the path, the parameter set or the presence of `k`,
+    because the link's address is the server's to move (with the AASA and the
+    entitlement — MYR-346) and a client that silently downgraded a valid new
+    shape to its own unsigned link would turn a coordinated rollout into a
+    regression nobody can see.
+  - **A resend RE-SIGNS**, so `LiveShareService.resend` takes the link off the
+    §7.5.4 RESPONSE rather than off the pending row it resent — new code, new
+    expiry, whole new URL, and the previous LINK stops redeeming along with the
+    previous code.
+  - **Both parsers were already right, and both are now pinned on a full signed
+    vector.** `InviteLink.code(from:)` reads the PATH, so the 86-character
+    base64url signature — a long run of code characters and their `_`/`-`
+    neighbours — cannot influence it. `InviteCodeEntry.extractCode`'s pass 0 is
+    where this pays: on a signed link the token heuristic sees the signature
+    shattered into runs by its own separators, and it picks the first
+    six-character run that mixes letters and digits, which inside a base64url
+    blob is a coin toss it has no business taking. An **all-letter code inside a
+    signed link** is the sharpest case and is asserted.
+  - **The capture scenes had to move or they would have photographed the
+    fallback.** `DebugShareEndpoint` mints a link through `DebugSignedInviteLink`
+    — the contract's exact shape (parameter ORDER `k`, `from`, `to`; `k` =
+    keyId.expUnix.86-char-base64url; the server's own name rule) with a
+    stand-in signature, since signing needs the server's private key and the
+    client never verifies it anyway. Without that, `ownerShareMessage` /
+    `ownerShareMessageNoName` would keep exercising the pre-0.22.0 path while
+    looking exactly right. **`ownerShareMessageNoName` is now the arm where the
+    SERVER omitted `from`** (`DebugShareEndpoint.ownerDisplayName = nil`), which
+    is the only way that arm can exist once the client no longer composes the
+    link; `to=Mira` stays on both, so the pair is still a one-parameter diff.
+    The `k` expiry is the row's own `expiresAt` in UNIX seconds (the contract
+    requires them to agree), so it moves with wall-clock time — the code in a
+    capture is stable, the ten expiry digits are not.
+  - **The stub follows the SERVER's name rule, not the client's stricter one.**
+    `InviteLink.inviterName` omits "José" whole; the contract strips to
+    `[A-Za-z]` and sends `Jos`. Making the stub agree with the app would have
+    made it a mirror of this client instead of a model of the server, and the
+    difference would then be invisible in every capture.
 
   ONE presentation still serves BOTH the create and the resend path (`doSend`
   and `resendDialogConfig` both just set `handout`). Both scenes are
@@ -1244,13 +1313,17 @@ six characters somewhere to point.
   and needed no new code: §7.5.5 answers `409`, the Kit folds it to
   `.alreadyHasAccess`, and the entry screen already renders that honestly —
   "You already have access to that Tesla", entry left intact, no shake.
-- **The share payload is the link and nothing else** (superseded by MYR-359 —
-  see "The share payload is ONE LINK" above). MYR-346 led the message with the
-  join link on the reading that platforms preview the FIRST link; iMessage
-  actually requires the message to be nothing BUT a link, so the steps, the
-  TestFlight link and the bare code line are gone from the payload and live on
-  the landing page instead. The link now also carries `?from={Name}`, which
-  `code(from:)` ignores by design.
+- **The share payload is the link and nothing else** (superseded by MYR-359, and
+  the link itself by MYR-368 — see "The share payload is ONE LINK" above).
+  MYR-346 led the message with the join link on the reading that platforms
+  preview the FIRST link; iMessage actually requires the message to be nothing
+  BUT a link, so the steps, the TestFlight link and the bare code line are gone
+  from the payload and live on the landing page instead. The link carries
+  `?from={Name}`, which `code(from:)` ignores by design — and from MYR-368 it is
+  MINTED AND SIGNED BY THE SERVER (`ShareInvite.shareUrl`, contracts 0.22.0),
+  carrying `k` plus `from` AND `to`, all three covered by one Ed25519 signature.
+  This client composes the link only as the documented fallback for a pre-0.22.0
+  server; `code(from:)` ignoring the query is what makes both grammars work.
 - **End-to-end cannot be verified until the web AASA deploys** — until then
   `simctl openurl` opens Safari, not the app. The routing is pinned by
   `App/Tests/InviteLinkRoutingTests.swift`; to drive the real screens use the

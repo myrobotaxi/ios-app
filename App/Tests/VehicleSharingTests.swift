@@ -105,6 +105,7 @@ private func invite(
     permission: String,
     status: ShareInvite.Status,
     code: String? = nil,
+    shareUrl: String? = nil,
     createdAt: String = "2026-07-27T15:04:05Z",
     expiresAt: String? = nil,
     acceptedAt: String? = nil
@@ -116,11 +117,31 @@ private func invite(
         permission: SharePermission(rawValue: permission),
         status: status,
         code: code,
+        // MYR-368 — defaulted to ABSENT, which is a pre-0.22.0 server. Every
+        // existing test therefore keeps exercising the client-composed fallback,
+        // and the signed-link tests opt in explicitly.
+        shareUrl: shareUrl,
         createdAt: createdAt,
         expiresAt: expiresAt,
         acceptedAt: acceptedAt
     )
 }
+
+// MARK: - MYR-368 signed-link vectors
+
+/// A COMPLETE server-minted link in the contract's exact shape — the vector this
+/// issue was specified against.
+///
+/// Kept as one literal because that is the unit the client handles: the Ed25519
+/// signature in `k` covers `join:{code}:{exp}:{from}:{to}`, so the URL has no
+/// separable parts as far as this app is concerned.
+let signedShareURL =
+    "https://myrobotaxi.app/join/RBO246?k=1.1785942245.fPkcqmLr2p_HezqZtbP6J1NC-jQA0nAOp7hiFqTKZHo9L2YGVkNDx162VsdromPEMSZaMvMhxRCBS_xfaRw0BQ&from=Alex&to=Mira"
+
+/// The same shape after a §7.5.4 resend: a new code, a new expiry, a new
+/// signature — a whole new link.
+let resignedShareURL =
+    "https://myrobotaxi.app/join/ZKQ913?k=1.1786006800.nTwfey5ahMYPsdJzkOSlGIxz8GIauU3lNwyPHqayXUPPgHFKLWuV6DH6DH0kuOVgk68cLXDkuKUfbDnQLotHoQ&from=Alex&to=Mira"
 
 private func summary(
     id: String,
@@ -541,6 +562,88 @@ final class LiveShareServiceTests: XCTestCase {
             ShareInviteMessage.shareURL(code: "RBO246", ownerFirstName: nil)
         )
     }
+
+    // MARK: MYR-368 — the server's signed link reaches the handout
+
+    /// §7.5.1's `shareUrl` travels from the create response to the share sheet
+    /// UNCHANGED. The service does not validate it, rewrite it or re-order its
+    /// query, because every one of those edits would break the signature it is
+    /// carrying.
+    func testCreateCarriesTheServersSignedLinkOntoTheHandout() async throws {
+        let endpoint = ScriptedShareEndpoint()
+        let vehicles = [VehicleFixtures.vehicles[0]]
+        endpoint.createResult = .success(invite(
+            id: "pen0", vehicle: vehicles[0].id, label: "Mira Chen", permission: "live_history",
+            status: .pending, code: "RBO246", shareUrl: signedShareURL,
+            expiresAt: "2026-08-05T15:04:05Z"
+        ))
+
+        let service = makeService(endpoint, vehicles: vehicles)
+        let handout = try await service.createInvite(
+            label: "Mira Chen", tier: .history, vehicleIDs: [vehicles[0].id]
+        )
+
+        XCTAssertEqual(handout?.shareUrl, signedShareURL)
+        XCTAssertEqual(
+            handout?.shareURL(ownerFirstName: "Thomas").absoluteString, signedShareURL,
+            "the owner's own name does not get to overrule a name that is inside a signature"
+        )
+    }
+
+    /// A resend RE-SIGNS, so the handout takes the link off THAT response — not
+    /// off the pending row it resent, which is now dead in both its code and its
+    /// link.
+    func testResendCarriesTheReSignedLinkAndNotThePreviousOne() async throws {
+        let endpoint = ScriptedShareEndpoint()
+        let vehicles = [VehicleFixtures.vehicles[0]]
+        endpoint.listByVehicle[vehicles[0].id] = [invite(
+            id: "pen0", vehicle: vehicles[0].id, label: "Mira Chen", permission: "live_history",
+            status: .pending, code: "RBO246", shareUrl: signedShareURL,
+            expiresAt: "2026-08-05T15:04:05Z"
+        )]
+        endpoint.resendResult = .success(invite(
+            id: "pen0", vehicle: vehicles[0].id, label: "Mira Chen", permission: "live_history",
+            status: .pending, code: "ZKQ913", shareUrl: resignedShareURL,
+            expiresAt: "2026-08-06T09:00:00Z"
+        ))
+
+        let service = makeService(endpoint, vehicles: vehicles)
+        await service.load()
+        let pending = try XCTUnwrap(service.pending.first)
+        let handout = try await service.resend(pending)
+
+        XCTAssertEqual(handout?.code, "ZKQ913")
+        XCTAssertEqual(handout?.shareURL(ownerFirstName: "Thomas").absoluteString, resignedShareURL)
+        XCTAssertNotEqual(handout?.shareUrl, signedShareURL, "the previous link stops redeeming")
+    }
+
+    /// THE GRACEFUL TRANSITION. A server that predates 0.22.0 sends `code` with no
+    /// `shareUrl` — the state every deployment was in the day before this issue —
+    /// and the handout falls back to MYR-359's client-composed link, byte for
+    /// byte. Nothing about the owner's experience changes on that server.
+    func testAServerWithoutTheFieldFallsBackToTheClientComposedLink() async throws {
+        let endpoint = ScriptedShareEndpoint()
+        let vehicles = [VehicleFixtures.vehicles[0]]
+        endpoint.createResult = .success(invite(
+            id: "pen0", vehicle: vehicles[0].id, label: "Mira Chen", permission: "live_history",
+            status: .pending, code: "RBO246", expiresAt: "2026-08-05T15:04:05Z"
+        ))
+
+        let service = makeService(endpoint, vehicles: vehicles)
+        let handout = try await service.createInvite(
+            label: "Mira Chen", tier: .history, vehicleIDs: [vehicles[0].id]
+        )
+
+        XCTAssertNil(handout?.shareUrl)
+        XCTAssertEqual(
+            handout?.shareURL(ownerFirstName: "Thomas").absoluteString,
+            "https://myrobotaxi.app/join/RBO246?from=Thomas"
+        )
+        XCTAssertEqual(
+            handout?.shareURL(ownerFirstName: nil).absoluteString,
+            "https://myrobotaxi.app/join/RBO246"
+        )
+    }
 }
 
 // MARK: - Share payload (MYR-340 → MYR-346 → MYR-359)
@@ -730,6 +833,135 @@ final class ShareInviteMessageTests: XCTestCase {
             resent.shareURL(ownerFirstName: "Thomas"),
             "the recipient of a resend gets the same card as a first-time invite"
         )
+    }
+
+    // MARK: MYR-368 — the server's link is the payload
+
+    /// THE PRIMARY PATH. When the server minted a link, that link IS the payload,
+    /// byte for byte — same character sequence in, same character sequence out.
+    ///
+    /// Asserted on `absoluteString` rather than on `URL` equality because the
+    /// failure this guards against is a REWRITE, not a mismatch: percent-encoding
+    /// a character Foundation would have escaped, normalising the path, or
+    /// reordering the query all produce a `URL` that still points "at the same
+    /// place" and still fails an Ed25519 verification at the join shell.
+    func testAServerMintedLinkIsTheWholePayloadUnchanged() {
+        let resolved = ShareInviteMessage.shareURL(
+            serverURL: signedShareURL, code: code, ownerFirstName: "Thomas"
+        )
+        XCTAssertEqual(resolved.absoluteString, signedShareURL)
+    }
+
+    /// The client's own name is IGNORED when the server signed one in. `from` and
+    /// `to` are both inside the signature, so composing our own `?from=` over the
+    /// top would be forging a value somebody else vouched for — and would strip
+    /// `k` in the process.
+    func testTheOwnersLocalNameCannotOverruleASignedOne() {
+        for name: String? in ["Thomas", nil, "", "Mary-Jane", "José", "<script>"] {
+            XCTAssertEqual(
+                ShareInviteMessage.shareURL(
+                    serverURL: signedShareURL, code: code, ownerFirstName: name
+                ).absoluteString,
+                signedShareURL,
+                "for \(String(describing: name))"
+            )
+        }
+    }
+
+    /// Every part of the contract's shape survives the round trip — the signature
+    /// parameter, its three dot-separated fields, and BOTH display names. Stated
+    /// as separate assertions from the byte-equality above so a failure says WHICH
+    /// part went missing.
+    func testTheSignedLinkKeepsItsSignatureAndBothNames() throws {
+        let url = ShareInviteMessage.shareURL(
+            serverURL: signedShareURL, code: code, ownerFirstName: nil
+        )
+        let items = try XCTUnwrap(
+            URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        )
+        XCTAssertEqual(items.map(\.name), ["k", "from", "to"], "the contract's parameter ORDER")
+        let k = try XCTUnwrap(items.first { $0.name == "k" }?.value)
+        let parts = k.split(separator: ".", omittingEmptySubsequences: false)
+        XCTAssertEqual(parts.count, 3, "keyId.expUnix.sigBase64url")
+        XCTAssertEqual(String(parts[0]), "1", "the key id shipping today")
+        XCTAssertEqual(Int(parts[1]), 1_785_942_245, "the expiry as UNIX seconds")
+        XCTAssertEqual(parts[2].count, 86, "unpadded base64url of 64 signature bytes")
+        XCTAssertEqual(items.first { $0.name == "from" }?.value, "Alex")
+        XCTAssertEqual(items.first { $0.name == "to" }?.value, "Mira")
+    }
+
+    /// THE FALLBACK. Absence is the contract's own documented case — "a consumer
+    /// that finds `code` without `shareUrl` MUST fall back" — and what this client
+    /// falls back to is MYR-359's link, unchanged.
+    func testAnAbsentServerLinkFallsBackToTheComposedOne() {
+        XCTAssertEqual(
+            ShareInviteMessage.shareURL(serverURL: nil, code: code, ownerFirstName: "Thomas")
+                .absoluteString,
+            "https://myrobotaxi.app/join/RBO246?from=Thomas"
+        )
+        XCTAssertEqual(
+            ShareInviteMessage.shareURL(serverURL: nil, code: code, ownerFirstName: nil)
+                .absoluteString,
+            "https://myrobotaxi.app/join/RBO246"
+        )
+    }
+
+    /// **`URL(string:)` SUCCEEDING IS NOT EVIDENCE THAT A STRING IS A LINK**, and
+    /// this test exists because the first implementation believed it was.
+    ///
+    /// Foundation parses RFC 3986 RELATIVE references, so `URL(string:)` answers
+    /// non-nil for almost anything: `"not a url at all"` becomes a URL whose
+    /// `absoluteString` is `not%20a%20url%20at%20all`, with no scheme and no host.
+    /// Handing THAT to `UIActivityViewController` puts a percent-escaped fragment
+    /// of text where the invite should be — the MYR-359 defect wearing a `URL`
+    /// type. The guard is absoluteness (a scheme AND a host), and every value that
+    /// fails it takes the composed link instead.
+    func testAValueThatParsesButIsNotAnAbsoluteLinkFallsBackToo() {
+        for junk in ["", "   ", "not a url at all", "RBO246", "/join/RBO246", "myrobotaxi.app/join/RBO246"] {
+            XCTAssertEqual(
+                ShareInviteMessage.shareURL(
+                    serverURL: junk, code: code, ownerFirstName: "Thomas"
+                ).absoluteString,
+                "https://myrobotaxi.app/join/RBO246?from=Thomas",
+                "for \(junk.debugDescription)"
+            )
+        }
+    }
+
+    /// The guard stops at absoluteness on purpose: it does NOT pin the host, the
+    /// path or the presence of `k`. The link's address is the server's to move
+    /// (with the AASA and the entitlement — MYR-346), and a client that silently
+    /// downgraded a valid new shape to its own unsigned link would turn a
+    /// coordinated rollout into a regression nobody can see.
+    func testAnAbsoluteLinkIsForwardedEvenWhenItIsNotTheShapeThisBuildExpects() {
+        for future in [
+            "https://myrobotaxi.app/j/RBO246?k=1.1785942245.sig",
+            "https://eu.myrobotaxi.app/join/RBO246?k=1.1785942245.sig&from=Alex&to=Mira",
+        ] {
+            XCTAssertEqual(
+                ShareInviteMessage.shareURL(
+                    serverURL: future, code: code, ownerFirstName: "Thomas"
+                ).absoluteString,
+                future
+            )
+        }
+    }
+
+    /// MYR-359's rules stand on the new payload: it is still ONE token, still one
+    /// line, still no prose, and still carries no TestFlight link. The URL got
+    /// longer, not chattier — a message that is nothing but a link is what makes
+    /// the card render, and that is a property of the WHOLE payload, not of the
+    /// half this issue changed.
+    func testTheSignedPayloadIsStillNothingButALink() {
+        let payload = ShareInviteMessage.shareURL(
+            serverURL: signedShareURL, code: code, ownerFirstName: "Thomas"
+        ).absoluteString
+        XCTAssertFalse(payload.contains(" "), "one token, no spaces")
+        XCTAssertFalse(payload.contains("\n"), "one line, no newlines")
+        XCTAssertFalse(payload.contains("testflight.apple.com"))
+        for prose in ["shared their Tesla", "MyRoboTaxi", "Open the link", "expires in"] {
+            XCTAssertFalse(payload.contains(prose), "found \(prose.debugDescription)")
+        }
     }
 
     // MARK: -
@@ -1053,5 +1285,174 @@ final class SharedViewerSharingGateTests: XCTestCase {
         let first = state.telemetrySource
         state.adoptSharedVehicle(grant)
         XCTAssertTrue(first === state.telemetrySource as AnyObject as? AnyObject)
+    }
+}
+
+// MARK: - The share-sheet capture scenes exercise the PRIMARY path (MYR-368)
+
+/// `ownerShareMessage` / `ownerShareMessageNoName` are the only capture route to
+/// the share sheet, and after this issue the thing worth capturing is the SERVER's
+/// signed link. A stub that kept answering with `code` alone would leave both
+/// scenes quietly photographing the MYR-359 fallback and calling it the new
+/// payload — a capture that is wrong about the product while looking exactly
+/// right, which is the failure this file's `DebugShareEndpoint` exists to avoid.
+///
+/// So the stub's link is asserted the way the app treats a real one: parse it,
+/// and check the shape the contract specifies.
+@MainActor
+final class DebugSignedInviteLinkTests: XCTestCase {
+
+    func testTheCaptureStubMintsALinkInTheContractsShape() throws {
+        let expires = Date(timeIntervalSince1970: 1_785_942_245)
+        let raw = DebugSignedInviteLink.url(
+            code: "RBO246", expires: expires, from: "Thomas Nandola", to: "Mira Chen"
+        )
+        let url = try XCTUnwrap(URL(string: raw))
+        let items = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
+
+        XCTAssertEqual(items.map(\.name), ["k", "from", "to"])
+        let parts = try XCTUnwrap(items.first { $0.name == "k" }?.value)
+            .split(separator: ".", omittingEmptySubsequences: false)
+        XCTAssertEqual(parts.count, 3)
+        XCTAssertEqual(String(parts[0]), DebugSignedInviteLink.keyID)
+        XCTAssertEqual(Int(parts[1]), 1_785_942_245, "`k`'s expiry is `expiresAt` in UNIX seconds")
+        XCTAssertEqual(parts[2].count, 86, "unpadded base64url of 64 signature bytes")
+        // The contract's server-side name rule: FIRST token, ASCII letters, ≤ 20.
+        XCTAssertEqual(items.first { $0.name == "from" }?.value, "Thomas")
+        XCTAssertEqual(items.first { $0.name == "to" }?.value, "Mira")
+    }
+
+    /// Whatever the stub mints must survive the SHIPPING parser — the property
+    /// that makes the capture evidence about the product rather than about this
+    /// file, and the same round-trip `ShareInviteMessageTests` asks of the
+    /// client-composed link.
+    func testTheCaptureStubsLinkParsesBackToItsCode() throws {
+        for code in ["RBO246", "ZKQ913", "ABCDEF"] {
+            let raw = DebugSignedInviteLink.url(
+                code: code, expires: Date(), from: "Thomas Nandola", to: "Mira Chen"
+            )
+            XCTAssertEqual(InviteLink.code(from: try XCTUnwrap(URL(string: raw))), code)
+            XCTAssertEqual(InviteCodeEntry.extractCode(from: raw), code, "and a paste of it, too")
+        }
+    }
+
+    /// `ownerShareMessageNoName` is now the arm where the SERVER omitted the
+    /// parameter, so the omission has to be the stub's — never an empty `from=`,
+    /// and never at the cost of `to`, which is what keeps the pair a
+    /// one-parameter diff.
+    func testAnUnnameableOwnerDropsOnlyTheFromParameter() throws {
+        for absent: String? in [nil, "", "   ", "123", "!!!"] {
+            let raw = DebugSignedInviteLink.url(
+                code: "RBO246", expires: Date(), from: absent, to: "Mira Chen"
+            )
+            XCTAssertFalse(raw.contains("from="), "for \(String(describing: absent))")
+            XCTAssertTrue(raw.contains("to=Mira"))
+            XCTAssertTrue(raw.contains("k="))
+        }
+    }
+
+    /// THE SERVER'S NAME RULE IS NOT THE CLIENT'S, and the stub models the
+    /// server's on purpose.
+    ///
+    /// `InviteLink.inviterName` (MYR-359, the FALLBACK link this client composes)
+    /// omits an accented name WHOLE — "Jos invited you to ride their Tesla"
+    /// misspells someone to a stranger, and declining to name them is the kinder
+    /// failure. The contract's server-side rule is the plainer one: strip to
+    /// `[A-Za-z]` and keep what is left, so "José" travels as "Jos" and only an
+    /// empty result drops the parameter. Making the stub agree with the app here
+    /// would have made it a mirror of this client instead of a model of the
+    /// server, and the difference would then be invisible in every capture.
+    func testTheStubFollowsTheServersNameRuleAndNotTheClientsStricterOne() {
+        let raw = DebugSignedInviteLink.url(
+            code: "RBO246", expires: Date(), from: "José Ruiz", to: "Mira Chen"
+        )
+        XCTAssertTrue(raw.contains("from=Jos"), "the server strips; it does not omit")
+        XCTAssertNil(InviteLink.inviterName("José"), "the client, composing its own link, omits")
+        XCTAssertEqual(DebugSignedInviteLink.signedName("Mary-Jane Watson"), "MaryJane",
+                       "FIRST token, ASCII letters only")
+        XCTAssertEqual(
+            DebugSignedInviteLink.signedName(String(repeating: "a", count: 40)),
+            String(repeating: "a", count: 20),
+            "capped at 20"
+        )
+    }
+
+    /// Two SEPARATE mints of the same code produce the same signature bytes, so a
+    /// scene captured twice differs only where a real mint would differ (the
+    /// expiry). Different codes do not collide.
+    func testTheStandInSignatureIsDeterministicPerCode() {
+        let a = DebugSignedInviteLink.url(code: "RBO246", expires: Date(timeIntervalSince1970: 1), from: nil, to: nil)
+        let b = DebugSignedInviteLink.url(code: "RBO246", expires: Date(timeIntervalSince1970: 1), from: nil, to: nil)
+        let c = DebugSignedInviteLink.url(code: "ZKQ913", expires: Date(timeIntervalSince1970: 1), from: nil, to: nil)
+        XCTAssertEqual(a, b)
+        XCTAssertNotEqual(a, c)
+    }
+}
+
+// MARK: - The scene end to end (MYR-368)
+
+/// The guard that the two share-sheet capture scenes exercise the PRIMARY path.
+///
+/// `DebugSignedInviteLinkTests` proves the stub mints a link and
+/// `LiveShareServiceTests` proves the service carries one; neither proves that
+/// the SCENE wires the two together. That gap is exactly where a capture goes
+/// quietly wrong — the sheet still opens, the code is still real, and the URL in
+/// the screenshot is the pre-0.22.0 fallback.
+@MainActor
+final class ShareMessageSceneWiringTests: XCTestCase {
+
+    private func handout(for scene: DebugScene) async throws -> ShareHandout {
+        let service = try XCTUnwrap(scene.shareServiceOverride)
+        await service.load()
+        let pending = try XCTUnwrap(service.pending.first)
+        // The same call `InvitesScreen`'s `opensShareSheetForFirstPending` makes.
+        let minted = try await service.resend(pending)
+        return try XCTUnwrap(minted)
+    }
+
+    /// `ownerShareMessage`: the sheet's payload is the SERVER's signed link, with
+    /// the owner's name in it — resolved by the shipping `ShareInviteMessage`, so
+    /// the capture shows what a real owner's phone would show.
+    func testTheNamedSceneSharesTheServersSignedLink() async throws {
+        let handout = try await self.handout(for: .ownerShareMessage)
+        let payload = handout.shareURL(ownerFirstName: "Thomas").absoluteString
+
+        XCTAssertEqual(payload, handout.shareUrl, "the server's link, verbatim")
+        XCTAssertTrue(payload.contains("/join/ZKQ913"), "the resend's freshly minted code")
+        XCTAssertTrue(payload.contains("&from=Thomas"))
+        XCTAssertTrue(payload.contains("&to=Mira"))
+        XCTAssertTrue(payload.contains("?k=1."), "the signature the join shell verifies")
+    }
+
+    /// `ownerShareMessageNoName`: the SERVER omitted `from`, which is the only way
+    /// that arm can exist now that the client no longer composes the link. `to`
+    /// stays, so the pair is a one-parameter diff and nothing else.
+    func testTheNoNameSceneOmitsOnlyTheFromParameter() async throws {
+        let named = try await handout(for: .ownerShareMessage)
+        let anonymous = try await handout(for: .ownerShareMessageNoName)
+        let payload = anonymous.shareURL(ownerFirstName: nil).absoluteString
+
+        XCTAssertEqual(payload, anonymous.shareUrl)
+        XCTAssertFalse(payload.contains("from="), "never an empty parameter")
+        XCTAssertTrue(payload.contains("&to=Mira"))
+        XCTAssertTrue(payload.contains("/join/ZKQ913"))
+        XCTAssertEqual(
+            named.shareURL(ownerFirstName: "Thomas").absoluteString
+                .replacingOccurrences(of: "&from=Thomas", with: ""),
+            payload,
+            "the two scenes differ by exactly that one parameter"
+        )
+    }
+
+    /// The list rows behind the tab carry the link too — §7.5.2 puts `shareUrl`
+    /// on every PENDING row, alongside the code it contains.
+    func testTheSeededPendingRowsCarryASignedLinkBeforeAnyResend() async throws {
+        let service = try XCTUnwrap(DebugScene.ownerShareLive.shareServiceOverride)
+        await service.load()
+        XCTAssertEqual(service.pending.count, 1, "two server rows, one code, one screen row")
+        let minted = try await service.createInvite(
+            label: "Mira Chen", tier: .history, vehicleIDs: [VehicleFixtures.vehicles[0].id]
+        )
+        XCTAssertEqual(try XCTUnwrap(minted).shareUrl?.contains("/join/RBO246"), true)
     }
 }

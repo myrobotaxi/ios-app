@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "description": "200 body of GET /api/vehicles/{vehicleId}/invites (rest-api.md §7.5.2), verbatim from the spec example. Note the envelope key is `invites`, NOT `items`: this surface is deliberately unpaginated (no cursor, no hasMore) and the distinct key keeps an SDK pagination helper from mistaking it for a page. Revoked rows are never serialized, so a consumer never filters. `code`/`expiresAt` appear only on the pending row; `acceptedAt` only on the accepted one.",
+    "description": "200 body of GET /api/vehicles/{vehicleId}/invites (rest-api.md §7.5.2), verbatim from the spec example. Note the envelope key is `invites`, NOT `items`: this surface is deliberately unpaginated (no cursor, no hasMore) and the distinct key keeps an SDK pagination helper from mistaking it for a page. Revoked rows are never serialized, so a consumer never filters. `code`/`expiresAt` appear only on the pending row; `acceptedAt` only on the accepted one. MYR-368 — `shareUrl` (contracts 0.22.0, the complete SIGNED join link) is present EXACTLY WHERE `code` IS, so it is on the pending row and absent from the accepted one. That pairing is the point of this fixture: a client must never expect to re-read either value for a grant that has been redeemed.",
     "scenario": "happy-path",
     "addedBy": "MYR-184"
   },
@@ -12,6 +12,7 @@
       "permission": "live_history",
       "status": "pending",
       "code": "RBO246",
+      "shareUrl": "https://myrobotaxi.app/join/RBO246?k=1.1785942245.mHRTPwZlrUFqzQ9k1p8O_5xkzXQ9dHTh5rHhNaeJ0OQz3n0XmL4vJ8ptKQC1cO8bZ5MPKB6h0nlFmVLbUqEQAg&from=Alex&to=Mira",
       "createdAt": "2026-07-29T15:04:05Z",
       "expiresAt": "2026-08-05T15:04:05Z"
     },
