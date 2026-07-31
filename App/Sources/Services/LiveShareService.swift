@@ -163,7 +163,14 @@ final class LiveShareService: ShareService {
         return ShareHandout(
             code: code,
             label: invite.label,
-            vehicleNames: vehicles.filter { ids.contains($0.id) }.map(\.name)
+            vehicleNames: vehicles.filter { ids.contains($0.id) }.map(\.name),
+            // MYR-368 — the server's own signed link, forwarded exactly as it
+            // arrived. Optional by contract: a server predating 0.22.0 sends the
+            // code alone and the handout falls back to the client-composed link.
+            // Deliberately NOT validated here — the shape, the parameter order
+            // and the signature are the server's, and anything this client
+            // "corrected" would fail verification at the join shell.
+            shareUrl: invite.shareUrl
         )
     }
 
@@ -220,7 +227,13 @@ final class LiveShareService: ShareService {
         let updated = try await api.resendShareInvite(inviteID: id)
         await performLoad()
         guard let code = updated.code else { throw ShareServiceError.missingCode }
-        return ShareHandout(code: code, label: updated.label, vehicleNames: [])
+        // §7.5.4 RE-SIGNS: a resend mints a new code and a new expiry, so the
+        // whole URL changes and the previous link stops redeeming. Taking the
+        // link off THIS response rather than off the pending row we resent is
+        // what makes that true on this side too.
+        return ShareHandout(
+            code: code, label: updated.label, vehicleNames: [], shareUrl: updated.shareUrl
+        )
     }
 }
 

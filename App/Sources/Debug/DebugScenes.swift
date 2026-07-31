@@ -755,13 +755,21 @@ enum DebugScene: String, CaseIterable {
     ///     one code) — the §7.5.1 regrouping, running for real.
     case ownerShareLive
 
-    /// MYR-340 → MYR-359 — the SYSTEM SHARE SHEET carrying what the client
-    /// actually receives, which is the only artefact either issue changes. As of
-    /// MYR-359 that is ONE URL — `https://myrobotaxi.app/join/{CODE}?from={Name}`
-    /// — handed over as a `URL` activity item, because iMessage builds the
-    /// branded card only for a message that is nothing but a link. The sheet's
-    /// preview therefore shows a LINK row, not a truncated paragraph; that
-    /// difference IS the capture.
+    /// MYR-340 → MYR-359 → MYR-368 — the SYSTEM SHARE SHEET carrying what the
+    /// client actually receives, which is the only artefact any of those issues
+    /// changes. As of MYR-359 it is ONE URL handed over as a `URL` activity item,
+    /// because iMessage builds the branded card only for a message that is nothing
+    /// but a link. The sheet's preview therefore shows a LINK row, not a truncated
+    /// paragraph; that difference IS the capture.
+    ///
+    /// **MYR-368 changes WHOSE URL it is.** The link is now minted and SIGNED by
+    /// the server (`ShareInvite.shareUrl`, contracts 0.22.0) —
+    /// `/join/{CODE}?k={kid}.{exp}.{sig}&from={Owner}&to={Recipient}`, with both
+    /// names inside the Ed25519 signature — and the client forwards it verbatim.
+    /// So `DebugShareEndpoint` mints one (`DebugSignedInviteLink`, the contract's
+    /// shape with a stand-in signature) and the capture exercises the PRIMARY
+    /// path. Without that, the scene would silently photograph the pre-0.22.0
+    /// fallback and call it the new payload.
     ///
     /// It is unreachable from every other capture route: the sheet opens
     /// only after a Resend → confirm → Resend tap sequence (or a full compose +
@@ -770,21 +778,28 @@ enum DebugScene: String, CaseIterable {
     /// `DebugShareEndpoint` on appear — the same real-code-path/injected-wire
     /// precedent as `ownerServiceWindowSaved`, and the same stand-in-for-a-tap
     /// precedent as `autoSubmitsInviteCode`. The code in the capture is therefore
-    /// genuinely minted by the shipping resend path, not hand-set, and the link
-    /// is built by the shipping `ShareInviteMessage`.
+    /// genuinely minted by the shipping resend path, not hand-set, and the URL is
+    /// resolved by the shipping `ShareInviteMessage`.
     ///
-    /// This scene is the NAMED case — the link carries `?from=Thomas`, via
-    /// `namesShareMessageOwner`.
+    /// This scene is the NAMED case — the link carries `&from=Thomas`, signed by
+    /// the stub server off its `ownerDisplayName`. `namesShareMessageOwner` still
+    /// supplies the owner profile, which now feeds only the fallback.
     case ownerShareMessage
 
-    /// MYR-340 → MYR-359 — the SAME share sheet for an account carrying NO name.
-    /// Not a defensive branch: Apple returns a human name only on the FIRST
-    /// authorization, and a row created before native sign-in may carry none at
-    /// all, so a real fraction of owners hit this. The link then carries NO
-    /// `?from=` parameter at all — never an empty one — and the landing page falls
+    /// MYR-340 → MYR-359 → MYR-368 — the SAME share sheet for an account carrying
+    /// NO name. Not a defensive branch: Apple returns a human name only on the
+    /// FIRST authorization, and a row created before native sign-in may carry none
+    /// at all, so a real fraction of owners hit this. The link then carries NO
+    /// `from` parameter at all — never an empty one — and the landing page falls
     /// back to its generic heading, which is where the two-grammar rule lives now
     /// that the app sends no prose. The pair is a clean before/after of exactly
     /// that one query parameter.
+    ///
+    /// MYR-368 moved WHERE the omission is decided, without changing what the
+    /// capture shows: the name is signed into the link server-side, so this scene
+    /// is now the arm where `DebugShareEndpoint.ownerDisplayName` is `nil` and the
+    /// SERVER omitted the parameter. `to=Mira` is still present on both, which is
+    /// what keeps the pair a one-parameter diff rather than a two-parameter one.
     case ownerShareMessageNoName
 
     /// MYR-184 (MYR-228 fix (c)) — the rider Live Map with ZERO shared vehicles.
@@ -2130,16 +2145,31 @@ struct DebugShareEndpoint: VehicleSharingEndpoint {
     var redeemFailureStatus: Int?
     var redeemOwnerFirstName: String = "Alex"
 
+    /// MYR-368 — the OWNER display name this stub server signs into `from`, or
+    /// `nil` for an account Apple never handed a name for.
+    ///
+    /// It lives on the ENDPOINT, not on the scene's profile, because that is where
+    /// it lives in production: contracts 0.22.0 puts both names INSIDE the Ed25519
+    /// signature, so `from` is resolved and signed server-side and the client has
+    /// no say in it. `ownerShareMessageNoName` is therefore the arm where the
+    /// SERVER omitted the parameter — which is the only way that arm can exist now
+    /// that the client no longer composes the link.
+    var ownerDisplayName: String? = "Thomas Nandola"
+
     func createShareInvite(_ body: CreateShareInviteRequest, vehicleID: String) async throws -> ShareInvite {
-        ShareInvite(
+        let expires = Date().addingTimeInterval(7 * 86_400)
+        return ShareInvite(
             inviteId: "debug-created",
             vehicleId: vehicleID,
             label: body.label,
             permission: body.permission,
             status: .pending,
             code: "RBO246",
+            shareUrl: DebugSignedInviteLink.url(
+                code: "RBO246", expires: expires, from: ownerDisplayName, to: body.label
+            ),
             createdAt: ISO8601DateFormatter().string(from: Date()),
-            expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(7 * 86_400))
+            expiresAt: ISO8601DateFormatter().string(from: expires)
         )
     }
 
@@ -2150,15 +2180,22 @@ struct DebugShareEndpoint: VehicleSharingEndpoint {
     func revokeShareInvite(inviteID: String) async throws {}
 
     func resendShareInvite(inviteID: String) async throws -> ShareInvite {
-        ShareInvite(
+        // §7.5.4 RE-SIGNS: a new code and a new expiry mean a whole new URL, and
+        // the previous link stops redeeming. This stub therefore mints the link
+        // alongside the code rather than echoing the pending row's.
+        let expires = Date().addingTimeInterval(7 * 86_400)
+        return ShareInvite(
             inviteId: inviteID,
             vehicleId: "debug",
             label: "Mira Chen",
             permission: SharePermission(rawValue: "live_history"),
             status: .pending,
             code: "ZKQ913",
+            shareUrl: DebugSignedInviteLink.url(
+                code: "ZKQ913", expires: expires, from: ownerDisplayName, to: "Mira Chen"
+            ),
             createdAt: ISO8601DateFormatter().string(from: Date()),
-            expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(7 * 86_400))
+            expiresAt: ISO8601DateFormatter().string(from: expires)
         )
     }
 
@@ -2167,6 +2204,86 @@ struct DebugShareEndpoint: VehicleSharingEndpoint {
             throw RestError.http(status: status, code: nil, message: nil, subCode: nil)
         }
         return RedeemShareInviteResponse(ownerFirstName: redeemOwnerFirstName, vehicles: viewerRows)
+    }
+}
+
+// MARK: - The signed join link, minted the way the server mints it (MYR-368)
+
+/// Builds `ShareInvite.shareUrl` in the exact shape contracts 0.22.0 specifies, so
+/// the share-sheet capture scenes exercise the SHIPPING primary path — the one
+/// where the payload is the server's URL forwarded verbatim — instead of quietly
+/// falling back to the client-composed link and photographing MYR-359 again.
+///
+/// **The SIGNATURE is a stand-in and nothing else is.** Every other part of the
+/// URL is derived exactly as the contract says: the parameter ORDER
+/// (`k`, then `from`, then `to`), the three dot-separated parts of `k` (key id,
+/// expiry as UNIX SECONDS, 86 characters of unpadded base64url standing for the
+/// 64-byte signature), and the NAME SANITIZATION (first whitespace-separated
+/// token, ASCII letters only, capped at 20, and the parameter OMITTED ENTIRELY
+/// when nothing survives). The bytes of `k` cannot be real here — signing needs
+/// the server's private key — and they do not need to be: the client never
+/// verifies them, it forwards them, and what these scenes prove is exactly that
+/// forwarding.
+///
+/// The expiry is the ROW's own `expiresAt` in a different encoding, per the
+/// contract's rule that the two agree. It therefore moves with wall-clock time,
+/// which is a real property of a minted link rather than an artefact — the code in
+/// the capture is stable, the ten expiry digits are not.
+///
+/// DEBUG-only.
+enum DebugSignedInviteLink {
+
+    /// The one-character key id the contract ships today.
+    static let keyID = "1"
+
+    static func url(code: String, expires: Date, from: String?, to: String?) -> String {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = InviteLink.host
+        components.path = "/\(InviteLink.pathComponent)/\(code)"
+
+        let fromValue = signedName(from)
+        let toValue = signedName(to)
+
+        var items = [
+            URLQueryItem(
+                name: "k",
+                value: "\(keyID).\(Int(expires.timeIntervalSince1970)).\(signature(for: code))"
+            )
+        ]
+        // Omitted entirely when nothing survives sanitization — never emitted
+        // empty. The signed payload still carries the empty string for it.
+        if let fromValue { items.append(URLQueryItem(name: "from", value: fromValue)) }
+        if let toValue { items.append(URLQueryItem(name: "to", value: toValue)) }
+        components.queryItems = items
+
+        return components.string ?? "https://\(InviteLink.host)/\(InviteLink.pathComponent)/\(code)"
+    }
+
+    /// The contract's server-side name rule: FIRST whitespace-separated token,
+    /// stripped to `[A-Za-z]`, capped at 20, `nil` when nothing is left.
+    ///
+    /// Deliberately NOT `InviteLink.inviterName` — that is the CLIENT's rule for a
+    /// link the client composes, and it is stricter (one non-name character drops
+    /// the whole value). Reusing it here would make this stub agree with the app
+    /// by construction and stop being a model of the server.
+    static func signedName(_ raw: String?) -> String? {
+        guard let first = raw?.split(whereSeparator: \.isWhitespace).first else { return nil }
+        let letters = first.filter { $0.isASCII && $0.isLetter }
+        return letters.isEmpty ? nil : String(letters.prefix(20))
+    }
+
+    /// 86 characters of unpadded base64url — the right SHAPE for a 64-byte Ed25519
+    /// signature, deterministic per code so a capture of the same scene twice
+    /// differs only where a real mint would differ.
+    private static func signature(for code: String) -> String {
+        let alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+        var state = UInt64(5_381)
+        for scalar in code.unicodeScalars { state = state &* 33 &+ UInt64(scalar.value) }
+        return String((0..<86).map { _ in
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return alphabet[Int((state >> 33) % 64)]
+        })
     }
 }
 
@@ -2253,16 +2370,31 @@ extension DebugScene {
                 || self == .ownerShareMessage
                 || self == .ownerShareMessageNoName else { return nil }
         let vehicles = VehicleFixtures.vehicles
+        let expiresAt = Date().addingTimeInterval(5 * 86_400)
         let created = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-2 * 86_400))
-        let expires = ISO8601DateFormatter().string(from: Date().addingTimeInterval(5 * 86_400))
+        let expires = ISO8601DateFormatter().string(from: expiresAt)
         var endpoint = DebugShareEndpoint()
+        // MYR-368 — `ownerShareMessageNoName` is the arm where the SERVER omitted
+        // `from`, because with a signed link the client no longer decides. The
+        // owner profile (`namesShareMessageOwner`) still differs between the two
+        // scenes and still feeds the MYR-359 fallback, so the pair keeps working
+        // against a pre-0.22.0 server too.
+        if self == .ownerShareMessageNoName { endpoint.ownerDisplayName = nil }
+        // §7.5.2 carries the signed link on every PENDING row, alongside the code
+        // it contains — and on no accepted row, which is where `code` is absent
+        // too.
+        let pendingShareURL = DebugSignedInviteLink.url(
+            code: "RBO246", expires: expiresAt,
+            from: endpoint.ownerDisplayName, to: "Mira Chen"
+        )
         // ONE pending invite spanning TWO vehicles on ONE code — the §7.5.1 shape
         // the screen must regroup into a single row.
         endpoint.invitesByVehicle[vehicles[0].id] = [
             ShareInvite(
                 inviteId: "pen-0", vehicleId: vehicles[0].id, label: "Mira Chen",
                 permission: SharePermission(rawValue: "live_history"), status: .pending,
-                code: "RBO246", createdAt: created, expiresAt: expires
+                code: "RBO246", shareUrl: pendingShareURL,
+                createdAt: created, expiresAt: expires
             ),
             ShareInvite(
                 inviteId: "acc-0", vehicleId: vehicles[0].id, label: "Jonas Park",
@@ -2275,7 +2407,8 @@ extension DebugScene {
             ShareInvite(
                 inviteId: "pen-1", vehicleId: vehicles[1].id, label: "Mira Chen",
                 permission: SharePermission(rawValue: "live_history"), status: .pending,
-                code: "RBO246", createdAt: created, expiresAt: expires
+                code: "RBO246", shareUrl: pendingShareURL,
+                createdAt: created, expiresAt: expires
             )
         ]
         return LiveShareService(api: endpoint, ownedVehicles: { vehicles })

@@ -25,7 +25,12 @@ packages:
     # rendered verbatim). Both snapshot-only. (0.17.0 added
     # `serviceEstimatedEndAt`; 0.16.0 the media now-playing fields +
     # `seatCoolingCapable`.)
-    from: 0.18.0
+    #
+    # MYR-368 — 0.22.0 adds `ShareInvite.shareUrl`, the COMPLETE server-minted
+    # SIGNED join link (`/join/{CODE}?k={kid}.{exp}.{sig}&from=&to=`). The app
+    # target names `ShareInvite` directly (`DebugShareEndpoint`), so this pin has
+    # to move with the Kit's rather than relying on SPM's dedupe to carry it.
+    from: 0.22.0
 
 settings:
   base:

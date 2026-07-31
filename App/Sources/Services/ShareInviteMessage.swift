@@ -1,6 +1,30 @@
 import Foundation
 
-// MARK: - Share-invite payload (MYR-340 → MYR-346 → MYR-359)
+// MARK: - Share-invite payload (MYR-340 → MYR-346 → MYR-359 → MYR-368)
+//
+// MYR-368: THE LINK IS THE SERVER'S NOW, AND IT IS SIGNED.
+//
+// Everything below about the payload's SHAPE — one URL, no prose, a `URL`
+// activity item — is unchanged and is why the card renders. What changed is who
+// WRITES the URL. contracts 0.22.0 puts a `shareUrl` on the pending `ShareInvite`:
+// the complete link, minted and signed by the server as
+// `/join/{CODE}?k={kid}.{exp}.{sig}&from={Owner}&to={Recipient}`, where `k` is an
+// Ed25519 signature over `join:{code}:{exp}:{from}:{to}` that the web join shell
+// verifies statically against a compiled-in public key.
+//
+// That makes the URL INDIVISIBLE. BOTH display names are inside the signature, so
+// there is no such thing as taking the server's code and attaching our own
+// `?from=` — the result would carry no `k` at all, get bounced at the shell, and
+// never reach the redeem endpoint. The link is therefore forwarded VERBATIM or it
+// is not the server's link.
+//
+// The fallback is not defensive coding, it is the contract's own instruction: a
+// consumer that finds `code` without `shareUrl` MUST fall back to the code. For
+// this app that means MYR-359's client-composed unsigned link, which is exactly
+// what shipped before this issue and still works — the shell only bounces a link
+// that CLAIMS a signature and fails it. The transition is therefore graceful in
+// both directions: an old app against the new server composes its own link, and a
+// new app against the old server does too.
 //
 // TestFlight, Jul 30: the branded invite card never appears in the thread.
 //
@@ -91,5 +115,57 @@ enum ShareInviteMessage {
     /// a URL — is text that happens to contain a link.
     static func shareURL(code: String, ownerFirstName: String?) -> URL {
         URL(string: InviteLink.url(code: code, from: ownerFirstName)) ?? InviteLink.landingURL
+    }
+
+    /// The share-sheet item when the server minted one (MYR-368) — **the primary
+    /// path**.
+    ///
+    /// - Parameters:
+    ///   - serverURL: `ShareInvite.shareUrl` off the create/resend response, or
+    ///     `nil` on a server that predates contracts 0.22.0.
+    ///   - code: the same row's `code`, used only for the fallback.
+    ///   - ownerFirstName: the signed-in owner's first name, used only for the
+    ///     fallback. The server's own link already carries `from` (and `to`),
+    ///     both of them inside the signature.
+    ///
+    /// **The server's URL is passed through UNTOUCHED.** Not re-composed, not
+    /// re-ordered, not re-encoded, not host-checked, not stripped of parameters:
+    /// every byte after `?` is covered by the Ed25519 signature in `k`, so the
+    /// only edit this client could make to the link is one that invalidates it.
+    /// `URL(string:)` is a parse, not a rewrite — the value round-trips through
+    /// `absoluteString` byte-identically for the character set the contract emits
+    /// (`[A-Za-z0-9._~-]` plus the delimiters), which is asserted rather than
+    /// assumed.
+    ///
+    /// The one reason to fall back on a non-nil `serverURL` is that it is not
+    /// usable as a LINK — and **"`URL(string:)` returned something" is not that
+    /// test**. Foundation's RFC 3986 parsing accepts almost any string as a
+    /// RELATIVE reference: `URL(string: "not a url at all")` succeeds, with a nil
+    /// scheme and a nil host, and handing that to `UIActivityViewController` puts
+    /// a percent-escaped fragment of text in the recipient's thread instead of a
+    /// link. So the test is that the value is ABSOLUTE — it has a scheme and a
+    /// host — which is the least this can check while still checking anything.
+    ///
+    /// It deliberately stops there. It does not pin the host, the path, the
+    /// parameter set or the presence of `k`: the link's address is the server's
+    /// to change (with the AASA and the entitlement, which is a deploy-time
+    /// agreement — MYR-346), and a client that quietly downgraded a valid new
+    /// shape to an unsigned self-composed link would turn a coordinated rollout
+    /// into a silent regression nobody sees. What it CANNOT do is emit text.
+    ///
+    /// A `String` activity item is never an option here (MYR-359: a string that
+    /// happens to be a URL is a body of text, and the card stops rendering), and
+    /// neither is handing over nothing.
+    ///
+    /// Nothing here is logged. The URL contains the code, so it carries the
+    /// code's P1 classification whole.
+    static func shareURL(serverURL: String?, code: String, ownerFirstName: String?) -> URL {
+        if let serverURL,
+           let minted = URL(string: serverURL),
+           minted.scheme != nil,
+           minted.host() != nil {
+            return minted
+        }
+        return shareURL(code: code, ownerFirstName: ownerFirstName)
     }
 }

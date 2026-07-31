@@ -114,6 +114,38 @@ final class InviteCodePasteTests: XCTestCase {
         )
     }
 
+    /// MYR-368 — THE VECTOR. The link the recipient now copies out of the thread
+    /// is the SERVER's signed one, and pass 0 reads its code out of the path.
+    ///
+    /// This is the paste that would go worst without pass 0. The token pass would
+    /// see the 86-character signature split into runs by its own `_` and `-`
+    /// characters, plus "RBO246", "Alex" and "Mira" — and it picks the first
+    /// SIX-character run that mixes letters and digits, which anywhere inside a
+    /// base64url blob is a coin toss it has no business taking. Reading the path
+    /// never has the question.
+    func testPastingTheFullSignedLinkFindsTheCode() {
+        let signed = "https://myrobotaxi.app/join/RBO246?k=1.1785942245.fPkcqmLr2p_HezqZtbP6J1NC-jQA0nAOp7hiFqTKZHo9L2YGVkNDx162VsdromPEMSZaMvMhxRCBS_xfaRw0BQ&from=Alex&to=Mira"
+        XCTAssertEqual(InviteCodeEntry.extractCode(from: signed), "RBO246")
+        XCTAssertEqual(InviteCodeEntry.extractCode(from: "  \(signed)\n"), "RBO246")
+        XCTAssertEqual(InviteCodeEntry.extractCode(from: "here you go \(signed)"), "RBO246")
+        XCTAssertEqual(
+            InviteCodeEntry.extractCode(from: signed.lowercased()), "RBO246",
+            "a client that lower-cased the link on the way through"
+        )
+        // Extracted values are keystroke-clean, so a complete paste submits on the
+        // same beat as the 6th keystroke rather than being rewritten first.
+        XCTAssertEqual(InviteCodeEntry.sanitize(InviteCodeEntry.extractCode(from: signed)), "RBO246")
+    }
+
+    /// The proof that pass 0 is load-bearing and not a shortcut: an ALL-LETTER
+    /// code inside a signed link. Every later pass ranks candidates by "mixes
+    /// letters and digits", which this code loses by definition — and the signed
+    /// link supplies a great many candidates that win it.
+    func testAnAllLetterCodeSurvivesASignedLinkFullOfLookalikeCandidates() {
+        let signed = "https://myrobotaxi.app/join/ABCDEF?k=1.1785942245.fPkcqmLr2p_HezqZtbP6J1NC-jQA0nAOp7hiFqTKZHo9L2YGVkNDx162VsdromPEMSZaMvMhxRCBS_xfaRw0BQ&from=Alex&to=Mira"
+        XCTAssertEqual(InviteCodeEntry.extractCode(from: signed), "ABCDEF")
+    }
+
     /// A link that is not ours falls through to the ordinary passes rather than
     /// being trusted — pass 0 is a fast path for a known shape, not a rule that
     /// any URL contains a code.

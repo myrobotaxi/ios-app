@@ -65,7 +65,25 @@ let package = Package(
         // paused. Unlike `serviceEstimatedEndAt` this one is an ORDINARY FOLDED
         // field: the server pushes it on `vehicle_update` when the owner flips it,
         // so `VehicleStateMerger` folds it with the standard null-clear semantics.
-        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.20.0")
+        // MYR-368 — 0.22.0 adds ONE optional string to `ShareInvite`: `shareUrl`,
+        // the COMPLETE server-minted join link the owner hands out
+        // (`/join/{CODE}?k={kid}.{exp}.{sig}&from={Owner}&to={Recipient}`). Three
+        // things about it shape every consumer in this client:
+        //   • It is PRESENT EXACTLY WHERE `code` IS — pending rows only — and it
+        //     CONTAINS the code, so it inherits the code's whole handling rule:
+        //     P1, a live bearer credential, never logged, never on a non-owner
+        //     surface.
+        //   • `k` is an Ed25519 signature over `join:{code}:{exp}:{from}:{to}`,
+        //     verified STATICALLY by the web join shell against a compiled-in
+        //     public key. BOTH display names are inside the signature, so the URL
+        //     is not ours to rewrite: a client that re-composed the link from
+        //     `code` + its own `?from=` would strip the signature and be bounced
+        //     at the shell. The value is shared VERBATIM or not at all.
+        //   • It is OPTIONAL for forward-compat, and the contract's own words are
+        //     that a consumer finding `code` without `shareUrl` MUST fall back —
+        //     which for this app is MYR-359's client-composed unsigned link. Absent
+        //     therefore decodes to `nil` and is a supported state, not a defect.
+        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.22.0")
     ],
     targets: [
         .target(
