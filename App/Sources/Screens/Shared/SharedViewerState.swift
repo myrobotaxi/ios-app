@@ -392,6 +392,19 @@ public final class SharedViewerState {
     /// sim/tests so no network touches the sim path.
     @ObservationIgnored let rideRouteStore: RideRouteStore
 
+    /// MYR-390 — has the route in front of the rider already been etched? Owned
+    /// HERE, beside the route cache, for exactly the reason that cache is: the
+    /// rider walks the route preview from Search through Review to Booking and
+    /// the view drawing it is torn down and rebuilt on the way. A pass that must
+    /// happen once per trip cannot be remembered by whichever overlay happens to
+    /// be mounted; `RideRequestRouteMap` used to try, and replayed its 1.6s etch
+    /// from zero on every step (r15).
+    ///
+    /// `@ObservationIgnored` like the store, and the ledger itself is not
+    /// `@Observable`: it is read once when a presentation is decided, never
+    /// rendered from.
+    @ObservationIgnored let routeEtchLedger = RouteEtchLedger()
+
     /// The single leg-fit camera owner for the tracking phase (MYR-177) — every
     /// programmatic tracking-camera write flows through it.
     @ObservationIgnored let trackingCamera = TrackingCameraController()
@@ -1226,6 +1239,12 @@ public final class SharedViewerState {
         draftPassenger = nil
         draftSchedule = nil
         previewPickupAnchor = nil // MYR-389 — the pickup ANCHOR is draft state too
+        // MYR-390 — and so is whether this trip's route has been etched. Keying
+        // the etch on route IDENTITY already makes a NEW destination etch from
+        // zero on its own; this covers the case identity cannot see, which is a
+        // rider who abandoned a trip and started an identical one. That is a new
+        // trip by every other measure in this method, so it draws itself again.
+        routeEtchLedger.forget()
         pinReturn = .search
         showDeclinedNotice = false
         opensScheduleOnSearch = false // MYR-233 — one-shot, never outlives the draft

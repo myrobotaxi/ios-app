@@ -50,3 +50,7 @@ build/
 .dd-386*/
 .shots-myr386/
 .captures-myr355/
+.dd-390/
+.shots-myr390/
+.dd-390-ds/
+.dd-390-kit/

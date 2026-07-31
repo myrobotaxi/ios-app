@@ -64,6 +64,21 @@ enum DebugScene: String, CaseIterable {
     /// because the leak is only VISIBLE once the request auto-accepts and the
     /// pending pill gives the greeting card — and its "Where to?" — back.
     case riderScheduledReview
+    /// MYR-390 — `riderScheduledReview`'s sheet, ARRIVED AT rather than seeded.
+    ///
+    /// The r15 defect is a TRANSITION: the route is fully etched and breathing on
+    /// the destination-selected search sheet, and tapping "Continue" to the
+    /// "Schedule with Lunar" sheet makes it collapse and re-draw. A cold `review`
+    /// scene boots straight into the destination phase, so the only etch it can
+    /// ever show is a first arrival — the exact "cold scenes passing while real
+    /// paths fail" trap MYR-217 wrote the rule about.
+    ///
+    /// So this boots `searchSelected`'s draft (plus MYR-389's committed schedule,
+    /// so the CTA is the client's own "Schedule with {owner}"), lets the etch
+    /// actually finish, and then drives the SHIPPING `proceedFromSearch()` — the
+    /// same method the Continue button calls. `RouteEtchContinuityUITests` samples
+    /// the map across that flip.
+    case riderScheduledReviewRealPath
     case review
     case reviewPicker
     case booking
@@ -2049,6 +2064,17 @@ enum DebugScene: String, CaseIterable {
     /// drive the "Change trip" back-nav to search (the regression probe).
     var replaysPinDropBackNav: Bool { self == .pinDropBackRealPath }
 
+    /// MYR-390: whether `SharedViewerScreen` should let the search preview's etch
+    /// SETTLE and then drive the real Search → Review handoff (see
+    /// `.riderScheduledReviewRealPath`).
+    var replaysReviewEtchHandoff: Bool { self == .riderScheduledReviewRealPath }
+
+    /// How long that scene waits AFTER the real route lands before driving
+    /// Continue: the 1.6s etch plus its 0.25s settle plus margin. The flip has to
+    /// happen over a route that is genuinely DONE, or the probe would be sampling
+    /// an etch interrupted mid-pass, which is a different (and legitimate) thing.
+    static let reviewEtchSettleAllowance: TimeInterval = 2.6
+
     /// MYR-248: a FIXED simulated device fix for scenes that must exercise the
     /// route-preview path (`routePreviewActive` needs a resolvable pickup) in the
     /// simulator without live mode's auth gate. `nil` for every other scene so sim
@@ -2488,6 +2514,14 @@ enum DebugScene: String, CaseIterable {
             viewer.draftDestination = DebugScene.sampleDestination
             viewer.draftSchedule = DebugScene.sampleSchedule
             viewer.sheetPhase = .review
+        case .riderScheduledReviewRealPath:
+            // MYR-390 — the SAME draft, seeded on SEARCH. The phase this scene is
+            // about is the one it walks to on its own (`replaysReviewEtchHandoff`),
+            // through the shipping `proceedFromSearch()`.
+            viewer.draftPickup = DebugScene.samplePickup
+            viewer.draftDestination = DebugScene.sampleDestination
+            viewer.draftSchedule = DebugScene.sampleSchedule
+            viewer.sheetPhase = .search
         case .riderBusyVehicle:
             // MYR-233 — same Review draft as `.review`, plus the injected busy
             // live vehicle. Nothing else differs, so the capture isolates exactly

@@ -53,11 +53,19 @@ struct RideRequestRouteMap: View {
     /// working cue; when the real route lands the etch draws it. Ignored unless
     /// `etch` is set.
     var loading: Bool = false
-    /// MYR-237 — identity of the PAGE hosting this preview (the sheet phase).
-    /// When it changes (Search → Review, Review → back to Search, …) the etch
-    /// REPLAYS (client: "if I leave a page and came back we should re-draw the
-    /// line with the etch"), with the camera re-fit written instantly first.
-    var replayKey: String = ""
+    /// MYR-390 — the etch's once-per-route memory, keyed by ROUTE IDENTITY and
+    /// owned by `SharedViewerState` (see `RouteEtchLedger`). `nil` for callers
+    /// with nothing to remember (Summary's static hero), which behaves exactly as
+    /// an empty ledger does.
+    ///
+    /// This REPLACES MYR-237's `replayKey`, which keyed the etch on the sheet
+    /// PHASE and so replayed the whole pass on every step transition under one
+    /// unchanged route — the r15 collapse. That parameter's other job, re-fitting
+    /// the camera for the new page's sheet inset, is now `onChange(of:
+    /// bottomInset)`, which is the fact it was standing in for. (Search and
+    /// Review resolve to the same `rideRequestRouteMapBottomInset`, which is why
+    /// the client saw the route vanish and come back under an unmoved camera.)
+    var etchLedger: RouteEtchLedger?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -159,12 +167,23 @@ struct RideRequestRouteMap: View {
     /// never did. Same test, one home.
     private var isRealRoute: Bool { RideRoutePolyline.isReal(route) }
 
-    /// Identity of the current route — re-fits + replays the etch when it
-    /// changes (the real route arriving, or a new trip via "Change trip").
+    /// Identity of the current GEOMETRY — re-fits the camera and re-decides the
+    /// presentation when it changes (the real route arriving over the straight
+    /// placeholder, or a new trip via "Change trip"). Leads with `route.count` on
+    /// purpose: a placeholder becoming 248 points of road is a real change to
+    /// what is drawn.
+    ///
+    /// MYR-390 — this is NOT the etch's memory key. "Is this the same trip" is
+    /// `RouteEtchIdentity` (the two endpoints), which a vertex count must not be
+    /// allowed to answer. Re-deciding is cheap and correct; REPLAYING is what was
+    /// wrong.
     private var routeKey: String {
         guard let first = route.first, let last = route.last else { return "empty" }
         return "\(route.count)|\(first.latitude),\(first.longitude)|\(last.latitude),\(last.longitude)"
     }
+
+    /// MYR-390 — the etch memory's key for the route currently drawn.
+    private var etchIdentity: RouteEtchIdentity? { RouteEtchIdentity(route) }
 
     var body: some View {
         // The fit needs the map's height to know what fraction the sheet covers
@@ -238,15 +257,30 @@ struct RideRequestRouteMap: View {
                     }
                 }
             }
-            .onChange(of: replayKey) { _, _ in
-                // A page change under the same route (Search → Review → back):
-                // re-fit for the new sheet inset instantly, then REPLAY the
-                // presentation (etch again on etch pages, settle on Booking).
+            .onChange(of: bottomInset) { _, _ in
+                // MYR-390 — the CAMERA half of the retired `replayKey`. A step
+                // whose sheet is a different height genuinely needs a new fit;
+                // written with animations disabled so the overlay keeps
+                // projecting from a settled frame. It does NOT restart the pass:
+                // a re-fit is a statement about the frame, never about the route.
+                //
+                // In the r15 flow this is a no-op, which is the point — Search's
+                // preview and Review both resolve to
+                // `rideRequestRouteMapBottomInset`, so the client's "same camera"
+                // observation was exactly right and nothing about the route
+                // should have moved either.
                 var tx = Transaction()
                 tx.disablesAnimations = true
                 withTransaction(tx) {
                     camera = .region(fittedRegion(height: geo.size.height))
                 }
+            }
+            .onChange(of: etch) { _, _ in
+                // MYR-390 — the PRESENTATION half. Review → Booking turns the
+                // etch off, and the pass has to be re-decided or Booking would
+                // inherit Review's breathing glow instead of settling static.
+                // `replayKey` used to cover this incidentally (the phase string
+                // changed too); now the fact itself is the trigger.
                 restartPresentation()
             }
             .onDisappear { passTask?.cancel() }
@@ -290,36 +324,51 @@ struct RideRequestRouteMap: View {
     #endif
 
     /// Decide the presentation for the CURRENT route and (re)start its pass.
-    /// Resets happen with animations DISABLED (a replay often fires inside the
+    /// Resets happen with animations DISABLED (a restart often fires inside the
     /// sheet's animated phase transition — inherited transactions must never
     /// animate a reset), and the driver task is started explicitly right here.
+    ///
+    /// MYR-390 — the decision itself is `RouteEtchPresentation.resolve`, a pure
+    /// function over the LEDGER rather than over this view's own `etchProgress`.
+    /// That is the whole fix: the view is re-created by every step transition and
+    /// therefore cannot be the thing that remembers whether the route in front of
+    /// the rider has already been drawn.
     private func restartPresentation() {
         trace("restart")
         passTask?.cancel()
+        let resolved = RouteEtchPresentation.resolve(
+            etch: etch,
+            reduceMotion: reduceMotion,
+            isRealRoute: isRealRoute,
+            etchedProgress: etchLedger?.progress(for: etchIdentity) ?? 0
+        )
         var tx = Transaction()
         tx.disablesAnimations = true
         withTransaction(tx) {
             etchAnimating = false
             glowAnimating = false
-            etchProgress = 0
+            // Seeded from the LEDGER, not from 0 — a re-mounted overlay over a
+            // completed etch reads full progress and there is nothing to collapse.
+            etchProgress = CGFloat(resolved.progress)
             overlayOpacity = 1
             glowPulse = 0
-            if etch, !reduceMotion, isRealRoute {
-                phase = .etching
-            } else if etch, !reduceMotion {
-                // No real road route yet — in flight, throttled, or failed.
-                // NEVER draw the straight fallback in etch mode (client rule):
-                // breathe the head at the pickup until the retry lands a route.
-                phase = .loading
-            } else {
-                phase = .settled
+            switch resolved.opening {
+            case .etching: phase = .etching
+            // No real road route yet — in flight, throttled, or failed. NEVER
+            // draw the straight fallback in etch mode (client rule): breathe the
+            // head at the pickup until the retry lands a route.
+            case .loading: phase = .loading
+            // Already etched under a previous step: the map-space route is drawn
+            // whole on this very frame and only the breathing glow starts.
+            case .pulsing: phase = .pulsing
+            case .settled: phase = .settled
             }
         }
         passTask = Task { await runPass() }
     }
 
-    /// Drives one pass for the current phase. Runs under `.task(id: etchRun)`,
-    /// so a route change restarts it and disappearing cancels it.
+    /// Drives one pass for the current phase. Owned by `passTask`, so a route
+    /// change restarts it and disappearing cancels it.
     private func runPass() async {
         switch phase {
         case .settled:
@@ -340,6 +389,10 @@ struct RideRequestRouteMap: View {
             etchProgress = 1 // animated by the ATTACHED easeInOut (overlayLayers)
             try? await Task.sleep(for: .seconds(Self.etchDuration))
             guard !Task.isCancelled, phase == .etching else { return }
+            // MYR-390 — the pass finished, so THE ROUTE is now etched. Recorded
+            // against the route's own identity, before the settle, so a step
+            // transition landing anywhere after this point opens fully drawn.
+            etchLedger?.record(etchIdentity, progress: 1)
             // SMOOTH handoff (client: "the pulsing should ease in smoothly
             // not blocky/glitchy or harsh"): (1) crossfade the fully drawn
             // overlay trail (head bloom included) into the identical map-space
@@ -360,9 +413,23 @@ struct RideRequestRouteMap: View {
             guard !Task.isCancelled, phase == .pulsing else { return }
             glowAnimating = true
             glowPulse = 1 // animated by the ATTACHED repeatForever
-        case .settling, .pulsing:
-            // Reached only via `.etching` above (restartPresentation never
-            // starts here); the sequence is already driving itself.
+        case .pulsing:
+            // MYR-390 — a route that was ALREADY etched, arriving on a new step.
+            // The settled gold line is map-space content and is therefore on
+            // screen from the first frame; only the breathing glow has to be
+            // armed. Two frames first, for the same reason the etch waits: the
+            // overlay must project from a settled camera.
+            //
+            // Reaching `.pulsing` the OTHER way (out of `.etching`, above) arms
+            // the glow inside that same pass, and `restartPresentation` is never
+            // called on a phase change, so the two can never double-arm.
+            try? await Task.sleep(for: .milliseconds(32))
+            guard !Task.isCancelled, phase == .pulsing else { return }
+            glowAnimating = true
+            glowPulse = 1
+        case .settling:
+            // Reached only via `.etching` below (restartPresentation never starts
+            // here); the sequence is already driving itself.
             return
         }
     }

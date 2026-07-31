@@ -103,6 +103,138 @@ enum RideRoutePolyline {
     }
 }
 
+// MARK: - MYR-390 — the etch's memory belongs to the ROUTE, not to a mounted view
+//
+// r15 clip: on the destination-selected search sheet the route is fully etched
+// and breathing; tapping "Continue" to the "Schedule with Lunar" sheet made the
+// drawn route VANISH for ~0.5s and then replay its 1.6s etch from zero. Same
+// trip, same camera, same 248-point polyline — the map's own `onChange(of:
+// replayKey)` snapped `etchProgress` back to 0 and put the presentation back in
+// `.etching`, whose map content is `EmptyMapContent()`. The route fact was never
+// touched: the VIEW forgot.
+//
+// A pass that must happen "once per route" cannot remember that inside the view
+// that draws it, because a step transition re-runs that view's whole lifecycle.
+// The memory moves next to the fact it is about.
+
+/// Identity of a drawn route, for the purpose of "has this already been etched?".
+///
+/// **The two ENDPOINTS, and deliberately not the point count.** MYR-237's
+/// `routeKey` (which still drives the camera re-fit and the pass restart) leads
+/// with `route.count`, and that is correct for *"the geometry under me changed"*
+/// — the straight `[pickup, destination]` placeholder being replaced by 248
+/// points of road is a real change and must re-fit and re-draw. It is the wrong
+/// key for *"is this the same trip"*: a refetch that returns one more vertex is
+/// the same trip, and keying the etch memory on the count would replay the whole
+/// pass over it.
+///
+/// Quantized to 1e-6 degrees (~0.1 m) so a float round-trip through a cache
+/// cannot mint a second identity for one route. The endpoints are the pickup
+/// anchor and the destination, which is exactly what MYR-389's
+/// `previewPickupAnchor` exists to hold still against a jittering GPS fix — a
+/// live coordinate must never reach this (MYR-237's standing trap).
+struct RouteEtchIdentity: Hashable, Sendable {
+    private let key: String
+
+    /// `nil` for anything that cannot be drawn as a line — a route with fewer
+    /// than two points has no etch to remember.
+    init?(_ route: [CLLocationCoordinate2D]) {
+        guard route.count > 1, let first = route.first, let last = route.last else { return nil }
+        key = String(
+            format: "%.6f,%.6f|%.6f,%.6f",
+            first.latitude, first.longitude, last.latitude, last.longitude
+        )
+    }
+}
+
+/// How far the etch has got, per route identity — the state MYR-237 kept in
+/// `RideRequestRouteMap.etchProgress` alone.
+///
+/// Deliberately **not** `@Observable`: nothing renders from it directly. It is
+/// read once, inside `restartPresentation()`, at the moment the presentation is
+/// decided; an observable ledger would invalidate the very view whose animation
+/// it is recording. It is a plain reference type so the route map can write into
+/// the instance the state owns without a binding.
+@MainActor
+final class RouteEtchLedger {
+    private var progressByRoute: [RouteEtchIdentity: Double] = [:]
+
+    init() {}
+
+    /// 0 for a route this ledger has never seen — which is what makes a genuinely
+    /// new trip etch from zero without anyone deciding that it should.
+    func progress(for identity: RouteEtchIdentity?) -> Double {
+        guard let identity else { return 0 }
+        return progressByRoute[identity] ?? 0
+    }
+
+    /// MONOTONIC: an etch that was interrupted half-way can only ever be topped
+    /// up by a later pass, never rewound by one. Without that, a restart landing
+    /// while a completed route was still crossfading could record its own 0 over
+    /// the 1 that is already true on screen.
+    func record(_ identity: RouteEtchIdentity?, progress: Double) {
+        guard let identity, progress.isFinite else { return }
+        let clamped = min(1, max(0, progress))
+        progressByRoute[identity] = max(progressByRoute[identity] ?? 0, clamped)
+    }
+
+    /// The draft trip ended (MYR-389's `discardDraftTrip`). A rider who walked
+    /// away and started again is starting a NEW trip even if they retype the same
+    /// destination, and a new trip etches.
+    func forget() { progressByRoute.removeAll() }
+}
+
+/// How a route preview should OPEN, as one pure function of four facts.
+///
+/// This is the rule the MYR-390 defect broke, written where it can be asserted:
+/// `RideRequestRouteMap` used to derive it inline and then let a `replayKey`
+/// `onChange` overwrite the answer on every sheet transition. Both halves are
+/// now this expression, so a step flip and a first arrival ask exactly the same
+/// question and can only ever disagree about the ANSWER — `etchedProgress`.
+enum RouteEtchPresentation {
+    /// The four ways a preview can open. `.settling` is not here on purpose: it
+    /// is a stage the etch pass drives itself into, never a state a route can be
+    /// re-entered at.
+    enum Opening: Equatable {
+        /// No real road route yet — breathe the head at the pickup, draw no line.
+        case loading
+        /// Play the 1.6s pass from `progress`.
+        case etching
+        /// Already etched: the settled route is drawn IMMEDIATELY and only the
+        /// whole-line breathing glow starts. This is the arm the defect could not
+        /// reach.
+        case pulsing
+        /// Static map-space route, no motion (Booking, Summary, Reduce Motion).
+        case settled
+    }
+
+    struct Resolution: Equatable {
+        let opening: Opening
+        /// What the overlay's trim should read the instant it mounts.
+        let progress: Double
+    }
+
+    /// - Parameter etchedProgress: this route identity's entry in the
+    ///   `RouteEtchLedger` — 0 for a route nobody has drawn yet.
+    static func resolve(
+        etch: Bool,
+        reduceMotion: Bool,
+        isRealRoute: Bool,
+        etchedProgress: Double
+    ) -> Resolution {
+        let settled = min(1, max(0, etchedProgress.isFinite ? etchedProgress : 0))
+        // Booking / Summary / Reduce Motion: the map-space route is drawn whole
+        // and nothing animates. It is FULLY DRAWN either way, so a static
+        // presentation arriving over a finished etch is seamless.
+        guard etch, !reduceMotion else { return Resolution(opening: .settled, progress: settled) }
+        // A straight fallback is not a route and is never etched (MYR-237).
+        guard isRealRoute else { return Resolution(opening: .loading, progress: 0) }
+        // THE WHOLE FIX: this route has already been etched, so it opens drawn.
+        guard settled < 1 else { return Resolution(opening: .pulsing, progress: 1) }
+        return Resolution(opening: .etching, progress: 0)
+    }
+}
+
 // MARK: - Route geometry (pure, unit-tested — MYR-177 deviation logic)
 
 enum RideRouteGeometry {
