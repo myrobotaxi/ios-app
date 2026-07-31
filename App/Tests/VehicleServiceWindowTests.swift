@@ -117,8 +117,11 @@ final class VehicleServiceWindowTests: XCTestCase {
     func testFloorIsTheEstimatePlusTheBuffer() {
         let end = date(DateComponents(year: 2026, month: 8, day: 1, hour: 14, minute: 0))
         let floor = VehicleServiceWindow.earliestSelectable(serviceEstimatedEndAt: end)
-        XCTAssertEqual(floor, end.addingTimeInterval(15 * 60))
-        XCTAssertEqual(VehicleServiceWindow.schedulingBuffer, 15 * 60)
+        // MYR-370 raised the buffer to one full step of the picker's own 30-minute
+        // grid, so the promise ("at least half an hour after the estimate") is the
+        // constant's rather than a side effect of rounding up to the next slot.
+        XCTAssertEqual(floor, end.addingTimeInterval(30 * 60))
+        XCTAssertEqual(VehicleServiceWindow.schedulingBuffer, 30 * 60)
     }
 
     /// The boundary is INCLUSIVE: the floor names the first bookable moment, not

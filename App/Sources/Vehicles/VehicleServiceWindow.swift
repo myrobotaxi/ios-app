@@ -185,11 +185,17 @@ public enum VehicleServiceWindow {
 
     /// The buffer added to the estimated completion before the first bookable
     /// slot. A car does not become available the instant service "ends" — it has
-    /// to be collected, and the estimate is an estimate. 15 minutes is the
-    /// smallest interval the picker can express (its time chips step by 30, so
-    /// this reliably pushes past the boundary slot rather than landing exactly on
-    /// it), which keeps the floor from promising the very minute the window closes.
-    public static let schedulingBuffer: TimeInterval = 15 * 60
+    /// to be collected, and the estimate is an estimate.
+    ///
+    /// MYR-370 raises this from 15 to **30 minutes**, one full step of the
+    /// picker's own grid. At 15 the floor landed mid-step and the `>=` rule then
+    /// rounded it up to the next slot anyway, so on a window ending exactly on
+    /// the half hour (11:30, the client's own case) the first offered slot was
+    /// 12:00 — the buffer's effect was real but its NUMBER was not: it happened
+    /// to be whatever rounding produced. A whole step makes the promise explicit
+    /// and uniform: the first bookable slot is always at least 30 minutes after
+    /// the estimate, whatever minute the estimate falls on.
+    public static let schedulingBuffer: TimeInterval = 30 * 60
 
     /// The earliest instant a ride may be scheduled against this vehicle, or
     /// `nil` when there is NO bound.

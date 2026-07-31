@@ -314,10 +314,22 @@ public enum RideRequestFixtures {
         RecentPassengerOption(name: "Dad", phone: "(415) 555-0193"),
     ]
 
-    /// ScheduledRideSheet's exact day/time chip sets — reused verbatim for
-    /// the ride-request Schedule sheet (ride-request.jsx uses the same
-    /// `['Today','Tomorrow','Thu','Fri','Sat','Sun','Mon']` + half-hour grid,
-    /// just with a different CTA copy).
+    /// **LEGACY — DO NOT WIRE THIS BACK INTO THE PICKER (MYR-370).**
+    ///
+    /// The prototype's literal day row, transcribed from `ride-request.jsx`. It
+    /// is a snapshot of ONE week: `ScheduledRideSheet.schedDates` maps these same
+    /// seven tokens to "Jun 16" … "Jun 22", and 2026-06-16 was a **Tuesday**. So
+    /// the row is chronological on a Tuesday and wrong on the other six days —
+    /// on a Thursday it repeats Today's and Tomorrow's weekdays, and resolves
+    /// non-monotonically (Jul 30 → Jul 31 → Aug 6 → Jul 31 → …). That was the
+    /// client's report; see `RideScheduleDays`, which GENERATES the row from the
+    /// device clock and is what the schedule card renders now.
+    ///
+    /// It survives for exactly one reason: these bare-weekday tokens can still
+    /// arrive from a schedule an older build committed, so
+    /// `RideRequestContractMapping.scheduledDate` must keep resolving them, and
+    /// the suites sweep this list to prove it does. It is no longer read by any
+    /// production surface.
     public static let scheduleDays = ["Today", "Tomorrow", "Thu", "Fri", "Sat", "Sun", "Mon"]
     public static let scheduleTimes: [String] = {
         var out: [String] = []
