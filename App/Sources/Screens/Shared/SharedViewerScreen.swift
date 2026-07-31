@@ -263,6 +263,27 @@ struct SharedViewerScreen: View {
                     }
                 }
             }
+            // MYR-390 real-path probe: let the SEARCH preview's etch finish, then
+            // perform the client's actual next action — Continue → the "Schedule
+            // with {owner}" sheet — through the shipping method the button calls.
+            // The defect lives entirely in that flip, and a cold `review` scene
+            // can only ever show a first arrival (MYR-217's rule).
+            if DebugScene.current?.replaysReviewEtchHandoff == true {
+                Task {
+                    // Wait for the ROUTE, not for a stopwatch: MKDirections took
+                    // 1s on one simulator run and 3.5s on the next, and a fixed
+                    // delay that lands mid-pass would have the probe sampling an
+                    // INTERRUPTED etch — a different, and legitimate, thing.
+                    let deadline = Date().addingTimeInterval(20)
+                    while Date() < deadline,
+                          !RideRoutePolyline.isReal(viewerState.rideRouteStore.leg2) {
+                        try? await Task.sleep(for: .milliseconds(100))
+                    }
+                    // Then the pass itself, plus its settle, plus margin.
+                    try? await Task.sleep(for: .seconds(DebugScene.reviewEtchSettleAllowance))
+                    viewerState.proceedFromSearch()
+                }
+            }
             #endif
         }
         .onChange(of: isPinDrop) { _, entering in
@@ -549,6 +570,13 @@ struct SharedViewerScreen: View {
     /// Booking is ONE view identity: the etch plays once (at destination
     /// selection), then persists as the breathing glow through "Continue"
     /// instead of replaying per phase.
+    ///
+    /// MYR-390 — one view identity was NECESSARY for that and was never
+    /// SUFFICIENT, and for two issues these lines described an intent the code
+    /// did not have: the map's own `replayKey` restarted the pass on every phase
+    /// string change, under the identity this hoist preserves. The sentence above
+    /// is true now because the etch's memory moved to `RouteEtchLedger`, keyed on
+    /// the route rather than on the page.
     private var routePreviewActive: Bool {
         switch viewerState.sheetPhase {
         case .review, .booking: return true
@@ -612,7 +640,15 @@ struct SharedViewerScreen: View {
                     : mapBottomInset,
                 etch: viewerState.sheetPhase != .booking,
                 loading: viewerState.sheetPhase != .booking && reviewPreviewLoading,
-                replayKey: String(describing: viewerState.sheetPhase)
+                // MYR-390 — the etch's once-per-route memory, held by the STATE
+                // rather than by the map. `replayKey: String(describing:
+                // sheetPhase)` used to sit here and made the promise 60 lines
+                // above (`routePreviewActive`: "the etch plays once … then
+                // persists as the breathing glow through 'Continue' instead of
+                // replaying per phase") false in exactly the way the client
+                // filmed: same route, same camera, and the drawn line collapsing
+                // and re-drawing on the flip.
+                etchLedger: viewerState.routeEtchLedger
             )
         } else {
             backgroundMapByPhase(glyphGlobalPoint: glyphGlobalPoint, viewportSize: viewportSize)
