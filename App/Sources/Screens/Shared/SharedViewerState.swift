@@ -1176,9 +1176,48 @@ public final class SharedViewerState {
         sheetPhase = .search
     }
 
-    /// Resets the draft + returns to `.idle` — ride-request.jsx `closeToIdle`.
-    public func resetDraftToIdle() {
-        sheetPhase = .idle
+    // MARK: MYR-389 — A DRAFT TRIP DOES NOT OUTLIVE THE FLOW THAT MADE IT
+    //
+    // THE DEFECT (r15, build 202607311129, the client's own words): *"when I tried
+    // to search it pulled up a prev route, the state wasn't reset to a clean
+    // search."* He tapped the idle map's "Where to?" and got his previous booking
+    // attempt back — destination filled, "Pickup Tomorrow · 12:00 PM" still
+    // latched, the old route etching in behind the sheet.
+    //
+    // THE CAUSE is an exit that ends the FLOW without ending the DRAFT. Review's
+    // scheduled `confirm()` returned the rider to the idle map with a bare
+    // `sheetPhase = .idle` (M1 scope: a reservation starts no live trip), leaving
+    // every draft field exactly where the rider left it — and the idle search bar
+    // was a bare `sheetPhase = .search`, which ADOPTS whatever is lying around.
+    // Two halves of one omission, and neither reads as wrong at its own call site.
+    //
+    // THE RULE, and it is deliberately an ENTRY invariant rather than an exit
+    // cleanup: **entering the request flow from the idle map always starts from
+    // nothing.** An exit-side fix has to be repeated on every path out — there are
+    // six today, `resetDraftToIdle` covered five, and the sixth is the one that
+    // shipped. An entry-side fix is one rule at the two doors, and it covers exits
+    // that do not exist yet. The offending exit is fixed TOO (it is one line, and a
+    // draft that lingers is still wrong even where nothing reads it), but the
+    // guarantee does not depend on it.
+    //
+    // SCOPE: this is UNSUBMITTED state only. Nothing here touches
+    // `RideRequestService.activeRequest`, so a submitted ride keeps the rider's
+    // slot and keeps resuming its own surface through `reconciledPhase` — the
+    // reservation the rider just booked is still theirs, it is simply no longer a
+    // draft. Nor is the route cache dropped: a LIVE ride owns its geometry
+    // (MYR-381), and the search preview stops reading that ride's endpoints
+    // instead (`SharedViewerScreen.previewRouteRequest`).
+
+    /// Everything an in-progress, UNSUBMITTED draft trip consists of — the ONE
+    /// list, so a field added to the draft cannot be forgotten by half the callers.
+    ///
+    /// `previewPickupAnchor` is in it now and was not before: `resetDraftToIdle`
+    /// cleared the pickup PLACE but left the anchored fix behind it, so the next
+    /// trip's route cache was keyed on the previous trip's pickup until a new
+    /// destination re-anchored it (`capturePreviewPickupAnchor` only writes when the
+    /// anchor is nil). `clearChosenDestination` had always cleared both, which is
+    /// what kept it invisible.
+    public func discardDraftTrip() {
         confirmedPickupLabelTask?.cancel() // MYR-239 — no re-resolution outlives the draft
         confirmedPickupLabelTask = nil
         draftPickup = nil
@@ -1186,9 +1225,34 @@ public final class SharedViewerState {
         draftFleetMemberID = RideRequestFixtures.fleet[0].id
         draftPassenger = nil
         draftSchedule = nil
+        previewPickupAnchor = nil // MYR-389 — the pickup ANCHOR is draft state too
+        pinReturn = .search
         showDeclinedNotice = false
         opensScheduleOnSearch = false // MYR-233 — one-shot, never outlives the draft
         scheduleReturn = .search // MYR-382 — and neither does where it returns to
+    }
+
+    /// Resets the draft + returns to `.idle` — ride-request.jsx `closeToIdle`.
+    public func resetDraftToIdle() {
+        discardDraftTrip()
+        sheetPhase = .idle
+    }
+
+    /// MYR-389 — the idle map's "Where to?" (tapped OR dragged open). The ONE door
+    /// into search from idle, and it opens on nothing: a rider reaching for the
+    /// search field is starting a trip, never resuming one they walked away from.
+    public func enterSearchFromIdle() {
+        discardDraftTrip()
+        sheetPhase = .search
+    }
+
+    /// MYR-389 — the idle sheet's Home/Work quick chips, which enter the flow
+    /// WITH a destination. Same door, same rule: the chip supplies the destination
+    /// and nothing else may ride along, or a stale schedule/passenger from an
+    /// abandoned trip would silently become part of a brand-new one.
+    public func selectDestinationFromIdle(_ place: RidePlace) {
+        discardDraftTrip()
+        selectDestination(place)
     }
 
     /// MYR-233 — leave Review for the SCHEDULING flow because the vehicle can't

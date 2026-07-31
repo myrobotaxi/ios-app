@@ -565,9 +565,14 @@ struct SharedViewerScreen: View {
     /// MYR-381 — through `liveRouteRequest`, so a TERMINAL record cannot supply the
     /// destination that raises this preview. That is the whole of the stale-etch
     /// defect: the draft was cleared and the declined ride answered in its place.
+    ///
+    /// MYR-389 — and through `previewRouteRequest`, so on SEARCH no record supplies
+    /// it at all, live or not. Both narrowings are about the same sentence read one
+    /// clause further: a route belongs to a ride that is happening AND to the
+    /// surface that ride is on.
     private var draftRouteEndpointsKnown: Bool {
         searchPreviewPickup != nil
-            && (liveRouteRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate) != nil
+            && (previewRouteRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate) != nil
     }
 
     /// The route preview map's `loading` input: true while the real road route
@@ -583,7 +588,7 @@ struct SharedViewerScreen: View {
     /// The preview's pickup coordinate: explicit request/draft pickup, else
     /// the live "Current location" fix.
     private var searchPreviewPickup: CLLocationCoordinate2D? {
-        liveRouteRequest?.input.pickup.coordinate
+        previewRouteRequest?.input.pickup.coordinate
             ?? viewerState.draftPickup?.coordinate
             // The ANCHOR, never the live fix: GPS jitter must not re-key the
             // route (MYR-237 device trace — the collapse/refetch loop).
@@ -854,12 +859,48 @@ struct SharedViewerScreen: View {
         return RiderRouteLifetime.bearsRoute(status: request.status) ? request : nil
     }
 
+    // MARK: MYR-389 — AND A SEARCH IS NOT ABOUT ANY RIDE BUT THE ONE BEING TYPED
+    //
+    // MYR-381 asked "is this ride still happening?" and stopped there, which is the
+    // right question for Review/Booking/Tracking: on those phases the submitted
+    // record IS the trip on screen. On SEARCH it is the wrong question entirely —
+    // the rider is choosing a destination, and the only trip that exists is the
+    // draft they are building.
+    //
+    // The client's r15 clip has both halves of this. Clearing the draft on entry
+    // (see `SharedViewerState.enterSearchFromIdle`) empties the field and the
+    // schedule row, but a rider who has just booked a reservation still HOLDS a
+    // live record — pending or accepted, both `bearsRoute` — and
+    // `draftRouteEndpointsKnown` would keep resolving ITS pickup and destination.
+    // The sheet would be clean and the map behind it would still be etching the
+    // trip they thought they had left: "no route" only half-delivered, and the
+    // more convincing half left in place.
+    //
+    // MYR-381's rule is untouched — a route may only be drawn from a LIVE ride —
+    // and the cache is deliberately NOT dropped here, because that reservation's
+    // geometry is still legitimately its own (and Tracking will want it). This
+    // narrows WHICH SURFACE may read it, which is the smaller claim of the two.
+    private var previewRouteRequest: RideRequestRecord? {
+        Self.previewRouteRequest(phase: viewerState.sheetPhase, liveRequest: liveRouteRequest)
+    }
+
+    /// Pure, so the one phase that differs is assertable without mounting the
+    /// screen (`RiderDraftLifetimeTests`) — the same reason `reconciledPhase` and
+    /// `mapBottomInset` are static.
+    static func previewRouteRequest(
+        phase: RiderSheetPhase,
+        liveRequest: RideRequestRecord?
+    ) -> RideRequestRecord? {
+        if case .search = phase { return nil }
+        return liveRequest
+    }
+
     /// Pickup → destination pair for the route-fitted phases — from the
     /// submitted `activeRequest` once it exists, else the still-in-progress
     /// draft (Review is reached before `submit(_:)` is ever called).
     private var requestRoute: [CLLocationCoordinate2D] {
         let pickup = searchPreviewPickup
-        let destination = liveRouteRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate
+        let destination = previewRouteRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate
         guard let pickup, let destination else {
             return [DriveFixtures.financialDistrict, DriveFixtures.embarcaderoCenter]
         }
@@ -908,7 +949,7 @@ struct SharedViewerScreen: View {
             return nil
         }
         let pickup = searchPreviewPickup
-        let destination = liveRouteRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate
+        let destination = previewRouteRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate
         guard let pickup, let destination else { return nil }
         return viewerState.rideRouteStore.leg2Route(pickup: pickup, destination: destination)
     }
@@ -932,7 +973,11 @@ struct SharedViewerScreen: View {
             return
         }
         let pickup = searchPreviewPickup
-        let destination = rideRequestService.activeRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate
+        // MYR-389 — through `previewRouteRequest` like every other endpoint site.
+        // This one had never been narrowed at all (MYR-381 left it on the raw
+        // record), so on SEARCH it would spend a throttle-budgeted MKDirections
+        // call priming the route for a trip the rider is not looking at.
+        let destination = previewRouteRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate
         guard let pickup, let destination else { return }
         viewerState.rideRouteStore.ensureLeg2(pickup: pickup, destination: destination)
     }
@@ -1541,7 +1586,10 @@ struct SharedViewerScreen: View {
 
     private var searchBar: some View {
         Button {
-            viewerState.sheetPhase = .search
+            // MYR-389 — never a bare `sheetPhase = .search`: that adopts whatever
+            // draft the last flow left behind, which is exactly what the client
+            // tapped into. See `SharedViewerState.enterSearchFromIdle`.
+            viewerState.enterSearchFromIdle()
         } label: {
             HStack(spacing: 11) {
                 Image(systemName: "magnifyingglass").font(.system(size: 16)).foregroundStyle(Color.mrtGold)
@@ -1625,7 +1673,9 @@ struct SharedViewerScreen: View {
         Button {
             // MYR-211 defect B: route through pin-drop to capture the pickup
             // (same shortcut as Search's destination list) — never bypass it.
-            viewerState.selectDestination(place)
+            // MYR-389: from IDLE, so the previous draft is discarded first — a
+            // stale schedule or passenger must not ride along into a new trip.
+            viewerState.selectDestinationFromIdle(place)
         } label: {
             HStack(spacing: 9) {
                 Image(systemName: icon).font(.system(size: 14)).foregroundStyle(Color.mrtGold)

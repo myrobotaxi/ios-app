@@ -52,6 +52,18 @@ enum DebugScene: String, CaseIterable {
     /// tapping. The client bug: after this back-nav the search sheet stranded
     /// at the TOP of the screen instead of its bottom-anchored search detent.
     case pinDropBackRealPath
+    /// MYR-389 — the Review sheet carrying a COMMITTED SCHEDULE, i.e. the one
+    /// whose CTA reads "Schedule with {owner}" rather than "Request from
+    /// {owner}". No scene reached it before, and it is the entry point of the
+    /// client's r15 defect: the scheduled branch of Review's `confirm()` is the
+    /// one exit that returns the rider to the idle map WITHOUT ending the draft
+    /// trip it just submitted.
+    ///
+    /// It deliberately arms the simulated service's real timers (unlike the
+    /// seeded booking/pending scenes, which hold still for a screenshot),
+    /// because the leak is only VISIBLE once the request auto-accepts and the
+    /// pending pill gives the greeting card — and its "Where to?" — back.
+    case riderScheduledReview
     case review
     case reviewPicker
     case booking
@@ -2047,7 +2059,7 @@ enum DebugScene: String, CaseIterable {
         )
     }
 
-    private static var sampleSchedule: RideSchedule { RideSchedule(day: "Tomorrow", time: "6:30 AM") }
+    static var sampleSchedule: RideSchedule { RideSchedule(day: "Tomorrow", time: "6:30 AM") }
 
     /// MYR-233 state selector for the `riderBusyVehicle` scene: which unavailable
     /// state to render (`MRT_BUSY_REASON=busy|inService|offline`, env or
@@ -2406,6 +2418,13 @@ enum DebugScene: String, CaseIterable {
         case .review, .reviewPicker:
             viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
+            viewer.sheetPhase = .review
+        case .riderScheduledReview:
+            // MYR-389 — `review` VERBATIM plus a committed schedule, so the pair
+            // is a clean one-field diff and the CTA becomes the scheduled one.
+            viewer.draftPickup = DebugScene.samplePickup
+            viewer.draftDestination = DebugScene.sampleDestination
+            viewer.draftSchedule = DebugScene.sampleSchedule
             viewer.sheetPhase = .review
         case .riderBusyVehicle:
             // MYR-233 — same Review draft as `.review`, plus the injected busy

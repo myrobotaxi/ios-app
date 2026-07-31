@@ -143,7 +143,13 @@ struct RiderIdleSearchSheet<Idle: View, Search: View>: View {
         if index == 1 {
             // Settled at search — open Search from idle (a re-settle at search
             // no-ops). Focus is left to the field tap, which happens post-settle.
-            if viewerState.sheetPhase == .idle { viewerState.sheetPhase = .search }
+            //
+            // MYR-389 — the DRAG is the same door as the tap on the search bar, so
+            // it starts from nothing too (`enterSearchFromIdle`). Wiring only the
+            // tap would leave one gesture opening a clean sheet and the other
+            // resurrecting the last trip, which is worse than the original bug:
+            // the same affordance would behave two ways.
+            if viewerState.sheetPhase == .idle { viewerState.enterSearchFromIdle() }
         } else {
             // Settled at idle — collapse Search to the greeting card with a full
             // draft reset (ride-request.jsx `closeToIdle`), the same commit the
