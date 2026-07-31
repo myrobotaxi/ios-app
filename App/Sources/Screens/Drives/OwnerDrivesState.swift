@@ -202,7 +202,20 @@ public enum UpcomingReservationRow {
             // vehicle and holds its real name; this mapping sees a wire row and a
             // vehicle id, and inventing a name from an id is how a fixture leaks.
             vehicleName: "",
-            scheduledFor: reservation.scheduledFor
+            scheduledFor: reservation.scheduledFor,
+            // MYR-378 — the DETAIL, built from the SAME wire record this row is,
+            // through the SAME mapping the rider's own Scheduled tab uses. One
+            // reservation, one shape, two roles: the owner's sheet cannot show a
+            // different pickup, distance or time from the rider's, because there is
+            // nothing for it to show them from.
+            // The CAR is still not named here, for the reason above — the sheet's
+            // vehicle card takes it from the screen, which is already scoped to one
+            // vehicle and holds its real name (`ScheduledRideSheetRole.owner`).
+            detail: RiderScheduledRideMapping.row(
+                for: record,
+                scheduledFor: reservation.scheduledFor,
+                vehicle: nil
+            )
         )
     }
 }
