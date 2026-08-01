@@ -15,6 +15,15 @@ import MyRobotaxiContracts
 // request BYTES, through the production composition). This file is the rules.
 final class R14CorrectnessTests: XCTestCase {
 
+    /// MYR-396 — see `LiveRideRequestServiceTests.setUp`: the service's default
+    /// owner-dispatch pointer is the real `UserDefaults` one, which in a test host
+    /// is shared by every test in the process. Cleared before each, so no ride
+    /// accepted in one test can be cold-adopted by the next.
+    override func setUp() {
+        super.setUp()
+        UserDefaultsOwnerDispatchPointer().clear()
+    }
+
     // MARK: - 1. Cancel: classified, reconciled, recorded
 
     func testAServerRefusalAndAnUnansweredCallAreDifferentFailures() {

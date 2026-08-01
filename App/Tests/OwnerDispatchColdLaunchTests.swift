@@ -33,6 +33,20 @@ import XCTest
 @MainActor
 final class OwnerDispatchColdLaunchTests: XCTestCase {
 
+    /// Every service here is given its OWN in-memory pointer, so this is belt and
+    /// braces — but the shared `UserDefaults` store is a real hazard in a test
+    /// host (see `LiveRideRequestServiceTests.setUp`) and a file about that store
+    /// should not be the one that leaves it dirty.
+    override func setUp() {
+        super.setUp()
+        UserDefaultsOwnerDispatchPointer().clear()
+    }
+
+    override func tearDown() {
+        UserDefaultsOwnerDispatchPointer().clear()
+        super.tearDown()
+    }
+
     // MARK: The gap
 
     /// THE REPRO. The server holds an `accepted` ride on this owner's car; the
