@@ -145,7 +145,18 @@ enum RiderScheduledRideMapping {
     ) -> ScheduledRide? {
         guard let scheduledFor = wire.scheduledFor.flatMap(RideRequestContractMapping.parseISO),
               let record = RideRequestContractMapping.record(from: wire),
-              RideReservation.isDormant(record)
+              // MYR-407 — `now:` IS FORWARDED, and dropping it is not a rounding
+              // error. This function's whole clock is its `now` parameter (the
+              // day/time labels below are rendered against it), so a call that
+              // let `isDormant` default to `Date()` mixed two clocks inside one
+              // row: the tab's own list runs on the wall clock and agrees, and a
+              // caller injecting a clock — every test, and any future surface
+              // asking "what did this list look like at time T" — got the
+              // dormancy verdict from the wall clock while the labels came from
+              // the injected one. It fails LOUDLY only once the fixture instant
+              // drifts into the past, which is exactly when it stops being
+              // caught.
+              RideReservation.isDormant(record, now: now)
         else { return nil }
         return row(for: record, scheduledFor: scheduledFor, vehicle: vehicle, now: now, calendar: calendar)
     }

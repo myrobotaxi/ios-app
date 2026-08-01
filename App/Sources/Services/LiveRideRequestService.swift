@@ -1140,7 +1140,14 @@ final class LiveRideRequestService: RideRequestService {
     private func armDueRefetch(now: Date = Date()) {
         let held = [activeRequest, ownerRequest]
             .compactMap { $0 }
-            .compactMap { record in RideReservation.dueInstant(record).map { (rideID: record.id, at: $0) } }
+            // MYR-407 — against THIS call's `now`, not a second `Date()`. The
+            // lead time is computed from `now` twenty lines down, so a dormancy
+            // verdict read off a different clock is the same value asked twice;
+            // and this function's `now` is injectable precisely so a test can
+            // arm the timer at a chosen instant.
+            .compactMap { record in
+                RideReservation.dueInstant(record, now: now).map { (rideID: record.id, at: $0) }
+            }
         // MYR-396 adds the OWNER's dormant reservation to the same single timer,
         // for the same reason the rider's is here: it is deliberately in no
         // pipeline, so `held` cannot see it.
@@ -1233,7 +1240,11 @@ final class LiveRideRequestService: RideRequestService {
         let now = Date()
         var ids = [activeRequest, ownerRequest]
             .compactMap { $0 }
-            .filter { record in RideReservation.dueInstant(record).map { $0 <= now } == true }
+            // MYR-407 — ONE clock for both halves of this predicate. The
+            // comparison already reads `now`; letting the dormancy check take a
+            // fresh `Date()` asked a record on the exact boundary two different
+            // questions and could answer "dormant, and its moment has passed".
+            .filter { record in RideReservation.dueInstant(record, now: now).map { $0 <= now } == true }
             .map(\.id)
         // The rider's own next reservation is held OUTSIDE both pipelines by design
         // (see `riderDueReservation`), so it needs naming here explicitly.
