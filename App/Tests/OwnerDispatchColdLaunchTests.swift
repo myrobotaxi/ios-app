@@ -9,7 +9,7 @@ import XCTest
 // THE DEFECT, from TestFlight r16 (build 202607311641): *"When I close out the app
 // the owner loses the UI of the current ride in progress."* Force-quit during an
 // accepted/arrived/enroute ride, relaunch, and owner Home renders as if no ride
-// exists — no dispatch card, no status line, no "Picked up" / "Dropped off".
+// exists — no dispatch card, no status line, no "Arrived at pickup" / "Dropped off".
 //
 // THE CAUSE IS AN ABSENCE, and it is spelled out in two sentences of §7.8.
 // `LiveRideRequestService.start()` performs exactly two cold-launch reads:
@@ -117,7 +117,7 @@ final class OwnerDispatchColdLaunchTests: XCTestCase {
 
     /// MYR-376's whole model, on the new path. A reservation the owner accepted for
     /// TOMORROW is `accepted` today, and adopting it as a live dispatch would put
-    /// "En route to pickup" and a live "Picked up" button over a parked car — the
+    /// "En route to pickup" and a live "Arrived at pickup" button over a parked car — the
     /// exact defect MYR-376 closed, re-opened through a new door. The gate is the
     /// SHARED `RideReservation.isAdoptableLiveRide`, not a second copy of the rule.
     func testADormantReservationIsNotAdoptedAsALiveDispatch() async {
@@ -128,7 +128,7 @@ final class OwnerDispatchColdLaunchTests: XCTestCase {
 
         await service.refreshOwnerDispatch()
 
-        XCTAssertNil(service.ownerDispatch, "no card, no 'En route to pickup', no 'Picked up'")
+        XCTAssertNil(service.ownerDispatch, "no card, no 'En route to pickup', no 'Arrived at pickup'")
         XCTAssertNil(service.ownerRequest, "and it does not take the owner's slot either")
     }
 

@@ -7,11 +7,24 @@ import DesignSystem
 // The owner's Live Map tracks the ride they accepted and its LIVE state: the
 // shared `RideRequestService.activeRequest.status` is folded from every
 // `ride_status_changed` WS unicast the owner receives (see
-// `LiveRideRequestService.integrate`), so as the owner confirms pickup
+// `LiveRideRequestService.integrate`), so as the owner reaches the curb
 // (`accepted → arrived`), the rider starts (`arrived → enroute`) and the owner
 // drops off (`→ completed`), this surface updates in place. The owner drives two
-// of those transitions directly from here: "Picked up" during `accepted`, and
-// "Dropped off" during `enroute`.
+// of those transitions directly from here: "Arrived at pickup" during `accepted`,
+// and "Dropped off" during `enroute`.
+//
+// MYR-411 — **THE ARRIVED STATE MEANS THE CURB, NOT BOARDING**, and until this
+// issue the button that reaches it said the opposite. It read "Picked up", so
+// owners tapped it once the rider was in the car — which is a whole boarding
+// later than the moment `arrived` stands for, and the rider's LA v3 wave glyph
+// ("Your ride is here") is pushed off that status, so it fired late every time.
+// The relabel is COPY ONLY: the button still calls `RideRequestService.pickedUp()`
+// and the same §7.8 `/picked-up` write still moves `accepted → arrived`
+// (`RideDispatchStatusTests` + `LiveRideRequestServiceTests` pin the pair — the
+// LABEL and the TRANSITION are asserted together so a future copy pass cannot
+// quietly take the wire with it). The rider's circular "Start ride" remains the
+// one and only `arrived → enroute` trigger; there is deliberately NO second owner
+// button for boarding.
 //
 // `OwnerRideStatusLine` is a PURE resolver (no SwiftUI) so the status lines are
 // unit-testable, and `OwnerDispatchCard` renders them tokens-only. Both take REAL
@@ -25,7 +38,7 @@ enum OwnerRideStatusLine {
     /// a non-active status (`pending` shows the incoming sheet; `declined` shows
     /// nothing). Neutral fallbacks when the rider name / drop-off label is absent.
     ///  • `accepted` (leg 1) → "En route to pickup · <Name>"
-    ///  • `arrived`          → "Picked up · waiting for <Name> to start"
+    ///  • `arrived`          → "At pickup · waiting for <Name> to start"
     ///  • `enroute`  (leg 2) → "<Name> aboard · heading to <dropoff>"
     ///  • `enroute` + ETA≤2  → "Arriving at <dropoff>"
     ///  • `completed`        → "Dropped off ✓"
@@ -36,7 +49,12 @@ enum OwnerRideStatusLine {
         case .accepted:
             return name.map { "En route to pickup \u{00B7} \($0)" } ?? "En route to pickup"
         case .arrived:
-            return name.map { "Picked up \u{00B7} waiting for \($0) to start" } ?? "Picked up \u{00B7} waiting to start"
+            // MYR-411 — the car is AT THE CURB and nobody is aboard yet, so this
+            // line no longer opens with "Picked up". It states where the car is and
+            // names the RIDER's move out of the state (their circular "Start ride"),
+            // keeping the existing "<state> · waiting for <Name> to <verb>" grammar
+            // and its neutral fallback.
+            return name.map { "At pickup \u{00B7} waiting for \($0) to start" } ?? "At pickup \u{00B7} waiting to start"
         case .enroute:
             if arriving {
                 return drop.map { "Arriving at \($0)" } ?? "Arriving"
@@ -67,11 +85,17 @@ enum OwnerRideStatusLine {
 
     /// The owner's action CTA title for the current dispatched state, or `nil` when
     /// there is nothing for the owner to do (`arrived` — awaiting the rider's Start;
-    /// and `completed`). Pure so the accepted→"Picked up" / enroute→"Dropped off"
-    /// gating is unit-testable.
+    /// and `completed`). Pure so the accepted→"Arrived at pickup" /
+    /// enroute→"Dropped off" gating is unit-testable.
+    ///
+    /// MYR-411 — the accepted title is the CURB, not boarding: it is tapped on
+    /// reaching the pickup, and it drives the identical `accepted → arrived`
+    /// transition "Picked up" drove. `arrived` stays `nil` — the state's only exit
+    /// is the rider's own "Start ride", and a second owner button here would be a
+    /// way to take the ride enroute with nobody in the car.
     static func actionTitle(for status: RideRequestStatus) -> String? {
         switch status {
-        case .accepted: return "Picked up"
+        case .accepted: return "Arrived at pickup"
         case .enroute: return "Dropped off"
         case .arrived, .completed, .pending, .declined: return nil
         }
@@ -123,7 +147,7 @@ struct OwnerDispatchAction {
 /// The top-of-map dispatch card for an active dispatched ride: a status pill (same
 /// capsule recipe as the `MapHeader` vehicle chip — fill + hairline + shadow,
 /// tokens-only) plus, when the owner can act, a gold CTA button beneath it
-/// ("Picked up" during accepted, "Dropped off" during enroute). Shown ONLY while a
+/// ("Arrived at pickup" during accepted, "Dropped off" during enroute). Shown ONLY while a
 /// ride is dispatched, so the plain owner Home (`ownerHome` drift-gate scene, no
 /// active ride) is unaffected.
 struct OwnerDispatchCard: View {
