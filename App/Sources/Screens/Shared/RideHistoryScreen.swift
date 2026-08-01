@@ -401,7 +401,7 @@ struct RequestedRideRow: View {
                     if let passenger = ride.passenger {
                         RideForTag(passenger: passenger)
                     }
-                    Text("\(String(format: "%.1f", ride.miles)) mi \u{00B7} \(ride.mins) min")
+                    Text("\(String(format: "%.1f", ride.miles)) mi \u{00B7} \(RideDuration.text(minutes: ride.mins))")
                         .font(.system(size: 12))
                         .monospacedDigit()
                         .foregroundStyle(Color.mrtTextMuted)

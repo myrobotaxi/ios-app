@@ -390,7 +390,11 @@ struct SharedSettingsScreen: View {
     }
 
     private var footer: some View {
-        SettingsFooter(text: "MyRoboTaxi \u{00B7} Guest access")
+        // MYR-395 — r16: "How come rider screen shows guest access at bottom and
+        // other shows version?" One footer, both roles. The access level the old
+        // line carried is not lost: the "Guest" badge sits in `profileCard` at the
+        // top of this same page, and the per-vehicle answer is `vehicleSection`.
+        SettingsFooter.appVersion
     }
 }
 

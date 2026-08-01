@@ -692,7 +692,10 @@ struct SettingsScreen: View {
     }
 
     private var footer: some View {
-        SettingsFooter(text: "MyRoboTaxi v1.0 (24)")
+        // MYR-395 — the same footer the rider page renders, and read from the
+        // bundle rather than typed (the literal said "v1.0 (24)", a build that
+        // never shipped).
+        SettingsFooter.appVersion
     }
 
     // MARK: Vehicle detail sheet (screens.jsx:1585-1642)

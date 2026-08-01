@@ -79,7 +79,8 @@ struct RideRequestReviewContent: View {
 
     private var arriveSub: String {
         if destinationResolving { return "Finding route\u{2026}" }
-        return "\(tripMinutes) min \u{00B7} \(String(format: "%.1f", tripMiles)) mi trip"
+        // MYR-395 — the client's own line: "2623 min · 1049.2 mi trip".
+        return "\(RideDuration.text(minutes: tripMinutes)) \u{00B7} \(String(format: "%.1f", tripMiles)) mi trip"
     }
 
     var body: some View {
@@ -528,7 +529,7 @@ struct RideRequestReviewContent: View {
                                     .font(.system(size: 14.5, weight: .semibold))
                                     .tracking(-0.2)
                                     .foregroundStyle(Color.mrtText)
-                                Text("\(member.relationship) \u{00B7} \(member.battery)% \u{00B7} \(member.etaMin) min away")
+                                Text("\(member.relationship) \u{00B7} \(member.battery)% \u{00B7} \(RideDuration.awayText(minutes: member.etaMin))")
                                     .font(.system(size: 12))
                                     .foregroundStyle(Color.mrtTextSec)
                             }

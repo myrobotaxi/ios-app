@@ -429,7 +429,7 @@ struct ScheduledRideSheet: View {
             }
             HStack(spacing: 18) {
                 statPair(label: "DISTANCE", value: "\(String(format: "%.1f", ride.miles)) mi")
-                statPair(label: "DRIVE", value: "\(ride.estimatedMinutes) min")
+                statPair(label: "DRIVE", value: RideDuration.text(minutes: ride.estimatedMinutes))
             }
             .padding(.leading, 22)
             .padding(.top, 11)

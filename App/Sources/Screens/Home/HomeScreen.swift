@@ -765,7 +765,7 @@ struct HomeScreen: View {
         } else {
             routeSentToast = RouteSentToastContent(
                 title: vehicleName.map { "Destination sent to \($0)" } ?? "Destination sent",
-                subtitle: "Heading to \(destination.label) \u{00B7} \(destination.minutes) min",
+                subtitle: "Heading to \(destination.label) \u{00B7} \(RideDuration.text(minutes: destination.minutes))",
                 isScheduled: false
             )
         }
