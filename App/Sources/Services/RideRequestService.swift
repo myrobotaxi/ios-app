@@ -224,6 +224,21 @@ public protocol RideRequestService: AnyObject, Observable {
     /// the same adoption a cold launch already performs. Sim is a no-op.
     func refreshActiveRide() async
 
+    /// MYR-405 — has this device ESTABLISHED what the rider's own ride is?
+    ///
+    /// `activeRequest == nil` is two different situations and the Live Activity
+    /// reaper cannot afford to confuse them: "this rider holds no ride" (every
+    /// Activity still on the lock screen is an orphan and must be ended) versus
+    /// "the §7.8 list has not answered yet, or answered with a failure" (nothing is
+    /// known and nothing may be ended). MYR-326's "loading ≠ unavailable" and
+    /// MYR-343's "three situations, one boolean", now with a lock-screen card as
+    /// the thing that gets destroyed by the wrong reading.
+    ///
+    /// Deliberately NOT a general-purpose loading flag: it goes true and STAYS
+    /// true, because once a device knows what the rider is doing a later failed
+    /// re-read does not un-know it.
+    var hasResolvedActiveRide: Bool { get }
+
     /// MYR-396 — re-sync the OWNER's live dispatch: the accepted / arrived /
     /// enroute ride they are currently driving.
     ///
@@ -353,6 +368,13 @@ public extension RideRequestService {
     /// (MYR-186), so a simulated run's behaviour is unchanged.
     func refreshIncoming() async {}
     func refreshActiveRide() async {}
+
+    /// Default: `true`. The simulated service holds ONE in-process record and has
+    /// no list to wait for, so it knows what the rider is doing from the first
+    /// frame. Same shape as `hasLiveSnapshotForActiveVehicle`'s protocol default —
+    /// and it is inert either way, since the Live Activity coordinator is built
+    /// INERT in simulated mode and never asks.
+    var hasResolvedActiveRide: Bool { true }
 
     /// Default: no-op. The simulated service has no server ride to re-read and no
     /// second party — its ONE `activeRequest` is both roles' record and it lives

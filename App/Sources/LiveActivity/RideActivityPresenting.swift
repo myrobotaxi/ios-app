@@ -31,6 +31,56 @@ enum RideActivityStaleness {
     }
 }
 
+/// What the app can see of ONE Activity ActivityKit has restored into this
+/// process (MYR-405).
+///
+/// A snapshot, not a handle: the coordinator decides from these and the presenter
+/// carries the decision out by ride id, so every lifecycle rule in this feature
+/// stays in the pure layer where it can be asserted.
+struct RideActivitySnapshot: Equatable, Sendable {
+    /// ActivityKit's `ActivityState`, narrowed to the four the app acts on.
+    ///
+    /// The two that are NOT on screen are the interesting ones. `.ended` means the
+    /// app (or the system) already ended it and it is living out its dismissal
+    /// policy — including MYR-405's deliberate five-minute completed linger — so
+    /// re-ending it would cut that linger short. `.dismissed` means the RIDER
+    /// swiped it away, which is a decision this app must not overrule.
+    enum Lifecycle: Equatable, Sendable {
+        case active
+        case stale
+        case ended
+        case dismissed
+
+        /// Is this Activity still occupying space on the rider's lock screen in a
+        /// way the app is still responsible for?
+        var isOnScreenAndOurs: Bool {
+            switch self {
+            case .active, .stale: return true
+            case .ended, .dismissed: return false
+            }
+        }
+    }
+
+    let rideID: String
+    let lifecycle: Lifecycle
+}
+
+/// How long the app waits for ActivityKit's ASYNCHRONOUS restore (MYR-405).
+///
+/// `Activity.activities` is NOT populated synchronously at launch. A start path
+/// that enumerates it on the first turn of the run loop reads an empty array,
+/// concludes there is nothing to adopt, and requests a SECOND Activity beside the
+/// one already on the lock screen — which is exactly the client's two-banner
+/// screenshot. The capture tooling hit the identical race on the same day
+/// (`RideActivityDebugLauncher`'s sweep) and was fixed the same way.
+enum RideActivityRestore {
+    /// ~2s of budget, in 250ms steps. Deliberately generous: this runs on a
+    /// background `Task` with nothing on screen waiting for it, and the cost of
+    /// being wrong is a duplicate banner that only a reinstall clears.
+    static let attempts = 8
+    static let interval: Duration = .milliseconds(250)
+}
+
 @MainActor
 protocol RideActivityPresenting: AnyObject {
     /// Whether the SYSTEM will allow a Live Activity at all. False when the rider
@@ -40,6 +90,37 @@ protocol RideActivityPresenting: AnyObject {
 
     /// Whether this presenter currently holds a live Activity.
     var isPresenting: Bool { get }
+
+    /// Every Activity of this type the process can currently see — a PLAIN,
+    /// SYNCHRONOUS read of `Activity.activities` (MYR-405).
+    ///
+    /// Synchronous and un-retried ON PURPOSE. The list fills in over the first
+    /// moments of a process, so "wait until it settles" is a POLICY, and policy
+    /// belongs to the coordinator where a stub can drive it. A seam method that
+    /// did the waiting itself would put the whole defect back behind ActivityKit,
+    /// where no test can reach it.
+    var presentedActivities: [RideActivitySnapshot] { get }
+
+    /// Take over a restored Activity as the one this presenter drives, so that
+    /// `update`, `end` and `pushTokens` all address it.
+    ///
+    /// Returns `false` when no Activity for that ride is visible — which, given
+    /// the restore race above, is a statement about this instant and not about
+    /// the lock screen.
+    func adopt(rideID: String) -> Bool
+
+    /// End a restored Activity BY RIDE ID, whether or not it is the one this
+    /// presenter holds. The orphan-reaping path (MYR-405) needs to end Activities
+    /// this process never started.
+    func endActivity(rideID: String, dismissal: RideActivityDismissal) async
+
+    /// The held Activity's own lifecycle, as the system reports it.
+    ///
+    /// This is how a USER DISMISSAL becomes knowable: a swipe moves the Activity
+    /// to `.dismissed` and nothing else tells the app it happened. Without it the
+    /// next status change would cheerfully update a card the rider deliberately
+    /// removed, or — worse — a relaunch would start a fresh one.
+    func activityStates() -> AsyncStream<RideActivitySnapshot.Lifecycle>
 
     /// Start one. Returns `false` if the system refused (disabled, or the
     /// per-app concurrent limit is reached) — never throws, because there is
@@ -75,6 +156,54 @@ final class SystemRideActivityPresenter: RideActivityPresenting {
     }
 
     var isPresenting: Bool { activity != nil }
+
+    var presentedActivities: [RideActivitySnapshot] {
+        Activity<RideActivityAttributes>.activities.map {
+            RideActivitySnapshot(
+                rideID: $0.attributes.rideID,
+                lifecycle: RideActivitySnapshot.Lifecycle($0.activityState)
+            )
+        }
+    }
+
+    func adopt(rideID: String) -> Bool {
+        guard let existing = Activity<RideActivityAttributes>.activities.first(where: {
+            $0.attributes.rideID == rideID && $0.activityState.isAdoptable
+        }) else { return false }
+        activity = existing
+        return true
+    }
+
+    func endActivity(rideID: String, dismissal: RideActivityDismissal) async {
+        for existing in Activity<RideActivityAttributes>.activities
+        where existing.attributes.rideID == rideID {
+            // THE HELD ACTIVITY IS NEVER ENDED BY ID, and this is what makes
+            // "keep one, reap the duplicates" expressible at all. Two Activities can
+            // carry the SAME ride id — that is the client's screenshot — so a reap
+            // that matched on the id alone would take down the very banner the
+            // adoption just kept, and the rider would watch both cards vanish.
+            guard existing.id != activity?.id else { continue }
+            // `nil` content, deliberately: this Activity is being reaped because it
+            // does not describe anything the account is doing, and the app has no
+            // honest final frame for a ride it cannot see. Passing `nil` leaves the
+            // last content it had and takes it down.
+            await existing.end(nil, dismissalPolicy: dismissal.uiPolicy)
+        }
+    }
+
+    func activityStates() -> AsyncStream<RideActivitySnapshot.Lifecycle> {
+        guard let activity else { return AsyncStream { $0.finish() } }
+
+        return AsyncStream { continuation in
+            let task = Task {
+                for await state in activity.activityStateUpdates {
+                    continuation.yield(RideActivitySnapshot.Lifecycle(state))
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
 
     func start(
         attributes: RideActivityAttributes,
@@ -137,6 +266,36 @@ final class SystemRideActivityPresenter: RideActivityPresenting {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+}
+
+extension RideActivitySnapshot.Lifecycle {
+    /// ActivityKit's `ActivityState`, narrowed.
+    ///
+    /// The enum is `@frozen`-less and Apple has added a case to it before
+    /// (`.stale`, iOS 16.2), so the `default` arm is required rather than tidy —
+    /// and it maps to `.active`, the conservative reading: an unknown state is an
+    /// Activity that may well still be on the lock screen, and treating it as gone
+    /// is how an orphan survives a reap.
+    init(_ state: ActivityState) {
+        switch state {
+        case .active: self = .active
+        case .stale: self = .stale
+        case .ended: self = .ended
+        case .dismissed: self = .dismissed
+        @unknown default: self = .active
+        }
+    }
+}
+
+private extension ActivityState {
+    /// May an Activity in this state be taken over and driven?
+    ///
+    /// Only one that is still on screen. Adopting an `.ended` Activity would hand
+    /// the coordinator a card whose dismissal is already scheduled — it would
+    /// register a push token for something the system is in the middle of removing.
+    var isAdoptable: Bool {
+        RideActivitySnapshot.Lifecycle(self).isOnScreenAndOurs
     }
 }
 

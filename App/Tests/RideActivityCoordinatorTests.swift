@@ -269,6 +269,248 @@ final class RideActivityCoordinatorTests: XCTestCase {
         XCTAssertTrue(endpoint.ends.isEmpty)
     }
 
+    // MARK: - MYR-405: the restore race, and the duplicate it produced
+
+    func testTheStartPathWAITSForTheRestoreAndADOPTSInsteadOfStartingASecondCard() async throws {
+        // THE CLIENT'S SCREENSHOT, AS A TEST. `Activity.activities` is restored
+        // ASYNCHRONOUSLY: the first reads of a process answer EMPTY even though a
+        // card for this very ride is on the lock screen. The old start path read
+        // once, saw nothing to adopt, and called `Activity.request` — two banners
+        // for one ride, and because the server keeps one token per (ride, rider) the
+        // older one starved on "IN RIDE · Not updating" for ever.
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+        presenter.restoreScript = [[], [], [snapshot("ride-1")], [snapshot("ride-1")]]
+
+        await coordinator.handleRideChange(makeRecord(status: .enroute))
+        await settle()
+
+        XCTAssertEqual(
+            presenter.startCount,
+            0,
+            "a second `Activity.request` for a ride that already has a card IS the defect"
+        )
+        XCTAssertEqual(presenter.adopted, ["ride-1"])
+        XCTAssertEqual(coordinator.phase.rideID, "ride-1")
+        XCTAssertGreaterThan(
+            presenter.restoreReads,
+            2,
+            "an empty list is not evidence until the budget has been spent on it"
+        )
+    }
+
+    func testAnADOPTEDActivityHasITSOwnTokenReRegistered() async throws {
+        // The other half of the fix, and the half that makes the kept banner LIVE
+        // again. The server rotates on (ride, rider), so until it hears the adopted
+        // Activity's own token every push still addresses whatever this account
+        // registered last — which, in the client's case, was the duplicate.
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+        presenter.restored = [snapshot("ride-1")]
+
+        await coordinator.handleRideChange(makeRecord(status: .enroute))
+        presenter.emit(token: Data([0xc0, 0xde]))
+        await settle()
+
+        XCTAssertEqual(presenter.adopted, ["ride-1"])
+        XCTAssertEqual(endpoint.registrations.map(\.token), ["c0de"])
+        XCTAssertEqual(endpoint.registrations.map(\.rideID), ["ride-1"])
+    }
+
+    func testADUPLICATEOfTheSameRideIsReapedWITHOUTDeletingThatRidesRegistration() async throws {
+        // Healing an install that is ALREADY in the broken state: two on-screen
+        // cards for one ride. One is kept and the other ended — and the §7.21 delete
+        // must NOT fire, because it is keyed on the RIDE and would delete the
+        // registration belonging to the banner just adopted.
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+        presenter.restored = [snapshot("ride-1"), snapshot("ride-1")]
+
+        await coordinator.handleLaunchOrForeground(account(makeRecord(status: .enroute)))
+        await settle()
+
+        XCTAssertEqual(presenter.adopted, ["ride-1"])
+        XCTAssertEqual(presenter.endedActivities.map(\.rideID), ["ride-1"], "the second card comes down")
+        XCTAssertEqual(presenter.endedActivities.map(\.dismissal), [.immediate])
+        XCTAssertTrue(
+            endpoint.ends.isEmpty,
+            "deleting the (ride, rider) registration here would starve the card we kept"
+        )
+        XCTAssertEqual(presenter.startCount, 0)
+    }
+
+    // MARK: - MYR-405: orphan reaping
+
+    func testAnORPHANIsReapedOnLaunchWhenTheAccountHoldsNoRide() async throws {
+        // The generalization of §7.21's 409-means-end-now. The ride ended while the
+        // app was not running, the terminal push was missed, and nothing in the app
+        // could reach the card: `handleRideChange` reasons from `phase`, which is
+        // this process's memory and is empty at launch.
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+        presenter.restored = [snapshot("ride-gone")]
+
+        await coordinator.handleLaunchOrForeground(account(nil))
+        await settle()
+
+        XCTAssertEqual(presenter.endedActivities.map(\.rideID), ["ride-gone"])
+        XCTAssertEqual(presenter.endedActivities.map(\.dismissal), [.immediate])
+        XCTAssertEqual(endpoint.ends, ["ride-gone"], "and the server stops pushing to it")
+    }
+
+    func testAnActivityForARideThatIsNOTTheAccountsActiveOneIsReaped() async throws {
+        let (coordinator, presenter, _) = makeCoordinator()
+        presenter.restored = [snapshot("someone-elses-ride"), snapshot("ride-1")]
+
+        await coordinator.handleLaunchOrForeground(account(makeRecord(status: .enroute)))
+        await settle()
+
+        XCTAssertEqual(presenter.endedActivities.map(\.rideID), ["someone-elses-ride"])
+        XCTAssertEqual(presenter.adopted, ["ride-1"], "and the live one is kept, not restarted")
+    }
+
+    func testTheREAPERWaitsForTheRidePipelineAndEndsNOTHINGUntilItAnswers() async throws {
+        // THE GUARD THAT KEEPS THE FIX FROM BEING WORSE THAN THE BUG. On a cold
+        // launch `activeRequest` is nil because §7.8 has not answered — not because
+        // the rider has no ride. Reaping on that reading would take a live ride's
+        // card off the lock screen every time the phone launched with no signal.
+        // MYR-326's "loading ≠ unavailable", with a lock-screen card as the casualty.
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+        presenter.restored = [snapshot("ride-1")]
+
+        await coordinator.handleLaunchOrForeground(account(nil, resolved: false))
+        await settle()
+
+        XCTAssertTrue(presenter.endedActivities.isEmpty, "a read that has not answered is not evidence")
+        XCTAssertTrue(endpoint.ends.isEmpty)
+        XCTAssertTrue(presenter.adopted.isEmpty, "and nothing is adopted on that reading either")
+    }
+
+    func testTheRideListAnsweringMIDPOLLIsWhatTheReaperActsOn() async throws {
+        // The launch sequence for real: the Activity list and the §7.8 read settle
+        // at roughly the same time, and ONE budget covers both. The reaper must act
+        // on the answered reading, not on the first one.
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+        presenter.restoreScript = [[], [snapshot("ride-gone")], [snapshot("ride-gone")]]
+        var resolved = false
+
+        await coordinator.handleLaunchOrForeground {
+            defer { resolved = true }
+            return RideActivityAccountRide(record: nil, isResolved: resolved)
+        }
+        await settle()
+
+        XCTAssertEqual(presenter.endedActivities.map(\.rideID), ["ride-gone"])
+        XCTAssertEqual(endpoint.ends, ["ride-gone"])
+    }
+
+    func testAnALREADYENDEDActivityIsLEFTALONESoTheCompletedLingerSurvives() async throws {
+        // `.ended` means the card is living out its dismissal policy — which for a
+        // completed ride is MYR-405's own five minutes. Reaping it would take the
+        // arrival card away seconds after it appeared: this issue's fix cancelling
+        // this issue's fix.
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+        presenter.restored = [snapshot("ride-done", .ended)]
+
+        await coordinator.handleLaunchOrForeground(account(nil))
+        await settle()
+
+        XCTAssertTrue(presenter.endedActivities.isEmpty)
+        XCTAssertTrue(endpoint.ends.isEmpty)
+    }
+
+    // MARK: - MYR-405: a new ride ends every prior card
+
+    func testStartingANEWRidesActivityEndsALLPriorOnes() async throws {
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+        presenter.restored = [snapshot("old-ride-a"), snapshot("old-ride-b")]
+
+        await coordinator.handleRideChange(makeRecord(id: "ride-new", status: .accepted))
+        await settle()
+
+        XCTAssertEqual(
+            Set(presenter.endedActivities.map(\.rideID)),
+            ["old-ride-a", "old-ride-b"]
+        )
+        XCTAssertEqual(Set(endpoint.ends), ["old-ride-a", "old-ride-b"])
+        XCTAssertEqual(presenter.startCount, 1, "and exactly one card is on the lock screen after it")
+        XCTAssertEqual(coordinator.phase.rideID, "ride-new")
+    }
+
+    // MARK: - MYR-405: the rider's swipe is final
+
+    func testARIDERSDISMISSALIsNeverResurrectedForTheSameRide() async throws {
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        await settle()
+        XCTAssertEqual(presenter.startCount, 1)
+
+        presenter.emit(lifecycle: .dismissed)
+        await settle()
+
+        XCTAssertEqual(coordinator.phase, .idle)
+        XCTAssertEqual(
+            endpoint.ends,
+            ["ride-1"],
+            "the server is told to stop pushing to a card nobody can see"
+        )
+
+        // Every route back in: a status change, a foreground, a relaunch.
+        await coordinator.handleRideChange(makeRecord(status: .enroute))
+        await coordinator.handleLaunchOrForeground(account(makeRecord(status: .enroute)))
+        await settle()
+
+        XCTAssertEqual(
+            presenter.startCount,
+            1,
+            """
+            Starting a second card here would overrule the rider repeatedly and make \
+            the swipe look broken. The in-app tracking sheet still carries the ride, \
+            exactly as it does for a rider who never enabled Live Activities.
+            """
+        )
+    }
+
+    func testANEWRideAfterADismissalStartsNormally() async throws {
+        // The client's own "or if new ride begins". A dismissal is a decision about
+        // ONE ride, not a standing opt-out.
+        let (coordinator, presenter, _) = makeCoordinator()
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        await settle()
+        presenter.emit(lifecycle: .dismissed)
+        await settle()
+
+        await coordinator.handleRideChange(makeRecord(id: "ride-2", status: .accepted))
+        await settle()
+
+        XCTAssertEqual(presenter.startCount, 2)
+        XCTAssertEqual(coordinator.phase.rideID, "ride-2")
+    }
+
+    func testADISMISSEDCardFoundInTheRestoreListIsNotRestarted() async throws {
+        // A dismissal has to survive the process it happened in: the rider swiped,
+        // force-quit, and relaunched into the same live ride.
+        let (coordinator, presenter, _) = makeCoordinator()
+        presenter.restored = [snapshot("ride-1", .dismissed)]
+
+        await coordinator.handleLaunchOrForeground(account(makeRecord(status: .enroute)))
+        await settle()
+
+        XCTAssertEqual(presenter.startCount, 0)
+        XCTAssertTrue(presenter.adopted.isEmpty, "a dismissed card is not on screen to adopt")
+        XCTAssertTrue(presenter.endedActivities.isEmpty, "and nothing is on screen to reap")
+    }
+
+    // MARK: - MYR-405: five minutes
+
+    func testACompletedRideEndsWithTheFIVEMinuteLinger() async throws {
+        let (coordinator, presenter, _) = makeCoordinator()
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        await settle()
+        await coordinator.handleRideChange(makeRecord(status: .completed))
+
+        XCTAssertEqual(presenter.endedWith?.dismissal, .linger(5 * 60))
+    }
+
     // MARK: - Harness
 
     private func makeCoordinator(
@@ -281,9 +523,29 @@ final class RideActivityCoordinatorTests: XCTestCase {
             endpoint: endpoint,
             isLive: true,
             sandbox: sandbox,
-            vehicleName: { "Blue Whale" }
+            vehicleName: { "Blue Whale" },
+            // MYR-405 — the restore budget is real seconds in production and zero
+            // here. The POLL still runs, read for read; only the waiting is skipped,
+            // so `restoreReads` remains a true count of how hard the coordinator
+            // looked before it believed an empty list.
+            sleep: { _ in }
         )
         return (coordinator, presenter, endpoint)
+    }
+
+    /// The account as the app can state it, for the launch/foreground entry point.
+    private func account(
+        _ record: RideRequestRecord?,
+        resolved: Bool = true
+    ) -> @MainActor () -> RideActivityAccountRide {
+        { RideActivityAccountRide(record: record, isResolved: resolved) }
+    }
+
+    private func snapshot(
+        _ rideID: String,
+        _ lifecycle: RideActivitySnapshot.Lifecycle = .active
+    ) -> RideActivitySnapshot {
+        RideActivitySnapshot(rideID: rideID, lifecycle: lifecycle)
     }
 
     /// Let the token-consuming `Task` run. The stream is fed from the test, so a
@@ -339,15 +601,77 @@ final class StubRideActivityPresenter: RideActivityPresenting {
 
     private var continuation: AsyncStream<Data>.Continuation?
 
+    // MARK: - MYR-405: the restore list
+
+    /// What `Activity.activities` answers RIGHT NOW.
+    var restored: [RideActivitySnapshot] = []
+
+    /// A SCRIPT of successive answers, which is how the async restore is
+    /// reproduced: the real list is empty for the first reads of a process and
+    /// fills in afterwards, and a coordinator that believes the first read is the
+    /// one that starts a second banner.
+    var restoreScript: [[RideActivitySnapshot]] = []
+
+    private(set) var restoreReads = 0
+    private(set) var adopted: [String] = []
+    private(set) var endedActivities: [(rideID: String, dismissal: RideActivityDismissal)] = []
+
+    private var lifecycleContinuation: AsyncStream<RideActivitySnapshot.Lifecycle>.Continuation?
+
+    var presentedActivities: [RideActivitySnapshot] {
+        restoreReads += 1
+        if !restoreScript.isEmpty { restored = restoreScript.removeFirst() }
+        return restored
+    }
+
+    func adopt(rideID: String) -> Bool {
+        guard restored.contains(where: { $0.rideID == rideID && $0.lifecycle.isOnScreenAndOurs })
+        else { return false }
+        adopted.append(rideID)
+        isPresenting = true
+        heldRideID = rideID
+        return true
+    }
+
+    func endActivity(rideID: String, dismissal: RideActivityDismissal) async {
+        endedActivities.append((rideID, dismissal))
+        // Mirrors `SystemRideActivityPresenter`: the HELD Activity is never ended by
+        // id, which is the only reason "keep one of two identically-named cards" can
+        // be expressed at all.
+        var keepOne = heldRideID == rideID
+        restored = restored.filter {
+            guard $0.rideID == rideID else { return true }
+            defer { keepOne = false }
+            return keepOne
+        }
+    }
+
+    func activityStates() -> AsyncStream<RideActivitySnapshot.Lifecycle> {
+        AsyncStream { continuation in
+            self.lifecycleContinuation = continuation
+        }
+    }
+
+    /// Stand in for the SYSTEM reporting a state change — a rider's swipe, above all.
+    func emit(lifecycle: RideActivitySnapshot.Lifecycle) {
+        lifecycleContinuation?.yield(lifecycle)
+    }
+
     func start(
         attributes: RideActivityAttributes,
         state: RideActivityAttributes.ContentState,
         staleDate: Date?
     ) async -> Bool {
         guard allowsStart, areActivitiesEnabled else { return false }
+        // DELIBERATELY PERMISSIVE ABOUT A SECOND CARD. `Activity.request` will
+        // happily give you one — that is the whole defect — so the stub grants it
+        // and records it, letting a test catch the duplicate instead of having the
+        // fake quietly prevent what production does not.
         startCount += 1
         isPresenting = true
         endedWith = nil
+        heldRideID = attributes.rideID
+        restored.append(RideActivitySnapshot(rideID: attributes.rideID, lifecycle: .active))
         return true
     }
 
@@ -360,7 +684,24 @@ final class StubRideActivityPresenter: RideActivityPresenting {
         isPresenting = false
         continuation?.finish()
         continuation = nil
+        lifecycleContinuation?.finish()
+        lifecycleContinuation = nil
+        // A `.linger` end leaves the Activity ON SCREEN in state `.ended` for the
+        // whole dismissal window, which is exactly the row a later reap must not
+        // touch. `.immediate` takes it off the list.
+        switch dismissal {
+        case .immediate:
+            restored.removeAll { $0.rideID == heldRideID }
+        case .linger:
+            restored = restored.map {
+                $0.rideID == heldRideID
+                    ? RideActivitySnapshot(rideID: $0.rideID, lifecycle: .ended)
+                    : $0
+            }
+        }
     }
+
+    private var heldRideID: String?
 
     func pushTokens() -> AsyncStream<Data> {
         AsyncStream { continuation in
