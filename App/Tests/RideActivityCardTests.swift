@@ -140,15 +140,28 @@ final class RideActivityCardTests: XCTestCase {
         var headline: RideActivityHeadline
         var subline: String?
         var rail: RideActivityRailState
-        var compact: RideActivityCompact
+        var compact: RideActivityTrailingSlot
+        /// MYR-398 §0 — the expanded island's `.trailing` slot, and the minimal
+        /// island's whole content. It joins the row table rather than getting a
+        /// table of its own, because it is the SAME ladder minus one rung and the
+        /// pair is only readable side by side: every row where the two differ is a
+        /// row where the compact island has a figure.
+        var expandedTrailing: RideActivityTrailingSlot
 
         var description: String {
-            "headline=\(headline) subline=\(String(describing: subline)) rail=\(rail) compact=\(compact)"
+            "headline=\(headline) subline=\(String(describing: subline)) rail=\(rail)"
+                + " compact=\(compact) expandedTrailing=\(expandedTrailing)"
         }
     }
 
     private func rendered(_ card: RideActivityCard) -> Rendered {
-        Rendered(headline: card.headline, subline: card.subline, rail: card.rail, compact: card.compact)
+        Rendered(
+            headline: card.headline,
+            subline: card.subline,
+            rail: card.rail,
+            compact: card.compact,
+            expandedTrailing: card.expandedTrailing
+        )
     }
 
     // MARK: - 1. la-data.jsx (v3), row for row
@@ -161,7 +174,8 @@ final class RideActivityCardTests: XCTestCase {
                 headline: .sentence("Finding your ride"),
                 subline: "Matching you with a ride",
                 rail: .idle,
-                compact: .markOnly
+                compact: .ringIndeterminate,
+                expandedTrailing: .ringIndeterminate
             )
         )
     }
@@ -174,7 +188,8 @@ final class RideActivityCardTests: XCTestCase {
                 headline: .pickupCountdown(Self.eightMinutes),
                 subline: Self.descriptor,
                 rail: .live(0.38),
-                compact: .figure("8 min")
+                compact: .figure("8 min"),
+                expandedTrailing: .ringDeterminate(0.38)
             )
         )
     }
@@ -192,7 +207,8 @@ final class RideActivityCardTests: XCTestCase {
                 headline: .pickupCountdown(Self.oneMinute),
                 subline: Self.descriptor,
                 rail: .live(0.88),
-                compact: .figure("1 min")
+                compact: .figure("1 min"),
+                expandedTrailing: .ringDeterminate(0.88)
             )
         )
     }
@@ -205,7 +221,8 @@ final class RideActivityCardTests: XCTestCase {
                 headline: .sentence("Pickup soon"),
                 subline: Self.descriptor,
                 rail: .live(0.38),
-                compact: .markOnly
+                compact: .ringDeterminate(0.38),
+                expandedTrailing: .ringDeterminate(0.38)
             )
         )
     }
@@ -222,7 +239,8 @@ final class RideActivityCardTests: XCTestCase {
                 headline: .sentence("Pickup soon"),
                 subline: Self.descriptor,
                 rail: .idle,
-                compact: .markOnly
+                compact: .ringIndeterminate,
+                expandedTrailing: .ringIndeterminate
             )
         )
     }
@@ -235,7 +253,8 @@ final class RideActivityCardTests: XCTestCase {
                 headline: .sentence("Your ride is here"),
                 subline: Self.descriptor,
                 rail: .live(1),
-                compact: .glyph(.wave)
+                compact: .glyph(.wave),
+                expandedTrailing: .glyph(.wave)
             )
         )
     }
@@ -251,7 +270,8 @@ final class RideActivityCardTests: XCTestCase {
                 headline: .dropoffClock(Self.etaClock),
                 subline: "Heading to Duarte's Tavern",
                 rail: .live(0.52),
-                compact: .figure(Self.etaClock)
+                compact: .figure(Self.etaClock),
+                expandedTrailing: .ringDeterminate(0.52)
             )
         )
     }
@@ -264,7 +284,8 @@ final class RideActivityCardTests: XCTestCase {
                 headline: .sentence("Dropoff soon"),
                 subline: "Heading to Duarte's Tavern",
                 rail: .live(0.52),
-                compact: .markOnly
+                compact: .ringDeterminate(0.52),
+                expandedTrailing: .ringDeterminate(0.52)
             )
         )
     }
@@ -285,7 +306,8 @@ final class RideActivityCardTests: XCTestCase {
                 headline: .sentence("Dropoff soon"),
                 subline: "Last updated \(Self.clock(Date(timeIntervalSince1970: 1_785_534_660)))",
                 rail: .live(0.52),
-                compact: .figure(Self.etaClock)
+                compact: .figure(Self.etaClock),
+                expandedTrailing: .ringDeterminate(0.52)
             )
         )
     }
@@ -298,7 +320,8 @@ final class RideActivityCardTests: XCTestCase {
                 headline: .sentence("You've arrived"),
                 subline: "Duarte's Tavern",
                 rail: .live(1),
-                compact: .glyph(.check)
+                compact: .glyph(.check),
+                expandedTrailing: .glyph(.check)
             )
         )
     }
@@ -311,7 +334,8 @@ final class RideActivityCardTests: XCTestCase {
                 headline: .sentence("No ride available"),
                 subline: "Nothing was charged",
                 rail: .idle,
-                compact: .markOnly
+                compact: .ringTrackOnly,
+                expandedTrailing: .ringTrackOnly
             )
         )
     }
@@ -324,7 +348,8 @@ final class RideActivityCardTests: XCTestCase {
                 headline: .sentence("Ride cancelled"),
                 subline: "Nothing was charged",
                 rail: .idle,
-                compact: .markOnly
+                compact: .ringTrackOnly,
+                expandedTrailing: .ringTrackOnly
             )
         )
     }
@@ -339,7 +364,8 @@ final class RideActivityCardTests: XCTestCase {
                 headline: .sentence("Reservation expired"),
                 subline: "No car arrived in time",
                 rail: .idle,
-                compact: .markOnly
+                compact: .ringTrackOnly,
+                expandedTrailing: .ringTrackOnly
             )
         )
     }
@@ -352,7 +378,8 @@ final class RideActivityCardTests: XCTestCase {
                 headline: .sentence("Ride in progress"),
                 subline: "Tap to open MyRoboTaxi",
                 rail: .idle,
-                compact: .markOnly
+                compact: .ringTrackOnly,
+                expandedTrailing: .ringTrackOnly
             )
         )
     }
@@ -936,7 +963,7 @@ final class RideActivityCardTests: XCTestCase {
         }
     }
 
-    // MARK: - 7. The compact island is a figure or nothing
+    // MARK: - 7. The compact island is a figure, a glyph, or the ring
 
     /// **NO STATUS WORD SURVIVES ANYWHERE IN THE MATRIX.** Every string v2 put in
     /// this slot is deleted, and with it the width ladder that table needed.
@@ -974,13 +1001,21 @@ final class RideActivityCardTests: XCTestCase {
         }
     }
 
-    /// **DISPATCH IS THE MARK ALONE**, exactly as Uber's is — and so is every
-    /// no-figure state.
-    func testAStateWithNoFigureShowsTheMarkAlone() {
-        XCTAssertEqual(card(.requested, eta: nil).compact, .markOnly)
-        XCTAssertEqual(card(.accepted, eta: nil, progress: 0.38).compact, .markOnly)
-        XCTAssertEqual(card(.enroute, eta: nil, progress: 0.52).compact, .markOnly)
-        XCTAssertEqual(card(.declined, eta: nil).compact, .markOnly)
+    /// **A STATE WITH NO FIGURE SHOWS THE RING** (MYR-398 §0 B).
+    ///
+    /// This test is the clearest before/after in the suite: every one of these four
+    /// rows resolved to `.markOnly` in v3 — an empty half-pill beside the mark, which
+    /// is what the client photographed on a live ride with no telemetry and read as a
+    /// dead app. Each now resolves to the ring MODE that says what is actually true
+    /// of it, and the four are deliberately four different answers.
+    func testAStateWithNoFigureShowsTheRing() {
+        // Dispatch — a live ride with no car yet. The rotation IS the message.
+        XCTAssertEqual(card(.requested, eta: nil).compact, .ringIndeterminate)
+        // No ETA, but telemetry IS arriving: the arc is the rail's own fraction.
+        XCTAssertEqual(card(.accepted, eta: nil, progress: 0.38).compact, .ringDeterminate(0.38))
+        XCTAssertEqual(card(.enroute, eta: nil, progress: 0.52).compact, .ringDeterminate(0.52))
+        // An ending is not waiting on anything and is not in progress.
+        XCTAssertEqual(card(.declined, eta: nil).compact, .ringTrackOnly)
     }
 
     /// **DISPATCH NEVER COUNTS DOWN**, even if a stale `eta` is sitting in the
@@ -989,7 +1024,7 @@ final class RideActivityCardTests: XCTestCase {
     func testDispatchNeverCountsDownEvenWithAnETAOnTheWire() {
         let card = card(.requested, progress: nil)
         XCTAssertEqual(card.headline, .sentence("Finding your ride"))
-        XCTAssertEqual(card.compact, .markOnly)
+        XCTAssertEqual(card.compact, .ringIndeterminate)
     }
 
     /// A TERMINAL card never counts down either — the "never a confident stale ETA"
@@ -1001,6 +1036,163 @@ final class RideActivityCardTests: XCTestCase {
             if case .pickupCountdown = card.headline { XCTFail("\(status) counted down") }
             if case .dropoffClock = card.headline { XCTFail("\(status) stated a clock") }
         }
+    }
+
+    // MARK: - 7b. §0 — the trailing-slot ladder, the ring, and the beat
+
+    /// **THE LADDER RESOLVES STRICTLY, AND THE RING NEVER DISPLACES A NUMBER.**
+    ///
+    /// §0 D's whole risk is over-application: a ring is a nicer thing to look at than
+    /// an empty pill, which makes it tempting in slots that already say something. So
+    /// the assertion is stated as the negative — every state that had a figure before
+    /// §0 still has exactly that figure, byte for byte.
+    func testTheFigureOutranksTheRingOnEveryStateThatHasOne() {
+        XCTAssertEqual(card(.accepted, progress: 0.38).compact, .figure("8 min"))
+        XCTAssertEqual(
+            card(.accepted, progress: 0.88, now: eta.addingTimeInterval(-90)).compact,
+            .figure("1 min")
+        )
+        XCTAssertEqual(card(.enroute, progress: 0.52).compact, .figure(Self.etaClock))
+        // Stale keeps the last figure too — §0 lists "Stale unchanged" by name.
+        XCTAssertEqual(
+            card(.enroute, progress: 0.52, isStale: true, asOf: 1_785_534_660).compact,
+            .figure(Self.etaClock)
+        )
+    }
+
+    /// The two rungs above the ring are DISJOINT, which is why the ladder's order can
+    /// never actually be observed — and is worth pinning, because the day a terminal
+    /// state is allowed a figure is the day the order starts to matter.
+    func testNoStateCanEverSatisfyBothTheFigureRungAndTheGlyphRung() {
+        for status in LiveActivityRideStatus.allCases where status == .arrived || status == .completed {
+            XCTAssertFalse(
+                RideActivityCopy.showsFigure(for: status),
+                "\(status) would make the ladder's order load-bearing"
+            )
+        }
+    }
+
+    /// **THE RING'S THREE MODES, ONE ROW EACH.**
+    func testTheRingSaysADifferentThingInEachOfItsThreeModes() {
+        // 1 · telemetry flowing → the RAIL'S OWN fraction.
+        XCTAssertEqual(card(.accepted, eta: nil, progress: 0.38).expandedTrailing, .ringDeterminate(0.38))
+        // 2 · a LIVE ride whose car has reported nothing → the rotation.
+        XCTAssertEqual(card(.accepted, eta: nil, progress: nil).expandedTrailing, .ringIndeterminate)
+        XCTAssertEqual(card(.requested, eta: nil).expandedTrailing, .ringIndeterminate)
+        // 3 · an ENDED ride → the track alone.
+        for ending in [LiveActivityRideStatus.declined, .cancelled, .reservationExpired] {
+            XCTAssertEqual(card(ending, eta: nil).expandedTrailing, .ringTrackOnly, "\(ending)")
+        }
+    }
+
+    /// **THE ARC IS THE RAIL'S OWN NUMBER — ONE SOURCE, SO THE TWO SURFACES CANNOT
+    /// DISAGREE.** Swept rather than sampled: a second reading of `progress` would
+    /// pass a spot check and drift on the clamp, the floor or the leg rule.
+    func testTheDeterminateArcIsTheSameFractionTheRailDraws() {
+        for progress in [0.0, 0.02, 0.13, 0.38, 0.52, 0.88, 1.0] {
+            for status in [LiveActivityRideStatus.accepted, .enroute] {
+                let resolved = card(status, eta: nil, progress: progress)
+                guard case .ringDeterminate(let arc) = resolved.expandedTrailing else {
+                    return XCTFail("\(status) at \(progress) drew no arc")
+                }
+                XCTAssertEqual(
+                    arc,
+                    max(RideActivityMetrics.ringMinimumArc, resolved.rail.progress),
+                    accuracy: 0.0001,
+                    "\(status) at \(progress)"
+                )
+            }
+        }
+    }
+
+    /// A round cap on a zero-length arc draws NOTHING, so a determinate ring at zero
+    /// would render as the track-only state — a different claim entirely.
+    func testTheArcIsFlooredSoItsCapIsAlwaysVisible() {
+        XCTAssertEqual(card(.enroute, eta: nil, progress: 0).expandedTrailing, .ringDeterminate(0.02))
+        XCTAssertEqual(
+            card(.enroute, eta: nil, progress: 0.001).expandedTrailing,
+            .ringDeterminate(0.02),
+            "the floor is a floor, not a special case for exactly zero"
+        )
+    }
+
+    /// **THE ENDED TEST IS THE LEG RULE, NOT A SECOND LIST OF STATUSES.**
+    ///
+    /// Swept over the whole enum so a status added later cannot get a spinner beside
+    /// "Ride cancelled" by being left off a hand-written list.
+    func testTheRingIsTrackOnlyForExactlyTheStatusesWithNoLeg() {
+        for status in LiveActivityRideStatus.allCases {
+            let slot = card(status, eta: nil, progress: nil).expandedTrailing
+            XCTAssertEqual(
+                slot == .ringTrackOnly,
+                RideActivityLeg.of(status) == nil,
+                "\(status): slot=\(slot), leg=\(String(describing: RideActivityLeg.of(status)))"
+            )
+        }
+    }
+
+    /// **THE EXPANDED SLOT IS GLYPH-OR-RING, NEVER EMPTY AND NEVER THE ETA** — swept
+    /// over the whole matrix, because "never" is the kind of claim one state gets to
+    /// break.
+    func testTheExpandedTrailingSlotIsNeverAFigureAndNeverEmpty() {
+        for status in LiveActivityRideStatus.allCases {
+            for progress in [nil, 0.0, 0.5, 1.0] as [Double?] {
+                for stale in [false, true] {
+                    let slot = card(status, progress: progress, isStale: stale).expandedTrailing
+                    if case .figure = slot {
+                        XCTFail("\(status) put the ETA in the expanded slot")
+                    }
+                    XCTAssertTrue(slot.drawsRing, "\(status) left the expanded slot empty")
+                }
+            }
+        }
+    }
+
+    /// The expanded slot is the compact one WHEREVER the compact one is not a figure
+    /// — i.e. the two ladders differ by exactly the rung the handoff says they do.
+    func testTheTwoSlotsDifferByExactlyTheFigureRung() {
+        for status in LiveActivityRideStatus.allCases {
+            for progress in [nil, 0.38, 1.0] as [Double?] {
+                let resolved = card(status, progress: progress)
+                if case .figure = resolved.compact { continue }
+                XCTAssertEqual(
+                    resolved.compact,
+                    resolved.expandedTrailing,
+                    "\(status) at \(String(describing: progress))"
+                )
+            }
+        }
+    }
+
+    /// **THE ARRIVAL BEAT IS ONCE-ONLY, AND THIS IS THE PURE HALF OF THE PROOF.**
+    ///
+    /// The view animates on CHANGES to the values it is handed
+    /// (`RideActivityRing.swift` keys every one of them to the resolved slot, never
+    /// to `onAppear`). So the property that makes a re-push harmless is a property of
+    /// THIS type: the ticker re-pushing the same terminal frame must resolve to an
+    /// EQUAL card at any later moment, leaving SwiftUI nothing to animate a second
+    /// time.
+    ///
+    /// `now` moves a full five minutes — the whole `completed` linger — because that
+    /// is exactly what the server does: the same content state, pushed again, against
+    /// a later clock. The other half of the proof is on the simulator
+    /// (`RideActivityIslandUITests.testTheArrivalBeatDoesNotReplayOnARepush`).
+    func testARepushOfTheSameTerminalFrameResolvesToAnIdenticalCard() {
+        for status in [LiveActivityRideStatus.completed, .arrived] {
+            let first = card(status, eta: nil, progress: 1, now: eta)
+            let repushed = card(status, eta: nil, progress: 1, now: eta.addingTimeInterval(5 * 60))
+            XCTAssertEqual(rendered(first), rendered(repushed), "\(status)")
+            XCTAssertEqual(first.isStale, repushed.isStale, "\(status)")
+        }
+    }
+
+    /// The beat's trigger is the SLOT, so the transition it plays on is a real one:
+    /// the frame before an arrival is not a glyph and the frame after it is.
+    func testTheGlyphIsReachedByATransitionRatherThanBySittingThere() {
+        XCTAssertEqual(card(.accepted, eta: nil, progress: 0.88).expandedTrailing, .ringDeterminate(0.88))
+        XCTAssertEqual(card(.arrived, eta: nil, progress: 1).expandedTrailing, .glyph(.wave))
+        XCTAssertEqual(card(.enroute, eta: nil, progress: 0.9).expandedTrailing, .ringDeterminate(0.9))
+        XCTAssertEqual(card(.completed, eta: nil, progress: 1).expandedTrailing, .glyph(.check))
     }
 
     // MARK: - 8. The monotone hold and the leg reset (unchanged by v3)
@@ -1124,7 +1316,7 @@ final class RideActivityCardTests: XCTestCase {
         }
     }
 
-    private static func text(of compact: RideActivityCompact) -> String? {
+    private static func text(of compact: RideActivityTrailingSlot) -> String? {
         if case .figure(let figure) = compact { return figure }
         return nil
     }

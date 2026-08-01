@@ -37,6 +37,20 @@ import MyRobotaxiContracts
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // ─────────────────────────────────────────────────────────────────────────────
+// WHAT §0 CHANGED (MYR-398 §0, the client's change request against the v3 build in
+// TestFlight as `202608011331`)
+//
+// One thing, and it is the "or NOTHING" above. The compact island's empty half-pill
+// and the expanded island's empty trailing slot are now a PROGRESS RING, and the
+// choice between a figure, a glyph and each of the ring's three modes is resolved
+// HERE, as `RideActivityTrailingSlot`, for the same reason everything else on this
+// surface is: a priority ladder living in a view is a ladder no test can climb.
+//
+// `compact` keeps its name and its meaning; `expandedTrailing` is the same ladder
+// with the ETA rung removed, and the minimal island renders that one too.
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ─────────────────────────────────────────────────────────────────────────────
 // THE HONESTY RULES, AND HOW v3 KEEPS THEM WITH AN ALWAYS-DRAWN RAIL
 //
 // §7.21.3's rule 1 is that an absent `progress` must not be rendered as `0`: "`0`
@@ -145,29 +159,73 @@ struct RideActivityRailState: Equatable {
     }
 }
 
-/// The compact Dynamic Island's trailing slot — **a figure or nothing**.
+/// **THE TRAILING SLOT, RESOLVED — the §0 D priority ladder as five values.**
 ///
-/// Uber's rule, and the board's: `8 min` / `1 min` / `3:42 PM`, the mark alone where
-/// there is no figure, and a glyph at the two stops. Every status WORD v2 rendered
-/// here is deleted, along with the width ladder they needed.
-enum RideActivityCompact: Equatable {
+/// One type for three surfaces (the compact island's trailing half-pill, the
+/// expanded island's `.trailing` region, and the minimal island), because the RULE
+/// is one rule with one exception, and writing it once is what stops the three
+/// disagreeing about a state nobody thought to check.
+///
+/// ─────────────────────────────────────────────────────────────────────────────
+/// **THE LADDER RESOLVES STRICTLY, TOP DOWN:**
+///
+///   1. **The ETA FIGURE**, if the server has one — `8 min` / `1 min` / `3:42 PM`,
+///      rendered exactly as they were before §0. **The ring never displaces a
+///      number.**
+///   2. **The arrival GLYPH**, at the two stops.
+///   3. **The RING**, and only when neither: Dispatch, both no-ETA states, the
+///      no-telemetry state, and every ending. It fills the half-pill that used to be
+///      EMPTY (v3's `markOnly`), which is the whole of §0 B — a rider who cannot see
+///      an ETA could not previously tell "waiting on the car" from "the app is
+///      dead".
+///
+/// The expanded island's slot runs the SAME ladder **minus step 1** — the expanded
+/// headline already carries the figure, so a second copy of it 20pt to the right is
+/// the badge the whole redesign removed. That slot is glyph-or-ring, never empty and
+/// never the ETA. The minimal island renders that same figure-less resolution.
+/// ─────────────────────────────────────────────────────────────────────────────
+enum RideActivityTrailingSlot: Equatable {
     /// 15/600 tabular, white. The pickup countdown's `{n} {unit}` or the trip leg's
     /// clock time — already composed, for the same no-clock-in-the-widget reason.
+    /// **Compact only.**
     case figure(String)
 
     /// A real SF Symbol, white — `hand.wave.fill` at the kerb, `checkmark.circle.fill`
     /// when the ride is done. Not artwork: Apple's optical weights, the same shapes
     /// the board drew with Material Symbols.
+    ///
+    /// It arrives with the §0 C beat and inside a COMPLETED ring, which is why the
+    /// glyph outranks the ring rather than sitting beside it: they are one mark.
     case glyph(Glyph)
 
-    /// The mark alone. Dispatch, both no-ETA degrades, and every ending.
-    case markOnly
+    /// Telemetry is flowing — a gold arc of `rail.p`, floored so its cap is visible.
+    ///
+    /// **THE FRACTION IS THE RAIL'S OWN**, not a second reading of `progress`: one
+    /// source, so the card's rail and the island's ring can never disagree about how
+    /// far along the same leg is.
+    case ringDeterminate(Double)
+
+    /// The route is known and the car has reported nothing yet — a 25% arc turning
+    /// on a view-local 1.4s loop. **This rotation is the substance of §0 B**, and it
+    /// costs no push budget because nothing about it comes off the wire.
+    case ringIndeterminate
+
+    /// The ring with no arc at all. A ride that ENDED is not making progress and is
+    /// not waiting on anything, so it gets the track and nothing else.
+    case ringTrackOnly
 
     enum Glyph: Equatable {
         /// `hand.wave.fill`, 17 — the car greeting you.
         case wave
         /// `checkmark.circle.fill`, 15 — the ride is done, not merely somewhere.
         case check
+    }
+
+    /// Whether this resolution draws the ring at all — the structural form of
+    /// "never empty": every case but `.figure` does.
+    var drawsRing: Bool {
+        if case .figure = self { return false }
+        return true
     }
 }
 
@@ -194,8 +252,16 @@ struct RideActivityCard: Equatable {
     /// Row 4. Never optional — see `RideActivityRailState`.
     var rail: RideActivityRailState
 
-    /// The compact island's trailing content.
-    var compact: RideActivityCompact
+    /// The compact island's trailing content — the whole §0 D ladder.
+    var compact: RideActivityTrailingSlot
+
+    /// The EXPANDED island's `.trailing` region, and the MINIMAL island.
+    ///
+    /// The same ladder minus the ETA. It is resolved HERE rather than derived in the
+    /// view from `compact`, because "the expanded slot is the compact one unless it
+    /// is a figure, in which case fall through to whatever the next rung would have
+    /// been" is a rule, and a rule that lives in a view is a rule no test reads.
+    var expandedTrailing: RideActivityTrailingSlot
 
     /// The RESOLVED staleness verdict — ActivityKit's `context.isStale` OR the
     /// server's own `asOf` having fallen behind the three-minute horizon (see
@@ -239,14 +305,20 @@ struct RideActivityCard: Equatable {
         // anything for ten minutes and the track is frozen. Folding both into one
         // verdict here is what keeps the rest of this type reading a single fact.
         let stale = isStale || RideActivityFreshness.hasGoneQuiet(asOf: state.asOfDate, now: now)
+        let rail = rail(for: state)
 
         return RideActivityCard(
             status: state.status,
             leg: leg,
             headline: headline(state: state, leg: leg, isStale: stale, now: now, time: time),
             subline: subline(state: state, vehicle: vehicle, isStale: stale, time: time),
-            rail: rail(for: state),
-            compact: compact(state: state, leg: leg, now: now, time: time),
+            rail: rail,
+            compact: trailingSlot(
+                state: state, leg: leg, rail: rail, allowsFigure: true, now: now, time: time
+            ),
+            expandedTrailing: trailingSlot(
+                state: state, leg: leg, rail: rail, allowsFigure: false, now: now, time: time
+            ),
             isStale: stale
         )
     }
@@ -389,9 +461,16 @@ struct RideActivityCard: Equatable {
         }
     }
 
-    // MARK: - The compact island
+    // MARK: - The trailing slot · §0 D
 
-    /// A figure, a glyph, or the mark alone.
+    /// **THE PRIORITY LADDER, IN ONE FUNCTION, FOR THREE SURFACES.**
+    ///
+    /// `allowsFigure` is the ONLY difference between the compact island's slot and
+    /// the expanded island's, and it is a parameter rather than two functions
+    /// precisely because "the same rule minus one rung" is what the handoff says: two
+    /// implementations would be two ladders one edit apart from disagreeing about a
+    /// state (which is how v1's expanded island came to spell the trip line
+    /// differently from the card's in the first place).
     ///
     /// **STALENESS DOES NOT CHANGE THIS SLOT**, deliberately, and it is the one place
     /// the island and the card disagree on purpose: the card has room to explain
@@ -399,28 +478,83 @@ struct RideActivityCard: Equatable {
     /// thing, and the last figure says more to a rider at a glance than an empty
     /// pill. It is NOT dimmed either — v2 dropped it to 45%; v3 has one accent and no
     /// dimming vocabulary at all.
-    private static func compact(
+    private static func trailingSlot(
+        state: RideActivityAttributes.ContentState,
+        leg: RideActivityLeg?,
+        rail: RideActivityRailState,
+        allowsFigure: Bool,
+        now: Date,
+        time: (Date) -> String
+    ) -> RideActivityTrailingSlot {
+        // 1 · THE FIGURE, and it outranks everything. `8 min` / `1 min` / `3:42 PM`
+        // resolve exactly as they did before §0 — the ring is an addition to the
+        // states that had NOTHING, never a replacement for a number.
+        if allowsFigure, let figure = figure(state: state, leg: leg, now: now, time: time) {
+            return .figure(figure)
+        }
+
+        // 2 · THE GLYPH, at the two stops.
+        //
+        // The two rungs are DISJOINT in practice — `showsFigure` is false for both
+        // `arrived` and `completed`, so no state can satisfy both — and the order is
+        // still written down, because the handoff states one and a reader should not
+        // have to prove the tie can never happen to know which way it breaks.
+        if let glyph = glyph(for: state.status) { return .glyph(glyph) }
+
+        // 3 · THE RING.
+        return ring(for: state.status, rail: rail)
+    }
+
+    /// The ETA-derived figure, or `nil` where the status may not carry one.
+    private static func figure(
         state: RideActivityAttributes.ContentState,
         leg: RideActivityLeg?,
         now: Date,
         time: (Date) -> String
-    ) -> RideActivityCompact {
-        switch state.status {
-        case .arrived: return .glyph(.wave)
-        case .completed: return .glyph(.check)
-        default: break
-        }
-
+    ) -> String? {
         guard RideActivityCopy.showsFigure(for: state.status), let eta = state.etaDate else {
-            return .markOnly
+            return nil
         }
-
         switch leg {
-        case .pickup:
-            return .figure(RideActivityCountdown.parts(until: eta, now: now).text)
-        case .dropoff, .none:
-            return .figure(time(eta))
+        case .pickup: return RideActivityCountdown.parts(until: eta, now: now).text
+        case .dropoff, .none: return time(eta)
         }
+    }
+
+    private static func glyph(for status: LiveActivityRideStatus) -> RideActivityTrailingSlot.Glyph? {
+        switch status {
+        case .arrived: return .wave
+        case .completed: return .check
+        default: return nil
+        }
+    }
+
+    /// **THE RING'S THREE STATES**, and each of them is a different thing to say.
+    ///
+    /// ```
+    /// telemetry flowing        determinate   the rail's own p, floored at 2%
+    /// route known, car quiet   indeterminate a 25% arc turning — "waiting on the car"
+    /// the ride ended           track only    nothing is in progress, nothing is coming
+    /// ```
+    ///
+    /// **THE ENDED TEST IS `RideActivityLeg.of(status) == nil`, NOT A SECOND LIST OF
+    /// STATUSES.** That accessor already answers "is this ride part-way along
+    /// anything", and it is the one that has to stay in step with the rail — a second
+    /// list would be a second definition of "over", and the first status added to one
+    /// and not the other renders a spinner beside "Ride cancelled". It also settles
+    /// the `unrecognized` arm the right way: a status this build cannot interpret is
+    /// not evidence a car is on its way, so it claims nothing.
+    ///
+    /// Dispatch is INDETERMINATE and that is the state the rotation was asked for:
+    /// no car has been assigned, the rail is idle, and the ring saying "still
+    /// working on it" is the difference between a waiting app and a dead one.
+    static func ring(
+        for status: LiveActivityRideStatus,
+        rail: RideActivityRailState
+    ) -> RideActivityTrailingSlot {
+        guard RideActivityLeg.of(status) != nil else { return .ringTrackOnly }
+        guard !rail.isIdle else { return .ringIndeterminate }
+        return .ringDeterminate(max(RideActivityMetrics.ringMinimumArc, rail.progress))
     }
 
     private static func nonEmpty(_ value: String) -> String? {
