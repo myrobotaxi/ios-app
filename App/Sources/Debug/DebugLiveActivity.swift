@@ -43,7 +43,8 @@ enum RideActivityDebugLauncher {
         status: LiveActivityRideStatus = .enroute,
         etaMinutesFromNow: Int? = 4,
         vehicleName: String = "Blue Whale",
-        destination: String = "Home"
+        destination: String = "Home",
+        progress: Double? = nil
     ) -> RideActivityAttributes.ContentState {
         RideActivityAttributes.ContentState(
             status: status,
@@ -51,9 +52,18 @@ enum RideActivityDebugLauncher {
                 Int(Date().addingTimeInterval(TimeInterval($0 * 60)).timeIntervalSince1970)
             },
             vehicleName: vehicleName,
-            destination: destination
+            destination: destination,
+            progress: progress
         )
     }
+
+    /// The pickup the sample Activity is collecting from — the static attribute
+    /// behind MYR-398's "Meet at {pickup}" line.
+    ///
+    /// It lives here rather than in the content state because that is where the
+    /// contract puts it (§7.21.3), and a capture that seeded it on the wire instead
+    /// would photograph a code path the server will never exercise.
+    static let samplePickupLabel = "Ferry Building"
 
     /// Start a sample Activity through the SHIPPING presenter.
     ///
@@ -63,7 +73,8 @@ enum RideActivityDebugLauncher {
     static func start(
         state: RideActivityAttributes.ContentState,
         staleDate: Date?,
-        rideID: String = "debug-ride"
+        rideID: String = "debug-ride",
+        pickupLabel: String? = samplePickupLabel
     ) async {
         // END ANY ACTIVITY LEFT OVER FROM A PREVIOUS CAPTURE FIRST.
         //
@@ -74,14 +85,36 @@ enum RideActivityDebugLauncher {
         // `arrived` capture (which carries no ETA at all) rendering a live
         // countdown. Without this sweep every capture after the first is a picture
         // of the wrong state, and it looks entirely plausible.
-        for existing in Activity<RideActivityAttributes>.activities {
-            await existing.end(nil, dismissalPolicy: .immediate)
+        // MYR-398 — AND THE SWEEP HAS TO WAIT FOR THE LIST, which the first version
+        // of it did not. `Activity.activities` is restored ASYNCHRONOUSLY after
+        // launch, so a sweep on the first turn of the run loop routinely reads an
+        // EMPTY array, ends nothing, and requests a second Activity beside the
+        // orphan — and the island then shows whichever one it likes, usually the
+        // older. Re-established by capture, exactly as the original trap was: a
+        // `noProgress` frame (which carries no ETA at all, by construction) was
+        // photographed rendering a live gold countdown.
+        //
+        // So the sweep RETRIES until the list is empty or the budget runs out. It
+        // is cheap on the healthy path — a first-ever launch finds nothing on the
+        // first pass and returns immediately — and it is the difference between a
+        // capture of this build and a plausible-looking picture of the last one.
+        for _ in 0..<sweepAttempts {
+            let existing = Activity<RideActivityAttributes>.activities
+            guard !existing.isEmpty else {
+                try? await Task.sleep(nanoseconds: sweepInterval)
+                if Activity<RideActivityAttributes>.activities.isEmpty { break }
+                continue
+            }
+            for activity in existing {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
+            try? await Task.sleep(nanoseconds: sweepInterval)
         }
 
         let presenter = SystemRideActivityPresenter()
         held = presenter
         _ = await presenter.start(
-            attributes: RideActivityAttributes(rideID: rideID),
+            attributes: RideActivityAttributes(rideID: rideID, pickupLabel: pickupLabel),
             state: state,
             staleDate: staleDate
         )
@@ -90,5 +123,11 @@ enum RideActivityDebugLauncher {
     /// Retained for the life of the process so the Activity is not torn down when
     /// the starting scope exits.
     private static var held: SystemRideActivityPresenter?
+
+    /// How hard the pre-start sweep tries. ~1.5s of budget in total, which is well
+    /// inside the 2s a capture script waits before backgrounding the app and far
+    /// less than any capture's own settle.
+    private static let sweepAttempts = 6
+    private static let sweepInterval: UInt64 = 250_000_000
 }
 #endif

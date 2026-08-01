@@ -20,18 +20,37 @@ import MyRobotaxiContracts
 /// The static, never-changing half of the Activity — fixed at `Activity.request`
 /// and immutable for the Activity's whole life.
 ///
-/// It carries the ride id and nothing else. Everything a rider READS comes over
-/// the wire in `ContentState`, and anything put here would be frozen at start
-/// time: a `vehicleName` in the attributes would still say "Blue Whale" after the
-/// owner renamed the car mid-ride, with no way for a push to correct it. The ride
-/// id is here precisely because it is the one fact that genuinely cannot change —
-/// it is what the Activity IS.
+/// Everything a rider READS normally comes over the wire in `ContentState`, and
+/// anything put here is frozen at start time: a `vehicleName` in the attributes
+/// would still say "Blue Whale" after the owner renamed the car mid-ride, with no
+/// way for a push to correct it. So the bar for a static field is that the fact
+/// genuinely CANNOT change for the life of the Activity.
+///
+/// Two fields clear it. The ride id is what the Activity IS. The PICKUP LABEL is
+/// the MYR-398 addition and is the contract's own instruction rather than a client
+/// convenience (rest-api.md §7.21.3, "Why the 'Meet at {pickup}' line is NOT on the
+/// wire"): a ride's pickup is fixed at creation, §7.8 has no endpoint that edits it
+/// and MYR-192's reschedule negotiates the TIME, so the server deliberately does
+/// not push it. Pushing it would put a second P1 place label through APNs ~40 times
+/// a ride to tell the phone a string it typed in itself.
 struct RideActivityAttributes: ActivityAttributes {
     /// The SERVER's ride-request id (`RideRequest.id`), which is also
     /// `RideRequestRecord.id` on the live path. It is the path component of
     /// `POST/DELETE /api/ride-requests/{id}/activity-token`, so an Activity that
     /// could not name its server ride could never be registered for pushes.
     var rideID: String
+
+    /// The rider's own label for where the car is collecting them, e.g. "Ferry
+    /// Building" — what the leg-1 card renders as "Meet at {pickup}".
+    ///
+    /// OPTIONAL, for two independent reasons. (1) An Activity started by a build
+    /// that predates this field is DECODED by the system after an app update, and a
+    /// non-optional addition would fail that decode and take a live ride's card off
+    /// the lock screen on upgrade day. (2) A ride created from the rider's current
+    /// position may carry no label worth showing, and `RideActivityCard` renders no
+    /// meet-at line at all rather than "Meet at " — the same rule the empty
+    /// `vehicleName` gets.
+    var pickupLabel: String?
 
     /// The mutable half — the exact shape the server sends as `aps.content-state`
     /// on an ActivityKit remote update.
@@ -113,18 +132,47 @@ struct RideActivityAttributes: ActivityAttributes {
         /// v1 starts none.
         var destination: String
 
+        /// How far along the CURRENT LEG the car is, `0...1` — the fraction the
+        /// progress track draws (MYR-398, contracts 0.27.0).
+        ///
+        /// WHICH leg is not on the wire and must not be asked for: `status` already
+        /// says it (`accepted`/`arrived` is the car coming to the rider, `enroute`
+        /// is the car taking them onward), and one fact carried twice is one fact
+        /// that can disagree with itself. `RideActivityLeg.of(_:)` is the client's
+        /// single reading of it.
+        ///
+        /// OMITTED ENTIRELY when the server cannot say — never null, never `0`.
+        /// That distinction is the whole feature: **an absent progress renders a
+        /// TRACKLESS card, a wrong one renders a lie.** `0` is not the humble
+        /// answer, it is the claim "the car has covered none of the distance", so a
+        /// renderer must never substitute it for `nil` and must never invent a
+        /// fraction from the ETA, the app's own `trackProgress`, or anything else
+        /// the phone can see. This is the same trap `eta` carries: optional on the
+        /// wire AND optional here, so a MISSPELLED key decodes silently to `nil`
+        /// and simply renders no track — no throw, no log. Cross-pinned by
+        /// `RideActivityContentStateTests`.
+        ///
+        /// It is MONOTONE PER LEG, clamped SERVER-SIDE to the highest fraction
+        /// already delivered to this Activity. `eta` deliberately is NOT clamped,
+        /// and §7.21.3 is explicit that the client must render both AS GIVEN:
+        /// "most of the way there, and arriving later than it said" is a coherent
+        /// pair, and a client that tries to reconcile them hides the true one.
+        var progress: Double?
+
         init(
             v: Int = RideActivityContentVersion.current,
             status: LiveActivityRideStatus,
             eta: Int? = nil,
             vehicleName: String,
-            destination: String
+            destination: String,
+            progress: Double? = nil
         ) {
             self.v = v
             self.status = status
             self.eta = eta
             self.vehicleName = vehicleName
             self.destination = destination
+            self.progress = progress
         }
     }
 }

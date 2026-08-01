@@ -237,7 +237,24 @@ enum RideActivityStateMachine {
             vehicleName: previous?.vehicleName.isEmpty == false
                 ? (previous?.vehicleName ?? vehicleName)
                 : vehicleName,
-            destination: record.input.destination.label
+            destination: record.input.destination.label,
+            // NO LOCALLY COMPUTED PROGRESS, EVER — the same rule as `eta`, and
+            // sharper. The app holds `record.trackProgress`, a simulated 0…1 over
+            // the WHOLE trip (both legs), and turning it into this field would be
+            // the "wrong one renders a lie" half of §7.21.3: a fraction of the
+            // whole journey rendered as a fraction of the current leg, drawn
+            // confidently, with nothing on the card admitting it was invented.
+            //
+            // So the client only ever CARRIES FORWARD what the car itself reported,
+            // and `RideActivityProgress.held` is where the leg reset and the
+            // monotone floor live. Across a leg flip nothing survives — leg one
+            // ends at exactly 1 and leg two opens near 0.
+            progress: RideActivityProgress.held(
+                current: nil,
+                currentLeg: RideActivityLeg.of(wireStatus(for: record.status)),
+                previous: previous?.progress,
+                previousLeg: previous.map { RideActivityLeg.of($0.status) } ?? nil
+            )
         )
     }
 
@@ -261,8 +278,23 @@ enum RideActivityStateMachine {
 extension RideActivityAttributes.ContentState {
     /// A copy with the status replaced, used to correct the last known frame into
     /// a final one when the ride was erased rather than transitioned.
+    ///
+    /// THE PROGRESS GOES WITH THE LEG, and that is the whole reason this is not a
+    /// one-line mutation. `cancelled` / `declined` / `reservation_expired` have no
+    /// leg at all, and §7.21.3's degradation table promises "no track on the ending
+    /// card" for exactly those three — a car that was 62% of the way to a rider who
+    /// then cancelled is not 62% of the way to anything. Carrying the fraction
+    /// through would leave a confident gold arrow mid-rail under the word
+    /// "Cancelled", which is MYR-172's own "reads as a ride still in progress"
+    /// objection wearing a picture instead of a sentence.
     func with(status newStatus: LiveActivityRideStatus) -> Self {
         var copy = self
+        copy.progress = RideActivityProgress.held(
+            current: nil,
+            currentLeg: RideActivityLeg.of(newStatus),
+            previous: progress,
+            previousLeg: RideActivityLeg.of(status)
+        )
         copy.status = newStatus
         return copy
     }

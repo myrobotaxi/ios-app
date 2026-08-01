@@ -84,6 +84,68 @@ enum RideActivityCopy {
         }
     }
 
+    // MARK: - The r16 headline (MYR-398)
+
+    /// What comes before the live countdown — "Pick up in 4:12" / "Arriving in
+    /// 9:30".
+    ///
+    /// The client's own words, as always: the server sends the status enum and
+    /// never prose. It switches on the LEG rather than on the status because the
+    /// number means two different things either side of the pickup, and because
+    /// `accepted` and `arrived` are one leg wearing two statuses.
+    static func headlinePrefix(for leg: RideActivityLeg) -> String {
+        switch leg {
+        case .pickup: return "Pick up in"
+        case .dropoff: return "Arriving in"
+        }
+    }
+
+    /// The headline when there is NO NUMBER to show — no `eta` on the wire, or
+    /// ActivityKit has marked the content stale, or the ride is over.
+    ///
+    /// This is the arm that makes the absent-`eta` degrade honest rather than
+    /// blank. It is deliberately SHORT: it stands where a countdown stood, in the
+    /// lock screen's largest type and in the expanded island's hero slot, so a
+    /// full sentence would wrap where a countdown never does.
+    ///
+    /// The terminal states keep MYR-172's own sentences verbatim — they are not
+    /// degradations, they are the ride's ending, and "Cancelled" needs the whole
+    /// sentence to read as one.
+    static func statusHeadline(
+        for status: LiveActivityRideStatus,
+        vehicleName: String,
+        destination: String
+    ) -> String {
+        let car = vehicleDisplayName(vehicleName)
+
+        switch status {
+        case .accepted:
+            // Leg one with no ETA: the car IS coming, we just cannot say when. The
+            // one thing this line must not do is imply a time.
+            return "Heading to pickup"
+        case .arrived:
+            // Never has an ETA by construction — there is nothing left to count
+            // down — so this is its ordinary rendering rather than a degradation.
+            return "\(car) is here"
+        case .enroute:
+            return "On the way"
+        case .requested, .completed, .declined, .cancelled, .reservationExpired, .unrecognized:
+            return headline(for: status, vehicleName: vehicleName, destination: destination)
+        }
+    }
+
+    /// "Meet at {pickup}" — the leg-one second line, from the Activity's STATIC
+    /// attributes.
+    ///
+    /// `nil` rather than "Meet at " when there is no label. A ride created from the
+    /// rider's current position may carry nothing worth naming, and a preposition
+    /// with no object is the blank-where-a-name-should-be failure `vehicleDisplayName`
+    /// exists to prevent, one line down.
+    static func meetAt(_ pickupLabel: String?) -> String? {
+        let trimmed = (pickupLabel ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : "Meet at \(trimmed)"
+    }
+
     /// The label above the ETA countdown.
     ///
     /// It changes with the leg because the number means two different things:

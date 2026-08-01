@@ -46,7 +46,13 @@ packages:
     # surface, not just the app's), and `LiveActivityContentState` is the authority
     # `RideActivityContentStateTests` pins that mirror against. Three targets now
     # depend on this one version, so it must not rely on SPM's dedupe to carry it.
-    from: 0.24.0
+    #
+    # MYR-398 — 0.27.0 adds ONE optional key to `LiveActivityContentState`:
+    # `progress`, a 0..1 fraction of the CURRENT leg, which is what the
+    # redesigned lock-screen card's track draws. `v` deliberately STAYS `1` (a new
+    # optional field is not a meaning change), so this pin is what the mirror's
+    # cross-pin test measures against and nothing else in the app moves with it.
+    from: 0.27.0
 
 settings:
   base:

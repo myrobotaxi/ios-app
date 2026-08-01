@@ -12,7 +12,16 @@ public struct TripProgressBar: View {
     private let compact: Bool
 
     /// jsx width/left transition — cubic-bezier(.4,0,.2,1) .8s.
-    static let progressAnimation = Animation.timingCurve(0.4, 0, 0.2, 1, duration: 0.8)
+    ///
+    /// PUBLIC as of MYR-398, because the Live Activity's progress track is a
+    /// SECOND consumer of this curve in a different process. That track cannot use
+    /// `TripProgressBar` itself — it draws the brand facet arrow instead of the
+    /// glowing orb, and it must not clamp away from 0 and 1 the way `clamped` does,
+    /// since `arrived`/`completed` send exactly `1` on the ride record's authority.
+    /// Everything it CAN share, it shares: a hand-copied `timingCurve(0.4, 0, 0.2,
+    /// 1, duration: 0.8)` in the widget target would be the same motion written
+    /// down twice, which is one place too many to keep it right.
+    public static let progressAnimation = Animation.timingCurve(0.4, 0, 0.2, 1, duration: 0.8)
 
     public init(
         progress: Double = 0.42,

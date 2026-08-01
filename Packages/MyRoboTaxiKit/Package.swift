@@ -180,7 +180,16 @@ let package = Package(
         // tracks the RIDER, so an owner sees `own: false` for rides other people booked
         // in their car. (0.24.0 added the Live Activity family; 0.23.0 the per-grant
         // share flags; 0.22.0 `ShareInvite.shareUrl`.)
-        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.26.0")
+        //
+        // MYR-398 — 0.27.0 adds `LiveActivityContentState.progress`, a 0..1 fraction
+        // of the CURRENT leg and the only new key the r16 card redesign needed. The
+        // Kit itself does not read it (the content state never travels a REST
+        // surface — it arrives as `aps.content-state` over APNs), but the pin is the
+        // AUTHORITY the app's hand-kept `RideActivityAttributes.ContentState` mirror
+        // is cross-pinned against, and all three targets resolve one version.
+        // `v` stays `1`: an additive optional key is not a meaning change, so an
+        // installed pre-r16 build decodes the new payload exactly as it always did.
+        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.27.0")
     ],
     targets: [
         .target(
