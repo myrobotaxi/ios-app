@@ -1,14 +1,45 @@
 import Foundation
 import MyRobotaxiContracts
 
-// MARK: - Every word the Live Activity says (MYR-172)
+// MARK: - Every word the Live Activity says (MYR-172, redesigned r16 v2 by MYR-398)
 //
 // ALL COPY IS THE CLIENT'S. The server sends the status ENUM and never prose —
 // "so wording can change in an app update without a server deploy"
-// (live-activity.schema.json). This is the one place that wording lives, for both
-// the lock-screen card and the Dynamic Island, and it is pure: no SwiftUI, no
-// ActivityKit, so the app's unit tests can assert on it directly even though
-// neither presentation can be instantiated in a test.
+// (live-activity.schema.json). This is the one place that wording lives, for all
+// four surfaces, and it is pure: no SwiftUI, no ActivityKit, so the app's unit
+// tests can assert on it directly even though no presentation can be instantiated
+// in a test.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// THIS TABLE IS `design/la/la-data.jsx`, PORTED ROW FOR ROW.
+//
+// That file's own header says it: "This mirrors RideActivityCopy on the client;
+// every string here is a client-side string." So it is the ANSWER KEY, not an
+// illustration — a state whose wording differs from its row is a defect on this
+// side, and `RideActivityCardTests` walks all twelve rows.
+//
+// What the v2 redesign changed about the words themselves:
+//
+//   • THE COUNTDOWN IS `{n} min` / `{n} s`, NEVER `mm:ss` (handoff §1 change 3).
+//     Formatting lives in `RideActivityCountdown` below, so the one rule that
+//     decides "minutes or seconds" is testable rather than living in a view.
+//   • TWO STATES GAINED HEADLINES THAT DID NOT EXIST — `requested` and the
+//     unknown-status fallback (handoff §1 change 11). Both are reachable: a push
+//     can legitimately move an Activity's status backwards to `requested` in a
+//     race, and the schema mandates tolerating a member this build has not heard
+//     of.
+//   • THE DEGRADE SENTENCES WENT. MYR-398 v1 had "Heading to pickup" / "On the
+//     way" standing in for an absent ETA; the board replaced both with the
+//     state's OWN sentence, so a card with no ETA reads like a card and not like
+//     a truncation.
+//   • `Meet at ` AND THE `{Vehicle} → {Destination}` TRIP LINE ARE DROPPED
+//     (handoff §1 change 10). The second line is one place: the pickup's bare
+//     name on leg one, the destination's bare name on leg two.
+//   • THE STATUS WORD IS NOW TWO WORDS, and they are different lengths on
+//     purpose. `chipWord` is the chip's ("Reservation expired"); `compactWord` is
+//     the compact island's ("Ended"). One table served both before, which is why
+//     the island was falling back to the long word (handoff §1 change 6).
+// ─────────────────────────────────────────────────────────────────────────────
 
 enum RideActivityCopy {
     /// What to call the car when the wire's `vehicleName` is the empty string.
@@ -25,47 +56,62 @@ enum RideActivityCopy {
         return trimmed.isEmpty ? genericVehicleName : trimmed
     }
 
-    /// The UPPERCASE kicker — the status word, in the design kit's label grammar
-    /// (10–12pt / 500 / tracking +1.2, uppercase).
+    // MARK: - The wordmark
+
+    /// The card's brand row, beside the 20pt tile — rendered uppercase at 42%.
     ///
-    /// `requested` says "REQUESTED" even though v1 never starts an Activity before
-    /// `accepted`: a server push can legitimately move an Activity's status
-    /// backwards to it in a race, and a kicker with a hole in it renders as an
-    /// empty band rather than as nothing.
-    static func kicker(for status: LiveActivityRideStatus) -> String {
-        switch status {
-        case .requested: return "Requested"
-        case .accepted: return "On the way"
-        case .arrived: return "Arrived"
-        case .enroute: return "In ride"
-        case .completed: return "Dropped off"
-        case .declined: return "Declined"
-        case .cancelled: return "Cancelled"
-        case .reservationExpired: return "Reservation expired"
-        // A status this build has never heard of. "Ride" is deliberately bland:
-        // the alternative is guessing, and a confident wrong word on a lock screen
-        // is worse than a vague right one.
-        case .unrecognized: return "Ride"
+    /// Written lower-case and cased by the view (`Wordmark`'s own grammar), so the
+    /// string and its treatment stay separable the way they are everywhere else in
+    /// the app.
+    static let wordmark = "myrobotaxi"
+
+    // MARK: - The headline
+
+    /// What comes before the live countdown — "Pick up in **4 min**" / "Arriving in
+    /// **17 min**".
+    ///
+    /// It switches on the LEG rather than on the status because the number means
+    /// two different things either side of the pickup, and because `accepted`,
+    /// `arrived` and `requested` are one leg wearing three statuses.
+    static func headlinePrefix(for leg: RideActivityLeg) -> String {
+        switch leg {
+        case .pickup: return "Pick up in"
+        case .dropoff: return "Arriving in"
         }
     }
 
-    /// The supporting sentence under the kicker, naming the car and — where it is
-    /// true — where it is going.
+    /// The sentence headline — the whole line when there is no number to show, and
+    /// the whole line on every ending.
     ///
-    /// The destination is NOT repeated on the terminal states: "Dropped off at
-    /// Home" is right, but "Cancelled · to Home" reads as though something is
-    /// still heading there.
-    static func headline(for status: LiveActivityRideStatus, vehicleName: String, destination: String) -> String {
+    /// `la-data.jsx`, row for row. Three rows are worth naming:
+    ///
+    ///   • `cancelled` is SUBJECT-FREE — "This ride was cancelled", not "{Car}
+    ///     cancelled". The rider may be the one who cancelled it, and a sentence
+    ///     that puts the car in the subject position blames it for their own tap.
+    ///   • `completed` names the PLACE, because that is the one ending where where
+    ///     you are is the news. It degrades to "You've arrived" rather than to
+    ///     "You've arrived at " when the wire carries no destination label.
+    ///   • `unrecognized` says "{Car} ride in progress" — new in v2, where v1 had
+    ///     the bare vehicle name. A name on its own is not a sentence and read as
+    ///     a truncated one; "in progress" is the only thing still safe to assert
+    ///     about a status this build cannot interpret.
+    static func sentence(
+        for status: LiveActivityRideStatus,
+        vehicleName: String,
+        destination: String
+    ) -> String {
         let car = vehicleDisplayName(vehicleName)
         let place = destination.trimmingCharacters(in: .whitespacesAndNewlines)
 
         switch status {
+        case .requested:
+            return "\(car) is on its way to you"
         case .accepted:
             return "\(car) is coming to pick you up"
         case .arrived:
             return "\(car) is here"
         case .enroute:
-            return place.isEmpty ? "\(car) is taking you there" : "\(car) → \(place)"
+            return "\(car) is taking you there"
         case .completed:
             return place.isEmpty ? "You've arrived" : "You've arrived at \(place)"
         case .declined:
@@ -77,87 +123,110 @@ enum RideActivityCopy {
             // honest thing is to say the reservation lapsed rather than leave the
             // rider reading "on its way" about a car that is not coming.
             return "\(car) didn't make it in time"
-        case .requested:
-            return "Waiting for \(car)"
         case .unrecognized:
-            return car
+            return "\(car) ride in progress"
         }
     }
 
-    // MARK: - The r16 headline (MYR-398)
+    // MARK: - The chip
 
-    /// What comes before the live countdown — "Pick up in 4:12" / "Arriving in
-    /// 9:30".
+    /// The status chip's word. 10.5/500 at 82% white, beside a 5pt tone dot.
     ///
-    /// The client's own words, as always: the server sends the status enum and
-    /// never prose. It switches on the LEG rather than on the status because the
-    /// number means two different things either side of the pickup, and because
-    /// `accepted` and `arrived` are one leg wearing two statuses.
-    static func headlinePrefix(for leg: RideActivityLeg) -> String {
-        switch leg {
-        case .pickup: return "Pick up in"
-        case .dropoff: return "Arriving in"
-        }
-    }
-
-    /// The headline when there is NO NUMBER to show — no `eta` on the wire, or
-    /// ActivityKit has marked the content stale, or the ride is over.
-    ///
-    /// This is the arm that makes the absent-`eta` degrade honest rather than
-    /// blank. It is deliberately SHORT: it stands where a countdown stood, in the
-    /// lock screen's largest type and in the expanded island's hero slot, so a
-    /// full sentence would wrap where a countdown never does.
-    ///
-    /// The terminal states keep MYR-172's own sentences verbatim — they are not
-    /// degradations, they are the ride's ending, and "Cancelled" needs the whole
-    /// sentence to read as one.
-    static func statusHeadline(
-        for status: LiveActivityRideStatus,
-        vehicleName: String,
-        destination: String
-    ) -> String {
-        let car = vehicleDisplayName(vehicleName)
-
+    /// "Reservation expired" is the widest of these and therefore sets the chip's
+    /// maximum width — the handoff calls that out because the lock card's brand row
+    /// has to hold tile + wordmark + chip at that width without reflowing.
+    static func chipWord(for status: LiveActivityRideStatus) -> String {
         switch status {
-        case .accepted:
-            // Leg one with no ETA: the car IS coming, we just cannot say when. The
-            // one thing this line must not do is imply a time.
-            return "Heading to pickup"
-        case .arrived:
-            // Never has an ETA by construction — there is nothing left to count
-            // down — so this is its ordinary rendering rather than a degradation.
-            return "\(car) is here"
-        case .enroute:
-            return "On the way"
-        case .requested, .completed, .declined, .cancelled, .reservationExpired, .unrecognized:
-            return headline(for: status, vehicleName: vehicleName, destination: destination)
+        case .requested: return "Requested"
+        case .accepted: return "On the way"
+        case .arrived: return "Arrived"
+        case .enroute: return "In ride"
+        case .completed: return "Dropped off"
+        case .declined: return "Declined"
+        case .cancelled: return "Cancelled"
+        case .reservationExpired: return "Reservation expired"
+        // A status this build has never heard of. Deliberately bland: the
+        // alternative is guessing, and a confident wrong word on a lock screen is
+        // worse than a vague right one.
+        case .unrecognized: return "Ride"
         }
     }
 
-    /// "Meet at {pickup}" — the leg-one second line, from the Activity's STATIC
-    /// attributes.
+    /// What the chip says INSTEAD once ActivityKit marks the content stale
+    /// (handoff §1 change 7, board decision 2).
     ///
-    /// `nil` rather than "Meet at " when there is no label. A ride created from the
-    /// rider's current position may carry nothing worth naming, and a preposition
-    /// with no object is the blank-where-a-name-should-be failure `vehicleDisplayName`
-    /// exists to prevent, one line down.
-    static func meetAt(_ pickupLabel: String?) -> String? {
-        let trimmed = (pickupLabel ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : "Meet at \(trimmed)"
+    /// **THE CHIP IS THE WARNING NOW.** v1 put staleness in a notice under the card
+    /// and left the chip saying "In ride", which is the one place a rider looks
+    /// first and the one place that was still confident. The notice stays, quieter,
+    /// and the chip carries the news with a grey dot.
+    ///
+    /// The word "stale" never renders anywhere — it is ActivityKit's vocabulary,
+    /// not a rider's.
+    static let staleChipWord = "Not updating"
+
+    /// The stale notice, dated from the last thing the server said.
+    ///
+    /// ⚠️ **`lastUpdate` IS `nil` ON TODAY'S WIRE, AND THAT IS NOT AN OVERSIGHT.**
+    /// The widget process holds exactly three things — the static attributes, the
+    /// content state, and `context.isStale` — and none of them is an update
+    /// instant. `ActivityViewContext` exposes no `staleDate` (checked against the
+    /// SDK interface, iOS 26.5), the content state's only instant is the `eta`, and
+    /// the `eta` is a FUTURE instant that was chosen BEFORE the update that carried
+    /// it. Rendering "Last update 4:02 PM" off an ETA would therefore overstate
+    /// freshness on the one card whose entire job is to admit it has none — the
+    /// worst direction to be wrong in. (v1 shipped exactly that, as
+    /// "As of {eta} ago", which renders "in 4 minutes ago" on a card whose ETA has
+    /// not yet elapsed.)
+    ///
+    /// So the `{t}` arm is written, tested and unreachable: the day the wire (or a
+    /// future `ActivityViewContext`) carries an update instant, `resolve` passes it
+    /// and the design's line renders as drawn. Until then the notice keeps its
+    /// SHAPE — hollow 5pt ring, 11.5pt at 42% — and says the one true thing.
+    static func staleNotice(lastUpdate: Date?, formatter: (Date) -> String) -> String {
+        guard let lastUpdate else { return staleNoticeWithoutAnInstant }
+        return "Last update \(formatter(lastUpdate))"
     }
 
-    /// The label above the ETA countdown.
+    /// The notice when there is no instant to date it from.
+    static let staleNoticeWithoutAnInstant = "Waiting for an update"
+
+    // MARK: - The compact island
+
+    /// The compact island's SHORT status word — one word, never truncates, changes
+    /// when the state changes (board decision 1).
     ///
-    /// It changes with the leg because the number means two different things:
-    /// before pickup it is when the car reaches the RIDER, after pickup it is when
-    /// the rider reaches the DESTINATION. One label for both would be wrong half
-    /// the time.
-    static func etaLabel(for status: LiveActivityRideStatus) -> String {
+    /// A separate table from `chipWord` on purpose. The compact region is a few
+    /// dozen points wide and v1 fell back to the chip's word there, which put
+    /// "Reservation expired" into a slot that fits "Ended". Rejected alternatives,
+    /// from the board: the vehicle name (reads as branding, and repeats across five
+    /// states) and arrow-only (the island already has a minimal presentation).
+    ///
+    /// The four endings deliberately COLLAPSE to one word. A rider glancing at the
+    /// island wants to know the ride is over; which flavour of over it was is the
+    /// lock card's business, and it says so in a whole sentence.
+    static func compactWord(for status: LiveActivityRideStatus) -> String {
         switch status {
-        case .enroute: return "Arrive"
-        default: return "Pickup"
+        case .requested: return "Sent"
+        case .accepted: return "Coming"
+        case .arrived: return "Here"
+        case .enroute: return "Driving"
+        case .completed: return "Done"
+        case .declined, .cancelled, .reservationExpired: return "Ended"
+        case .unrecognized: return "Ride"
         }
     }
+
+    /// The expanded island's affordance line, at its quietest step.
+    ///
+    /// It appears in exactly one situation (la-kit's `LAIslandExpanded`): a SENTENCE
+    /// state that is not stale and has no rail — i.e. the endings, where the bottom
+    /// row would otherwise be empty. The expanded island is reached by a deliberate
+    /// long press, so a rider who got there was looking for something; on a live
+    /// state the chip, the rail and the countdown are that something, and on an
+    /// ending the only thing left to offer is the way back into the app.
+    static let islandHint = "Tap to open MyRoboTaxi"
+
+    // MARK: - Gates
 
     /// Whether a countdown may be shown at all for this status.
     ///
@@ -172,27 +241,97 @@ enum RideActivityCopy {
         case .unrecognized: return false
         }
     }
+}
 
-    // MARK: - Staleness
+// MARK: - `{n} min` / `{n} s`
 
-    /// What the card says INSTEAD of a countdown once ActivityKit marks the content
-    /// stale.
+/// The ETA figure's FORMAT, as a pure rule (MYR-398 v2, handoff §1 change 3 + §3).
+///
+/// ─────────────────────────────────────────────────────────────────────────────
+/// **NEVER `mm:ss`.** `Text(timerInterval:countsDown:)` renders exactly that and
+/// therefore cannot be used at all — the handoff's SwiftUI note 1 says so in as
+/// many words, and it is the reason this type exists instead of a one-line view.
+/// `4:12` after "Pick up in" reads as a clock time (a rider glances and thinks
+/// "quarter past four"), and second-precision on a lock card is false precision
+/// about a car in traffic.
+///
+/// **AND IT DOES NOT COUNT DOWN — CLIENT DECISION, 2026-07-31, WHICH SUPERSEDES
+/// THE HANDOFF'S OWN SWIFTUI NOTE 1.** That note proposed a 1s
+/// `TimelineView(.periodic)` emitting a new figure every second. The client's
+/// ruling, verbatim: *"We are pulling live data from Tesla ETA telemetry; counting
+/// down is inaccurate."*
+///
+/// He is right about the thing that matters, and it is a point about PROVENANCE
+/// rather than about rendering. The `eta` on the wire is the CAR'S OWN carried
+/// navigation ETA (§7.21.3), which is a live estimate over live traffic — not a
+/// stopwatch that was started once. A phone decrementing it locally is not showing
+/// the car's answer more often, it is showing an EXTRAPOLATION of the car's last
+/// answer and dressing it as the car's current one. Between pushes that
+/// extrapolation is exactly as wrong as the traffic is, and the rider cannot tell
+/// which of the two they are looking at.
+///
+/// So the figure is derived ONCE, when a content state arrives, from the pushed
+/// instant against that moment — and then it HOLDS until the next push (60–90s) or
+/// the next state change. A figure that has stopped being refreshed at all is what
+/// staleness is for: the chip becomes "Not updating" and the headline swaps to the
+/// sentence.
+///
+/// **THE PLATFORM AGREES, WHICH IS WORTH RECORDING.** Before the ruling landed this
+/// was implemented with the handoff's 1s `TimelineView(.periodic)` and MEASURED on
+/// the simulator: one Activity, two SpringBoard captures 70 seconds apart, a
+/// 6-minute ETA — the status-bar clock advanced from 10:44 to 10:45 and the compact
+/// island read `5 min` in both frames. ActivityKit does not tick a periodic
+/// timeline between content updates; only `Text(timerInterval:)` and
+/// `ProgressView(timerInterval:)` are special-cased that way, and both render the
+/// format the board removed. The client's decision and the platform's behaviour are
+/// the same behaviour, so this build no longer has a mechanism that only appears to
+/// work.
+/// ─────────────────────────────────────────────────────────────────────────────
+///
+/// The unit is NEVER dropped: "4" alone is the same ambiguity with less to go on.
+enum RideActivityCountdown: Equatable {
+
+    /// The figure and its unit, resolved for one instant in time.
+    struct Parts: Equatable {
+        /// The number, as digits. Rendered 600 tabular, in WHITE.
+        var value: String
+        /// "min" or "s". Rendered 500 at 62%, the same type size as the value.
+        var unit: String
+
+        /// The two joined, which is what the compact island shows and what an
+        /// accessibility reader says.
+        var text: String { "\(value) \(unit)" }
+    }
+
+    /// The threshold between the two units. At or above it the card says minutes.
+    static let secondsUnit: TimeInterval = 60
+
+    /// Resolve `until` against `now` — ONCE, when the content state arrives.
     ///
-    /// MYR-194's staleness policy is "honest — the Activity renders 'as of X min
-    /// ago' when updates lapse; never a confident stale ETA". So the ETA is not
-    /// dimmed, it is REPLACED: a greyed-out "4 min" is still a number a rider will
-    /// read as the answer, and the whole point is that we no longer know the
-    /// answer.
-    static let staleTitle = "Not updating"
-
-    /// The "as of" line when there is no instant to date it from.
+    /// `now` is "the moment this frame was composed", which for a pushed update is
+    /// the moment the push landed. It is a parameter and not `Date()` inside the
+    /// body precisely so that is a statement rather than an accident: the figure
+    /// belongs to the frame, and re-deriving it later would be the local countdown
+    /// the client ruled out.
     ///
-    /// The card normally renders staleness as "As of {relative}" using SwiftUI's
-    /// self-updating relative style, which keeps counting while the screen is
-    /// asleep and nothing is repainting. That needs a reference instant, and the
-    /// only one the content state carries is the ETA — which is exactly the field
-    /// that may be absent. So this is the arm for "stale, and we never had a time
-    /// to be stale relative to": it claims nothing rather than inventing a
-    /// duration.
-    static let staleFallbackSubtitle = "Waiting for an update"
+    /// **MINUTES ARE TRUNCATED, NOT ROUNDED**, and the handoff's own worked example
+    /// is what settles it: change 3 rewrites the shipped `4:12` as `4 min`. That is
+    /// floor, and it is also the reading every clock in the world has trained —
+    /// "4 min" means "somewhere in the fourth minute". Rounding up would print
+    /// `5 min` over a car 4:12 away and would make the minute→second handover jump
+    /// backwards (`2 min` → `1 min` → `59 s` across two seconds).
+    ///
+    /// **A LAPSED INSTANT CLAMPS TO `0 s` RATHER THAN GOING NEGATIVE OR VANISHING.**
+    /// The card is repainted by pushes it does not control, so an ETA can and does
+    /// run out between them; `0 s` is honest, holds the line's width, and is the
+    /// only value in the set that says "any moment now" without inventing a word
+    /// for it.
+    static func parts(until: Date, now: Date = Date()) -> Parts {
+        let remaining = max(0, until.timeIntervalSince(now))
+
+        if remaining >= secondsUnit {
+            return Parts(value: String(Int(remaining / 60)), unit: "min")
+        }
+        return Parts(value: String(Int(remaining)), unit: "s")
+    }
 }

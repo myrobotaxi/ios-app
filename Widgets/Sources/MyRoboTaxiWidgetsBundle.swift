@@ -36,15 +36,14 @@ struct RideLiveActivityWidget: Widget {
             } compactTrailing: {
                 RideActivityIslandTrailing(card: card)
             } minimal: {
-                // MYR-398 — THE MINIMAL STATE IS THE ARROW.
+                // MYR-398 v2 — THE MINIMAL STATE IS THE EAST-BANKED ARROW.
                 //
-                // MYR-172 put a bare gold dot here (phone-frame.jsx:29-33). The
-                // client's direction makes the brand's facet arrow the ride's
-                // glyph everywhere it appears — the track, the compact leading
-                // slot, and here — and a dot is the one place it would still be
-                // anonymous. This is what the rider sees when another app owns the
-                // island, so it has one job: say WHOSE ride is running.
-                ArrowMark(size: 15, glow: !context.isStale)
+                // MYR-172 put a bare gold dot here (phone-frame.jsx:29-33); v1 made
+                // it the mark at its own -22° bank; v2 banks it due east like every
+                // other instance of it on these four surfaces. One glyph, one
+                // orientation, four surfaces — an arrow that pointed north here and
+                // east on the rail would read as two different marks.
+                RideActivityIslandMinimal(card: card)
             }
             // Tapping any region opens the app, which routes to the rider's own
             // tracking sheet. No deep-link URL is set: the app already reconciles

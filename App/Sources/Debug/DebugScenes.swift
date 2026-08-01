@@ -205,14 +205,24 @@ enum DebugScene: String, CaseIterable {
     /// a genuine Activity through the SHIPPING `SystemRideActivityPresenter` and
     /// then gets out of the way; the picture is of the system, not of the app.
     ///
-    /// `MRT_ACTIVITY_STATE=enroute|accepted|arrived|completed|noProgress|stale`
-    /// selects which frame. MYR-398 adds `noProgress` — the honestly-degraded card
-    /// for a car with no active nav route, which sends neither `eta` nor
-    /// `progress`, so the capture is the headline + meet-at line with NO track and
-    /// no invented number. `stale` is the honest-staleness arm and is seeded by handing
-    /// ActivityKit a stale-date in the PAST — there is no API to force staleness, so
-    /// the only way to photograph `context.isStale` is to actually be stale. Default
-    /// `enroute`.
+    /// `MRT_ACTIVITY_STATE` selects which frame. **MYR-398 v2 opened the whole
+    /// twelve-row matrix**, because the redesign changed what every one of them
+    /// renders and six of them had no capture route at all:
+    ///
+    /// `requested` · `accepted` · `noProgress` (accepted, no ETA) · `arrived` ·
+    /// `enroute` (default) · `enrouteNoETA` · `stale` · `completed` · `declined` ·
+    /// `cancelled` · `expired` · `unknown`
+    ///
+    /// The names are the SCENE's, and they map onto `design/la/la-data.jsx`'s rows
+    /// in order — that file is the answer key the captures are read against.
+    ///
+    /// `noProgress` is the honestly-degraded card for a car with no active nav
+    /// route, which sends neither `eta` nor `progress`, so the capture is the
+    /// sentence headline over the pickup with NO rail and no invented number.
+    /// `stale` is the honest-staleness arm and is seeded by handing ActivityKit a
+    /// stale-date a few seconds in the FUTURE — there is no API to force staleness,
+    /// so the only way to photograph `context.isStale` is to actually become stale.
+    /// Default `enroute`.
     ///
     /// It boots the ordinary rider `idle` shell underneath, so the app itself is in
     /// a known state and every other rider scene stays byte-identical.
@@ -2241,16 +2251,31 @@ enum DebugScene: String, CaseIterable {
         guard startsSampleLiveActivity else { return nil }
 
         switch ProcessInfo.processInfo.environment["MRT_ACTIVITY_STATE"] ?? "enroute" {
+        case "requested":
+            // MYR-398 v2 — la-data row 1, which had no headline before this round
+            // and therefore no reason to be captured. NO RAIL: nobody has accepted
+            // yet, so there is no leg to be part-way along and the server sends no
+            // fraction. The chip's dot is the only `pending` (goldDeepSoft) in the
+            // whole set, so this is also the only frame that photographs it.
+            return (
+                RideActivityDebugLauncher.sampleState(
+                    status: .requested,
+                    etaMinutesFromNow: nil,
+                    progress: nil
+                ),
+                nil
+            )
         case "accepted":
-            // MYR-398 — LEG ONE, the full card: "Pick up in 6:00", "Meet at Ferry
-            // Building" (the STATIC attribute, not the wire), and a track a third
-            // of the way along. `0.34` rather than a round number so the arrow
-            // lands somewhere a reader can see is a measurement.
+            // MYR-398 — LEG ONE, the full card: "Pick up in 6 min", the pickup at
+            // 62% (the STATIC attribute, not the wire), and a rail a third of the
+            // way along. `0.38` is la-data's own figure for this row, so the
+            // capture can be measured against the board rather than against a
+            // round number nobody drew.
             return (
                 RideActivityDebugLauncher.sampleState(
                     status: .accepted,
                     etaMinutesFromNow: 6,
-                    progress: 0.34
+                    progress: 0.38
                 ),
                 nil
             )
@@ -2285,12 +2310,57 @@ enum DebugScene: String, CaseIterable {
                 ),
                 nil
             )
+        case "enrouteNoETA":
+            // MYR-398 v2 — la-data row 6. Leg TWO with a rail and no number, which
+            // is the one combination that proves the second line is the
+            // DESTINATION in gold rather than a countdown's companion: nothing else
+            // on the card is gold except the rail.
+            return (
+                RideActivityDebugLauncher.sampleState(
+                    status: .enroute,
+                    etaMinutesFromNow: nil,
+                    progress: 0.52
+                ),
+                nil
+            )
         case "completed":
             return (
                 RideActivityDebugLauncher.sampleState(
                     status: .completed,
                     etaMinutesFromNow: nil,
                     progress: 1
+                ),
+                nil
+            )
+        case "declined", "cancelled", "expired", "unknown":
+            // MYR-398 v2 — la-data rows 9-12, THE ENDINGS. None had a capture route
+            // before this round and all four changed: `cancelled` became
+            // subject-free, `unknown` gained a sentence where it had only a vehicle
+            // name, and all four now collapse to one word on the island while
+            // keeping four different chips on the card.
+            //
+            // They share an arm because they are one shape — no ETA, no rail, no
+            // second line — and differ only in the status, which is the whole point
+            // of capturing them: the four frames should differ in exactly the chip
+            // and the sentence.
+            //
+            // `expired` is the one to measure the row against: "Reservation expired"
+            // is the widest chip in the set and sets the brand row's width.
+            let ending: LiveActivityRideStatus
+            switch ProcessInfo.processInfo.environment["MRT_ACTIVITY_STATE"] {
+            case "declined": ending = .declined
+            case "cancelled": ending = .cancelled
+            case "expired": ending = .reservationExpired
+            // Not a status any server sends on purpose — the schema's mandated
+            // "tolerate a member this build has not heard of" arm, reached with a
+            // plausible future one.
+            default: ending = .unrecognized("boarding")
+            }
+            return (
+                RideActivityDebugLauncher.sampleState(
+                    status: ending,
+                    etaMinutesFromNow: nil,
+                    progress: nil
                 ),
                 nil
             )

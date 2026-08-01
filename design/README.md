@@ -6,7 +6,11 @@ project (`019e19a0-1707-77b7-a71e-97e4f5ed5769`). The claude.ai project stays
 canonical; the orchestrator re-syncs this mirror when the design changes.
 
 **Full sync: 2026-07-06** — every text file in the project (all `app/*`,
-`ds/*`, canvases, Handoff). Not mirrored: `screenshots/` and `uploads/`
+`ds/*`, canvases, Handoff). **Partial sync 2026-07-31 (MYR-398 v2)**:
+`Handoff-Live-Activity.md` + `la/` — the client's Live Activity / Dynamic Island
+redesign, authored after the full sync and mirrored here with the PR that ports
+it, so the mirror does not lag the surface it describes. Not mirrored:
+`screenshots/` and `uploads/`
 (iterative design-process images, not canonical references — the runnable
 prototype below supersedes them).
 
@@ -60,7 +64,10 @@ degrades correctly under Reduce Motion.
 | `app/phone-frame.jsx`, `ios-frame.jsx`, `tweaks-panel.jsx`, `design-canvas.jsx` | Prototype chrome only — never port |
 | `ds/ds-data.jsx` | **Canonical** DEVIATIONS / OPEN_QUESTIONS / MOTION_TOKENS |
 | `ds/anatomy-*.jsx` + `Anatomy.html` | Labeled exploded screens |
-| `app/surfaces.jsx` + `surfaces.html` | DI / Live Activity / widget specs (its `decisions` copy is stale — trust `ds/ds-data.jsx`; auth is Apple-only) |
+| `app/surfaces.jsx` + `surfaces.html` | DI / Live Activity / widget specs — **SUPERSEDED for the Live Activity** by `Handoff-Live-Activity.md` + `la/` below (its `decisions` copy is also stale — trust `ds/ds-data.jsx`; auth is Apple-only) |
+| `Handoff-Live-Activity.md` | **The Live Activity + Dynamic Island redesign (r16, MYR-398 v2)** — geometry table, colour table, the render-ready 12-state table, the board's decisions, and the SwiftUI notes. Client-authored. |
+| `la/la-data.jsx` | Every state's strings / tones / compact words AS DATA. Its own header: *"This mirrors RideActivityCopy on the client; every string here is a client-side string."* It is the ANSWER KEY — `RideActivityCardTests` walks its twelve rows. |
+| `la/la-kit.jsx` | The five parts + the four surfaces as JSX — exact paddings, radii, opacities, sizes. What a capture is measured against. |
 
 If a value here conflicts with anything else, this mirror + the claude.ai
 project win. If something seems missing or stale, say so in your report — the

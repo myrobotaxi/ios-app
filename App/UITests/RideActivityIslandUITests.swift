@@ -1,6 +1,6 @@
 import XCTest
 
-// MARK: - MYR-398 — photographing a surface this app does not draw
+// MARK: - MYR-398 v2 — photographing a surface this app does not draw
 //
 // The redesigned Live Activity is rendered by the `MyRoboTaxiWidgets` process onto
 // the SYSTEM's own surfaces, so booting a screen and screenshotting the app
@@ -11,14 +11,20 @@ import XCTest
 // it, and `simctl io screenshot` takes the whole screen. The EXPANDED island needs
 // a long press on a SpringBoard element, which is a gesture headless tooling cannot
 // perform — the same `ExpandedRouteUITests` / `DriveSummaryCelebrationUITests`
-// situation, and the same answer. This suite synthesizes that press against
-// SpringBoard and attaches what comes back.
+// situation, and the same answer. This suite synthesizes that press and attaches
+// what comes back.
+//
+// v2 SWEEPS THE WHOLE TWELVE-ROW MATRIX rather than four frames, because the
+// redesign changed what every one of them renders and six had no capture route at
+// all before this round. The rows are `design/la/la-data.jsx`'s, in its order, so
+// the attachments can be read straight against the board.
 //
 // WHAT THIS SUITE DELIBERATELY DOES NOT CLAIM. The LOCK-SCREEN card still has no
 // route: `simctl` has no lock command, XCUITest cannot lock a device, and the
 // Simulator's own Device ▸ Lock is a menu a human clicks. That gap is stated in the
 // PR rather than papered over — a capture of the expanded island is not a capture
-// of the lock screen, and the two lay out differently.
+// of the lock screen, and the two lay out differently (different tile size,
+// different chip placement, a ground we draw versus one the hardware owns).
 //
 // It is also NOT a pass/fail assertion about pixels. What it asserts is that an
 // Activity is genuinely RUNNING (so a green run cannot be a photograph of nothing)
@@ -68,61 +74,119 @@ final class RideActivityIslandUITests: XCTestCase {
         add(attachment)
     }
 
-    /// COMPACT → EXPANDED, for both legs.
+    /// Background the app, photograph the COMPACT island, long-press for the
+    /// EXPANDED one, photograph that, collapse.
+    private func captureBothIslandStates(_ state: String) {
+        let app = startActivity(state: state)
+
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 3)
+        attach(XCUIScreen.main.screenshot(), named: "island-compact-\(state)")
+
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        springboard
+            .coordinate(withNormalizedOffset: Self.islandCentre)
+            .withOffset(CGVector(dx: 0, dy: Self.islandCentreYOffset))
+            .press(forDuration: 1.1)
+        Thread.sleep(forTimeInterval: 1.5)
+        attach(XCUIScreen.main.screenshot(), named: "island-expanded-\(state)")
+
+        // Collapse again so the next iteration starts from a known place.
+        springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
+        Thread.sleep(forTimeInterval: 1)
+        app.terminate()
+    }
+
+    /// la-data rows 1-6 — everything that is still happening.
     ///
-    /// Leg one is the whole point of the redesign — "Pick up in 6:00", "Meet at
-    /// Ferry Building" and a track a third of the way along — and leg two is the
-    /// state the client photographed as *"looks terrible"*.
-    func testTheIslandExpandsOnEachLeg() throws {
-        for state in ["accepted", "enroute"] {
-            let app = startActivity(state: state)
-
-            XCUIDevice.shared.press(.home)
-            Thread.sleep(forTimeInterval: 3)
-
-            attach(XCUIScreen.main.screenshot(), named: "island-compact-\(state)")
-
-            let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-            let island = springboard
-                .coordinate(withNormalizedOffset: Self.islandCentre)
-                .withOffset(CGVector(dx: 0, dy: Self.islandCentreYOffset))
-            island.press(forDuration: 1.1)
-            Thread.sleep(forTimeInterval: 1.5)
-
-            attach(XCUIScreen.main.screenshot(), named: "island-expanded-\(state)")
-
-            // Collapse again so the next iteration starts from a known place.
-            springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
-            Thread.sleep(forTimeInterval: 1)
-            app.terminate()
+    /// The set is chosen so the island's two trailing vocabularies are both covered
+    /// and can be told apart at a glance: `accepted` / `enroute` carry the FIGURE
+    /// (15/600 tabular), and `requested` / `noProgress` / `arrived` / `enrouteNoETA`
+    /// carry the four SHORT WORDS (14.5/500) that board decision 1 added —
+    /// Sent / Coming / Here / Driving. v1 rendered the chip's long word in that slot.
+    func testTheIslandRendersEveryLiveState() throws {
+        for state in ["requested", "accepted", "noProgress", "arrived", "enroute", "enrouteNoETA"] {
+            captureBothIslandStates(state)
         }
     }
 
-    /// The two DEGRADED frames, which are the honesty rules made visible.
+    /// la-data rows 8-12 — the endings.
     ///
-    /// `noProgress` is a car with no active navigation route: §7.21.3 sends neither
-    /// `eta` nor `progress`, so the card must read "Heading to pickup" over "Meet at
-    /// Ferry Building" with NO track and no invented number. `arrived` is the other
-    /// end — no `eta` by construction, and a `progress` of exactly `1`.
-    func testTheDegradedFramesRenderWithoutInventingAnything() throws {
-        for state in ["noProgress", "arrived"] {
-            let app = startActivity(state: state)
-
-            XCUIDevice.shared.press(.home)
-            Thread.sleep(forTimeInterval: 3)
-            attach(XCUIScreen.main.screenshot(), named: "island-compact-\(state)")
-
-            let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-            springboard
-                .coordinate(withNormalizedOffset: Self.islandCentre)
-                .withOffset(CGVector(dx: 0, dy: Self.islandCentreYOffset))
-                .press(forDuration: 1.1)
-            Thread.sleep(forTimeInterval: 1.5)
-            attach(XCUIScreen.main.screenshot(), named: "island-expanded-\(state)")
-
-            springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
-            Thread.sleep(forTimeInterval: 1)
-            app.terminate()
+    /// All five collapse to `Done` / `Ended` / `Ride` on the island while keeping
+    /// five different chips on the card, which is the pair the frames are read for.
+    /// `expired` is the width case: "Reservation expired" is the widest chip in the
+    /// set and is what the brand row has to hold without reflowing.
+    func testTheIslandRendersEveryEnding() throws {
+        for state in ["completed", "declined", "cancelled", "expired", "unknown"] {
+            captureBothIslandStates(state)
         }
+    }
+
+    /// la-data row 7 — staleness, which cannot be seeded and has to be WAITED FOR.
+    ///
+    /// ActivityKit offers no way to force `isStale`, and a stale-date already in the
+    /// past at `request` time is ignored or clamped (established by capture in
+    /// MYR-172, not by reading), so the scene hands it a date ~8s out and this test
+    /// waits for the deadline to pass. Both sides are photographed from ONE
+    /// Activity, which is what makes the pair a before/after of exactly staleness:
+    /// the fresh frame carries the confident figure, and the stale one should keep
+    /// that figure at 45% while the chip becomes "Not updating".
+    func testTheStaleFrameIsPhotographedFromBothSidesOfItsDeadline() throws {
+        let app = startActivity(state: "stale")
+
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 2)
+        attach(XCUIScreen.main.screenshot(), named: "island-compact-stale-before")
+
+        // Well past the ~8s deadline, and inside the ~60s window before iOS discards
+        // a stale ephemeral Activity ("Ephemeral activity ended… no longer
+        // relevant" — MYR-172's own finding).
+        Thread.sleep(forTimeInterval: 18)
+        attach(XCUIScreen.main.screenshot(), named: "island-compact-stale-after")
+
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        springboard
+            .coordinate(withNormalizedOffset: Self.islandCentre)
+            .withOffset(CGVector(dx: 0, dy: Self.islandCentreYOffset))
+            .press(forDuration: 1.1)
+        Thread.sleep(forTimeInterval: 1.5)
+        attach(XCUIScreen.main.screenshot(), named: "island-expanded-stale")
+
+        springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
+        Thread.sleep(forTimeInterval: 1)
+        app.terminate()
+    }
+
+    /// **THE FIGURE HOLDS** — the client's 2026-07-31 ruling, photographed.
+    ///
+    /// *"We are pulling live data from Tesla ETA telemetry; counting down is
+    /// inaccurate."* So between pushes the ETA figure must not move: what the card
+    /// shows is what the CAR last said, and a phone decrementing it locally would be
+    /// presenting an extrapolation as the car's own answer.
+    ///
+    /// One Activity, two frames ~70 seconds apart, over an ETA seeded 6 minutes out.
+    /// Both frames must read the SAME figure while the status-bar clock in the same
+    /// screenshots advances a minute — which is what makes the pair evidence rather
+    /// than a still.
+    ///
+    /// It is also the regression guard for the mechanism: this test FAILED to hold
+    /// still on the first implementation of this branch, which followed the
+    /// handoff's SwiftUI note 1 and put a 1s `TimelineView(.periodic)` in the
+    /// headline. (In the event it held still there too — ActivityKit does not tick a
+    /// periodic timeline between content updates — so the ruling and the platform
+    /// agree, and this build now has no clock in the widget process at all.)
+    func testTheCountdownFigureHOLDSBetweenPushes() throws {
+        let app = startActivity(state: "accepted")
+
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 3)
+        attach(XCUIScreen.main.screenshot(), named: "island-hold-t0")
+
+        // Just over a minute, so a figure that counted down locally could not
+        // possibly still read the same.
+        Thread.sleep(forTimeInterval: 70)
+        attach(XCUIScreen.main.screenshot(), named: "island-hold-t70")
+
+        app.terminate()
     }
 }
