@@ -168,13 +168,37 @@ struct RideActivityAttributes: ActivityAttributes {
         /// pair, and a client that tries to reconcile them hides the true one.
         var progress: Double?
 
+        /// When the SERVER last learned something about this ride, as an ABSOLUTE
+        /// unix timestamp in SECONDS (MYR-398 v3, contracts 0.28.0).
+        ///
+        /// The source for the board's stale subline, `Last updated 3:31 PM` — and it
+        /// had to be its own key rather than being derived, because it is the MIRROR
+        /// IMAGE of `eta`. That one is a FUTURE instant chosen BEFORE the update that
+        /// carried it, so dating a freshness notice from it OVERSTATES freshness on
+        /// the one card whose entire job is to admit it has none (v1 shipped exactly
+        /// that, rendering "in 4 minutes ago"). Nothing else the widget process holds
+        /// is an update instant: `ActivityViewContext` exposes no `staleDate`,
+        /// checked against the SDK interface on iOS 26.5.
+        ///
+        /// OMITTED ENTIRELY by a server that does not track it — **absent means
+        /// "this server does not say", never "just now"**. `RideActivityCard` renders
+        /// the wordless `Waiting for an update` in that case rather than inventing an
+        /// instant, which is what keeps an older server graceful.
+        ///
+        /// It carries the same silent-mis-key trap `eta` and `progress` do: optional
+        /// on the wire AND optional here, so a MISSPELLED key decodes to `nil` with
+        /// no throw and no log, and simply renders the fallback for ever. The name
+        /// here IS the wire key. Cross-pinned by `RideActivityContentStateTests`.
+        var asOf: Int?
+
         init(
             v: Int = RideActivityContentVersion.current,
             status: LiveActivityRideStatus,
             eta: Int? = nil,
             vehicleName: String,
             destination: String,
-            progress: Double? = nil
+            progress: Double? = nil,
+            asOf: Int? = nil
         ) {
             self.v = v
             self.status = status
@@ -182,6 +206,7 @@ struct RideActivityAttributes: ActivityAttributes {
             self.vehicleName = vehicleName
             self.destination = destination
             self.progress = progress
+            self.asOf = asOf
         }
     }
 }
@@ -207,32 +232,18 @@ extension RideActivityAttributes.ContentState {
     /// When the server last had something to say — the instant the stale subline
     /// dates itself from (`Last updated 3:31 PM`).
     ///
-    /// ⚠️ **`nil` ON TODAY'S WIRE, AND THIS ACCESSOR IS THE WHOLE SEAM.** The v3
-    /// board's stale row reads `Last updated {h:mm A}`, and nothing the widget
-    /// process holds is an update instant: `ActivityViewContext` exposes no
-    /// `staleDate` (SDK interface, iOS 26.5), and the content state's only instant
-    /// is the `eta` — a FUTURE instant chosen BEFORE the update that carried it, so
-    /// dating the notice from it OVERSTATES freshness on the one card whose entire
-    /// job is to admit it has none. (v1 shipped exactly that, as "As of {eta} ago",
-    /// which renders "in 4 minutes ago".)
+    /// ⚠️ **`nil` MEANS "THIS SERVER DOES NOT SAY", NEVER "JUST NOW".** contracts
+    /// 0.28.0 added the field and an older server omits it entirely, so the fallback
+    /// arm is a live path rather than dead code: `RideActivityCard.subline` renders
+    /// `Waiting for an update`, which says the true thing without a number nobody
+    /// can source.
     ///
-    /// **contracts 0.28.0 adds `asOf` (unix seconds) to the Live Activity content
-    /// state.** It was NOT tagged when this branch was cut (latest published tag:
-    /// `v0.27.0`), so the mirror below carries no `asOf` property and this accessor
-    /// answers `nil`, which `RideActivityCard.subline` renders as
-    /// `Waiting for an update`. Landing it is three lines and one test, in this
-    /// order — and the order matters, because the SECOND step is the one with a
-    /// silent failure mode:
-    ///
-    ///   1. bump the Kit's contracts pin to `0.28.0`;
-    ///   2. add `var asOf: Int?` to the mirror below — **spelled exactly**, since
-    ///      ActivityKit decodes `aps.content-state` with a plain `JSONDecoder` and
-    ///      no key strategy, and a wrong key on an OPTIONAL decodes silently to
-    ///      `nil` (the MYR-362 trap, which `eta` and `progress` already carry);
-    ///   3. return `asOf.map { Date(timeIntervalSince1970: TimeInterval($0)) }`
-    ///      here, and extend `RideActivityContentStateTests`' raw-key cross-pin,
-    ///      which is what makes step 2 checkable at all.
-    var asOfDate: Date? { nil }
+    /// Same seconds-not-milliseconds unit as `etaDate`, and named for the same
+    /// reason: every other timestamp this app reads off a wire is an ISO-8601
+    /// string, so a reader arriving here is primed to expect a parse.
+    var asOfDate: Date? {
+        asOf.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+    }
 
     /// True when the ride has reached a state that will never be pushed to again.
     ///

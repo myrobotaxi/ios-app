@@ -141,26 +141,28 @@ enum RideActivityCopy {
 
     /// The stale subline — `Last updated 3:31 PM`.
     ///
-    /// ⚠️ **THE INSTANT'S SOURCE IS `ContentState.asOf`, WHICH IS NOT ON THE WIRE
-    /// TODAY.** The widget process holds exactly three things — the static
-    /// attributes, the content state, and `context.isStale` — and until the content
-    /// state carries an update instant, none of them is one. `ActivityViewContext`
-    /// exposes no `staleDate` (checked against the SDK interface, iOS 26.5), and
-    /// the content state's only instant is the `eta`, which is a FUTURE instant
-    /// chosen BEFORE the update that carried it: dating the notice from it
-    /// OVERSTATES freshness on the one card whose entire job is to admit it has
-    /// none. (v1 shipped exactly that, as "As of {eta} ago", which renders "in 4
-    /// minutes ago" whenever the ETA has not yet elapsed.)
+    /// **THE INSTANT'S SOURCE IS `ContentState.asOf`** (contracts 0.28.0, unix
+    /// seconds) — the instant the SERVER last learned something about this ride.
     ///
-    /// So the arm is written, tested and reached the day the wire grows the field:
-    /// contracts **0.28.0** adds `asOf` (unix seconds) to the Live Activity content
-    /// state, `ContentState.asOfDate` reads it, and this line renders as the board
-    /// drew it. Until then `resolve` passes `nil` and the subline is
-    /// `waitingForAnUpdate` — which says the same true thing without a number
-    /// nobody can source.
+    /// It had to be its own wire key rather than being derived, and that is the
+    /// whole reason this line took two rounds to reach. The widget process holds
+    /// exactly three things — the static attributes, the content state, and
+    /// `context.isStale` — and none of the other two is an update instant:
+    /// `ActivityViewContext` exposes no `staleDate` (checked against the SDK
+    /// interface, iOS 26.5), and the content state's only other instant is the
+    /// `eta`, which is a FUTURE instant chosen BEFORE the update that carried it.
+    /// Dating a freshness notice from it OVERSTATES freshness on the one card whose
+    /// entire job is to admit it has none — v1 shipped exactly that, as
+    /// "As of {eta} ago", which renders "in 4 minutes ago" whenever the ETA has not
+    /// yet elapsed.
     static func lastUpdated(_ time: String) -> String { "Last updated \(time)" }
 
     /// The stale subline when there is no instant to date it from.
+    ///
+    /// **A LIVE ARM, NOT A LEFTOVER.** `asOf` is optional on the wire and a server
+    /// that predates 0.28.0 omits it, so absence means "this server does not say"
+    /// and never "just now". This is what a card renders instead of inventing an
+    /// instant — the same true thing, without a number nobody can source.
     static let waitingForAnUpdate = "Waiting for an update"
 
     // MARK: - Gates
@@ -281,6 +283,50 @@ enum RideActivityCountdown: Equatable {
             return Parts(value: String(Int(remaining / 60)), unit: "min")
         }
         return Parts(value: String(Int(remaining)), unit: "s")
+    }
+}
+
+// MARK: - Has the server stopped LEARNING?
+
+/// The second half of staleness, and **the case contracts 0.28.0 added `asOf` for**
+/// (MYR-398 v3).
+///
+/// ─────────────────────────────────────────────────────────────────────────────
+/// **`context.isStale` DOES NOT COVER THE SITUATION THIS FIELD EXISTS TO EXPOSE**,
+/// and the contract says so in as many words. The server's ETA ticker pushes
+/// UNCONDITIONALLY, and every push re-arms `aps.stale-date` — so when the car goes
+/// quiet mid-leg (or clears its nav route) the numbers keep arriving, ActivityKit
+/// never marks the Activity stale, and **the rider is left with a frozen track and
+/// nothing on the card explaining it.**
+///
+/// `asOf` is what makes that visible: it is when the server last LEARNED something,
+/// and it deliberately **does not re-stamp to `now` on a pass that computed nothing
+/// new**. So a card can be receiving pushes every 60–90s with an `asOf` that has not
+/// moved in ten minutes, and that card must say `Last updated 3:31 PM`.
+///
+/// **THE HORIZON IS THE CONTRACT'S OWN THREE MINUTES**, measured on the READING
+/// rather than on the car's row timestamp (which any telemetry write refreshes). It
+/// is the same number `RideActivityStaleness.window` arms a locally-composed frame's
+/// stale-date with — one constant, so the card cannot call something stale that the
+/// app would still have considered fresh, or the other way round.
+/// ─────────────────────────────────────────────────────────────────────────────
+enum RideActivityFreshness {
+    /// How long the server may go without learning anything before the card says so.
+    static let window: TimeInterval = 3 * 60
+
+    /// True when the server's own last-learned instant has fallen behind the horizon.
+    ///
+    /// **`nil` IS NEVER STALE.** Two very different situations arrive as an absent
+    /// `asOf` and neither is evidence that anything went quiet: a server that
+    /// predates 0.28.0, and the app's OWN locally-composed backstop frames, which
+    /// never invent one. Reading absence as staleness would put `Waiting for an
+    /// update` on the first frame of every ride against an un-upgraded server.
+    ///
+    /// A FUTURE `asOf` is not stale either — clock skew between a server and a phone
+    /// is ordinary, and the honest reading of "learned in the future" is "just now".
+    static func hasGoneQuiet(asOf: Date?, now: Date) -> Bool {
+        guard let asOf else { return false }
+        return now.timeIntervalSince(asOf) > window
     }
 }
 

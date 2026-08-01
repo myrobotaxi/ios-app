@@ -209,8 +209,9 @@ enum DebugScene: String, CaseIterable {
     /// board rows** — v2's twelve plus the two states v3 invented:
     ///
     /// `dispatch` · `accepted` · `arriving` · `pickupNoETA` · `noTelemetry` ·
-    /// `arrived` · `enroute` (default) · `enrouteNoETA` · `stale` · `completed` ·
-    /// `declined` · `cancelled` · `expired` · `unknown`
+    /// `arrived` · `enroute` (default) · `enrouteNoETA` · `stale` ·
+    /// `staleNoInstant` · `completed` · `declined` · `cancelled` · `expired` ·
+    /// `unknown`
     ///
     /// The names are the SCENE's, and they map onto `design/la/la-data.jsx`'s rows in
     /// order — that file is the answer key the captures are read against. `requested`
@@ -2425,9 +2426,13 @@ enum DebugScene: String, CaseIterable {
             )
         case "stale":
             // la-data row 9, **PUSHES STOPPED**. The subline swaps to
-            // "Waiting for an update" (the `asOf` fallback — contracts 0.28.0 was not
-            // tagged when this branch was cut, see `ContentState.asOfDate`), the
-            // headline drops its clock for "Dropoff soon", **the rail HOLDS its
+            // **"Last updated {h:mm A}"**, dated from contracts 0.28.0's `asOf` — a
+            // PAST instant the server stamps, seeded here 4 minutes back so the
+            // rendered time is visibly BEHIND the status-bar clock in the same frame.
+            // That contrast is the capture's whole point: an `eta`-dated notice would
+            // read AHEAD of it.
+            //
+            // The headline drops its clock for "Dropoff soon", **the rail HOLDS its
             // position and STAYS GOLD**, and the compact island KEEPS the last
             // figure. v2 desaturated the rail and dimmed the figure to 45%; both are
             // gone.
@@ -2448,7 +2453,26 @@ enum DebugScene: String, CaseIterable {
                 RideActivityDebugLauncher.sampleState(
                     status: .enroute,
                     etaMinutesFromNow: 4,
-                    progress: 0.62
+                    progress: 0.62,
+                    asOfMinutesAgo: 4
+                ),
+                Date().addingTimeInterval(8)
+            )
+        case "staleNoInstant":
+            // The SAME stale frame from a server that predates contracts 0.28.0 and
+            // omits `asOf` entirely. The pair with `stale` is a clean one-key diff of
+            // exactly the subline: "Last updated 3:31 PM" vs "Waiting for an update".
+            //
+            // It earns its own arm because absence is a LIVE state rather than a
+            // leftover — every installed build talking to an un-upgraded server takes
+            // this path, and the alternative (dating the notice from the `eta`) is
+            // what v1 shipped and renders "in 4 minutes ago".
+            return (
+                RideActivityDebugLauncher.sampleState(
+                    status: .enroute,
+                    etaMinutesFromNow: 4,
+                    progress: 0.62,
+                    asOfMinutesAgo: nil
                 ),
                 Date().addingTimeInterval(8)
             )

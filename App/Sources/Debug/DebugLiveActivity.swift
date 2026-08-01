@@ -46,7 +46,8 @@ enum RideActivityDebugLauncher {
         etaMinutesFromNow: Int? = 4,
         vehicleName: String = "Blue Whale",
         destination: String = "Home",
-        progress: Double? = nil
+        progress: Double? = nil,
+        asOfMinutesAgo: Int? = nil
     ) -> RideActivityAttributes.ContentState {
         RideActivityAttributes.ContentState(
             status: status,
@@ -55,7 +56,14 @@ enum RideActivityDebugLauncher {
             },
             vehicleName: vehicleName,
             destination: destination,
-            progress: progress
+            progress: progress,
+            // MYR-398 v3 — contracts 0.28.0's `asOf`, the instant the SERVER last
+            // learned something. A PAST instant, and seeded only where the capture
+            // needs one: every non-stale scene leaves it absent, which is also the
+            // arm an older server produces.
+            asOf: asOfMinutesAgo.map {
+                Int(Date().addingTimeInterval(TimeInterval(-$0 * 60)).timeIntervalSince1970)
+            }
         )
     }
 

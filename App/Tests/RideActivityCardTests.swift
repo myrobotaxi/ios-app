@@ -82,14 +82,16 @@ final class RideActivityCardTests: XCTestCase {
         eta etaSeconds: Int? = 1_785_535_200,
         vehicleName: String = vehicleNickname,
         destination: String = RideActivityCardTests.destination,
-        progress: Double? = nil
+        progress: Double? = nil,
+        asOf: Int? = nil
     ) -> RideActivityAttributes.ContentState {
         RideActivityAttributes.ContentState(
             status: status,
             eta: etaSeconds,
             vehicleName: vehicleName,
             destination: destination,
-            progress: progress
+            progress: progress,
+            asOf: asOf
         )
     }
 
@@ -110,6 +112,7 @@ final class RideActivityCardTests: XCTestCase {
         destination: String = RideActivityCardTests.destination,
         vehicleName: String = vehicleNickname,
         isStale: Bool = false,
+        asOf: Int? = nil,
         now: Date? = nil
     ) -> RideActivityCard {
         RideActivityCard.resolve(
@@ -118,7 +121,8 @@ final class RideActivityCardTests: XCTestCase {
                 eta: etaSeconds,
                 vehicleName: vehicleName,
                 destination: destination,
-                progress: progress
+                progress: progress,
+                asOf: asOf
             ),
             vehicle: vehicle,
             isStale: isStale,
@@ -271,12 +275,15 @@ final class RideActivityCardTests: XCTestCase {
     /// The rail holds its fraction and STAYS GOLD (v2 desaturated it), and the
     /// compact island KEEPS the figure at full strength (v2 dimmed it to 45%).
     func testRow09PushesStopped() {
+        // The board's own row, with the server's `asOf` on the wire (contracts
+        // 0.28.0). `1_785_534_660` is 9 minutes before the fixture ETA, so the
+        // subline dates itself from an instant in the PAST — which is the whole
+        // point of the field being separate from `eta`.
         XCTAssertEqual(
-            rendered(card(.enroute, progress: 0.52, isStale: true)),
+            rendered(card(.enroute, progress: 0.52, isStale: true, asOf: 1_785_534_660)),
             Rendered(
                 headline: .sentence("Dropoff soon"),
-                // `Last updated {h:mm A}` the day `asOf` lands — see section 6.
-                subline: "Waiting for an update",
+                subline: "Last updated \(Self.clock(Date(timeIntervalSince1970: 1_785_534_660)))",
                 rail: .live(0.52),
                 compact: .figure(Self.etaClock)
             )
@@ -790,30 +797,122 @@ final class RideActivityCardTests: XCTestCase {
         XCTAssertEqual(card(.enroute, progress: 0.52, isStale: true).compact, .figure(Self.etaClock))
     }
 
-    /// **`asOf` IS NOT ON TODAY'S WIRE, AND THE FALLBACK SAYS THE TRUE THING.**
-    ///
-    /// contracts 0.28.0 adds it; it was not tagged when this branch was cut, so
-    /// `ContentState.asOfDate` answers `nil` and the subline is
-    /// "Waiting for an update" rather than a time dated from the ETA — which is a
-    /// FUTURE instant and would overstate freshness on the one card whose job is to
-    /// admit it has none.
-    func testTheStaleSublineFallsBackWhenThereIsNoUpdateInstant() {
+    /// **THE STALE SUBLINE DATES ITSELF FROM `asOf`** — contracts 0.28.0, the
+    /// instant the SERVER last learned something, and deliberately NOT the `eta`.
+    func testTheStaleSublineDatesItselfFromTheServersOwnInstant() {
+        let asOf = 1_785_534_660
+        let expected = "Last updated \(Self.clock(Date(timeIntervalSince1970: TimeInterval(asOf))))"
         for status in [LiveActivityRideStatus.requested, .accepted, .arrived, .enroute] {
             XCTAssertEqual(
-                card(status, progress: 0.5, isStale: true).subline,
+                card(status, progress: 0.5, isStale: true, asOf: asOf).subline,
+                expected,
+                "\(status)"
+            )
+        }
+    }
+
+    /// **AND IT IS NEVER THE `eta`.** That one is a FUTURE instant chosen BEFORE the
+    /// update that carried it, so a card dating its freshness notice from it would
+    /// overstate freshness on the one card whose job is to admit it has none — v1
+    /// shipped exactly that ("in 4 minutes ago"). The two instants are 9 minutes
+    /// apart in these fixtures precisely so a regression to `eta` fails here.
+    func testTheStaleSublineIsNeverDatedFromTheETA() {
+        let subline = card(.enroute, progress: 0.52, isStale: true, asOf: 1_785_534_660).subline
+        XCTAssertNotEqual(subline, "Last updated \(Self.etaClock)")
+    }
+
+    /// **AN OLDER SERVER OMITS THE KEY, AND THAT IS A LIVE ARM.** Absence means
+    /// "this server does not say", never "just now", so the card falls back to the
+    /// wordless sentence rather than inventing an instant.
+    func testTheStaleSublineFallsBackWhenTheServerSendsNoInstant() {
+        for status in [LiveActivityRideStatus.requested, .accepted, .arrived, .enroute] {
+            XCTAssertEqual(
+                card(status, progress: 0.5, isStale: true, asOf: nil).subline,
                 "Waiting for an update",
                 "\(status)"
             )
         }
     }
 
-    /// The `{t}` arm is written and tested even though nothing reaches it yet, so
-    /// landing 0.28.0 is a field and an accessor rather than a copy decision.
-    func testTheStaleSublineRendersTheInstantTheDayTheWireCarriesOne() {
+    /// A card whose `asOf` is RECENT reads normally — the field is only consulted
+    /// against the horizon, never rendered on a fresh card.
+    func testARecentAsOfLeavesTheCardFresh() {
         XCTAssertEqual(
-            RideActivityCopy.lastUpdated(Self.etaClock),
-            "Last updated \(Self.etaClock)"
+            card(
+                .accepted,
+                progress: 0.38,
+                asOf: Int(eta.addingTimeInterval(-540).timeIntervalSince1970),
+                now: eta.addingTimeInterval(-510)
+            ).subline,
+            Self.descriptor
         )
+    }
+
+    // MARK: - 6b. The SECOND way a card goes stale (contracts 0.28.0)
+
+    /// **THE CASE `asOf` WAS ADDED FOR, AND `context.isStale` CANNOT SEE.**
+    ///
+    /// The server's ETA ticker pushes unconditionally and every push re-arms
+    /// `aps.stale-date`, so when the car goes quiet mid-leg ActivityKit never marks
+    /// the Activity stale — the numbers keep arriving and the track just freezes,
+    /// with nothing on the card explaining it. An `asOf` past the three-minute
+    /// horizon is what says so.
+    func testAFrozenAsOfMakesTheCardStaleEvenWhenActivityKitSaysItIsFresh() {
+        let now = eta.addingTimeInterval(-510)
+        let quiet = Int(now.addingTimeInterval(-600).timeIntervalSince1970)
+
+        let card = card(.enroute, progress: 0.52, isStale: false, asOf: quiet, now: now)
+
+        XCTAssertTrue(card.isStale, "ten minutes without the server learning anything")
+        XCTAssertEqual(card.headline, .sentence("Dropoff soon"))
+        XCTAssertEqual(
+            card.subline,
+            "Last updated \(Self.clock(Date(timeIntervalSince1970: TimeInterval(quiet))))"
+        )
+        XCTAssertEqual(card.rail, .live(0.52), "the rail HOLDS and stays gold")
+    }
+
+    /// The horizon is the contract's own three minutes, and it is the SAME constant
+    /// the app arms a locally-composed frame's stale-date with.
+    func testTheFreshnessHorizonIsThreeMinutesAndIsSharedWithTheAppsOwnWindow() {
+        XCTAssertEqual(RideActivityFreshness.window, 3 * 60)
+        XCTAssertEqual(RideActivityStaleness.window, RideActivityFreshness.window)
+
+        let now = Date(timeIntervalSince1970: 1_785_535_200)
+        XCTAssertFalse(
+            RideActivityFreshness.hasGoneQuiet(asOf: now.addingTimeInterval(-179), now: now)
+        )
+        XCTAssertFalse(
+            RideActivityFreshness.hasGoneQuiet(asOf: now.addingTimeInterval(-180), now: now),
+            "exactly at the horizon is still fresh — the comparison is strict"
+        )
+        XCTAssertTrue(
+            RideActivityFreshness.hasGoneQuiet(asOf: now.addingTimeInterval(-181), now: now)
+        )
+    }
+
+    /// **AN ABSENT `asOf` IS NEVER STALE**, and this is the guard that keeps an
+    /// un-upgraded server (and the app's own backstop frames, which never invent an
+    /// instant) from rendering "Waiting for an update" on a perfectly live card.
+    func testAnAbsentAsOfIsNeverTreatedAsQuiet() {
+        let now = Date(timeIntervalSince1970: 1_785_535_200)
+        XCTAssertFalse(RideActivityFreshness.hasGoneQuiet(asOf: nil, now: now))
+        XCTAssertFalse(card(.accepted, progress: 0.38, asOf: nil).isStale)
+    }
+
+    /// Clock skew between a server and a phone is ordinary, so an `asOf` in the
+    /// FUTURE reads as "just now" rather than as a negative age.
+    func testAFutureAsOfIsNotStale() {
+        let now = Date(timeIntervalSince1970: 1_785_535_200)
+        XCTAssertFalse(
+            RideActivityFreshness.hasGoneQuiet(asOf: now.addingTimeInterval(30), now: now)
+        )
+    }
+
+    /// ActivityKit's verdict still stands on its own — the two are OR'd, so a card
+    /// with no `asOf` at all still goes stale the way it always did.
+    func testActivityKitsOwnVerdictStillMakesACardStaleWithNoAsOf() {
+        XCTAssertTrue(card(.enroute, progress: 0.52, isStale: true, asOf: nil).isStale)
     }
 
     /// A TERMINAL card is not "waiting for an update": the outcome cannot change,

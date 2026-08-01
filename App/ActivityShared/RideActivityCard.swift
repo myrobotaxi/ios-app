@@ -197,10 +197,11 @@ struct RideActivityCard: Equatable {
     /// The compact island's trailing content.
     var compact: RideActivityCompact
 
-    /// ActivityKit's own staleness verdict, passed through. v3 uses it for exactly
-    /// two things — the headline drops its figure, and the subline becomes
-    /// `Last updated {t}` — and for NOTHING visual: no dimming, no desaturation, no
-    /// badge.
+    /// The RESOLVED staleness verdict — ActivityKit's `context.isStale` OR the
+    /// server's own `asOf` having fallen behind the three-minute horizon (see
+    /// `RideActivityFreshness`). v3 uses it for exactly two things — the headline
+    /// drops its figure, and the subline becomes `Last updated {t}` — and for
+    /// NOTHING visual: no dimming, no desaturation, no badge.
     var isStale: Bool
 
     /// Resolve the card from everything the widget process is handed.
@@ -229,14 +230,24 @@ struct RideActivityCard: Equatable {
     ) -> RideActivityCard {
         let leg = RideActivityLeg.of(state.status)
 
+        // **TWO WAYS A CARD GOES STALE, AND ACTIVITYKIT ONLY KNOWS ONE.**
+        //
+        // `context.isStale` fires when no push has arrived inside the window the
+        // last one armed. The OTHER way is the one contracts 0.28.0 added `asOf`
+        // for: the ETA ticker keeps pushing, so `aps.stale-date` keeps being
+        // re-armed and ActivityKit never fires — while the server has not LEARNED
+        // anything for ten minutes and the track is frozen. Folding both into one
+        // verdict here is what keeps the rest of this type reading a single fact.
+        let stale = isStale || RideActivityFreshness.hasGoneQuiet(asOf: state.asOfDate, now: now)
+
         return RideActivityCard(
             status: state.status,
             leg: leg,
-            headline: headline(state: state, leg: leg, isStale: isStale, now: now, time: time),
-            subline: subline(state: state, vehicle: vehicle, isStale: isStale, time: time),
+            headline: headline(state: state, leg: leg, isStale: stale, now: now, time: time),
+            subline: subline(state: state, vehicle: vehicle, isStale: stale, time: time),
             rail: rail(for: state),
             compact: compact(state: state, leg: leg, now: now, time: time),
-            isStale: isStale
+            isStale: stale
         )
     }
 

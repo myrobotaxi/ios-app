@@ -137,25 +137,34 @@ final class RideActivityIslandUITests: XCTestCase {
         }
     }
 
-    /// la-data row 9 — staleness, which cannot be seeded and has to be WAITED FOR.
+    /// la-data row 9 — staleness.
     ///
-    /// ActivityKit offers no way to force `isStale`, and a stale-date already in the
-    /// past at `request` time is ignored or clamped (established by capture in
-    /// MYR-172, not by reading), so the scene hands it a date ~8s out and this test
-    /// waits for the deadline to pass. Both sides are photographed from ONE Activity,
-    /// which is what makes the pair a before/after of exactly staleness.
+    /// ⚠️ **contracts 0.28.0 MADE THIS PHOTOGRAPHABLE FOR THE FIRST TIME, and the
+    /// reason is worth reading before trusting the frames.** v2's only route to a
+    /// stale card was `context.isStale`, which ActivityKit offers no way to force —
+    /// a stale-date already in the past at `request` time is ignored or clamped
+    /// (established by capture in MYR-172), and the island turned out not to be
+    /// re-rendered when the deadline passes at all, so the presentation could never
+    /// be photographed. **The `asOf` route does not depend on ActivityKit noticing
+    /// anything**: the scene seeds an instant 4 minutes back, `RideActivityFreshness`
+    /// puts that past the three-minute horizon at resolve time, and the card is
+    /// stale in its FIRST frame.
     ///
-    /// **WHAT SHOULD AND SHOULD NOT CHANGE ACROSS IT, IN v3**: the compact island
-    /// should be BYTE-IDENTICAL (the figure is kept, at full strength — v2 dimmed it
-    /// to 45%), and the expanded card should change in exactly two rows — the
-    /// headline drops its clock for "Dropoff soon" and the subline becomes
-    /// "Waiting for an update". The rail must be unchanged and still GOLD.
+    /// That is also the case the field exists for and the one a rider actually
+    /// meets: the ETA ticker keeps pushing, `aps.stale-date` keeps being re-armed,
+    /// ActivityKit never fires, and only `asOf` can say the server has stopped
+    /// learning.
     ///
-    /// ⚠️ **AND IT MAY WELL SHOW NOTHING**, which is v2's own honest finding carried
-    /// forward: the Activity genuinely goes stale (visible in `log show --predicate
-    /// 'subsystem == "com.apple.activitykit"'`) but the island is not re-rendered
-    /// when the deadline passes, so `context.isStale` never reaches a render. The
-    /// frames are attached either way and the PR says which happened.
+    /// **WHAT THE EXPANDED FRAME MUST SHOW**: "Dropoff soon" over
+    /// **"Last updated {h:mm A}"**, with the rail HOLDING its fraction and still
+    /// GOLD. The compact island must be unchanged and undimmed — it keeps the last
+    /// figure, which v2 dropped to 45%. The stale time must read BEHIND the status
+    /// bar's clock in the same screenshot; an `eta`-dated notice would read ahead of
+    /// it, which is the v1 defect this field replaced.
+    ///
+    /// The ~8s ActivityKit stale-date is still armed and both sides of it are still
+    /// photographed, so the pair also carries whatever that half does or does not
+    /// do.
     func testTheStaleFrameIsPhotographedFromBothSidesOfItsDeadline() throws {
         let app = startActivity(state: "stale")
 
@@ -201,6 +210,44 @@ final class RideActivityIslandUITests: XCTestCase {
         for state in ["expired", "enroute"] {
             captureBothIslandStates(state)
         }
+    }
+
+    /// **THE PRE-0.28.0 FALLBACK, PHOTOGRAPHED AS ITS OWN ARM.**
+    ///
+    /// A server that predates the field omits `asOf` entirely, and absence means
+    /// "this server does not say" rather than "just now" — so the card falls back to
+    /// the wordless **"Waiting for an update"** instead of inventing an instant.
+    /// The pair with `stale` is a clean one-key diff of exactly the subline, which is
+    /// the only thing on either card that differs.
+    ///
+    /// It is an ordinary live arm rather than a legacy path: every installed build
+    /// talking to an un-upgraded server takes it, and the alternative — dating the
+    /// notice from the `eta` — is what v1 shipped and renders "in 4 minutes ago".
+    ///
+    /// ⚠️ Reaching it needs ActivityKit's own verdict, since there is no `asOf` to
+    /// age out, so this one IS subject to the un-re-rendered-island finding and may
+    /// photograph the fresh frame. The unit matrix covers the arm either way.
+    func testTheStaleFallbackIsPhotographedForAServerWithNoInstant() throws {
+        let app = startActivity(state: "staleNoInstant")
+
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 2)
+        attach(XCUIScreen.main.screenshot(), named: "island-compact-staleNoInstant-before")
+
+        Thread.sleep(forTimeInterval: 18)
+        attach(XCUIScreen.main.screenshot(), named: "island-compact-staleNoInstant-after")
+
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        springboard
+            .coordinate(withNormalizedOffset: Self.islandCentre)
+            .withOffset(CGVector(dx: 0, dy: Self.islandCentreYOffset))
+            .press(forDuration: 1.1)
+        Thread.sleep(forTimeInterval: 1.5)
+        attach(XCUIScreen.main.screenshot(), named: "island-expanded-staleNoInstant")
+
+        springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
+        Thread.sleep(forTimeInterval: 1)
+        app.terminate()
     }
 
     /// **THE FIGURE HOLDS** — the client's 2026-07-31 ruling, photographed.

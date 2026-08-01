@@ -111,7 +111,8 @@ final class RideActivityContentStateTests: XCTestCase {
             eta: 1_785_535_200,
             vehicleName: "Blue Whale",
             destination: "Home",
-            progress: 0.62
+            progress: 0.62,
+            asOf: 1_785_534_660
         )
         let generated = LiveActivityContentState(
             v: 1,
@@ -119,7 +120,8 @@ final class RideActivityContentStateTests: XCTestCase {
             eta: 1_785_535_200,
             vehicleName: "Blue Whale",
             destination: "Home",
-            progress: 0.62
+            progress: 0.62,
+            asOf: 1_785_534_660
         )
 
         let mirrorKeys = try rawKeys(of: mirror)
@@ -146,7 +148,8 @@ final class RideActivityContentStateTests: XCTestCase {
             eta: nil,
             vehicleName: "Blue Whale",
             destination: "Home",
-            progress: nil
+            progress: nil,
+            asOf: nil
         )
         let generated = LiveActivityContentState(
             v: 1,
@@ -154,7 +157,8 @@ final class RideActivityContentStateTests: XCTestCase {
             eta: nil,
             vehicleName: "Blue Whale",
             destination: "Home",
-            progress: nil
+            progress: nil,
+            asOf: nil
         )
 
         XCTAssertEqual(try rawKeys(of: mirror), try rawKeys(of: generated))
@@ -170,7 +174,8 @@ final class RideActivityContentStateTests: XCTestCase {
             eta: 1_785_535_200,
             vehicleName: "Blue Whale",
             destination: "Home",
-            progress: 1
+            progress: 1,
+            asOf: 1_785_534_660
         )
 
         let decoded = try JSONDecoder().decode(
@@ -184,6 +189,67 @@ final class RideActivityContentStateTests: XCTestCase {
         XCTAssertEqual(decoded.vehicleName, "Blue Whale")
         XCTAssertEqual(decoded.destination, "Home")
         XCTAssertEqual(decoded.progress, 1)
+        XCTAssertEqual(
+            decoded.asOf,
+            1_785_534_660,
+            "unix SECONDS, like `eta` — key parity alone would not catch milliseconds"
+        )
+    }
+
+    // MARK: - 2b. `asOf` (contracts 0.28.0)
+
+    /// **THE SILENT-MIS-KEY GUARD, POINTED AT THE NEWEST OPTIONAL.**
+    ///
+    /// `asOf` is optional on the wire AND optional in the mirror, so a misspelling
+    /// (`asOfAt`, `as_of`, `updatedAt`) decodes to `nil` with no throw and no log —
+    /// and `nil` is a LEGITIMATE value here, meaning "this server does not say". The
+    /// card would render `Waiting for an update` for ever against a server that was
+    /// sending the instant all along, and every decode round-trip test would pass.
+    /// The only check that catches it is the raw key against the generated type's.
+    func testTheAsOfKeyIsSpelledExactlyAsTheGeneratedTypeSpellsIt() throws {
+        let mirror = RideActivityAttributes.ContentState(
+            status: .enroute,
+            vehicleName: "Blue Whale",
+            destination: "Home",
+            asOf: 1_785_534_660
+        )
+        XCTAssertTrue(try rawKeys(of: mirror).contains("asOf"))
+
+        let generated = LiveActivityContentState(
+            v: 1,
+            status: .enroute,
+            vehicleName: "Blue Whale",
+            destination: "Home",
+            asOf: 1_785_534_660
+        )
+        XCTAssertTrue(try rawKeys(of: generated).contains("asOf"))
+    }
+
+    /// A server that predates 0.28.0 omits the key, and that must decode cleanly to
+    /// the fallback rather than throwing — the same tolerance `eta` and `progress`
+    /// have, and the reason the stale subline keeps its wordless arm.
+    func testAServerThatPredatesTheFieldDecodesToNoInstantRatherThanFailing() throws {
+        let payload = Data("""
+        {"v":1,"status":"enroute","eta":1785535200,"vehicleName":"Blue Whale","destination":"Home","progress":0.62}
+        """.utf8)
+
+        let state = try JSONDecoder().decode(RideActivityAttributes.ContentState.self, from: payload)
+
+        XCTAssertNil(state.asOf)
+        XCTAssertNil(state.asOfDate, "absent means 'this server does not say', never 'just now'")
+    }
+
+    /// The accessor reads SECONDS, like `etaDate` — the one conversion this type
+    /// deliberately does not perform.
+    func testTheAsOfAccessorReadsUnixSeconds() throws {
+        let payload = Data("""
+        {"v":1,"status":"enroute","vehicleName":"Blue Whale","destination":"Home","asOf":1785534660}
+        """.utf8)
+
+        let state = try JSONDecoder().decode(RideActivityAttributes.ContentState.self, from: payload)
+
+        XCTAssertEqual(state.asOf, 1_785_534_660)
+        XCTAssertEqual(state.asOfDate, Date(timeIntervalSince1970: 1_785_534_660))
     }
 
     // MARK: - 3. Decode the schema's own printed examples

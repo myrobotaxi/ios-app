@@ -2536,8 +2536,8 @@ SIMCTL_CHILD_MRT_SCENE=riderLiveActivity xcrun simctl launch <udid> app.myrobota
 xcrun simctl launch <udid> com.apple.Preferences && xcrun simctl io <udid> screenshot di.png
 # MRT_ACTIVITY_STATE — all FOURTEEN v3 board rows (default enroute):
 #   dispatch | accepted | arriving | pickupNoETA | noTelemetry | arrived
-#   | enroute | enrouteNoETA | stale | completed | declined | cancelled
-#   | expired | unknown
+#   | enroute | enrouteNoETA | stale | staleNoInstant | completed | declined
+#   | cancelled | expired | unknown
 # (`requested` and `noProgress` survive as v2 aliases of dispatch / noTelemetry.)
 ```
 
@@ -2648,16 +2648,37 @@ semantics are UNCHANGED; ONE lifecycle moment moved (see the start point below).
   Saturday would have put "Finding your ride" on the lock screen and left it there.
   MYR-405's adopt / reap / dismissal all now run one status earlier and are tested
   there explicitly.
-- **⚠️ `Last updated {t}` STILL HAS NO SOURCE, AND THE FALLBACK IS THE HONEST ARM.**
-  contracts **0.28.0** adds `asOf` (unix seconds) to the content state; it was NOT
-  tagged when this branch shipped (latest `v0.27.0`), so `ContentState.asOfDate`
-  answers `nil` and the subline reads **"Waiting for an update"**. Landing it is
-  three steps in order — bump the Kit pin, add `var asOf: Int?` **spelled exactly**
-  (a wrong key on an OPTIONAL decodes silently to `nil`, the MYR-362 trap `eta` and
-  `progress` already carry), then return the mapped `Date` and extend the raw-key
-  cross-pin. Dating the notice from the `eta` instead is what v1 shipped and it
-  renders "in 4 minutes ago": a FUTURE instant chosen BEFORE the update that carried
-  it OVERSTATES freshness on the one card whose job is to admit it has none.
+- **`Last updated {t}` IS WIRED — contracts 0.28.0's `asOf`, AND IT EXPOSES A CASE
+  `context.isStale` CANNOT SEE.** The field is the instant the SERVER last LEARNED
+  something, and it deliberately **does not re-stamp to `now` on a pass that computed
+  nothing new**. That matters because the ETA ticker pushes UNCONDITIONALLY and every
+  push re-arms `aps.stale-date` — so when the car goes quiet mid-leg (or clears its
+  nav route) the numbers keep arriving, **ActivityKit never marks the Activity stale
+  at all**, and the rider is left with a frozen track and nothing explaining it.
+  `RideActivityFreshness.hasGoneQuiet` is the second half of the verdict, on the
+  contract's own **three-minute horizon**, and `resolve` ORs the two. It is the SAME
+  constant `RideActivityStaleness.window` arms a local frame's stale-date with — two
+  copies could drift into a card calling itself stale over data the app still thought
+  fresh.
+  - **`nil` IS NEVER STALE.** An un-upgraded server omits the key, and so do the
+    app's own backstop frames, which never invent an instant; absence means "this
+    server does not say", never "just now". That arm renders the wordless
+    **"Waiting for an update"** and is an ordinary live path, not a leftover. A
+    FUTURE `asOf` is not stale either — server/phone clock skew is ordinary.
+  - **Dating the notice from the `eta` is the defect this field replaced.** That one
+    is a FUTURE instant chosen BEFORE the update that carried it, so it OVERSTATES
+    freshness on the one card whose job is to admit it has none — v1 shipped exactly
+    that, rendering "in 4 minutes ago".
+  - **The mis-key trap applies as it does to `eta` and `progress`**: optional on the
+    wire AND optional in the mirror, so a misspelling decodes silently to `nil` and
+    the card renders the fallback for ever with every round-trip test green. The
+    guard is the raw-key cross-pin against the generated type.
+  - ⚠️ **THIS IS WHAT FINALLY MADE THE STALE PRESENTATION PHOTOGRAPHABLE.** The
+    `asOf` route does not depend on ActivityKit noticing anything, so scene `stale`
+    (which seeds an instant 4 minutes back) is stale in its FIRST frame. The
+    ActivityKit route is still unphotographable — scene `staleNoInstant`, which has
+    no `asOf` to age out, captures the FRESH frame, confirming the island is not
+    re-rendered when the deadline passes.
 - **ISLAND AUTO-EXPAND ON THE SIX PHASE CHANGES IS SERVER-SIDE** (an alert config on
   the push). Nothing client-side does it or can; the client's job is only not to
   break alert rendering, and the expansion arrives with the backend half.
@@ -2673,6 +2694,9 @@ semantics are UNCHANGED; ONE lifecycle moment moved (see the start point below).
   deadline passes. In v3 that is doubly ambiguous and the PR says so — v3 SPECIFIES
   that the compact island is unchanged by staleness, so two identical frames are
   equally consistent with the rule working and with nothing having re-rendered.
+  **The `asOf` route closes the CARD half of this gap** (see above): the expanded
+  island's stale subline is now captured directly, so the only remaining unphotographed
+  arm is ActivityKit's own verdict.
 
 `App/UITests/RideActivityIslandUITests.swift` sweeps all fourteen rows (compact +
 SpringBoard long-press expanded, per state), photographs the stale deadline from
