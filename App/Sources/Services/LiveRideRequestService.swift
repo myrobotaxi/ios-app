@@ -900,6 +900,32 @@ final class LiveRideRequestService: RideRequestService {
         Task { _ = try? await api.cancelRideRequest(id: id) }
     }
 
+    /// MYR-397 — the AWAITED cancel for a ride that is already running.
+    ///
+    /// Deliberately the mutation and nothing else: it makes the call, lets the Kit's
+    /// error out, and touches NO local state. Everything the optimistic `cancel()`
+    /// above does — clearing `activeRequest`, retiring the owner-side twin,
+    /// re-arming the due refetch — happens here through the normal reconciliation
+    /// path instead, because the ride is only over once the server says so. On
+    /// success the caller's `refreshActiveRide()` re-reads and `integrate` maps the
+    /// wire's `cancelled` to the record disappearing (MYR-172), which is the same
+    /// erasure by the route that can be trusted.
+    ///
+    /// One local effect is kept and it is not optimism: the deferred create is
+    /// disarmed, because a send that has not gone out yet must not go out after a
+    /// cancel has been asked for.
+    func cancelActiveRide(id: String) async throws {
+        sendTask?.cancel()
+        sendTask = nil
+        pendingSend = nil
+        _ = try await api.cancelRideRequest(id: id)
+        // The rider's ride is also this device's OWNER incoming card when the
+        // account is both (MYR-325's same-account duality) — retire it here for the
+        // same reason `cancel()` does, rather than leaving the owner half holding a
+        // phantom request whose Accept would 409.
+        retireOwnerRide(id: id)
+    }
+
     func completeAndReset() -> RequestedRide? {
         // v1 has no completed lifecycle (MYR-176/177), so the Ride Summary is
         // unreachable in live mode. Reset defensively; nothing to persist.

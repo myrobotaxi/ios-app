@@ -23,6 +23,37 @@ struct FloatingMapButton: View {
     let action: () -> Void
 
     var body: some View {
+        FloatingMapButtonControl(
+            hidden: hidden,
+            systemImage: systemImage,
+            accessibilityLabel: accessibilityLabel,
+            action: action
+        )
+        .padding(.bottom, bottom)
+        .padding(.trailing, 16) // screens.jsx:353 `right = 16`
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+    }
+}
+
+// MARK: - FloatingMapButtonControl (MYR-397)
+//
+// The button WITHOUT its full-screen positioning container.
+//
+// `FloatingMapButton` above is that container plus this control, byte for byte
+// what it always was, so every existing call site is unchanged. The split exists
+// because the rider tracking map's controls no longer position themselves against
+// a screen edge at all: they ride the sheet's top edge through a
+// `SheetEdgeFollower`, which hosts the smallest view that has to move. Handing a
+// `UIHostingController` a view whose frame is the whole screen would give the
+// follower a full-screen hit region to translate — and a full-screen UIKit layer
+// over a map is the MYR-334 dropped-taps trap from the other side.
+struct FloatingMapButtonControl: View {
+    let hidden: Bool
+    var systemImage: String = "location.fill"
+    var accessibilityLabel: String = "Recenter map on vehicle"
+    let action: () -> Void
+
+    var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 17, weight: .medium))
@@ -35,7 +66,7 @@ struct FloatingMapButton: View {
         }
         .buttonStyle(.plain)
         // MYR-327: the label belongs to the BUTTON, not to the full-screen
-        // positioning container below it. Attached to the container (where it
+        // positioning container. Attached to the container (where it
         // used to sit) the accessibility element's frame was the whole screen —
         // so assistive tech announced the map itself as "Recenter map on
         // vehicle", and an automated activation landed at screen centre instead
@@ -45,8 +76,5 @@ struct FloatingMapButton: View {
         .scaleEffect(hidden ? 0.9 : 1)
         .allowsHitTesting(!hidden)
         .animation(.easeInOut(duration: 0.22), value: hidden) // screens.jsx:363 `.22s ease`
-        .padding(.bottom, bottom)
-        .padding(.trailing, 16) // screens.jsx:353 `right = 16`
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
     }
 }

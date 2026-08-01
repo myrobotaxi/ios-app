@@ -89,6 +89,43 @@ enum DebugScene: String, CaseIterable {
     /// MYR-270 — rider tracking sheet AFTER the owner confirmed pickup: the "Your car
     /// is here" stage with the circular pulsing "Start ride" CTA (status `.arrived`).
     case trackingArrived
+    /// MYR-393 — **the state the client photographed the opposite of.** An accepted,
+    /// dispatched ride whose car is PARKED and has not moved: "Waiting for Lunar to
+    /// start", NO 34pt countdown, no "N mi · N min" on the pickup row, and a car
+    /// marker at the car's REAL position rather than interpolated down the route.
+    ///
+    /// Live-path-only by construction — the ladder short-circuits to the
+    /// pre-MYR-393 line whenever there is no telemetry to be honest with, which is
+    /// exactly what keeps `trackingLeg1`/`trackingLeg2`/`trackingArriving` on the
+    /// sentence their own `trackProgress` ticker earns. So this forces the ONE live
+    /// branch (`debugResolvesLiveMotion`) on an otherwise simulated boot and injects
+    /// a live-shaped `VehicleState`: `speed: 0`, `status: .parked`, a real fix. The
+    /// verdict is the SHIPPING `RiderCarMotion.evidence` → `RiderMotionLatch` →
+    /// `RiderTrackingLadder` chain; nothing about the line is hand-set.
+    case trackingWaitingToStart
+    /// MYR-393 — the SAME parked car, read 12 minutes ago and not streaming. The
+    /// marker still renders (we hold a position; MYR-394's REST polling is what will
+    /// keep it fresh), and the surface SAYS SO: a muted "Position from 12m ago"
+    /// under the status line. The one-line diff against `trackingWaitingToStart`,
+    /// which is streaming and carries no qualifier at all.
+    case trackingStalePosition
+    /// MYR-397 — the redesigned PEEK: status line + ETA, a complete composition at
+    /// its own measured height. `trackingLeg1` verbatim plus the detent, so the pair
+    /// is a clean before/after of exactly the guillotine MYR-296 named — the old
+    /// peek was this same card with its bottom 160-odd points cut off mid-row.
+    case trackingPeek
+    /// MYR-397 — the Cancel that was REFUSED. A `409` on `POST
+    /// /api/ride-requests/{id}/cancel` with the ride still standing on the re-read,
+    /// which resolves through the SHIPPING `ReservationCancelFailure.classify` →
+    /// `ReservationCancelOutcome.resolve` pair to the honest muted pill — and, the
+    /// whole point, leaves the rider ON the tracking sheet with the ride intact.
+    ///
+    /// It has no other capture route: against a real backend a refusal needs a ride
+    /// that has moved on mid-tap, and the pre-MYR-397 code path discarded the answer
+    /// entirely. The refusal is injected as a real thrown `RestError.http`, so what
+    /// the capture shows is the production classifier's reading of a real wire
+    /// error. Capture at t≈2s (the cancel fires on appear).
+    case trackingCancelRefused
     case summary
     case declined
     /// MYR-233 — the rider Review sheet with a BUSY vehicle: the muted "Busy"
@@ -1231,6 +1268,35 @@ enum DebugScene: String, CaseIterable {
         return false
     }
 
+    /// MYR-397 — boot the rider TRACKING sheet at its PEEK detent.
+    ///
+    /// The sheet rests at FULL (the ride's details are what the rider is there for),
+    /// and headless tooling cannot drag it — the same reason `MRT_OWNER_DETENT`
+    /// exists for the owner sheet, and this is deliberately its twin rather than a
+    /// second mechanism. Orthogonal to the scene, so any tracking scene can be
+    /// photographed at either detent; unset, every existing capture rests exactly
+    /// where it did.
+    ///
+    ///   `MRT_SCENE=trackingLeg1 MRT_TRACKING_DETENT=peek`
+    static var tracksAtPeekDetent: Bool {
+        if let scene = current, scene == .trackingPeek { return true }
+        if ProcessInfo.processInfo.environment["MRT_TRACKING_DETENT"] == "peek" { return true }
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-MRT_TRACKING_DETENT"), i + 1 < args.count { return args[i + 1] == "peek" }
+        return false
+    }
+
+    /// MYR-397 — drive the tracking sheet's Cancel on appear, against a server that
+    /// REFUSES it.
+    ///
+    /// A stand-in for the TAP only (the `ownerFreshnessWaking` /
+    /// `flipsRideShareOnBoot` precedent): everything after it — the throw, the
+    /// classify, the re-read, the reconcile, the copy — is the shipping path. The
+    /// refusal itself is a real `RestError.http(409, …)`, so the capture shows what
+    /// the production classifier made of a real wire error rather than a hand-set
+    /// notice string.
+    var refusesRideCancelOnBoot: Bool { self == .trackingCancelRefused }
+
     /// MYR-346 — simulate an INCOMING universal link, orthogonal to the scene.
     ///
     /// `MRT_JOIN_LINK` (or `-MRT_JOIN_LINK <value>`) takes either a full URL
@@ -2157,6 +2223,61 @@ enum DebugScene: String, CaseIterable {
         ))
     }
 
+    // MARK: MYR-393 — the parked car the honest ladder is about
+
+    /// Where the parked car sits for the two MYR-393 captures: ~1.4 mi from the
+    /// sample pickup (`DriveFixtures.financialDistrict`), which is the client's own
+    /// reported distance.
+    ///
+    /// Deliberately in the SIM's geography rather than at the literal 2705 N
+    /// Central Expy his screenshot shows. His car was in Plano and his pickup was in
+    /// Plano; putting a Texas coordinate against an SF fixture pickup produces a
+    /// 1,500-mile leg-1 route, which is a faithful rendering of nonsense inputs and
+    /// a useless capture. The SITUATION is what the scene reproduces — an accepted
+    /// ride, a car that has not moved, a mile and a half away — and that is the
+    /// thing the ladder is about.
+    static let parkedServiceCentreFix = CLLocationCoordinate2D(latitude: 37.7889, longitude: -122.4225)
+
+    /// A live-shaped `VehicleState` for a car that is NOT MOVING.
+    ///
+    /// The three fields the ladder reads are the point — `speed: 0`, `status:
+    /// .parked`, and a real fix — and they are the wire's own, so the capture runs
+    /// the SHIPPING `RiderCarMotion.evidence` rather than a flag. Everything else is
+    /// filled to the contract's non-optional minimum.
+    ///
+    /// `readAgo` backdates `lastUpdated`, which is the ONLY difference between
+    /// `trackingWaitingToStart` (streaming, current, no qualifier) and
+    /// `trackingStalePosition` (read 12 minutes ago, qualifier up). Computed
+    /// relative to `now` for the reason `sampleServiceEnd` is: a literal drifts and
+    /// the scene would photograph a different age every week.
+    @MainActor
+    static func parkedTrackingState(readAgo: TimeInterval) -> VehicleState {
+        let read = Date().addingTimeInterval(-readAgo)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return VehicleState(
+            vehicleId: "debug-parked",
+            name: "Lunar",
+            model: "Model Y",
+            year: 2026,
+            color: "Quicksilver",
+            status: .parked,
+            speed: 0,
+            heading: 0,
+            latitude: parkedServiceCentreFix.latitude,
+            longitude: parkedServiceCentreFix.longitude,
+            locationName: "Tesla Plano",
+            locationAddress: "2705 N Central Expy, Plano, TX",
+            chargeLevel: 68,
+            estimatedRange: 240,
+            interiorTemp: 71,
+            exteriorTemp: 88,
+            odometerMiles: 12_480,
+            fsdMilesSinceReset: 0,
+            lastUpdated: formatter.string(from: read)
+        )
+    }
+
     /// The destination the real-path replay chooses on the search sheet before
     /// tapping Continue — the same sample the seeded scenes use.
     static var realPathDestination: RidePlace { sampleDestination }
@@ -2414,7 +2535,12 @@ enum DebugScene: String, CaseIterable {
                 fleetMemberID: Self.liveIncomingVehicleID,
                 requesterName: Self.sampleProfile.firstName
             )
-        case .trackingLeg1:
+        case .trackingLeg1, .trackingPeek, .trackingCancelRefused,
+             // MYR-393 — the SAME accepted, dispatched leg-1 record the client had.
+             // That is the point: nothing about the RIDE differs from
+             // `trackingLeg1`, and the sentence changes anyway, because the sentence
+             // is now about the car.
+             .trackingWaitingToStart, .trackingStalePosition:
             return record(status: .accepted, progress: 0.08)
         case .trackingLeg2:
             return record(status: .accepted, progress: 0.5)
@@ -2656,9 +2782,29 @@ enum DebugScene: String, CaseIterable {
             viewer.draftDestination = DebugScene.sampleDestination
             viewer.debugFleetMemberOverride = DebugScene.platedFleetMember
             viewer.sheetPhase = .booking
-        case .trackingLeg1, .trackingLeg2, .trackingArriving, .trackingArrived:
+        case .trackingLeg1, .trackingLeg2, .trackingArriving, .trackingArrived,
+             // MYR-397 — the peek and the refused cancel are `trackingLeg1`'s own
+             // seed; what differs is the detent and the injected refusal.
+             .trackingPeek, .trackingCancelRefused:
             viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
+            viewer.sheetPhase = .tracking
+        case .trackingWaitingToStart, .trackingStalePosition:
+            // MYR-393 — the same leg-1 seed, plus the two live-shaped inputs the
+            // honest ladder needs: the live branch forced on, and a `VehicleState`
+            // for a car that is NOT MOVING. Everything downstream — the evidence
+            // read, the latch, the ladder, the marker, the freshness qualifier — is
+            // the shipping code.
+            viewer.draftPickup = DebugScene.samplePickup
+            viewer.draftDestination = DebugScene.sampleDestination
+            viewer.debugResolvesLiveMotion = true
+            viewer.debugTrackingVehicleState = DebugScene.parkedTrackingState(
+                readAgo: self == .trackingStalePosition ? 12 * 60 : 0
+            )
+            // Streaming and current on the waiting scene (so it carries NO
+            // qualifier); read 12 minutes ago and not streaming on the stale one,
+            // which is the ONE difference between the two captures.
+            viewer.debugTrackingIsStreaming = self == .trackingStalePosition ? false : true
             viewer.sheetPhase = .tracking
         case .summary:
             viewer.draftPickup = DebugScene.samplePickup

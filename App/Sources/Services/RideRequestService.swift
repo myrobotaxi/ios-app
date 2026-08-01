@@ -158,7 +158,30 @@ public protocol RideRequestService: AnyObject, Observable {
 
     /// Rider cancels an in-flight (not yet accepted) request
     /// (`PendingContent`'s "Cancel request" / `closeToIdle`).
+    ///
+    /// **OPTIMISTIC BY DESIGN, AND THEREFORE NOT THE TRACKING SHEET'S PATH.** It
+    /// clears `activeRequest` synchronously and fires the POST into a detached
+    /// task whose answer is discarded. On the pending pill that is right: the
+    /// booking grace window depends on a cancel making zero server calls (MYR-218
+    /// defect 1), and nothing has been dispatched. On a ride the owner has already
+    /// accepted it would be the MYR-381 defect at its worst — see
+    /// `cancelActiveRide(id:)`.
     func cancel()
+
+    /// MYR-397 — cancel a ride that is ALREADY RUNNING, and let the caller see the
+    /// answer.
+    ///
+    /// Awaited and THROWING, which is the entire difference from `cancel()` above:
+    /// the tracking sheet classifies what comes back (`ReservationCancelFailure`),
+    /// reconciles it against a re-read and only then removes the ride. **It must
+    /// not touch local state itself** — an optimistic removal here is a rider who
+    /// believes they have cancelled walking away from a car that is still coming
+    /// for them, which is the one outcome this app must never produce.
+    ///
+    /// The simulated default performs the existing local cancel and does not throw:
+    /// there is no server to refuse, so the sim path has exactly one outcome and
+    /// modelling a refusal it can never receive would be fixture behaviour.
+    func cancelActiveRide(id: String) async throws
 
     /// MYR-270 — OWNER confirms the rider is aboard on the leg-1 tracking sheet:
     /// advances `accepted → arrived` (car reached pickup, awaiting the rider's
@@ -325,6 +348,12 @@ public extension RideRequestService {
     func pickedUp() {}
     func startRide() {}
     func droppedOff() {}
+
+    /// MYR-397 default — the simulated service has no server to refuse a cancel, so
+    /// this IS its whole cancel: the existing local discard, and no throw. The
+    /// tracking sheet's classify/reconcile machinery then resolves `.cancelled`
+    /// every time, which is the correct simulated answer rather than a stubbed one.
+    func cancelActiveRide(id: String) async throws { cancel() }
 }
 
 // MARK: - Timing constants (single source, per CLAUDE.md deliverable 2)

@@ -27,7 +27,11 @@ struct TrackingMapView: View {
     let leg1Route: [CLLocationCoordinate2D]
     /// Pickup → destination road polyline (leg 2).
     let leg2Route: [CLLocationCoordinate2D]
-    let carCoordinate: CLLocationCoordinate2D
+    /// MYR-393 — the freshest position we hold for the car, or `nil` when we hold
+    /// none. `nil` draws NO vehicle glyph: the route, both pins and the camera are
+    /// unaffected, because a camera is context and a gold pin is a claim that the
+    /// car is there right now (MYR-387's rule, on the rider's tracking map).
+    let carCoordinate: CLLocationCoordinate2D?
     /// Map-relative heading (deg clockwise from north) — `TrackingCarMarker`
     /// rotates the glyph to it.
     let carHeading: Double
@@ -68,15 +72,23 @@ struct TrackingMapView: View {
             if leg1Route.count > 1 {
                 return VehicleRoute.remainingCoordinates(along: leg1Route, progress: legProgress)
             }
+            // MYR-393 — with no position for the car there is nothing to frame but
+            // the pickup, which is a fact. Framing on a coordinate we do not have
+            // is the same fabrication the marker now refuses.
+            guard let carCoordinate else { return [pickupCoordinate] }
             return [carCoordinate, pickupCoordinate]
         case .inRide:
             if leg2Route.count > 1 { return leg2Route }
             if let destinationCoordinate { return [pickupCoordinate, destinationCoordinate] }
+            guard let carCoordinate else { return [pickupCoordinate] }
             return [carCoordinate, pickupCoordinate]
         }
     }
 
-    private var carKey: String { "\(carCoordinate.latitude),\(carCoordinate.longitude)" }
+    private var carKey: String {
+        guard let carCoordinate else { return "nofix" }
+        return "\(carCoordinate.latitude),\(carCoordinate.longitude)"
+    }
     /// Changes when a leg's polyline is (re)fetched — the straight fallback → the
     /// real Apple route — so the fit tightens to the actual road geometry.
     private var routeKey: String { "\(leg1Route.count)-\(leg2Route.count)" }
@@ -151,7 +163,8 @@ struct TrackingMapView: View {
         guard !coords.isEmpty else { return }
         if controller.phase == .inactive {
             applyWrite(controller.enter(leg: leg, fitCoords: coords, bottomInset: bottomInset, viewHeight: viewHeight, topInset: MRTMetrics.trackingFitTopInset))
-        } else if let write = controller.update(leg: leg, carPosition: carCoordinate, fitCoords: coords, bottomInset: bottomInset, viewHeight: viewHeight, topInset: MRTMetrics.trackingFitTopInset) {
+        } else if let carCoordinate,
+                  let write = controller.update(leg: leg, carPosition: carCoordinate, fitCoords: coords, bottomInset: bottomInset, viewHeight: viewHeight, topInset: MRTMetrics.trackingFitTopInset) {
             applyWrite(write)
         }
     }
@@ -212,9 +225,14 @@ enum TrackingRouteMapContent {
     static func pickup(
         leg1Route: [CLLocationCoordinate2D],
         leg2Route: [CLLocationCoordinate2D],
-        carCoordinate: CLLocationCoordinate2D
+        carCoordinate: CLLocationCoordinate2D?
     ) -> CLLocationCoordinate2D {
-        leg1Route.last ?? leg2Route.first ?? carCoordinate
+        // MYR-393 — the car is the LAST fallback and is now optional. With no leg
+        // geometry AND no fix there is no pickup to pin, so `(0, 0)` would be the
+        // only remaining answer and §2.3 says that is the no-fix sentinel, not a
+        // place. The caller's own guard is what keeps that unreachable: leg 2 is
+        // always the submitted ride's pickup→destination pair.
+        leg1Route.last ?? leg2Route.first ?? carCoordinate ?? kCLLocationCoordinate2DInvalid
     }
 
     /// The drop-off, or `nil` when leg 2 has no geometry yet.
@@ -229,7 +247,7 @@ enum TrackingRouteMapContent {
         leg2Route: [CLLocationCoordinate2D],
         pickupCoordinate: CLLocationCoordinate2D,
         destinationCoordinate: CLLocationCoordinate2D?,
-        carCoordinate: CLLocationCoordinate2D,
+        carCoordinate: CLLocationCoordinate2D?,
         carHeading: Double,
         legProgress: Double,
         showsUserLocation: Bool
@@ -266,8 +284,16 @@ enum TrackingRouteMapContent {
         }
 
         // The live car — Uber-style top-down glyph rotated to real heading.
-        Annotation("Vehicle", coordinate: carCoordinate) {
-            TrackingCarMarker(heading: HeadingMath.mapRelative(heading: carHeading, cameraHeading: 0))
+        //
+        // MYR-393 — drawn ONLY from a position we hold. The client's report is this
+        // annotation rendered at a point interpolated along a polyline by a
+        // client-side ticker, a mile and a half from a car that was parked; with no
+        // fix there is no honest coordinate to put it at, and no marker is the only
+        // truthful frame.
+        if let carCoordinate {
+            Annotation("Vehicle", coordinate: carCoordinate) {
+                TrackingCarMarker(heading: HeadingMath.mapRelative(heading: carHeading, cameraHeading: 0))
+            }
         }
     }
 

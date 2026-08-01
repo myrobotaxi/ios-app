@@ -537,7 +537,26 @@ public enum MRTMetrics {
     /// MYR-271 — gap between the rider tracking sheet's SETTLED top edge and the
     /// recenter button's bottom, so the button clears the card in EVERY detent
     /// (re-anchored off the settled detent height, not a fixed offset).
+    ///
+    /// MYR-397 — it is no longer the SETTLED height the buttons are anchored off:
+    /// they are laid out once against the PEEK detent and translated by the engine
+    /// as the sheet grows (`SheetEdgeAnchor`), so this gap is now the distance from
+    /// the sheet's live top edge at every point of the drag rather than only at
+    /// rest. The number is unchanged, so the resting frames are.
     public static let trackingRecenterSheetGap: CGFloat = 22
+
+    /// MYR-397 — the tracking sheet's peek layer sizes to its own content
+    /// (`SHEET_HEIGHTS`' rule for every phase past search, ride-request.jsx:47),
+    /// so `trackingSheetPeekHeight` above is only the FALLBACK until the first
+    /// measurement lands. This is the peek composition's bottom band: smaller than
+    /// the full card's 30 because a brief summary ends on its last line of ink,
+    /// where the full card ends above a home indicator with a scroll behind it.
+    public static let trackingPeekBottomPad: CGFloat = 18
+
+    /// MYR-397 — the gap above the tracking sheet's "Cancel ride" action. Matches
+    /// the sheet's own inter-block rhythm (the itinerary/ride-row 12 plus the 6 a
+    /// destructive control takes to sit apart from the content it is about).
+    public static let trackingCancelTopGap: CGFloat = 18
 
     // MARK: - Expanded route viewer (MYR-327)
     //
