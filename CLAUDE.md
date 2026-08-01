@@ -2322,12 +2322,75 @@ SIMCTL_CHILD_MRT_SCENE=ownerShareLoading xcrun simctl launch <udid> app.myrobota
 SIMCTL_CHILD_MRT_SCENE=ownerShareUnreachable xcrun simctl launch <udid> app.myrobotaxi.ios
 ```
 
-**Still open, found and NOT fixed here**: owner **Settings** renders the same
-`shareService.viewers` list behind a bare `isEmpty` fallback
-(`SettingsScreen.sharedWithCard` → `SettingsNoticeRow("No one has access yet.")`),
-so it has this exact flash on its own surface. It is a different tab and MYR-354's
-grammar owns that page; the phase it needs is now published, and unread there for
-the same reason it was unread here.
+**THE SETTINGS HALF WAS WORSE THAN A FLASH** (MYR-392, the handoff above, now
+closed) — scenes `ownerSettingsShareLoading` / `ownerSettingsShareUnreachable`.
+MYR-386 recorded owner Settings as carrying "this exact flash on its own
+surface". It was carrying something sharper: **`SettingsScreen` never called
+`shareService.load()` at all.** Its only tasks were `pushPrefs.load()` and
+`prepareAccountDeletion()`, and `ShareService.load()` had exactly two call sites,
+both on `InvitesScreen`. So an owner who opened Settings without ever visiting
+the Share tab sat on phase `.idle` with an empty array for the whole session and
+read **"No one has access yet."** — a PERMANENT false claim about their own
+account, on the page that also offers to REVOKE the access it had never read.
+
+- **The fix is both halves, and they are one change.** Settings gets its own
+  `.task { await shareService.load() }` plus MYR-386's vehicle-id re-ask (the
+  §7.5.2 short-circuit on an empty fleet is per-vehicle here too, so without the
+  re-ask the fix would reproduce the permanent-empty-hero it removes). Only then
+  is it TRUE on this surface that "not asked yet" is "about to ask", which is
+  what makes `.idle` shimmer with `.loading` legitimate here exactly as it is on
+  the Share tab.
+- **`SettingsScreen.SharedWithState` is the card's rule, and it deliberately does
+  NOT call `ShareRosterState.resolve`.** That state models the Share tab's TWO
+  sections; this card renders one thing — who can see the car right now — so it
+  resolves from the ACCEPTED list alone and an account whose only rows are
+  pending invites still reads the notice. Everything else is arm-for-arm the
+  same, including **rows in hand outranking every phase** (this page performs the
+  revoke whose re-read would otherwise blank it).
+- **The failure arm is stricter than the empty one**: the service's sentence
+  (`LiveShareService.unreadableMessage`, verbatim) and NO CTA at all. The "Invite
+  someone" row would route to a Share tab failing the identical read.
+- **The count badge was part of the same claim.** "0 people" over a shimmering
+  card is the false statement in three characters, rendered from the same
+  unfetched array; the badge now appears only with rows in hand or after a
+  completed fetch (MYR-347 removed "VIEWERS · 0" for the sibling reason). A
+  loaded-empty account still reads "0 people" exactly as before.
+- **THE SKELETON MAY NOT WEAR THE REAL CARD'S FILL**, which is
+  `ShareSkeletonCard`'s trap one screen over: `Color.mrtSkeletonFill` **IS**
+  `surface` and `SettingsCard` fills with `.mrtSurface`, so `.regular` blocks
+  inside the real card are invisible. `SettingsSharedWithSkeleton` takes
+  `mrtSkeletonRowFill` through the REAL `.mrtSurface(.card, fill:)`, so radius,
+  hairline and gutters are the loaded card's and only the fill differs. Its rows
+  are `ViewerRow`-shaped (36pt avatar, 14/11pt lines, 12pt vertical padding) and
+  the trailing Revoke pill's slot is left EMPTY — a control that exists
+  regardless of the data must not be drawn as a block.
+- **`ownerSettingsShareUnreachable` IS THE PROOF THAT THE SCREEN ASKS**, and that
+  is why the failing arm earns a scene. `.idle` and `.loading` render the same
+  skeleton, so a read parked in flight looks identical whether the screen asked
+  or never did; only a read that FAILS can tell them apart. On the pre-fix screen
+  it shimmers for ever — verified by reverting the `.task` on this branch, where
+  `SettingsSharedWithUITests` and the mounted
+  `testTheScreenAsksForTheRosterOnAppear` both fail and the rest stay green.
+- Both scenes leave the Tesla Account section on the FIXTURE list (no
+  `rendersLiveLinkedVehicles`), so the only thing in flight in either frame is
+  the roster, and both are live-path-only by construction. Every simulated +
+  DEBUG capture is unchanged: `ownerSettings`, `ownerSettingsTop`,
+  `ownerSettingsLoading`, `ownerDeleteAccount` and the whole Share-tab family
+  diff to zero pixels against `origin/main` outside the status bar, the
+  "synced Ns ago" stamp and the home indicator — the three bands a base-vs-base
+  control moves in too.
+
+```sh
+SIMCTL_CHILD_MRT_SCENE=ownerSettingsShareLoading xcrun simctl launch <udid> app.myrobotaxi.ios
+SIMCTL_CHILD_MRT_SCENE=ownerSettingsShareUnreachable xcrun simctl launch <udid> app.myrobotaxi.ios
+```
+
+**Found and NOT fixed here** (MYR-392): `TeslaAccountRowSkeleton` renders its
+SECOND bar — the "model · plate" line — at `.regular` emphasis INSIDE the real
+`SettingsCard`, i.e. `mrtSkeletonFill` on `mrtSurface`, which is the invisible
+-on-card trap this very file documents. `ownerSettingsLoading` therefore shows
+two lonely name bars with no detail lines. It is MYR-326's scene and byte-stable,
+so changing it is a deliberate capture change and belongs to its own issue.
 
 **The Live Activity is the first surface this app does not draw** (MYR-172) —
 scene `riderLiveActivity`. The rider's ride card on the lock screen and in the

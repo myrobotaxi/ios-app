@@ -111,6 +111,70 @@ struct SettingsScreen: View {
         return .notice("No Tesla linked yet.")
     }
 
+    // MARK: Shared with — where the ROSTER's fetch stands (MYR-392)
+
+    /// What the "Shared with" card renders, resolved from the SAME
+    /// `ShareRosterLoadPhase` the Share tab reads (MYR-386) plus the accepted
+    /// list.
+    ///
+    /// This card had MYR-386's defect on its own surface, and in its worse form.
+    /// The Share tab at least ASKED — its `.task` calls `load()` on appear, so
+    /// the empty hero was a flash. **Owner Settings never called `load()` at
+    /// all**: its only tasks were `pushPrefs.load()` and
+    /// `prepareAccountDeletion()`, and `ShareService.load()` had exactly two call
+    /// sites, both on `InvitesScreen`. So an owner who opened Settings without
+    /// ever visiting the Share tab sat on `.idle` with an empty array for the
+    /// rest of the session and read "No one has access yet." — not a flash, a
+    /// PERMANENT false claim about their own account, made to someone who may
+    /// have shared their car with three people.
+    ///
+    /// The fix is both halves: this screen now asks (see the `.task` in `body`),
+    /// which is also what makes `.idle` legitimately shimmer here exactly as it
+    /// does on the Share tab, and this rule reads the answer.
+    enum SharedWithState: Equatable {
+        /// A fetch is running (or is about to — see `sharedWithState`), and
+        /// nothing is known. Row-shaped placeholders.
+        case loading
+        /// A COMPLETED fetch found nobody. The only route to the notice.
+        case empty
+        /// Accepted grants in hand.
+        case people([Viewer])
+        /// The read failed with nothing in hand — the service's own sentence, and
+        /// no CTA (MYR-386's grammar).
+        case unavailable(String)
+    }
+
+    /// The one rule, mirroring `ShareRosterState.resolve` arm for arm.
+    ///
+    /// **ROWS IN HAND OUTRANK EVERY PHASE.** `LiveShareService` re-reads the whole
+    /// list after every mutation, so a re-read that blanked a populated card into
+    /// a skeleton — or into a failure line — would make a REVOKE performed on this
+    /// very page look like the list falling over.
+    ///
+    /// **IT TAKES THE ACCEPTED LIST ONLY, DELIBERATELY**, which is the one place
+    /// it may not simply call `ShareRosterState.resolve`. That state models a page
+    /// with two sections; this card renders exactly one thing — who can see the
+    /// car right now. An account whose only rows are PENDING invites has still
+    /// shared with nobody, so the notice is the honest render there and the
+    /// invited rows stay the Share tab's business.
+    static func sharedWithState(
+        phase: ShareRosterLoadPhase,
+        viewers: [Viewer]
+    ) -> SharedWithState {
+        if !viewers.isEmpty { return .people(viewers) }
+        switch phase {
+        // `.idle` shimmers WITH `.loading`, for the reason MYR-386 spells out on
+        // the Share tab and which is only true here BECAUSE of this issue: the
+        // screen's own `.task` asks unconditionally on appear, so "not asked yet"
+        // is always "about to ask". Before the `.task` existed this arm would have
+        // been a skeleton that never resolved — which is why the two changes are
+        // one change.
+        case .idle, .loading: return .loading
+        case .loaded: return .empty
+        case .failed(let message): return .unavailable(message)
+        }
+    }
+
     /// Scroll anchor for the DEBUG `ownerSettings` capture scene (see below).
     private static let bottomAnchorID = "mrt-settings-bottom"
 
@@ -316,6 +380,39 @@ struct SettingsScreen: View {
         // sim. A failed read is an honest state, not a silent fall-through — see
         // `LivePushPrefsService.load()`.
         .task { await pushPrefs.load() }
+        // MYR-392 — READ THE OWNER'S GRANTS ON ARRIVAL. THE HEADLINE OF THIS
+        // ISSUE: this line did not exist, and nothing else on this screen asked.
+        //
+        // `ShareService.load()` had exactly two call sites, both on
+        // `InvitesScreen` (its own `.task`, and MYR-386's vehicle-id re-ask). This
+        // page consumed the same `shareService` and rendered its `viewers` list
+        // without ever asking for it, so on the live path an owner who never
+        // opened the Share tab read "No one has access yet." for the whole session
+        // over a roster nobody had fetched. The same mount also feeds a REVOKE
+        // (`confirmRevoke` → `shareService.revoke`), so this page could offer to
+        // cut access it had never read.
+        //
+        // No-op in sim (`SimulatedShareService.load()` does nothing and its
+        // fixtures are in hand before `init` returns), so every simulated + DEBUG
+        // Settings capture is byte-identical.
+        .task { await shareService.load() }
+        // MYR-392, mirroring MYR-386's re-ask on the Share tab, for the same
+        // reason and against the same hazard.
+        //
+        // §7.5.2 is PER-VEHICLE, so `LiveShareService.performLoad` short-circuits
+        // on an empty fleet. The `.task` above fires on APPEARANCE, and Settings
+        // opened during a cold boot appears before `GET /api/vehicles` answers —
+        // so without this the roster fetch would be skipped and nothing would ever
+        // re-run it, which is the permanent-empty-hero half of MYR-386 reproduced
+        // on this page by the very fix above.
+        //
+        // Keyed on the vehicle IDS rather than the rows: telemetry rewrites charge
+        // and location on those same `Vehicle` values every second, and keying on
+        // the rows would spend a §7.5.2 fan-out per frame.
+        .onChange(of: shareService.vehicleRideShare.map(\.id)) { _, ids in
+            guard !ids.isEmpty else { return }
+            Task { await shareService.load() }
+        }
         // MYR-355 — the account-deletion confirm. MYR-366 reduced it to ONE
         // dialog: the second one is now the full-screen offboarding flow below,
         // and the failure alert went with it (the retry lives on that screen,
@@ -542,11 +639,37 @@ struct SettingsScreen: View {
 
     // MARK: Shared with (screens.jsx:447-470)
 
+    /// MYR-392 — the ONE resolved state this card renders. Pure, and pinned by
+    /// `SettingsSharedWithTests` across the whole matrix.
+    private var sharedWithState: SharedWithState {
+        Self.sharedWithState(phase: shareService.rosterPhase, viewers: shareService.viewers)
+    }
+
     private var sharedWithHeader: some View {
         SettingsSectionLabel(title: "Shared with") {
-            Text("\(shareService.viewers.count) \(shareService.viewers.count == 1 ? "person" : "people")")
-                .font(.system(size: 11))
-                .foregroundStyle(Color.mrtTextMuted)
+            // MYR-392 — THE COUNT IS PART OF THE CLAIM. "0 people" over a
+            // shimmering card is the same false statement the notice was, in three
+            // characters, and it was rendered from the same unfetched array. The
+            // badge appears only once the count is one the app has actually been
+            // told: with rows in hand, or after a completed fetch. MYR-347 removed
+            // the Share tab's "VIEWERS · 0" for the sibling reason.
+            //
+            // A loaded-empty account still shows "0 people" exactly as before, so
+            // every simulated + DEBUG capture is byte-identical.
+            if let count = sharedWithHeaderCount {
+                Text("\(count) \(count == 1 ? "person" : "people")")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.mrtTextMuted)
+            }
+        }
+    }
+
+    /// The header badge's number, or `nil` while there is nothing honest to count.
+    private var sharedWithHeaderCount: Int? {
+        switch sharedWithState {
+        case .people(let viewers): return viewers.count
+        case .empty: return 0
+        case .loading, .unavailable: return nil
         }
     }
 
@@ -557,20 +680,49 @@ struct SettingsScreen: View {
     /// consumed here EXACTLY as it is and its baked-in page gutter is corrected
     /// at this call site — see `MRTSettingsGrammar.viewerRowCardInset` for the
     /// arithmetic and the handoff note.
+    ///
+    /// MYR-392 — it switches on `SharedWithState` rather than on `viewers.isEmpty`.
+    /// A bare `isEmpty` gives an in-flight list, a failed list and a genuinely
+    /// empty one the same definitive render, and this page could not even reach
+    /// the third: it never fetched. A screen cannot forget an arm of an enum the
+    /// way it can forget the third leg of an `if`/`else`.
+    @ViewBuilder
     private var sharedWithCard: some View {
-        SettingsCard {
-            if shareService.viewers.isEmpty {
+        switch sharedWithState {
+        case .loading:
+            SettingsSharedWithSkeleton()
+        case .unavailable(let message):
+            // The service's own sentence, and NOTHING else — MYR-386's grammar,
+            // which is stricter than the empty arm's on purpose. "No one has
+            // access yet." is a claim about the ACCOUNT that a failed read cannot
+            // support, and the "Invite someone" row would route to a Share tab
+            // that is failing the identical read. Recovery is the low-friction one
+            // (a resume re-asks); there is no retry button anywhere in this class.
+            SettingsCard {
+                SettingsNoticeRow(text: message)
+            }
+        case .empty:
+            SettingsCard {
                 SettingsNoticeRow(text: "No one has access yet.")
-            } else {
-                ForEach(Array(shareService.viewers.enumerated()), id: \.element.id) { index, viewer in
+                inviteSomeoneRow
+            }
+        case .people(let viewers):
+            SettingsCard {
+                ForEach(Array(viewers.enumerated()), id: \.element.id) { index, viewer in
                     ViewerRow(viewer: viewer) { confirmRevoke = viewer }
                         .padding(.horizontal, -MRTSettingsGrammar.viewerRowCardInset)
                         .mrtSettingsRowSeparator(isFirst: index == 0)
                 }
+                inviteSomeoneRow
             }
-            SettingsActionRow(icon: "plus", title: "Invite someone") {
-                ownerTab = "invites"
-            }
+        }
+    }
+
+    /// The card's closing action row. One declaration, consumed by the two arms
+    /// that carry it, so the two cannot drift into two different rows.
+    private var inviteSomeoneRow: some View {
+        SettingsActionRow(icon: "plus", title: "Invite someone") {
+            ownerTab = "invites"
         }
     }
 

@@ -470,6 +470,108 @@ struct ShareVehicleRideShareSkeleton: View {
     }
 }
 
+// MARK: - Settings ⇢ Shared with (MYR-392)
+//
+// The owner Settings "Shared with" card while the §7.5.2 roster is in flight —
+// the same fetch, the same phase and the same rule as the Share tab's
+// `ShareRosterSkeleton`, on the other surface that renders `shareService.viewers`.
+//
+// It is the MYR-354 settings-row geometry rather than the Share tab's, because
+// this card is an inset grouped list and that one is a full-bleed page: a
+// skeleton is only worth having if the real rows land INTO its layout.
+
+/// The "Shared with" card as a PLACEHOLDER: `SettingsCard`'s own shape, gutters
+/// and section gap, with two `ViewerRow`-shaped rows inside it.
+///
+/// **THE FILL IS THE WHOLE TRAP, AND IT IS ALREADY DOCUMENTED ONE SCREEN OVER**
+/// (see `ShareSkeletonCard` above). `Color.mrtSkeletonFill` **IS** `surface`, and
+/// `SettingsCard` fills with `.mrtSurface` — so `.regular` blocks dropped into
+/// the real card render invisibly, and the placeholder would be a lonely row of
+/// name bars with no avatars and no detail lines. This card therefore carries
+/// `mrtSkeletonRowFill`, which is deliberately DARKER than the block fills, and
+/// takes it through the REAL `.mrtSurface(.card, fill:)` so the radius, the
+/// hairline and the gutters are the loaded card's to the point — only the fill
+/// differs, exactly as on the Share tab.
+///
+/// **NO "Invite someone" ROW**, matching `InvitesScreen`'s own `.loading` arm,
+/// which likewise renders no action row. MYR-386's rule is that a control which
+/// exists regardless of the data must not be drawn as a block (a block where a
+/// button will be reads as a tappable thing that does nothing); the row is real,
+/// so it arrives with the card that can carry it rather than as a placeholder of
+/// itself.
+struct SettingsSharedWithSkeleton: View {
+    /// Two rows. Enough to read as a list, few enough to make no claim about a
+    /// number the server has not stated — `TeslaAccountRowSkeleton`'s own rule on
+    /// this page, and the reason this is not the Share tab's three.
+    static let rowCount = 2
+
+    /// The label VoiceOver reads while the card is a placeholder. `static` so the
+    /// UI test names the same string the screen does.
+    static let accessibilityLabel = "Loading who this car is shared with"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(0..<Self.rowCount, id: \.self) { index in
+                SettingsViewerRowSkeleton(index: index)
+                    .mrtSettingsRowSeparator(isFirst: index == 0)
+            }
+        }
+        // `SettingsCard`'s body, with the fill swapped — see the note above.
+        .mrtSurface(.card, fill: .mrtSkeletonRowFill)
+        .padding(.horizontal, MRTMetrics.pageGutter)
+        .padding(.bottom, MRTSettingsGrammar.sectionSpacing)
+        .mrtSkeletonAccessibility(Self.accessibilityLabel)
+    }
+}
+
+/// One `ViewerRow`-shaped placeholder inside the Settings card: the avatar
+/// circle, the 14pt name line and the 11pt permission line, at that row's own
+/// spacing and vertical padding, with the content column at the card's 16pt
+/// inset (which is what `MRTSettingsGrammar.viewerRowCardInset` corrects the real
+/// row to).
+///
+/// The trailing "Revoke" pill's slot is deliberately left EMPTY. It is a CONTROL
+/// that exists regardless of the data, and a capsule-shaped block there would
+/// invent a destructive button over a row that stands for nobody.
+private struct SettingsViewerRowSkeleton: View {
+    let index: Int
+
+    /// Varied per row so two placeholders read as two different people rather
+    /// than as a repeated graphic. Indexed, not random, so the capture scene is
+    /// deterministic (`DriveRowSkeleton`'s rule).
+    private static let nameWidths: [CGFloat] = [104, 84]
+    private static let permWidths: [CGFloat] = [88, 112]
+
+    /// `ViewerRow`'s own `Avatar()` default size.
+    private static let avatarSize: CGFloat = 36
+    /// `ViewerRow`'s `HStack(spacing: 14)`.
+    private static let contentGap: CGFloat = 14
+
+    var body: some View {
+        HStack(spacing: Self.contentGap) {
+            MRTSkeletonBar(
+                width: Self.avatarSize, height: Self.avatarSize, radius: Self.avatarSize / 2
+            )
+            VStack(alignment: .leading, spacing: 3) {
+                // The name — 14pt medium.
+                MRTSkeletonBar(
+                    width: Self.nameWidths[index % Self.nameWidths.count],
+                    height: 14, radius: 5, emphasis: .strong
+                )
+                // `Viewer.perm` — 11pt.
+                MRTSkeletonBar(
+                    width: Self.permWidths[index % Self.permWidths.count],
+                    height: 11
+                )
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, MRTSettingsGrammar.rowHorizontalPadding)
+        .padding(.vertical, 12)
+        .frame(minHeight: MRTMetrics.minTapTarget)
+    }
+}
+
 // MARK: - Settings ⇢ Tesla Account
 
 /// A placeholder for one linked-vehicle row in the read-only live Tesla Account

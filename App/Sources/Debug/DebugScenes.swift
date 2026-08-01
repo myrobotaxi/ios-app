@@ -1077,6 +1077,38 @@ enum DebugScene: String, CaseIterable {
     case ownerShareLoading
     case ownerShareUnreachable
 
+    /// MYR-392 — THE SAME TWO STATES ON THE OTHER SURFACE THAT RENDERS THIS
+    /// ROSTER: owner **Settings** ⇢ "Shared with".
+    ///
+    /// That card resolved from a bare `shareService.viewers.isEmpty`, so it had
+    /// MYR-386's conflation — and in a worse form, because **this screen never
+    /// called `load()` at all**. `ShareService.load()` had exactly two call sites,
+    /// both on `InvitesScreen`, so an owner who opened Settings without ever
+    /// visiting the Share tab sat on `.idle` with an empty array and read "No one
+    /// has access yet." for the rest of the session. Not a flash: a permanent
+    /// false claim about their own account.
+    ///
+    /// **`ownerSettingsShareUnreachable` IS THE PROOF THAT SETTINGS ASKS**, which
+    /// is why it earns a scene rather than a screenshot of the sentence. `.idle`
+    /// and `.loading` render the same skeleton (deliberately — see
+    /// `SettingsScreen.sharedWithState`), so a parked read cannot tell a screen
+    /// that asks from one that never did; only a read that FAILS can. Without the
+    /// `.task` this scene shows a skeleton for ever, which is exactly how the UI
+    /// test fails on the pre-fix build.
+    ///
+    /// `ownerSettingsShareLoading` is the in-flight capture: two `ViewerRow`-shaped
+    /// placeholders in the settings-card geometry. **Capture it twice** — once
+    /// normally, once with `xcrun simctl ui <udid> reduce_motion enabled` — to
+    /// prove `MRTShimmerBand`'s fallback: the blocks stay, the sweep goes.
+    ///
+    /// Both leave the Tesla Account section on the fixture list (they do NOT set
+    /// `rendersLiveLinkedVehicles`), so the only thing in flight in either frame is
+    /// the roster, and both are live-path-only by construction
+    /// (`SimulatedShareService.rosterPhase` is `.loaded` from the first frame) —
+    /// `ownerSettings` / `ownerSettingsTop` stay byte-identical.
+    case ownerSettingsShareLoading
+    case ownerSettingsShareUnreachable
+
     /// MYR-347 — the two composer steps, which headless tooling cannot reach:
     /// step one is behind a tap on the hero CTA / "Invite someone" row, and step
     /// two additionally needs six characters typed into a field. Both seed the
@@ -1483,7 +1515,11 @@ enum DebugScene: String, CaseIterable {
         case .ownerDrives, .ownerDrivesLoading, .ownerReservationUpcoming,
              .ownerReservationDetail: return "drives"
         // MYR-354 adds `ownerSettingsTop`; MYR-347 adds the five Share scenes.
-        case .ownerSettings, .ownerSettingsTop, .ownerSettingsLoading: return "settings"
+        // MYR-392 — the two Settings-side roster states are the Settings tab, for
+        // the reason MYR-369 wrote this line out for the ride-share scenes: a
+        // scene whose subject is a card on THIS page must not boot to another one.
+        case .ownerSettings, .ownerSettingsTop, .ownerSettingsLoading,
+             .ownerSettingsShareLoading, .ownerSettingsShareUnreachable: return "settings"
         // MYR-355 / MYR-366 — the owner-shell deletion + offboarding scenes are
         // the Settings tab: that is where the flow is entered from.
         case .ownerDeleteAccount, .ownerOffboarding, .offboardingFailed, .ownerOffboardingDone:
@@ -1522,6 +1558,10 @@ enum DebugScene: String, CaseIterable {
             // DEBUG identity their siblings do, so the profile card and the
             // mode-switch row are in frame for the grammar comparison.
             || self == .ownerSettingsTop
+            // MYR-392 — the two Settings-side roster scenes are live-shaped by
+            // construction (their share service is the production one), so they
+            // carry the live identity too.
+            || self == .ownerSettingsShareLoading || self == .ownerSettingsShareUnreachable
             || self == .riderSettingsOwned || self == .riderSettingsMixed
             || self == .riderSettingsEmpty
             // MYR-355 — the deletion scenes are the same screens with a dialog (or,
@@ -1929,6 +1969,8 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerShareControls || self == .ownerShareVehiclePaused
             // MYR-386 — same chain, same reason.
             || self == .ownerShareLoading || self == .ownerShareUnreachable
+            // MYR-392 — and the Settings-side pair of the same two states.
+            || self == .ownerSettingsShareLoading || self == .ownerSettingsShareUnreachable
             // MYR-355 — the owner-shell deletion scenes. MYR-366 — `offboarding
             // Failed` is captured on the OWNER shell because the owner's sequence
             // is the longer one and therefore the harder stepper to stop honestly
@@ -2999,6 +3041,8 @@ enum DebugScene: String, CaseIterable {
             viewer.draftDestination = DebugScene.sampleDestination
             viewer.sheetPhase = .summary
         case .modeChooser, .ownerSettings, .ownerSettingsTop, .riderSettings,
+             // MYR-392 — Settings scenes; nothing about the rider sheet is seeded.
+             .ownerSettingsShareLoading, .ownerSettingsShareUnreachable,
              .riderSettingsOwned, .riderSettingsMixed, .riderSettingsEmpty,
              // MYR-355 — settings scenes: nothing about the rider sheet is seeded.
              .ownerDeleteAccount, .riderDeleteAccount,
@@ -3391,6 +3435,26 @@ extension DebugScene {
                 ownedVehicles: { [VehicleFixtures.vehicles[0]] }
             )
         case .ownerShareUnreachable:
+            return LiveShareService(
+                api: DebugFailingSharingEndpoint(),
+                rideShareAPI: DebugRideShareEndpoint(),
+                ownedVehicles: { [VehicleFixtures.vehicles[0]] }
+            )
+        // MYR-392 — the SAME two wires behind owner SETTINGS. Identical
+        // construction on purpose: the roster is one service read by two screens,
+        // so the Settings-side capture must differ from the Share-tab one only in
+        // which surface is rendering it.
+        //
+        // `ownerSettingsShareUnreachable` is also the load-happens guard: `.idle`
+        // and `.loading` both shimmer, so only a read that FAILS can distinguish a
+        // screen that asked from one that never did.
+        case .ownerSettingsShareLoading:
+            return LiveShareService(
+                api: DebugHangingSharingEndpoint(),
+                rideShareAPI: DebugRideShareEndpoint(),
+                ownedVehicles: { [VehicleFixtures.vehicles[0]] }
+            )
+        case .ownerSettingsShareUnreachable:
             return LiveShareService(
                 api: DebugFailingSharingEndpoint(),
                 rideShareAPI: DebugRideShareEndpoint(),
