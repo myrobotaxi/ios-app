@@ -15,10 +15,28 @@ import DesignSystem
 // during `accepted` (the owner has not confirmed pickup yet — the server would 409 a
 // start). Tapping it calls `start()`, which flips `arrived → enroute` and makes the
 // backend push the drop-off nav.
+/// MYR-397 — which layer of the tracking sheet this content is rendering.
+///
+/// ONE struct renders both, deliberately: the peek's status line, its ETA and the
+/// full card's are the SAME derivations (`toPickupMinutes`, `pickupRemainMiles`,
+/// the ladder), and two views computing them independently is how a peek comes to
+/// say "4 min" under a full card that has stopped claiming one. The compositions
+/// differ; the numbers behind them cannot.
+enum TrackingSheetLayer: Equatable {
+    /// The brief summary the sheet drags DOWN to — status line + ETA.
+    case peek
+    /// The full details the sheet drags UP to — LOOK FOR, itinerary, plate,
+    /// Cancel.
+    case full
+}
+
 struct RideRequestTrackingContent: View {
     @Bindable var viewerState: SharedViewerState
     var rideRequestService: any RideRequestService
     var totalHeight: CGFloat?
+    /// MYR-397 — peek or full. Defaults to `full`, so every existing call site
+    /// (previews, the standalone fallback card) renders exactly what it did.
+    var layer: TrackingSheetLayer = .full
     /// MYR-271: when hosted inside the `PanSheet` engine (`RiderTrackingSheet`), the
     /// engine's surface provides the sheet wash/corners/hairline, so the content
     /// drops its own `rideRequestSheetChrome()` (mirrors the search sheet's `hosted`
@@ -29,6 +47,20 @@ struct RideRequestTrackingContent: View {
     /// arriving takeover then never fires on live, never a fabricated ETA, MYR-228).
     /// Drives the `enroute` "Arriving" takeover off the REAL wire ETA (≤ 2), not a timer.
     var navMinutesToArrival: Int? = nil
+    /// MYR-393 — the honest motion ladder's verdict for this frame: the status
+    /// line, and whether a countdown to pickup may be claimed at all. Resolved by
+    /// `SharedViewerScreen` (which holds the live motion latch) so the peek layer,
+    /// the full layer and the map are all reading ONE decision.
+    var ladder: RiderTrackingLadderState
+    /// MYR-393 — the muted "Position from N min ago" qualifier, or `nil` when the
+    /// freshest position we hold is current (and always `nil` in SIM).
+    var freshnessNote: String? = nil
+    /// MYR-397 — is "Cancel ride" in this phase? Resolved through
+    /// `RiderTrackingCancelVisibility` at the call site so the rule is pure.
+    var showsCancel: Bool = false
+    /// A cancel is in flight — the row spins and refuses a second tap.
+    var isCancelling: Bool = false
+    var onCancel: (() -> Void)? = nil
 
     /// MYR-270 — disables the "Start ride" CTA for the frame it is tapped. `start()`
     /// flips the status to `.enroute` synchronously (the button then vanishes), so
@@ -79,17 +111,11 @@ struct RideRequestTrackingContent: View {
     /// sim/`.accepted` progress path it is the existing progress-derived `remain ≤ 2`
     /// so the `trackingArriving` sim scene is unchanged.
     private var arriving: Bool {
-        switch request?.status {
-        case .enroute, .completed:
-            if let eta = navMinutesToArrival { return eta <= 2 }
-            return false
-        default:
-            return atPickupByProgress && remainMinutes <= 2
-        }
+        RiderTrackingStage.arrivingDropoff(request: request, navMinutesToArrival: navMinutesToArrival)
     }
 
     private var stage: RiderTrackingStage {
-        RiderTrackingStage.stage(status: request?.status, atPickupByProgress: atPickupByProgress, arriving: arriving)
+        RiderTrackingStage.stage(request: request, navMinutesToArrival: navMinutesToArrival)
     }
 
     /// Whether the sheet renders the IN-RIDE leg framing (hero/itinerary/"Your ride"
@@ -101,14 +127,39 @@ struct RideRequestTrackingContent: View {
         }
     }
 
-    private var arrivingPickup: Bool { !atPickup && toPickupMinutes <= 1 }
-
-    private var statusWord: String {
-        if !atPickup { return arrivingPickup ? "Your ride is arriving" : "Heading your way" }
-        return stage == .arrivingDropoff ? "Arriving at drop-off" : "Heading to \(destination.label)"
+    var arrivingPickup: Bool {
+        !atPickup && RiderTrackingStage.arrivingPickup(request: request, navMinutesToArrival: navMinutesToArrival)
     }
 
+    /// MYR-393 — the status line is the LADDER's now, not a `!atPickup` ternary.
+    ///
+    /// The sentence it replaced ("Heading your way" for every non-terminal status)
+    /// was derived from the DISPATCH, so it fired on the accept and kept saying so
+    /// about a car parked at a service centre. `ladder.line.text` is a decision
+    /// about the CAR, and the one place either layer reads it from.
+    private var statusWord: String { ladder.line.text }
+
     var body: some View {
+        Group {
+            switch layer {
+            case .peek: peekLayer
+            case .full: fullLayer
+            }
+        }
+        .modifier(TrackingChrome(hosted: hosted))
+        .onChange(of: request?.status) {
+            // The advance resolved — either it moved on (button gone) or a
+            // failed/reverted advance came back (button re-shown). Clear the latch
+            // so a re-shown "Start ride" is tappable again (MYR-265 review bug).
+            starting = false
+        }
+    }
+
+    // MARK: MYR-397 — the two layers
+
+    /// The full-details layer: everything this sheet has always rendered, plus the
+    /// Cancel action in every pre-pickup phase.
+    private var fullLayer: some View {
         VStack(alignment: .leading, spacing: 0) {
             switch stage {
             case .arrivingDropoff:
@@ -125,18 +176,39 @@ struct RideRequestTrackingContent: View {
                     rideRow(emphasize: false)
                 }
             }
+            // MYR-397 — its own slot rather than an inline `if`, so "no dead space
+            // where it was" is measurable rather than asserted in a comment. See
+            // `TrackingCancelSlot`.
+            TrackingCancelSlot(visible: showsCancel, isCancelling: isCancelling) {
+                onCancel?()
+            }
         }
         .padding(.horizontal, 22)
         .padding(.top, 14)
         .padding(.bottom, 30)
-        .modifier(TrackingChrome(hosted: hosted))
-        .onChange(of: request?.status) {
-            // The advance resolved — either it moved on (button gone) or a
-            // failed/reverted advance came back (button re-shown). Clear the latch
-            // so a re-shown "Start ride" is tappable again (MYR-265 review bug).
-            starting = false
-        }
     }
+
+    /// The brief-summary peek. Built from THIS struct's own derivations (see
+    /// `TrackingSheetLayer`), so it can never disagree with the card above it.
+    private var peekLayer: some View {
+        RiderTrackingPeekContent(
+            ladder: ladder,
+            // MYR-395 — the peek's hero is the FULL card's hero, unit included:
+            // it takes the same `(value, unit)` pair rather than a number plus an
+            // assumption, so a 43-hour leg cannot read "2623" over a small "min"
+            // on one layer and "43 hr 43 min" on the other.
+            duration: peekShowsHero ? heroDuration : nil,
+            milesText: peekShowsHero ? heroMilesText : nil,
+            contextPrefix: atPickup ? "Dropping you off at " : "Picking you up at ",
+            contextPlace: atPickup ? destination.label : pickupLabel,
+            freshnessNote: freshnessNote
+        )
+    }
+
+    /// The peek's hero pair. Past pickup the numbers are the drop-off's and are
+    /// always honest; before it they are the ladder's to allow — a pre-motion peek
+    /// carries the waiting line and NO number, exactly as the full card does.
+    private var peekShowsHero: Bool { atPickup || ladder.showsPickupCountdown }
 
     // MARK: Live header (ride-request.jsx:820-838)
 
@@ -156,27 +228,52 @@ struct RideRequestTrackingContent: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
+                // MYR-393 — the position-freshness qualifier, when the freshest
+                // fix we hold is old. Brings exactly its own room (MYR-345).
+                if let freshnessNote {
+                    Text(freshnessNote)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Color.mrtTextMuted)
+                        .lineLimit(1)
+                        .accessibilityIdentifier("mrt.tracking.freshnessNote")
+                }
             }
             Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 5) {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(heroDuration.value)
-                        .font(.system(size: 34, weight: .bold))
+            // MYR-393 — **no countdown before motion.** The 34pt hero was the "4
+            // min" the client photographed beside a parked car; it is computed
+            // from `trackProgress`, a ticker the ACCEPT starts. Pre-motion the
+            // whole pair is withheld rather than replaced: nothing is being
+            // fetched and no arrival is estimable, so there is no in-flight state
+            // to render and a placeholder would be the MYR-294 shimmer again.
+            // MYR-395 — when it IS claimed, the number and its unit come from the
+            // ONE duration grammar (`heroDuration`), so a withheld countdown stays
+            // withheld and a long one reads "43 hr 43" / "min".
+            if showsHeroPair {
+                VStack(alignment: .trailing, spacing: 5) {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(heroDuration.value)
+                            .font(.system(size: 34, weight: .bold))
+                            .monospacedDigit()
+                            .tracking(-1)
+                            .foregroundStyle(Color.mrtText)
+                        Text(heroDuration.unit)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Color.mrtGold.opacity(0.8))
+                    }
+                    Text(heroMilesText)
+                        .font(.system(size: 12.5))
                         .monospacedDigit()
-                        .tracking(-1)
-                        .foregroundStyle(Color.mrtText)
-                    Text(heroDuration.unit)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Color.mrtGold.opacity(0.8))
+                        .foregroundStyle(Color.mrtGold.opacity(0.6))
                 }
-                Text(heroMilesText)
-                    .font(.system(size: 12.5))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.mrtGold.opacity(0.6))
             }
         }
         .padding(.bottom, 16)
     }
+
+    /// The hero minutes/miles pair. In-ride numbers describe a trip the rider is
+    /// on and are always shown; pre-pickup ones are a claim about a car they
+    /// cannot see, and the ladder decides whether it is one we can make.
+    private var showsHeroPair: Bool { atPickup || ladder.showsPickupCountdown }
 
     /// MYR-395 — the hero's number and its unit, from the ONE duration grammar.
     ///
@@ -199,19 +296,50 @@ struct RideRequestTrackingContent: View {
 
     private var itineraryStops: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // MYR-393 — the pickup row's clock and its "N mi · N min" note are the
+            // same accept-seeded ticker the hero was, so they are withheld on the
+            // same rule. `unknownClock` is the calm dash `RidePickupETADisplay`
+            // already renders for an ETA that is genuinely unknown — one grammar
+            // for "we do not know when", rather than a second one invented here.
             stopRow(
-                isDropoff: false, place: pickupLabel, clock: pickupClock, filled: atPickup,
-                note: atPickup ? "Picked up" : "\(String(format: "%.1f", pickupRemainMiles)) mi \u{00B7} \(RideDuration.text(minutes: toPickupMinutes))",
+                isDropoff: false,
+                place: pickupLabel,
+                clock: showsHeroPair ? pickupClock : RidePickupETADisplay.unknownClock,
+                filled: atPickup,
+                note: pickupStopNote,
                 last: false
             )
+            // The drop-off clock is the whole-trip `remainMinutes` from now, which
+            // is the pickup leg's ticker plus the trip — so pre-motion it is
+            // exactly as unfounded and goes with it. Its NOTE is different and
+            // stays: "N mi trip" is a fact about the route, true whether or not
+            // the car has set off.
             stopRow(
-                isDropoff: true, place: destination.label, clock: arriveClock, filled: false,
+                isDropoff: true,
+                place: destination.label,
+                clock: showsHeroPair ? arriveClock : RidePickupETADisplay.unknownClock,
+                filled: false,
                 note: atPickup ? "\(String(format: "%.1f", dropRemainMiles)) mi \u{00B7} \(RideDuration.text(minutes: remainMinutes))" : "\(String(format: "%.1f", destination.miles)) mi trip",
                 last: true
             )
         }
         .padding(15)
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.mrtGold.opacity(Double(0x24) / 255.0), lineWidth: MRTMetrics.hairline))
+    }
+
+    /// The pickup stop's trailing note. "Picked up" once we are past it; the
+    /// remaining-distance pair while the car is demonstrably approaching; and —
+    /// pre-motion — the honest waiting sentence in place of a distance that is
+    /// interpolated from a ticker rather than measured from the car.
+    ///
+    /// MYR-395 — when the pair IS rendered its duration goes through the shared
+    /// `RideDuration` grammar, exactly as it did before this row moved into a
+    /// helper: withholding decides WHETHER there is a number, the grammar decides
+    /// how it reads.
+    private var pickupStopNote: String {
+        if atPickup { return "Picked up" }
+        guard showsHeroPair else { return "Not started yet" }
+        return "\(String(format: "%.1f", pickupRemainMiles)) mi \u{00B7} \(RideDuration.text(minutes: toPickupMinutes))"
     }
 
     private func stopRow(isDropoff: Bool, place: String, clock: String, filled: Bool, note: String, last: Bool) -> some View {
@@ -320,7 +448,9 @@ struct RideRequestTrackingContent: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 7) {
                 Circle().fill(Color.mrtGold).frame(width: 6, height: 6).shadow(color: .mrtGoldGlow, radius: 4)
-                RideEyebrowText(text: "Your car is here", color: .mrtGold, size: 11)
+                // MYR-393 — the ladder's own `.carIsHere`, so this sheet has ONE
+                // status line and not a literal that happens to agree with it.
+                RideEyebrowText(text: statusWord, color: .mrtGold, size: 11)
             }
             .padding(.bottom, 10)
             // Reuse the "Look for" spotting chip so the rider can identify the car.
@@ -420,6 +550,70 @@ enum RiderTrackingStage: Equatable {
             if atPickupByProgress { return arriving ? .arrivingDropoff : .inRide }
             return .toPickup
         }
+    }
+
+    // MARK: MYR-393/397 — the same derivation, reachable from OUTSIDE the sheet
+    //
+    // Two things now have to know which stage a ride is in and neither of them is
+    // the sheet: the motion ladder (whose answer the sheet, the peek layer and the
+    // map all read) and `RiderTrackingCancelVisibility`. Before this the stage was
+    // assembled from six private computed properties inside
+    // `RideRequestTrackingContent`, so a second caller had to re-derive it — and a
+    // Cancel button that thought the ride was pre-pickup while the card above it
+    // had moved on is precisely the kind of disagreement that ships.
+    //
+    // These are the SAME expressions, moved rather than paraphrased; the view now
+    // calls them too, so there is one derivation and it is testable without
+    // mounting anything.
+
+    /// Whole-trip minutes remaining, from the record's own progress ticker.
+    static func remainMinutes(request: RideRequestRecord?) -> Int {
+        let progress = request?.trackProgress ?? 0
+        let destinationMinutes = request?.input.destination.minutes ?? RideRequestFixtures.recentPlaces[0].minutes
+        let total = RideRequestTiming.pickupLegMinutes + Double(destinationMinutes)
+        return max(0, Int(((1 - progress) * total).rounded()))
+    }
+
+    /// Minutes to the pickup, from that same ticker.
+    static func toPickupMinutes(request: RideRequestRecord?) -> Int {
+        let progress = request?.trackProgress ?? 0
+        let cut = request?.pickupCut ?? 0.2
+        guard cut > 0 else { return 0 }
+        return max(0, Int(((cut - progress) / cut * RideRequestTiming.pickupLegMinutes).rounded()))
+    }
+
+    static func atPickupByProgress(request: RideRequestRecord?) -> Bool {
+        (request?.trackProgress ?? 0) >= (request?.pickupCut ?? 0.2)
+    }
+
+    /// Whether the drop-off "Arriving" takeover fires (see the sheet's own note:
+    /// the live in-ride leg uses the REAL streamed nav ETA, never a timer).
+    static func arrivingDropoff(request: RideRequestRecord?, navMinutesToArrival: Int?) -> Bool {
+        switch request?.status {
+        case .enroute, .completed:
+            if let eta = navMinutesToArrival { return eta <= 2 }
+            return false
+        default:
+            return atPickupByProgress(request: request) && remainMinutes(request: request) <= 2
+        }
+    }
+
+    /// Whether the car is on the last stretch to the PICKUP ("Your ride is
+    /// arriving"). Only meaningful on `.toPickup`; the ladder gates it on motion
+    /// evidence exactly as it gates "Heading your way", since both are claims
+    /// about a car approaching.
+    static func arrivingPickup(request: RideRequestRecord?, navMinutesToArrival: Int?) -> Bool {
+        guard stage(request: request, navMinutesToArrival: navMinutesToArrival) == .toPickup else { return false }
+        return toPickupMinutes(request: request) <= 1
+    }
+
+    /// The stage for a record.
+    static func stage(request: RideRequestRecord?, navMinutesToArrival: Int?) -> RiderTrackingStage {
+        stage(
+            status: request?.status,
+            atPickupByProgress: atPickupByProgress(request: request),
+            arriving: arrivingDropoff(request: request, navMinutesToArrival: navMinutesToArrival)
+        )
     }
 }
 

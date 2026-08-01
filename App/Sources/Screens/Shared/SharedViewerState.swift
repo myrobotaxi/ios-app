@@ -1,5 +1,9 @@
 import CoreLocation
 import DesignSystem
+// MYR-393 — the tracking surface's motion + marker inputs are the live
+// `VehicleState` itself (speed, status, fix, read time), read through the pure
+// resolvers in `RiderMotionLadder.swift`.
+import MyRobotaxiContracts
 import Observation
 
 // MARK: - Rider sheet phase (MYR-191, extended MYR-171)
@@ -537,7 +541,71 @@ public final class SharedViewerState {
     /// `rendersLiveVehicleFreshness`. `false` everywhere else, so every simulated
     /// scene keeps the fixture placeholder and stays byte-identical.
     public var debugResolvesLivePickupETA = false
+    /// MYR-393 capture hook: resolve the tracking sheet's MOTION LADDER and its car
+    /// marker on the LIVE-shaped branch from a simulated boot.
+    ///
+    /// The waiting-to-start state is live-path-only by construction — the ladder
+    /// short-circuits to the pre-MYR-393 line whenever there is no telemetry to be
+    /// honest with, precisely so the `trackProgress`-driven tracking scenes are not
+    /// told they are stationary while the simulation is driving them. So the only
+    /// way to photograph it is to force the one branch, exactly as
+    /// `debugResolvesLivePickupETA` and `rendersLiveVehicleFreshness` do. `false`
+    /// everywhere else, so every simulated scene keeps the old line.
+    public var debugResolvesLiveMotion = false
+    /// MYR-393 capture hook: the live-shaped `VehicleState` the ladder and the
+    /// marker read. Travels the SHIPPING `RiderCarMotion.evidence` /
+    /// `RiderVehicleProjection.hasFix` / `RiderCarMarker.resolve`, so a capture
+    /// shows what the production resolvers made of a real wire shape rather than a
+    /// hand-set phase.
+    public var debugTrackingVehicleState: VehicleState?
+    /// MYR-393 capture hook: the freshness pair that goes with the state above.
+    /// `nil` = not streaming, which is the situation the position-age qualifier is
+    /// for (an in-service car reporting through REST polling, MYR-394).
+    public var debugTrackingIsStreaming: Bool?
     #endif
+
+    // MARK: MYR-393 — the tracking surface's live-motion inputs
+    //
+    // Three accessors rather than three reads scattered through
+    // `SharedViewerScreen`, for the reason the pickup-ETA pair above exists: the
+    // ladder, the marker and the freshness note must all be looking at ONE car and
+    // one read, and a DEBUG scene must be able to substitute that car in exactly
+    // one place.
+
+    /// Whether the tracking surface resolves motion + marker on the live branch.
+    var resolvesTrackingMotion: Bool {
+        #if DEBUG
+        if debugResolvesLiveMotion { return true }
+        #endif
+        return isLiveLocation
+    }
+
+    /// The watched vehicle's accumulated live state, as the tracking surface sees it.
+    var trackingVehicleState: VehicleState? {
+        #if DEBUG
+        if let debugTrackingVehicleState { return debugTrackingVehicleState }
+        #endif
+        return liveVehicleLocator?.state
+    }
+
+    /// The freshest position we hold for the watched vehicle, through the SAME
+    /// `(0,0)`-is-no-fix gate the rider map already applies.
+    var trackingVehicleCoordinate: CLLocationCoordinate2D? {
+        RiderVehicleProjection.coordinate(from: trackingVehicleState)
+    }
+
+    /// How current that position is: the read time and whether the car is
+    /// streaming. `VehicleFreshnessStamp`'s own two inputs, so the rider's
+    /// position qualifier and the owner's freshness stamp cannot disagree about
+    /// what "current" means.
+    var trackingPositionRead: (lastUpdated: Date?, isStreaming: Bool?) {
+        #if DEBUG
+        if let debugTrackingVehicleState {
+            return (VehicleContractMapping.parseTimestamp(debugTrackingVehicleState.lastUpdated), debugTrackingIsStreaming)
+        }
+        #endif
+        return (snapshot.lastUpdated, snapshot.isStreaming)
+    }
 
     /// Whether the pickup ETA resolves at all: the live path, plus the one DEBUG
     /// capture scene. On the simulated path this is false and every ETA surface

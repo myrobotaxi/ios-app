@@ -1314,7 +1314,19 @@ struct RootView: View {
                                         role: role
                                     )
                                 }
-                            }
+                            },
+                            // MYR-397 item 2 — the tracking map's owner chip, gated
+                            // on the account actually holding an owner role. The
+                            // SAME `ownedVehicles` partition `riderVehicleSet` above
+                            // reads, so the chip and MYR-354's "Your car" row can
+                            // never give one account two different answers about
+                            // whether it owns anything.
+                            holdsOwnerRole: !sharedVehicleCatalog.ownedVehicles.isEmpty,
+                            // `nil` without a real signed-in account: `switchViewMode`
+                            // needs a user id to persist the choice against and
+                            // no-ops without one, so the chip must not offer the tap
+                            // at all (`RiderOwnerModeChipGate`).
+                            onSwitchToOwnerMode: session.currentUser == nil ? nil : { switchViewMode() }
                         )
                     }
                 }

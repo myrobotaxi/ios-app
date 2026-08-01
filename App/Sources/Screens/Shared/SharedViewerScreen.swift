@@ -2,6 +2,10 @@ import SwiftUI
 import MapKit
 import CoreLocation
 import DesignSystem
+// MYR-397 — for the DEBUG capture hook's real `RestError.http(409, …)`, so the
+// refused-cancel scene exercises the production classifier on a real wire error
+// rather than a hand-set notice.
+import MyRoboTaxiKit
 
 // MARK: - SharedViewerScreen (MYR-191, design/app/screens.jsx
 // SharedViewerScreen 1855-2242 idle path + ride-request.jsx
@@ -33,6 +37,16 @@ struct SharedViewerScreen: View {
     var liveProfile: UserProfile? = nil
     /// MYR-186 — forwarded to `RideRequestReviewContent`; see its declaration.
     var onRideRequestSubmitted: (() -> Void)? = nil
+    /// MYR-397 item 2 — does this account hold an OWNER role (at least one owned
+    /// vehicle on the §7.0 list)? The tracking map's owner chip renders only when
+    /// it does. Derived by `RootView` from the SAME `ownedVehicles` partition
+    /// `RiderVehicleSet.resolve` reads — see `RiderOwnerModeChipGate`.
+    var holdsOwnerRole: Bool = false
+    /// Flip this account to the owner shell. `nil` whenever no real signed-in
+    /// account can persist the choice (SIM, static-token dev override), which is
+    /// also the second half of the chip's gate: a control whose tap does nothing
+    /// is worse than no control.
+    var onSwitchToOwnerMode: (() -> Void)? = nil
 
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var isFollowing = true
@@ -67,10 +81,30 @@ struct SharedViewerScreen: View {
     /// the schedule picker OPEN and re-floored, so the correction is the very next
     /// thing they touch.
     @State private var showScheduleWindowToast = false
-    /// MYR-271 — the tracking sheet's settled visible height, reported by
-    /// `RiderTrackingSheet` on every settle. The recenter button + the tracking map
-    /// camera inset re-anchor ABOVE this so both clear the card in every detent.
-    @State private var trackingSettledHeight: CGFloat = MRTMetrics.trackingMapBottomInset
+    /// MYR-397 — the tracking sheet's PEEK detent, measured by the sheet. The
+    /// recenter + expand controls are laid out against THIS (the lowest detent) and
+    /// then translated by the engine as the sheet grows, so they ride its edge
+    /// instead of re-anchoring in one un-animated jump at settle.
+    @State private var trackingPeekHeight: CGFloat = MRTMetrics.trackingSheetPeekHeight
+    /// MYR-397 — the seam that does the translating. Owned here (a `@State` value)
+    /// so it survives the body re-evaluations the phase machine produces; handed to
+    /// the sheet as its `edgeAnchor:` and to the controls as their follower.
+    @State private var trackingEdgeAnchor = SheetEdgeAnchor()
+    /// MYR-397 — a live ride's cancel is in flight (the awaited, reconciled path —
+    /// see `RiderActiveRideCancel`), so the row spins and refuses a second tap.
+    @State private var cancellingRide = false
+    /// MYR-397 — the honest failure sentence when a cancel was REFUSED and the ride
+    /// is still standing. `nil` says nothing, which is what a cancel that worked
+    /// (or one whose ride had already gone) is entitled to.
+    @State private var cancelFailureNotice: String?
+    /// MYR-393 — the ride's accumulated motion evidence. Held here rather than on
+    /// `SharedViewerState` because it is scoped to the tracking SURFACE and to one
+    /// ride; `RiderMotionLatch` keys itself on the ride id, so a new ride starts
+    /// from nothing without anything having to remember to reset it.
+    @State private var motionLatch = RiderMotionLatch()
+    /// The latch's last verdict. Written from the telemetry `onChange` below (never
+    /// from `body`, which must stay a pure read) and consumed by the ladder.
+    @State private var motionEvidence: RiderMotionEvidence = .unknown
     /// MYR-327 — the expanded, user-driven route viewer over the live tracking
     /// map. The tracking map is pannable in place, but the sheet covers ~312pt of
     /// it; this is where the rider can actually "zoom in and out to look at" the
@@ -79,9 +113,9 @@ struct SharedViewerScreen: View {
     /// MYR-352 — the availability banner's own measured height, reported by
     /// `RiderIdleAvailabilityBannerView` through `RiderIdleBannerHeightKey`. `0`
     /// whenever no banner is up, which is every simulated boot and every
-    /// pre-existing DEBUG scene. The same precedent as `trackingSettledHeight`
-    /// directly above: a live-only element that reports what it measures so the
-    /// chrome around it can reserve exactly that much.
+    /// pre-existing DEBUG scene. The same precedent as `trackingPeekHeight`
+    /// above: a live-only element that reports what it measures so the chrome
+    /// around it can reserve exactly that much.
     @State private var idleBannerHeight: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -153,26 +187,17 @@ struct SharedViewerScreen: View {
                 // re-engages the leg-fit camera (`TrackingMapView`'s
                 // `.onChange(of: isFollowing)` → `TrackingCameraController.recenter`).
                 if isTrackingPhase {
-                    FloatingMapButton(
-                        // MYR-271: re-anchor above the sheet's SETTLED top (recomputed
-                        // from the settled detent height) so it clears the card in
-                        // every detent — no longer a fixed offset that overlapped it.
-                        bottom: trackingSettledHeight + MRTMetrics.trackingRecenterSheetGap,
-                        hidden: isFollowing
-                    ) {
-                        isFollowing = true
-                    }
-                    .ignoresSafeArea(edges: .bottom)
+                    trackingMapControls
 
-                    // MYR-327 — the visible half of "click into the map". The map
-                    // tap works anywhere, but nothing said so; this chip sits one
-                    // button-stack above the recenter control (which is itself
-                    // conditional), always available while tracking.
-                    ExpandRouteButton { showsExpandedRoute = true }
-                        .padding(.trailing, 16)
-                        .padding(.bottom, trackingSettledHeight + MRTMetrics.trackingRecenterSheetGap + MRTMetrics.trackingExpandButtonStackGap)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                        .ignoresSafeArea(edges: .bottom)
+                    // MYR-397 item 2 — the way BACK to the owner shell, which this
+                    // surface had none of: no `MapHeader`, no nav (MYR-198 hides it
+                    // past idle), no Settings route. Owner-role accounts only.
+                    if RiderOwnerModeChipGate.showsChip(
+                        holdsOwnerRole: holdsOwnerRole,
+                        canSwitchModes: onSwitchToOwnerMode != nil
+                    ) {
+                        RiderOwnerModeChip { onSwitchToOwnerMode?() }
+                    }
                 }
             }
         }
@@ -225,8 +250,21 @@ struct SharedViewerScreen: View {
         .onChange(of: isTrackingPhase) { _, tracking in
             // Leaving tracking (drop-off → summary, a decline, …) closes the
             // viewer: its content is the live ride, so it must not outlive it.
-            if !tracking { showsExpandedRoute = false }
+            if !tracking {
+                showsExpandedRoute = false
+                // MYR-397 — and so must a refusal about a ride that has ended.
+                cancelFailureNotice = nil
+            }
         }
+        // MYR-393 — feed the motion latch. The latch is ACCUMULATED state and must
+        // never be written from `body`; this is the one place it advances, on the
+        // two facts that can change it: a new position/speed frame, and a new ride.
+        //
+        // Keyed on the fix + the read time rather than on the whole `VehicleState`:
+        // the state is rewritten by every delta the socket folds (cabin temperature,
+        // media, charge), and re-running the latch on those would be work per frame
+        // for a decision that only three fields can affect.
+        .onChange(of: motionInputKey) { _, _ in advanceMotionLatch() }
         .onAppear {
             viewerState.startTelemetry()
             // MYR-230 deliverable 1: reconcile the CURRENT active ride into the
@@ -238,12 +276,27 @@ struct SharedViewerScreen: View {
             // never reflected. Fold the current status + progress through the same
             // mapping, idempotently and without animating the first layout.
             reconcileMountedPhase()
+            // MYR-393 — seat the motion latch from whatever the stream already
+            // holds. A rider returning to the tab mid-ride must not have the
+            // ladder start from `.unknown` and say "waiting" about a car it can
+            // plainly see moving; the anchor is seated here and the first frame
+            // after it decides.
+            advanceMotionLatch()
             // MYR-177: if we mounted straight into tracking (cold scene / adopted
             // ride), prime the route cache so the leg-fit map has real geometry.
             if isTrackingPhase { isFollowing = true; reconcileTrackingRoutes() }
             #if DEBUG
             // MYR-327 drift-gate capture hook: headless tooling cannot tap the map.
             if isTrackingPhase, DebugScene.opensExpandedRouteMap { showsExpandedRoute = true }
+            // MYR-397 capture hook: drive the Cancel a thumb would tap. A stand-in
+            // for the TAP only — the refusal, the classify, the re-read and the
+            // copy are all the shipping path.
+            if isTrackingPhase, DebugScene.current?.refusesRideCancelOnBoot == true {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(1))
+                    cancelRefusedRideForCapture()
+                }
+            }
             #endif
             // MYR-237: mounted into Review/Booking (DEBUG scene / retryable
             // session-failure return) — prime the real Apple route to draw/etch.
@@ -447,6 +500,56 @@ struct SharedViewerScreen: View {
             systemImage: "arrow.clockwise",
             tint: .mrtTextMuted
         )
+        // MYR-397 — a cancel the server REFUSED, with the ride still standing. The
+        // sentence is `ReservationCancelCopy.riderActiveRide`'s, classified from
+        // what came back (refused vs unreachable) rather than collapsed into one
+        // apology — the r14 lesson, on a live ride. It is deliberately the SAME
+        // muted pill the four notices above use: nothing the rider did failed, and a
+        // red alert about a car that is still coming would read as an emergency.
+        //
+        // Presented off the notice ITSELF rather than a second `Bool` (see
+        // `cancelToastBinding`): two pieces of state for one fact is how a toast
+        // comes to show the previous refusal's sentence.
+        .mrtSuccessToast(
+            isPresented: cancelToastBinding,
+            message: cancelFailureNotice ?? "",
+            systemImage: "exclamationmark.circle",
+            tint: .mrtTextMuted
+        )
+    }
+
+    #if DEBUG
+    /// MYR-397 capture hook — the refused cancel, end to end.
+    ///
+    /// It runs the SHIPPING `RiderActiveRideCancel.perform` with a mutation that
+    /// throws a real `RestError.http(409, …)` and a re-read that answers "still
+    /// held" (which is what the server refusing it means). So the notice in the
+    /// capture came from `ReservationCancelFailure.classify` →
+    /// `ReservationCancelOutcome.resolve` → `ReservationCancelCopy.riderActiveRide`,
+    /// and the ride is still on the sheet behind it — which is the property this
+    /// scene exists to photograph.
+    private func cancelRefusedRideForCapture() {
+        guard !cancellingRide else { return }
+        cancellingRide = true
+        Task { @MainActor in
+            defer { cancellingRide = false }
+            let outcome = await RiderActiveRideCancel.perform(
+                rideID: rideRequestService.activeRequest?.id ?? "debug-ride",
+                cancel: { throw RestError.http(status: 409, code: nil, message: "ride_active", subCode: nil) },
+                reread: { true }
+            )
+            if case .refused(let notice) = outcome { cancelFailureNotice = notice }
+        }
+    }
+    #endif
+
+    /// MYR-397 — presents whenever there is a refusal to say, and clears the notice
+    /// on dismissal so the pill and the sentence are one piece of state.
+    private var cancelToastBinding: Binding<Bool> {
+        Binding(
+            get: { cancelFailureNotice != nil },
+            set: { presented in if !presented { cancelFailureNotice = nil } }
+        )
     }
 
     // MARK: Phase content (MYR-171)
@@ -525,21 +628,80 @@ struct SharedViewerScreen: View {
                 RideRequestBookingContent(viewerState: viewerState, rideRequestService: rideRequestService, totalHeight: totalHeight)
             case .tracking:
                 // MYR-271: the tracking card rides the shared PanSheet engine (drag +
-                // fluid chrome), reporting its settled height back for the recenter /
-                // map-inset re-anchor. The two-leg map/camera behind it are unchanged.
-                RiderTrackingSheet(settledHeight: $trackingSettledHeight) {
-                    RideRequestTrackingContent(
-                        viewerState: viewerState,
-                        rideRequestService: rideRequestService,
-                        totalHeight: totalHeight,
-                        hosted: true,
-                        navMinutesToArrival: viewerState.riderNavMinutesToArrival
-                    )
-                }
+                // fluid chrome). MYR-397: as TWO compositions crossfaded by the drag
+                // — a clean brief-summary peek and the full details — plus the edge
+                // anchor the map controls follow.
+                RiderTrackingSheet(
+                    peekHeight: $trackingPeekHeight,
+                    edgeAnchor: trackingEdgeAnchor,
+                    peekContent: { trackingContent(totalHeight: totalHeight, layer: .peek) },
+                    fullContent: { trackingContent(totalHeight: totalHeight, layer: .full) }
+                )
             case .summary:
                 RideRequestSummaryContent(viewerState: viewerState, rideRequestService: rideRequestService, historyStore: historyStore, riderName: riderName, liveProfile: liveProfile)
             }
         }
+    }
+
+    // MARK: MYR-393/397 — the tracking sheet's two layers, from ONE decision
+    //
+    // Both layers are the same `RideRequestTrackingContent` with a different
+    // `layer:`, and both are handed the SAME ladder verdict, the SAME freshness
+    // note and the SAME cancel visibility — resolved here, once. Two views
+    // resolving the ladder independently is how a peek comes to say "4 min" under
+    // a card that has stopped claiming one.
+    private func trackingContent(totalHeight: CGFloat, layer: TrackingSheetLayer) -> some View {
+        RideRequestTrackingContent(
+            viewerState: viewerState,
+            rideRequestService: rideRequestService,
+            totalHeight: totalHeight,
+            layer: layer,
+            hosted: true,
+            navMinutesToArrival: viewerState.riderNavMinutesToArrival,
+            ladder: trackingLadder,
+            freshnessNote: trackingFreshnessNote,
+            showsCancel: RiderTrackingCancelVisibility.showsCancel(stage: trackingStage),
+            isCancelling: cancellingRide,
+            onCancel: { cancelActiveRide() }
+        )
+    }
+
+    // MARK: MYR-397 item 3 — map controls that ride the sheet edge
+    //
+    // ONE follower for both controls rather than two, because they move together
+    // and every follower is a `UIHostingController` boundary. They are laid out
+    // against the PEEK detent — the sheet's lowest — and the engine translates them
+    // up by however much taller it currently is, per finger frame and through the
+    // settle spring. See `SheetEdgeFollower`.
+    //
+    // Before this they were positioned at the sheet's SETTLED height plus a gap — a
+    // value the engine publishes only AFTER a settle commits, so through the whole
+    // drag they sat still over a moving sheet and then jumped in one un-animated
+    // layout pass. That binding is deleted along with its other consumer (the camera
+    // inset below), so there is no longer a path by which sheet geometry reaches
+    // either piece of chrome.
+    private var trackingMapControls: some View {
+        // The stack gap reproduces the pre-MYR-397 placement exactly: the expand
+        // chip's bottom edge sat `trackingExpandButtonStackGap` (52) above the
+        // recenter button's, and the recenter button is `minTapTarget` (44) tall —
+        // so the clear space between them is 8. Derived rather than written as 8,
+        // because the two constants are the ones a future tune would move.
+        VStack(spacing: MRTMetrics.trackingExpandButtonStackGap - MRTMetrics.minTapTarget) {
+            // MYR-327 — the visible half of "click into the map". The map tap works
+            // anywhere, but nothing said so; this chip sits one button-stack above
+            // the recenter control (which is itself conditional).
+            ExpandRouteButton { showsExpandedRoute = true }
+            // MYR-177: the SAME recenter affordance the idle map has — appears once
+            // the rider pans/pinches away (follow off) and re-engages the leg-fit
+            // camera (`TrackingMapView`'s `.onChange(of: isFollowing)` →
+            // `TrackingCameraController.recenter`).
+            FloatingMapButtonControl(hidden: isFollowing) { isFollowing = true }
+        }
+        .mrtFollowsSheetEdge(trackingEdgeAnchor)
+        .padding(.trailing, 16)
+        .padding(.bottom, trackingPeekHeight + MRTMetrics.trackingRecenterSheetGap)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+        .ignoresSafeArea(edges: .bottom)
     }
 
     private var isPinDrop: Bool {
@@ -745,12 +907,20 @@ struct SharedViewerScreen: View {
                 leg: trackingLeg,
                 leg1Route: trackingLeg1Route,
                 leg2Route: trackingLeg2Route,
-                carCoordinate: trackingCarPosition.coordinate,
+                // MYR-393 — the freshest position we hold, or NO marker. See
+                // `trackingCarPosition` / `trackingMarkerCoordinate`.
+                carCoordinate: trackingMarkerCoordinate,
                 carHeading: trackingCarPosition.headingDegrees,
                 legProgress: trackingLegProgress,
-                // MYR-271: track the sheet's settled detent height so the leg-fit
-                // camera fills the true visible band above the (now draggable) card.
-                bottomInset: trackingSettledHeight,
+                // MYR-397 — CAPPED, per MYR-338. This used to be the sheet's own
+                // SETTLED height, i.e. its live geometry: so
+                // dragging the sheet down re-fitted the camera at every settle and
+                // the map slid out from under the rider mid-gesture — the client's
+                // *"Map should stay fixed"* on the rider's side of it. The inset is
+                // now the tracking phase's own constant and takes NO sheet geometry
+                // at all, which is what makes the re-frame structurally impossible
+                // rather than merely damped (MYR-338's own wording).
+                bottomInset: Self.mapBottomInset(phase: .tracking, isPendingPill: false),
                 cameraPosition: $cameraPosition,
                 isFollowing: $isFollowing,
                 controller: viewerState.trackingCamera,
@@ -1065,12 +1235,23 @@ struct SharedViewerScreen: View {
     private var trackingPickup: CLLocationCoordinate2D { requestRoute[0] }
     private var trackingDestination: CLLocationCoordinate2D { requestRoute[1] }
 
-    /// The origin the car started its approach from (leg 1). Live: the car's
-    /// last-known coordinate (cold snapshot via the locator). Sim / no-fix: a
-    /// short hop from pickup so leg 1 has a real approach to frame (~0.8 mi).
-    private var trackingCarOrigin: CLLocationCoordinate2D {
-        if viewerState.isLiveLocation, let live = viewerState.liveVehicleLocator?.coordinate { return live }
-        return CLLocationCoordinate2D(latitude: trackingPickup.latitude + 0.0075, longitude: trackingPickup.longitude - 0.011)
+    /// The origin the car started its approach from (leg 1).
+    ///
+    /// MYR-393 — **`nil` on the live path with no fix**, where it used to fall
+    /// through to the simulated hop. MYR-293's rule for this leg is that the route
+    /// ORIGIN is the car's real position; a fabricated origin does not merely draw a
+    /// wrong line, it spends a throttle-budgeted MKDirections call resolving REAL
+    /// ROAD GEOMETRY to a place the car has never been — which is the most
+    /// convincing wrong answer this surface can give, and the shape of the client's
+    /// own screenshot.
+    ///
+    /// Sim keeps the short hop from pickup (~0.8 mi) so leg 1 has an approach to
+    /// frame and every tracking capture is byte-identical.
+    private var trackingCarOrigin: CLLocationCoordinate2D? {
+        guard viewerState.resolvesTrackingMotion else {
+            return CLLocationCoordinate2D(latitude: trackingPickup.latitude + 0.0075, longitude: trackingPickup.longitude - 0.011)
+        }
+        return viewerState.trackingVehicleCoordinate
     }
 
     private var trackingLeg: TrackingLeg {
@@ -1095,8 +1276,13 @@ struct SharedViewerScreen: View {
 
     /// The two leg polylines, falling back to a straight segment until the
     /// provider resolves (so the map always has geometry to draw + fit).
+    /// MYR-393 — with no honest origin there is NO leg-1 geometry, not a straight
+    /// line from a place the car is not. Empty draws nothing (`routeLeg` needs
+    /// `count > 1`) and frames on the pickup alone.
     private var trackingLeg1Route: [CLLocationCoordinate2D] {
-        viewerState.rideRouteStore.leg1.count > 1 ? viewerState.rideRouteStore.leg1 : [trackingCarOrigin, trackingPickup]
+        if viewerState.rideRouteStore.leg1.count > 1 { return viewerState.rideRouteStore.leg1 }
+        guard let trackingCarOrigin else { return [] }
+        return [trackingCarOrigin, trackingPickup]
     }
     private var trackingLeg2Route: [CLLocationCoordinate2D] {
         viewerState.rideRouteStore.leg2.count > 1 ? viewerState.rideRouteStore.leg2 : [trackingPickup, trackingDestination]
@@ -1112,14 +1298,177 @@ struct SharedViewerScreen: View {
         }
     }
 
-    /// The car's current coordinate + heading, interpolated along the active
-    /// leg's route by the per-leg progress (route tangent for heading).
+    /// The car's coordinate + heading INTERPOLATED along the active leg's route by
+    /// the per-leg progress (route tangent for heading).
+    ///
+    /// MYR-393 — this is the SIMULATED model and it is no longer what the live map
+    /// draws. It stays because the heading still comes from here on both paths (the
+    /// wire's `heading` is the car's compass bearing and is exactly as good, but
+    /// swapping it would rotate the glyph in every simulated capture), and because
+    /// the sim path renders it verbatim.
     private var trackingCarPosition: VehicleRoute.Position {
         let route = trackingLeg == .toPickup ? trackingLeg1Route : trackingLeg2Route
         return VehicleRoute.position(along: route, progress: trackingLegProgress)
     }
 
+    /// MYR-393 — **where the gold glyph is actually drawn, or `nil` for no glyph.**
+    ///
+    /// The client's second defect: the marker slid down a road on the LIVE path
+    /// too, interpolated from `trackProgress` — a ticker the accept starts — while
+    /// his car sat in a service bay a mile and a half from where it was drawn. A
+    /// position is either something we hold or something we do not; it is never
+    /// something to derive from a clock.
+    ///
+    ///  • live, with a fix → the freshest coordinate the stream has delivered;
+    ///  • live, no fix → `nil`, and `TrackingRouteMapContent` draws no vehicle
+    ///    annotation at all. The route, both pins and the camera are untouched —
+    ///    MYR-387's rule verbatim: *a camera is context, a gold pin is a claim that
+    ///    the car is there right now*;
+    ///  • simulated → the interpolation above, so every tracking capture is
+    ///    byte-identical.
+    private var trackingMarkerCoordinate: CLLocationCoordinate2D? {
+        switch trackingCarMarker {
+        case .simulated:
+            return trackingCarPosition.coordinate
+        case .withheld:
+            return nil
+        case .live:
+            // `.live` is only resolved when `hasFix` passed, so this cannot fall
+            // through to the interpolation — but the `??` is written rather than
+            // force-unwrapped because a coordinate that disagreed with the marker
+            // decision is exactly the bug this property exists to remove.
+            return viewerState.trackingVehicleCoordinate
+        }
+    }
+
     private var isTrackingPhase: Bool { viewerState.sheetPhase == .tracking }
+
+    // MARK: MYR-393 — the honest ladder, the truthful marker, and the cancel
+    //
+    // Everything below is DERIVED. The latch (the one piece of accumulated state)
+    // is fed from an `onChange` on the live read, never from `body`.
+
+    private var trackingStage: RiderTrackingStage {
+        RiderTrackingStage.stage(
+            request: rideRequestService.activeRequest,
+            navMinutesToArrival: viewerState.riderNavMinutesToArrival
+        )
+    }
+
+    /// The ride's car, for the "Waiting for {car} to start" line. The SAME resolution
+    /// the sheet's own "Look for" row makes, so the two name one vehicle.
+    private var trackingVehicleName: String {
+        let member = viewerState.liveFleetMember
+            ?? rideRequestService.activeRequest?.input.fleetMember
+            ?? RideRequestFixtures.fleet[0]
+        let name = member.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A car with no nickname must not produce "Waiting for  to start". "your
+        // ride" is the same neutral noun the rest of this flow falls back to.
+        return name.isEmpty ? "your ride" : name
+    }
+
+    /// MYR-393 — the whole ladder for this frame.
+    ///
+    /// `resolvesLiveMotion` is `viewerState.isLiveLocation`, the ONE resolved
+    /// `AppMode` seam every other live/sim decision on this screen already reads.
+    /// False short-circuits to the pre-MYR-393 rendering before any evidence is
+    /// consulted, which is what keeps `trackingLeg1`/`trackingLeg2`/
+    /// `trackingArriving` byte-identical.
+    private var trackingLadder: RiderTrackingLadderState {
+        RiderTrackingLadder.resolve(
+            resolvesLiveMotion: viewerState.resolvesTrackingMotion,
+            stage: trackingStage,
+            evidence: motionEvidence,
+            arrivingPickup: RiderTrackingStage.arrivingPickup(
+                request: rideRequestService.activeRequest,
+                navMinutesToArrival: viewerState.riderNavMinutesToArrival
+            ),
+            vehicleName: trackingVehicleName,
+            destinationName: rideRequestService.activeRequest?.input.destination.label
+                ?? RideRequestFixtures.recentPlaces[0].label
+        )
+    }
+
+    /// MYR-393 — what the map may draw for the car, and how old it is.
+    private var trackingCarMarker: RiderCarMarker {
+        RiderCarMarker.resolve(
+            resolvesLiveMotion: viewerState.resolvesTrackingMotion,
+            state: viewerState.trackingVehicleState,
+            lastUpdated: viewerState.trackingPositionRead.lastUpdated,
+            isStreaming: viewerState.trackingPositionRead.isStreaming,
+            now: Date()
+        )
+    }
+
+    /// The three facts that can change the motion verdict, as one comparable key.
+    ///
+    /// Deliberately NOT the whole `VehicleState`: the socket folds a delta onto it
+    /// for every cabin temperature, media tick and charge frame, and re-running the
+    /// latch on those would be work per frame for a decision none of them affects.
+    /// Deliberately NOT just the coordinate either — a car creeping inside the
+    /// jitter radius still reports a speed, and that speed is the fastest honest
+    /// evidence there is.
+    private var motionInputKey: String {
+        let state = viewerState.trackingVehicleState
+        let latitude = state?.latitude ?? 0
+        let longitude = state?.longitude ?? 0
+        let speed = state?.speed ?? -1
+        let status = state?.status.rawValue ?? "-"
+        let ride = rideRequestService.activeRequest?.id ?? "-"
+        return "\(ride)|\(latitude),\(longitude)|\(speed)|\(status)"
+    }
+
+    /// Advance the latch and publish its verdict. The ONE writer.
+    private func advanceMotionLatch() {
+        motionEvidence = motionLatch.update(
+            rideID: rideRequestService.activeRequest?.id,
+            state: viewerState.trackingVehicleState
+        )
+    }
+
+    private var trackingFreshnessNote: String? {
+        RiderCarFreshnessNote.text(
+            marker: trackingCarMarker,
+            lastUpdated: viewerState.trackingPositionRead.lastUpdated,
+            now: Date()
+        )
+    }
+
+    /// MYR-397 — the awaited, reconciled cancel. See `RiderActiveRideCancel` for
+    /// why `RideRequestService.cancel()` (optimistic, answer discarded) is NOT the
+    /// path a dispatched ride may take.
+    private func cancelActiveRide() {
+        guard !cancellingRide else { return }
+        guard let rideID = rideRequestService.activeServerRideID else {
+            // No server id yet means the create POST has not landed — the ride
+            // exists only on this device, so the local discard IS the whole cancel
+            // and there is nothing to reconcile against. This is the booking-grace
+            // path `cancel()` was written for (MYR-218 defect 1).
+            rideRequestService.cancel()
+            viewerState.resetDraftToIdle()
+            return
+        }
+        cancellingRide = true
+        let service = rideRequestService
+        Task { @MainActor in
+            defer { cancellingRide = false }
+            let outcome = await RiderActiveRideCancel.perform(
+                rideID: rideID,
+                cancel: { try await service.cancelActiveRide(id: rideID) },
+                reread: {
+                    await service.refreshActiveRide()
+                    return RiderActiveRideCancel.stillStands(status: service.activeRequest?.status)
+                }
+            )
+            switch outcome {
+            case .cancelled:
+                cancelFailureNotice = nil
+                viewerState.resetDraftToIdle()
+            case .refused(let notice):
+                cancelFailureNotice = notice
+            }
+        }
+    }
 
     // MARK: MYR-327 — expanded route viewer (tracking)
 
@@ -1149,10 +1498,13 @@ struct SharedViewerScreen: View {
                 pickupCoordinate: TrackingRouteMapContent.pickup(
                     leg1Route: trackingLeg1Route,
                     leg2Route: trackingLeg2Route,
-                    carCoordinate: trackingCarPosition.coordinate
+                    carCoordinate: trackingMarkerCoordinate
                 ),
                 destinationCoordinate: TrackingRouteMapContent.destination(leg2Route: trackingLeg2Route),
-                carCoordinate: trackingCarPosition.coordinate,
+                // MYR-393 — the expanded viewer draws the SAME content the inline
+                // map does (MYR-327's whole point), so it withholds the glyph on
+                // exactly the same evidence.
+                carCoordinate: trackingMarkerCoordinate,
                 carHeading: trackingCarPosition.headingDegrees,
                 legProgress: trackingLegProgress,
                 showsUserLocation: viewerState.userLocation.showsUserLocationDot
@@ -1185,7 +1537,9 @@ struct SharedViewerScreen: View {
     private func reconcileTrackingRoutes() {
         guard isTrackingPhase else { return }
         viewerState.rideRouteStore.ensureLeg2(pickup: trackingPickup, destination: trackingDestination)
-        if trackingLeg == .toPickup {
+        // MYR-393 — no origin, no leg-1 fetch. Asking MKDirections for a route from
+        // a coordinate we invented is how a fabrication acquires real road geometry.
+        if trackingLeg == .toPickup, let trackingCarOrigin {
             viewerState.rideRouteStore.ensureLeg1(carPosition: trackingCarOrigin, pickup: trackingPickup)
         }
     }

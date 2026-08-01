@@ -129,6 +129,12 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
     /// Optional crossfade layer pair driven by the same progress (the rider
     /// idle↔search sheet). `nil` → single-layer behavior (the owner sheet).
     let crossfade: PanSheetCrossfade?
+    /// MYR-397 — chrome that rides this sheet's top edge (the rider tracking
+    /// map's recenter + expand controls). The engine translates every registered
+    /// follower from the SAME two places it translates its own surface: every
+    /// drag frame, and inside the settle animator's block. `nil` for every sheet
+    /// with no following chrome, which is all of them but one.
+    let edgeAnchor: SheetEdgeAnchor?
     /// MYR-332 — the detent index at which drag PROGRESS (and therefore the
     /// crossfade) reaches 1. `nil` = the tallest detent, which is what every
     /// two-detent sheet wants.
@@ -154,6 +160,7 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
         onDragProgress: ((CGFloat) -> Void)? = nil,
         crossfade: PanSheetCrossfade? = nil,
         progressUpperDetentIndex: Int? = nil,
+        edgeAnchor: SheetEdgeAnchor? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.detentHeights = detentHeights
@@ -167,6 +174,7 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
         self.onDragProgress = onDragProgress
         self.crossfade = crossfade
         self.progressUpperDetentIndex = progressUpperDetentIndex
+        self.edgeAnchor = edgeAnchor
         self.content = content()
     }
 
@@ -182,6 +190,7 @@ public struct PanSheet<Content: View>: UIViewControllerRepresentable {
             accessibilityLabel: accessibilityLabel,
             onDragProgress: onDragProgress,
             progressUpperDetentIndex: progressUpperDetentIndex,
+            edgeAnchor: edgeAnchor,
             onSettleCommit: { index in
                 // Push the settled detent back into SwiftUI AND notify the caller,
                 // both AFTER settle so no binding write happens mid-drag.
@@ -238,6 +247,8 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
     private var onDragProgress: ((CGFloat) -> Void)?
     /// MYR-332 — the detent index at which progress reaches 1 (see `PanSheet`).
     private var progressUpperDetentIndex: Int?
+    /// MYR-397 — chrome riding this sheet's top edge (see `SheetEdgeFollower`).
+    private var edgeAnchor: SheetEdgeAnchor?
 
     private var detentHeights: [CGFloat] = [1]
     private var selection = 0
@@ -340,6 +351,7 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
         accessibilityLabel: String?,
         onDragProgress: ((CGFloat) -> Void)?,
         progressUpperDetentIndex: Int? = nil,
+        edgeAnchor: SheetEdgeAnchor? = nil,
         onSettleCommit: @escaping (Int) -> Void
     ) {
         self.detentHeights = detentHeights
@@ -349,6 +361,7 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
         self.overshootPad = overshootPad
         self.onDragProgress = onDragProgress
         self.progressUpperDetentIndex = progressUpperDetentIndex
+        self.edgeAnchor = edgeAnchor
         self.onSettleCommit = onSettleCommit
         surface.accessibilityIdentifier = accessibilityIdentifier
         if let accessibilityLabel {
@@ -467,6 +480,10 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
         CATransaction.setDisableActions(true)
         surface.transform = CGAffineTransform(translationX: 0, y: offsetY)
         CATransaction.commit()
+        // MYR-397: chrome rides the sheet's EDGE, from this same update — the
+        // anchor disables its own implicit actions for exactly the reason the
+        // transaction above does.
+        edgeAnchor?.apply(visibleHeight: height, animated: false)
         // MYR-236 round 5: content rides the surface. Drive the drag-progress
         // hook + the crossfade alphas from the SAME transform update — UIKit
         // only, zero SwiftUI work per frame.
@@ -826,6 +843,12 @@ public final class PanSheetController<Content: View>: UIViewController, UIGestur
             self.liveHeight = targetHeight
             self.surface.mrtVisibleHeight = targetHeight
             self.surface.transform = CGAffineTransform(translationX: 0, y: self.surfaceHeight - targetHeight)
+            // MYR-397: the followers' transforms are written INSIDE this block on
+            // purpose — the settle has no frames to hook, only an animator, so a
+            // follower driven from `applyVisibleHeight` alone would sit still
+            // through the spring and then teleport at its completion. Written
+            // here they are interpolated by the same timing as the surface.
+            self.edgeAnchor?.apply(visibleHeight: targetHeight, animated: true)
             // MYR-236 round 5: crossfade the content alphas ALONGSIDE the settle
             // transform (same animator/duration) so the fade completes WITH the
             // motion, not after — `applyVisibleHeight` only fires during drags.
