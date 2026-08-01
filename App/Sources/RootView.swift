@@ -1347,6 +1347,9 @@ struct RootView: View {
             guard let frame = DebugScene.current?.sampleLiveActivityFrame else { return }
             await RideActivityDebugLauncher.start(state: frame.state, staleDate: frame.staleDate)
         }
+        // MYR-405 — `MRT_ACTIVITY_ORPHAN=seed|relaunch`, the two-process repro of
+        // the restore race. Orthogonal to the scene and unset for every capture.
+        .task { await RideActivityDebugLauncher.runOrphanProbe() }
         #endif
         // MYR-346 — same hand-off for universal links, and the drain of anything
         // the mailbox held through a cold launch.
