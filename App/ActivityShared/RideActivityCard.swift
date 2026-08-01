@@ -74,9 +74,12 @@ enum RideActivityLeg: String, Hashable, CaseIterable {
         case .enroute:
             return .dropoff
         case .completed:
-            // The leg it ENDED on. `completed` lingers ~15 minutes carrying a
-            // `progress` of exactly `1`, so the drop-off track renders full for the
-            // whole linger rather than disappearing at the moment of arrival.
+            // The leg it ENDED on. `completed` lingers ~5 minutes (MYR-405, client
+            // 2026-07-31 — it was ~15) carrying a `progress` of exactly `1`, so the
+            // drop-off rail renders full for the whole linger rather than
+            // disappearing at the moment of arrival. **The rendering does not depend
+            // on the number**: the linger's LENGTH is the end policy's, and this
+            // side draws whatever it is handed for as long as it is up.
             return .dropoff
         case .declined, .cancelled, .reservationExpired, .unrecognized:
             return nil

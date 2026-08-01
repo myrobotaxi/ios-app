@@ -73,7 +73,10 @@ const LA_STATES = [
   },
   {
     id: 'completed', label: 'Completed', group: 'end',
-    note: 'Lingers ~15 min. Full rail, arrow parked on the destination cap — the only arrival beat.',
+    // MYR-405 (client, 2026-07-31): the linger is FIVE minutes, not fifteen. The
+    // end policy is the lifecycle worker's; what this row owns is unchanged —
+    // full rail, arrow parked on the cap.
+    note: 'Lingers ~5 min. Full rail, arrow parked on the destination cap — the only arrival beat.',
     headline: { kind: 'sentence', text: "You've arrived at " + LA_DEST },
     second: null, track: { p: 1, leg: 2 }, chip: 'Dropped off', tone: 'done',
     compact: { text: 'Done', tone: 'done' },
