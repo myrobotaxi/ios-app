@@ -1,125 +1,147 @@
-// Live Activity + Dynamic Island — the state machine, as data.
+// Live Activity + Dynamic Island — the state machine, as data. (v3)
 //
-// ⚠️ MIRROR NOTE (MYR-398 v2 port, 2026-07-31). This file is the client's, copied
-// verbatim EXCEPT for two later client decisions that arrived after he wrote it and
-// that the port asserts against. Both are marked inline below:
-//   • MYR-405 — the `completed` linger is ~5 min, not ~15.
-//   • The COMPACT column, in full: Sent→Requested, Coming→On the way,
-//     Here→Arrived, Driving→Arriving, Done→Dropped off, and all three unhappy
-//     endings collapse to ONE shared phrase, Ended→Ride ended.
-//     `RideActivityCopy.compactWord` is the shipping table and carries the
-//     reasoning, including why the shared phrase costs some precision on purpose.
-// One row per state the widget can render. This mirrors RideActivityCopy
-// on the client; every string here is a client-side string.
+// Structure and phrasing follow the Uber ride Live Activity, which is the
+// reference the team picked:
+//   · Five phases: Dispatch → Enroute → Arriving → Arrived → On trip.
+//   · The headline leads and is bold. Pickup leg counts DOWN in minutes
+//     ("Pickup in 8 min"); the trip leg states a CLOCK TIME ("3:42 PM
+//     dropoff"). Two different forms, so a duration can never be mistaken
+//     for a time of day.
+//   · The subline is the one piece of context that leg needs: which car is
+//     coming ("7SRJ294 · Silver Model Y") on the way to you, where you're
+//     going ("Heading to {place}") once you're in it.
+//   · The rail is unlabeled — the subline already names where you're going.
+//   · The compact island carries a FIGURE or nothing — "8 min", "1 min",
+//     "3:42 PM", exactly as Uber does it. No invented status words. At a stop
+//     it shows a glyph instead — a wave at the curb, a check when the ride is
+//     done — the same non-textual arrival beat Uber uses.
+//   · No badges anywhere. Every state says what it is in words — the
+//     headline carries the status, the subline carries the detail. The rail
+//     is always live gold; it is never dimmed to signal a problem.
 
-const LA_VEHICLE = 'Cybercab';
-const LA_PICKUP = 'Sansome & Clay';
+const LA_PLATE = '7SRJ294';
+const LA_CAR = 'Silver Model Y';
+const LA_PICKUP = '1124 Mission St';
 const LA_DEST = "Duarte's Tavern";
-
-// chip tones — map to tokens, not new colors
-const LA_TONE = {
-  pending:  { c: T.goldDeepSoft, label: 'pending' },
-  active:   { c: T.gold,         label: 'active' },
-  riding:   { c: T.driving,      label: 'in ride' },
-  done:     { c: T.parked,       label: 'complete' },
-  dead:     { c: T.offline,      label: 'terminal' },
-};
 
 const LA_STATES = [
   {
-    id: 'requested', label: 'Requested', group: 'live',
-    note: 'Not in the shipped matrix — proposed. The chip exists but no headline was specified.',
+    id: 'dispatch', label: 'Dispatch', group: 'pickup', leg: 1, phase: 'Dispatch',
+    note: 'No car assigned yet, so there is no ETA, no progress and no plate to show. The rail still draws, parked at the origin, and the compact island shows the mark alone — exactly what Uber does at Dispatch.',
+    headline: { status: 'Finding your ride' },
+    sub: 'Matching you with a ride',
+    rail: { p: 0, state: 'idle' },
+    compact: {},
+  },
+  {
+    id: 'enroute', label: 'Enroute', group: 'pickup', leg: 1, phase: 'Enroute',
+    note: 'The hero state. Bold headline leads; the subline is the plate and the car, which is exactly what a rider standing at the curb needs. Uber puts the same string in the same place.',
+    headline: { phase: 'Pickup', value: '8', unit: 'min' },
+    sub: LA_PLATE + ' · ' + LA_CAR,
+    rail: { p: 0.38, state: 'live' },
+    compact: { text: '8 min' },
+  },
+  {
+    id: 'arriving', label: 'Arriving', group: 'pickup', leg: 1, phase: 'Arriving',
+    note: 'Its own phase under two minutes, exactly as Uber splits it. Same layout, just a smaller number — the rail being nearly full is what signals imminence.',
+    headline: { phase: 'Pickup', value: '1', unit: 'min' },
+    sub: LA_PLATE + ' · ' + LA_CAR,
+    rail: { p: 0.88, state: 'live' },
+    compact: { text: '1 min' },
+  },
+  {
+    id: 'enroute-noeta', label: 'Enroute · no ETA', group: 'pickup', leg: 1, phase: 'Enroute',
+    note: 'One word swapped in the same slot at the same size — nothing on the card moves, and nothing needs a badge to explain it.',
+    headline: { status: 'Pickup soon' },
+    sub: LA_PLATE + ' · ' + LA_CAR,
+    rail: { p: 0.38, state: 'live' },
+    compact: {},
+  },
+  {
+    id: 'enroute-notelemetry', label: 'Enroute · no telemetry', group: 'pickup', leg: 1, phase: 'Enroute',
+    note: 'Never blank. The line is the route — true before the first location lands, and it simply fills in as telemetry arrives.',
+    headline: { status: 'Pickup soon' },
+    sub: LA_PLATE + ' · ' + LA_CAR,
+    rail: { p: 0, state: 'idle' },
+    compact: {},
+  },
+  {
+    id: 'arrived', label: 'Arrived', group: 'pickup', leg: 1, phase: 'Arrived',
+    note: 'Leg 1 complete: rail full, and the mark replaces the destination pin rather than sitting on top of it. The subline still carries the plate — this is the moment the rider needs it most. In the compact island a wave replaces the figure, the same beat Uber uses when the driver pulls up — the car greeting you. Full on the server’s authority, never inferred from an ETA hitting zero.',
+    headline: { status: 'Your ride is here' },
+    sub: LA_PLATE + ' · ' + LA_CAR,
+    rail: { p: 1, state: 'live' },
+    compact: { glyph: 'wave' },
+  },
+  {
+    id: 'ontrip', label: 'On trip', group: 'trip', leg: 2, phase: 'On trip',
+    note: 'The leg flip resets the rail to zero and changes the form of the headline: a clock time, not a countdown. This is the state that used to read "Arriving in 17 min" — the line the field report was about.',
+    headline: { clock: '3:42 PM', word: 'dropoff' },
+    sub: 'Heading to ' + LA_DEST,
+    rail: { p: 0.52, state: 'live' },
+    compact: { text: '3:42 PM' },
+  },
+  {
+    id: 'ontrip-noeta', label: 'On trip · no ETA', group: 'trip', leg: 2, phase: 'On trip',
+    note: 'Mirrors the pickup no-ETA state exactly — same slot, same geometry, one word different.',
+    headline: { status: 'Dropoff soon' },
+    sub: 'Heading to ' + LA_DEST,
+    rail: { p: 0.52, state: 'live' },
+    compact: {},
+  },
+  {
+    id: 'stale', label: 'On trip · pushes stopped', group: 'trip', leg: 2, phase: 'On trip',
+    note: 'The subline carries the timestamp instead of the destination — one honest sentence, no badge and no dimming. The rail holds its last known position and stays gold, because the position is still true; it just is not moving.',
+    headline: { status: 'Dropoff soon' },
+    sub: 'Last updated 3:31 PM',
+    rail: { p: 0.52, state: 'live' },
+    compact: { text: '3:42 PM' },
+  },
+  {
+    id: 'completed', label: 'Completed', group: 'end', leg: 2, phase: 'Completed',
+    note: 'Lingers ~15 min. Rail full, the mark standing where the destination pin was — the only arrival beat, and the only other state where the rail completes. The compact island shows a check: the ride is done, not merely somewhere.',
+    headline: { status: "You've arrived" },
+    sub: LA_DEST,
+    rail: { p: 1, state: 'live' },
+    compact: { glyph: 'check' },
+  },
+  {
+    id: 'declined', label: 'Declined', group: 'end', leg: 2, phase: 'Ended',
+    note: 'The route never happened, so the rail is idle at zero rather than absent — the card keeps its height and the row reads as an untraveled route.',
+    headline: { status: 'No ride available' },
+    sub: 'Nothing was charged',
+    rail: { p: 0, state: 'idle' },
+    compact: {},
+  },
+  {
+    id: 'cancelled', label: 'Cancelled', group: 'end', leg: 2, phase: 'Ended',
+    note: 'Subject-free headline — the rider may be the one who cancelled, so the copy does not assign it.',
+    headline: { status: 'Ride cancelled' },
+    sub: 'Nothing was charged',
+    rail: { p: 0, state: 'idle' },
+    compact: {},
+  },
+  {
+    id: 'expired', label: 'Reservation expired', group: 'end', leg: 2, phase: 'Ended',
+    note: 'The headline is the outcome; the subline is the reason. Nothing else is needed.',
+    headline: { status: 'Reservation expired' },
+    sub: 'No car arrived in time',
+    rail: { p: 0, state: 'idle' },
+    compact: {},
+  },
+  {
+    id: 'unknown', label: 'Unknown status · fallback', group: 'end', leg: 2, phase: 'Ended',
+    note: 'Never ships intentionally, but it is reachable. Headline falls back to the vehicle line and the rail goes idle.',
     proposed: true,
-    headline: { kind: 'sentence', text: LA_VEHICLE + ' is on its way to you' },
-    second: { pickup: true },
-    track: null, chip: 'Requested', tone: 'pending',
-    compact: { text: 'Requested', tone: 'pending' }, // client 2026-07-31: was 'Sent'
-  },
-  {
-    id: 'accepted-eta', label: 'Accepted · ETA + progress', group: 'live',
-    note: 'The hero state. One type size across the headline; the unit carries the meaning, so a duration can never be misread as a clock time. Under a minute the value becomes seconds ("45 s").',
-    headline: { kind: 'countdown', prefix: 'Pick up in', value: '4', unit: 'min' },
-    second: { pickup: true },
-    track: { p: 0.38, leg: 1 }, chip: 'On the way', tone: 'active',
-    compact: { text: '4 min', tone: 'active' },
-  },
-  {
-    id: 'accepted-noeta', label: 'Accepted · no ETA', group: 'live',
-    note: 'Sentence headline. No track at all — never an empty rail.',
-    headline: { kind: 'sentence', text: LA_VEHICLE + ' is coming to pick you up' },
-    second: { pickup: true },
-    track: null, chip: 'On the way', tone: 'active',
-    compact: { text: 'On the way', tone: 'active' }, // client 2026-07-31: was 'Coming'
-  },
-  {
-    id: 'arrived', label: 'Arrived', group: 'live',
-    note: 'Track is full on the server’s authority, not from an ETA.',
-    headline: { kind: 'sentence', text: LA_VEHICLE + ' is here' },
-    second: { pickup: true },
-    track: { p: 1, leg: 1 }, chip: 'Arrived', tone: 'active', pulse: true,
-    compact: { text: 'Arrived', tone: 'active' }, // client 2026-07-31: was 'Here'
-  },
-  {
-    id: 'enroute-eta', label: 'En route · ETA', group: 'live',
-    note: 'Leg flip resets the rail to zero and swaps the second line from the pickup to the destination — one place, in gold.',
-    headline: { kind: 'countdown', prefix: 'Arriving in', value: '17', unit: 'min' },
-    second: { trip: true }, track: { p: 0.52, leg: 2 }, chip: 'In ride', tone: 'riding',
-    compact: { text: '17 min', tone: 'riding' },
-  },
-  {
-    id: 'enroute-noeta', label: 'En route · no ETA', group: 'live',
-    note: 'Sentence + destination. Rail shown only if progress is present.',
-    headline: { kind: 'sentence', text: LA_VEHICLE + ' is taking you there' },
-    second: { trip: true }, track: { p: 0.52, leg: 2 }, chip: 'In ride', tone: 'riding',
-    compact: { text: 'Arriving', tone: 'riding' }, // client 2026-07-31: was 'Driving'
-  },
-  {
-    id: 'stale', label: 'Stale · pushes stopped', group: 'live',
-    note: 'Countdown replaced by the status sentence + dated notice. Rail keeps its position, loses its gold; the compact island keeps the last known figure at 45%.',
-    headline: { kind: 'sentence', text: LA_VEHICLE + ' is taking you there' },
-    second: { trip: true }, track: { p: 0.52, leg: 2 }, chip: 'Not updating', tone: 'dead',
-    stale: 'Last update 4:02 PM',
-    compact: { text: '17 min', tone: 'stale' },
-  },
-  {
-    id: 'completed', label: 'Completed', group: 'end',
-    // MYR-405 (client, 2026-07-31): the linger is FIVE minutes, not fifteen. The
-    // end policy is the lifecycle worker's; what this row owns is unchanged —
-    // full rail, arrow parked on the cap.
-    note: 'Lingers ~5 min. Full rail, arrow parked on the destination cap — the only arrival beat.',
-    headline: { kind: 'sentence', text: "You've arrived at " + LA_DEST },
-    second: null, track: { p: 1, leg: 2 }, chip: 'Dropped off', tone: 'done',
-    compact: { text: 'Dropped off', tone: 'done' }, // client 2026-07-31: was 'Done'
-  },
-  {
-    id: 'declined', label: 'Declined', group: 'end',
-    note: 'No second line, no rail. Chip carries the whole outcome.',
-    headline: { kind: 'sentence', text: LA_VEHICLE + " can't take this ride" },
-    second: null, track: null, chip: 'Declined', tone: 'dead',
-    compact: { text: 'Ride ended', tone: 'dead' }, // client 2026-07-31: was 'Ended'; asked as 'Ride cancelled', which TRUNCATES (91.3pt vs the slot's ~91pt ceiling) — see RideActivityCopy.compactWord
-  },
-  {
-    id: 'cancelled', label: 'Cancelled', group: 'end',
-    note: 'Subject-free sentence — the rider may be the one who cancelled.',
-    headline: { kind: 'sentence', text: 'This ride was cancelled' },
-    second: null, track: null, chip: 'Cancelled', tone: 'dead',
-    compact: { text: 'Ride ended', tone: 'dead' }, // client 2026-07-31: was 'Ended'; asked as 'Ride cancelled', which TRUNCATES (91.3pt vs the slot's ~91pt ceiling) — see RideActivityCopy.compactWord
-  },
-  {
-    id: 'expired', label: 'Reservation expired', group: 'end',
-    note: 'Longest chip in the set — sets the chip’s max width.',
-    headline: { kind: 'sentence', text: LA_VEHICLE + " didn't make it in time" },
-    second: null, track: null, chip: 'Reservation expired', tone: 'dead',
-    compact: { text: 'Ride ended', tone: 'dead' }, // client 2026-07-31: was 'Ended'; asked as 'Ride cancelled', which TRUNCATES (91.3pt vs the slot's ~91pt ceiling) — see RideActivityCopy.compactWord
-  },
-  {
-    id: 'unknown', label: 'Unknown status · fallback', group: 'end',
-    note: 'Never ships intentionally. Chip reads "Ride"; headline falls back to the vehicle line.',
-    proposed: true,
-    headline: { kind: 'sentence', text: LA_VEHICLE + ' ride in progress' },
-    second: null, track: null, chip: 'Ride', tone: 'dead',
-    compact: { text: 'Ride', tone: 'dead' },
+    headline: { status: 'Ride in progress' },
+    sub: 'Tap to open MyRoboTaxi',
+    rail: { p: 0, state: 'idle' },
+    compact: {},
   },
 ];
 
-Object.assign(window, { LA_STATES, LA_TONE, LA_VEHICLE, LA_PICKUP, LA_DEST });
+// The phase changes the island alerts on — Uber's five, plus the end.
+// A silent compact swap is unreadable, so each of these expands the island.
+const LA_TRANSITIONS = ['dispatch', 'enroute', 'arriving', 'arrived', 'ontrip', 'completed'];
+
+Object.assign(window, { LA_STATES, LA_TRANSITIONS, LA_PLATE, LA_CAR, LA_PICKUP, LA_DEST });

@@ -1,7 +1,7 @@
 import Foundation
 import MyRobotaxiContracts
 
-// MARK: - What the Live Activity card SAYS and DRAWS (MYR-398, r16 redesign v2)
+// MARK: - What the Live Activity card SAYS and DRAWS (MYR-398, r16 redesign v3)
 //
 // PURE, and for the same reason `RideActivityStateMachine` is: the presentations
 // themselves cannot be instantiated in a unit test (an `ActivityViewContext` needs
@@ -14,30 +14,41 @@ import MyRobotaxiContracts
 // can reach it even though the widget process is the only thing that renders it.
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// WHAT v2 ADDED TO THIS TYPE, AND WHY IT IS HERE RATHER THAN IN THE VIEWS
+// WHAT v3 CHANGED ABOUT THIS TYPE'S OUTPUT SHAPE
 //
-// v1 resolved the headline, the second line and the track here, and then let the
-// views ask `RideActivityCopy` directly for the status word — twice, in two slots,
-// with two different fallbacks. That is how the compact island came to render the
-// chip's long word: nothing was wrong with either call, and no test could see the
-// disagreement because neither call was the card.
+// The split — one pure resolver, views that switch on values and never on `status`
+// — is v2's and is kept verbatim, because it is what made the board an executable
+// assertion. What changed is every field it returns:
 //
-// So v2 resolves the WHOLE row: the chip's word, its TONE, whether that tone dot
-// pulses, the second line's one place, and the compact island's text. The views
-// switch on values; they never switch on `status`. `RideActivityCardTests` then
-// walks `la-data.jsx`'s twelve rows against this one function, which is the only
-// way the design's own table can be an executable assertion.
+//   • `headline` is THREE forms now, and two of them are per-leg. The pickup leg
+//     counts down (`Pickup in 8 min`); the trip leg states a clock time (`3:42 PM
+//     dropoff`); everything else is a sentence.
+//   • `subline` replaces `secondLine`. It is always a PLACE or an IDENTIFICATION,
+//     never a status, and it is a plain `String?` rather than a two-case enum
+//     because v3 has no per-case treatment left — one size, one colour, one line.
+//   • `rail` replaces `track: Double?`. **The rail is ALWAYS rendered.** An absent
+//     progress is the `idle` variant (track and pin drawn, no fill, 50% puck at the
+//     origin) rather than an absent row — "an untraveled route, not an error", and
+//     the reason every state has the same 128pt footprint.
+//   • `chipWord`, `tone`, `pulsesToneDot` are **DELETED**. There are no chips and
+//     no status colours on any surface; one accent (gold), no tone dots, no pulse.
+//   • `compact` is a FIGURE, a GLYPH, or NOTHING. Every status word v2 put in that
+//     slot is gone.
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// THE HONESTY RULES THIS TYPE EXISTS TO KEEP (rest-api.md §7.21.3) — UNCHANGED
+// THE HONESTY RULES, AND HOW v3 KEEPS THEM WITH AN ALWAYS-DRAWN RAIL
 //
-//   1. `progress` ABSENT → NO TRACK. Not an empty rail, not a track at zero. `0`
-//      is the claim "the car has covered none of the distance"; absence is the
-//      admission "we cannot say". The card composes cleanly without one, which is
-//      the only reason the server is free to omit it.
-//   2. `eta` ABSENT → NO COUNTDOWN. The headline degrades to the state's own
-//      sentence. The client NEVER computes an ETA — the contract's ETA is the
+// §7.21.3's rule 1 is that an absent `progress` must not be rendered as `0`: "`0`
+// is the claim the car has covered none of the distance; absence is the admission
+// we cannot say." v2 kept it by drawing NO rail. v3 keeps it by drawing the IDLE
+// rail — which is a different mark, not a zero-valued one: no gold fill at all, and
+// a half-strength puck parked at the origin. A rail with a gold fill of width zero
+// and a full-strength puck would be the lie; this is the row saying "here is the
+// route, nothing of it has been reported".
+//
+//   2. `eta` ABSENT → NO FIGURE. The headline degrades to `Pickup soon` /
+//      `Dropoff soon`. The client NEVER computes an ETA — the contract's ETA is the
 //      CAR'S OWN carried navigation ETA and nothing on the phone is that.
 //   3. RENDER BOTH AS GIVEN. `progress` is clamped server-side and `eta` is
 //      deliberately not, so "most of the way there and arriving later than it said"
@@ -46,40 +57,43 @@ import MyRobotaxiContracts
 
 /// Which half of the ride the card is describing.
 ///
-/// The LEG IS NOT ON THE WIRE and must never be asked for: §7.21.3 keeps it off
-/// the payload precisely because `status` already carries it, and "one fact on the
-/// wire twice is two things that can disagree". This is the client's single
-/// reading of it — the headline, the second line and the track's reset key all
-/// come through here rather than each switching on `status` themselves.
+/// The LEG IS NOT ON THE WIRE and must never be asked for: §7.21.3 keeps it off the
+/// payload precisely because `status` already carries it, and "one fact on the wire
+/// twice is two things that can disagree". This is the client's single reading of
+/// it — the headline's FORM, the subline's subject and the rail's reset key all come
+/// through here rather than each switching on `status` themselves.
 enum RideActivityLeg: String, Hashable, CaseIterable {
-    /// Leg one — the car driving to the RIDER. The card counts down to the pickup
-    /// and names where to stand.
+    /// Leg one — the car driving to the RIDER. The card counts down in minutes and
+    /// the subline identifies the car.
     case pickup
 
-    /// Leg two — the car driving the rider ONWARD. The card counts down to the
-    /// drop-off and names it.
+    /// Leg two — the car driving the rider ONWARD. The card states a clock time and
+    /// the subline names where they are going.
     case dropoff
 
     /// `nil` for a ride that has no leg in progress at all, which is not the same
-    /// as "leg unknown": a declined, cancelled or lapsed ride is not part-way
-    /// along anything, and neither is a status this build has never heard of.
+    /// as "leg unknown": a declined, cancelled or lapsed ride is not part-way along
+    /// anything, and neither is a status this build has never heard of.
     static func of(_ status: LiveActivityRideStatus) -> RideActivityLeg? {
         switch status {
         case .requested, .accepted, .arrived:
             // `arrived` is the END of leg one, not the start of leg two: the car is
             // at the kerb and the rider has not boarded. The server sends exactly
-            // `1` here on the ride record's authority, so the pickup track renders
+            // `1` here on the ride record's authority, so the pickup rail renders
             // FULL — which is the picture the rider wants at that moment.
+            //
+            // `requested` is leg ONE too, even though at Dispatch there is no car
+            // yet. The leg is what the ride is DOING; the absence of a vehicle is
+            // what the idle rail and the mark-only island say.
             return .pickup
         case .enroute:
             return .dropoff
         case .completed:
-            // The leg it ENDED on. `completed` lingers ~5 minutes (MYR-405, client
-            // 2026-07-31 — it was ~15) carrying a `progress` of exactly `1`, so the
-            // drop-off rail renders full for the whole linger rather than
-            // disappearing at the moment of arrival. **The rendering does not depend
-            // on the number**: the linger's LENGTH is the end policy's, and this
-            // side draws whatever it is handed for as long as it is up.
+            // The leg it ENDED on. `completed` lingers FIVE MINUTES (MYR-405,
+            // client 2026-07-31 — superseding MYR-194's ~15, and superseding the v3
+            // handoff's stale "~15 min" note in its own la-data row) carrying a
+            // `progress` of exactly `1`, so the drop-off rail renders full for the
+            // whole linger rather than disappearing at the moment of arrival.
             return .dropoff
         case .declined, .cancelled, .reservationExpired, .unrecognized:
             return nil
@@ -87,74 +101,74 @@ enum RideActivityLeg: String, Hashable, CaseIterable {
     }
 }
 
-/// The chip's 5pt dot, which is the ONLY place a state's colour appears.
+/// The card's headline — row 2, 20/600, ONE line, `lineLimit(1)`.
 ///
-/// Handoff §1 change 4: twelve states × coloured text is a dozen colours competing
-/// with gold, so the colour collapses into the dot and the chip's label is always
-/// 82% white. §4's table maps each of these onto an EXISTING DesignSystem token —
-/// there are no new status colours in this redesign.
-enum RideActivityTone: String, Hashable, CaseIterable {
-    /// `goldDeepSoft` — a claim in flight. `requested` only.
-    case pending
-    /// `gold` — the car is ours and it is moving toward the rider.
-    case active
-    /// `driving` — the rider is in the car.
-    case riding
-    /// `parked` — dropped off. The one ending that went right.
-    case complete
-    /// `offline` — every other ending, and staleness.
-    case terminal
-}
-
-/// The card's top line.
+/// **TWO OF THE THREE FORMS ARE PER-LEG, AND THAT IS THE FIELD REPORT'S FIX.** A
+/// duration and a time of day are now different shapes, so `17 min` on the way to a
+/// destination can never be read as "arriving at 17 past".
 enum RideActivityHeadline: Equatable {
-    /// "Pick up in" + the ETA figure, `{n} min` / `{n} s`.
-    ///
-    /// **THE FIGURE TRAVELS, NOT THE INSTANT — CLIENT DECISION, 2026-07-31.** It is
-    /// derived ONCE here, when the content state is resolved, and then HELD until
-    /// the next push. *"We are pulling live data from Tesla ETA telemetry; counting
-    /// down is inaccurate."* See `RideActivityCountdown` for the full reasoning: the
-    /// wire's `eta` is the car's own live navigation estimate, and a phone
-    /// decrementing it locally shows an extrapolation of the car's last answer while
-    /// looking exactly like the car's current one.
-    ///
-    /// Carrying `Parts` rather than a `Date` is what makes that structural. A view
-    /// handed an instant can always re-derive; a view handed a figure cannot.
-    case countdown(prefix: String, figure: RideActivityCountdown.Parts)
+    /// `Pickup in 8 min` — the pickup leg, counting down in MINUTES (`45 s` under a
+    /// minute). Resolved once per content state and HELD; see
+    /// `RideActivityCountdown`.
+    case pickupCountdown(RideActivityCountdown.Parts)
 
-    /// A sentence with no number in it. Every arm the contract leaves without an
-    /// `eta`, plus every terminal state, plus staleness.
+    /// `3:42 PM dropoff` — the trip leg, stating a CLOCK TIME. Already formatted,
+    /// so the view cannot re-derive it and no clock enters the widget process.
+    case dropoffClock(String)
+
+    /// A sentence with no figure in it: Dispatch, both `… soon` degrades, the
+    /// arrival, and every ending.
     case sentence(String)
 }
 
-/// The card's ONE second-line place (handoff §1 change 10, §2 part 2).
+/// The route line — row 4, 18pt, **ALWAYS RENDERED**.
 ///
-/// **NEVER A PAIR.** v1 rendered "Meet at {pickup}" on leg one and
-/// "{Vehicle} → {Destination}" on leg two; the board dropped the preposition, the
-/// vehicle and the arrow. The headline already says which leg you are on and the
-/// rail already shows the span, so naming both ends was the busiest row on the
-/// card.
-enum RideActivitySecondLine: Equatable {
-    /// Leg one — where to stand, at 62% white. The bare label, no "Meet at ".
-    case pickup(String)
-    /// Leg two — where you are going, IN GOLD. The bare label, no vehicle, no
-    /// arrow.
-    case destination(String)
+/// Two states only, which is the board's §4 rail contract in full. There is no
+/// dimmed variant and no absent variant: when the pushes stop, the last known
+/// position is still true, so the rail keeps its gold and the SUBLINE says
+/// `Last updated 3:31 PM`. (v2 desaturated it to `#5C5A54`; that colour is deleted
+/// with this type's `isStale` reading of the rail.)
+struct RideActivityRailState: Equatable {
+    /// `0…1`, clamped. On `idle` it is always `0` — an idle rail with a fraction
+    /// would be a fill that is not drawn, i.e. a number the card is keeping to
+    /// itself.
+    var progress: Double
+
+    /// The untravelled variant: track and destination pin drawn, NO gold fill, and
+    /// the puck at 50% opacity parked at the origin.
+    var isIdle: Bool
+
+    static let idle = RideActivityRailState(progress: 0, isIdle: true)
+
+    static func live(_ progress: Double) -> RideActivityRailState {
+        RideActivityRailState(progress: min(1, max(0, progress)), isIdle: false)
+    }
 }
 
-/// What the compact Dynamic Island's trailing slot shows.
+/// The compact Dynamic Island's trailing slot — **a figure or nothing**.
+///
+/// Uber's rule, and the board's: `8 min` / `1 min` / `3:42 PM`, the mark alone where
+/// there is no figure, and a glyph at the two stops. Every status WORD v2 rendered
+/// here is deleted, along with the width ladder they needed.
 enum RideActivityCompact: Equatable {
-    /// The ETA figure — 15/600 tabular. Resolved once and held, exactly as the
-    /// headline's is.
-    ///
-    /// `isStale` rides ALONG with it rather than replacing it (handoff §1 change 7):
-    /// the compact island keeps the last known figure at 45% instead of dropping to
-    /// a word, because a rider glancing at the island wants the number and the
-    /// opacity is the whole admission.
-    case figure(RideActivityCountdown.Parts, isStale: Bool)
+    /// 15/600 tabular, white. The pickup countdown's `{n} {unit}` or the trip leg's
+    /// clock time — already composed, for the same no-clock-in-the-widget reason.
+    case figure(String)
 
-    /// The short status word — 14.5/500, and never `monospacedDigit`.
-    case word(String)
+    /// A real SF Symbol, white — `hand.wave.fill` at the kerb, `checkmark.circle.fill`
+    /// when the ride is done. Not artwork: Apple's optical weights, the same shapes
+    /// the board drew with Material Symbols.
+    case glyph(Glyph)
+
+    /// The mark alone. Dispatch, both no-ETA degrades, and every ending.
+    case markOnly
+
+    enum Glyph: Equatable {
+        /// `hand.wave.fill`, 17 — the car greeting you.
+        case wave
+        /// `checkmark.circle.fill`, 15 — the ride is done, not merely somewhere.
+        case check
+    }
 }
 
 /// The whole card, resolved.
@@ -166,215 +180,247 @@ struct RideActivityCard: Equatable {
 
     var leg: RideActivityLeg?
 
+    /// Row 2.
     var headline: RideActivityHeadline
 
-    /// The one second-line place, or `nil` — leg one with no pickup label, and
-    /// every TERMINAL state, where MYR-172's own reasoning stands: "Cancelled" over
-    /// a destination reads as a ride still in progress.
-    var secondLine: RideActivitySecondLine?
-
-    /// The fraction the track draws, or `nil` for NO TRACK AT ALL.
-    var track: Double?
-
-    /// The chip's word — "Not updating" when stale, the status's own word otherwise.
-    var chipWord: String
-
-    /// The chip's 5pt dot colour, as a token-free tone.
-    var tone: RideActivityTone
-
-    /// Whether that dot PULSES — `arrived`, and only `arrived`.
+    /// Row 3 — a PLACE or an IDENTIFICATION, never a status.
     ///
-    /// The single animation on this card besides the rail's offset (handoff §7,
-    /// "everything else is static — Live Activities are budget-limited"). It is on
-    /// the one state where something is waiting for the rider rather than the other
-    /// way round. A stale `arrived` does not pulse: motion is a claim to be live.
-    var pulsesToneDot: Bool
+    /// `nil` only when the fact it would name is genuinely absent (an `enroute`
+    /// frame whose `destination` is the empty string). The ROW is still 17pt tall in
+    /// that case: the footprint is fixed in every state, so an absent subline costs
+    /// the card nothing and moves nothing.
+    var subline: String?
+
+    /// Row 4. Never optional — see `RideActivityRailState`.
+    var rail: RideActivityRailState
 
     /// The compact island's trailing content.
     var compact: RideActivityCompact
 
-    /// ActivityKit's own staleness verdict, passed through so the views can dim the
-    /// rail and raise the notice.
+    /// ActivityKit's own staleness verdict, passed through. v3 uses it for exactly
+    /// two things — the headline drops its figure, and the subline becomes
+    /// `Last updated {t}` — and for NOTHING visual: no dimming, no desaturation, no
+    /// badge.
     var isStale: Bool
-
-    /// The instant the stale notice dates itself from.
-    ///
-    /// **ALWAYS `nil` TODAY.** See `RideActivityCopy.staleNotice(lastUpdate:…)` —
-    /// nothing the widget process holds is an update instant, and the `eta` (v1's
-    /// choice) is a FUTURE instant that would overstate freshness on the one card
-    /// that exists to admit it has none. The field is kept so the arm has a way in
-    /// the day the wire grows one.
-    var staleLastUpdate: Date?
 
     /// Resolve the card from everything the widget process is handed.
     ///
-    /// `pickupLabel` is the STATIC attribute; `state` is the pushed content state;
-    /// `isStale` is `ActivityViewContext.isStale`.
+    /// `vehicle` is the STATIC attribute (see `RideActivityVehicle`); `state` is the
+    /// pushed content state; `isStale` is `ActivityViewContext.isStale`.
     ///
     /// `now` IS THE FRAME'S OWN MOMENT — the instant this content state was
-    /// composed, which for a pushed update is the instant it landed. It exists as a
+    /// composed, which for a pushed update is the instant it landed. It is a
     /// parameter for two reasons. It makes the whole card a deterministic function
-    /// of its inputs, so the twelve-row table can be asserted against literal
+    /// of its inputs, so the fourteen-row table can be asserted against literal
     /// figures. And it is where the client's "no local countdown" ruling is
-    /// enforced: the ETA figure is derived HERE, once, and every surface is handed
-    /// the figure rather than the instant, so no view is able to re-derive it a
+    /// enforced: the figure is derived HERE, once, and every surface is handed the
+    /// composed string rather than the instant, so no view is able to re-derive it a
     /// second later.
+    ///
+    /// `time` formats the two wall-clock strings. Injected for the one reason those
+    /// are unlike every other string on this surface: they need a LOCALE, and the
+    /// system's answer is not ours to hard-code — see `RideActivityClock`.
     static func resolve(
         state: RideActivityAttributes.ContentState,
-        pickupLabel: String?,
+        vehicle: RideActivityVehicle?,
         isStale: Bool,
-        now: Date = Date()
+        now: Date = Date(),
+        time: (Date) -> String = RideActivityClock.shortTime
     ) -> RideActivityCard {
         let leg = RideActivityLeg.of(state.status)
 
         return RideActivityCard(
             status: state.status,
             leg: leg,
-            headline: headline(state: state, leg: leg, isStale: isStale, now: now),
-            secondLine: secondLine(state: state, leg: leg, pickupLabel: pickupLabel),
-            track: track(for: state),
-            chipWord: isStale
-                ? RideActivityCopy.staleChipWord
-                : RideActivityCopy.chipWord(for: state.status),
-            tone: isStale ? .terminal : tone(for: state.status),
-            pulsesToneDot: state.status == .arrived && !isStale,
-            compact: compact(state: state, isStale: isStale, now: now),
-            isStale: isStale,
-            // The `{t}` arm has no source on this wire. Stated once, here, rather
-            // than being quietly absent at a call site.
-            staleLastUpdate: nil
+            headline: headline(state: state, leg: leg, isStale: isStale, now: now, time: time),
+            subline: subline(state: state, vehicle: vehicle, isStale: isStale, time: time),
+            rail: rail(for: state),
+            compact: compact(state: state, leg: leg, now: now, time: time),
+            isStale: isStale
         )
     }
 
-    // MARK: - Headline
+    // MARK: - Row 2 · the headline
 
     private static func headline(
         state: RideActivityAttributes.ContentState,
         leg: RideActivityLeg?,
         isStale: Bool,
-        now: Date
+        now: Date,
+        time: (Date) -> String
     ) -> RideActivityHeadline {
-        let sentence = RideActivityHeadline.sentence(
-            RideActivityCopy.sentence(
-                for: state.status,
-                vehicleName: state.vehicleName,
-                destination: state.destination
-            )
+        switch state.status {
+        case .requested:
+            return .sentence(RideActivityCopy.dispatchHeadline)
+        case .arrived:
+            return .sentence(RideActivityCopy.arrivedHeadline)
+        case .completed:
+            return .sentence(RideActivityCopy.completedHeadline)
+        case .declined:
+            return .sentence(RideActivityCopy.declinedHeadline)
+        case .cancelled:
+            return .sentence(RideActivityCopy.cancelledHeadline)
+        case .reservationExpired:
+            return .sentence(RideActivityCopy.expiredHeadline)
+        case .unrecognized:
+            return .sentence(RideActivityCopy.unknownHeadline)
+        case .accepted, .enroute:
+            break
+        }
+
+        // The two figure-bearing states. The `soon` sentence is the degrade for BOTH
+        // reasons a figure can be missing — no ETA on the wire, and staleness — and
+        // it is the same string in the same slot either way, which is what keeps the
+        // card from moving.
+        let soon = RideActivityHeadline.sentence(
+            leg == .dropoff ? RideActivityCopy.dropoffSoon : RideActivityCopy.pickupSoon
         )
 
-        // A terminal ride has no future arrival, so a stale `eta` still sitting in
-        // the content state must not be counted down (MYR-194's rule applied to the
-        // STATE rather than to the clock).
-        guard RideActivityCopy.showsCountdown(for: state.status) else { return sentence }
-
-        // STALE OUTRANKS THE ETA. A dimmed "4 min" is still a number a rider reads
-        // as the answer, and the point of staleness is that we no longer have one.
-        // The whole headline swaps to the sentence rather than the timer freezing —
-        // the handoff's SwiftUI note 1 is explicit about that, because a frozen
-        // `TimelineView` looks identical to a working one that has stopped ticking.
-        guard !isStale else { return sentence }
-
-        // NO ETA, NO COUNTDOWN — and no locally computed stand-in. `eta` is
-        // optional on the wire TODAY (a car with no active nav route yields no key
-        // at all, and there is no server-side route solver), so this arm is an
-        // ordinary state rather than an error, and it is what makes a future
-        // server-side ETA freshness gate (MYR-401) shippable without a client
-        // release: omitting the key will land on a card that already knows what to
-        // say.
-        guard let eta = state.etaDate, let leg else { return sentence }
-
-        return .countdown(
-            prefix: RideActivityCopy.headlinePrefix(for: leg),
-            figure: RideActivityCountdown.parts(until: eta, now: now)
-        )
-    }
-
-    // MARK: - The second line
-
-    /// One place, never a pair.
-    ///
-    /// Present for exactly the four LIVE states and absent on every ending, which
-    /// falls out of `showsCountdown` rather than being a second list of statuses to
-    /// keep in step — `completed` has a leg (`dropoff`, the one it ended on, which
-    /// the full rail needs) and must still show no place.
-    ///
-    /// STALE CHANGES NOTHING HERE. The handoff's state table says "unchanged": a
-    /// pickup and a destination are facts about the ride, not readings off the car,
-    /// so they do not rot while the pushes are away.
-    private static func secondLine(
-        state: RideActivityAttributes.ContentState,
-        leg: RideActivityLeg?,
-        pickupLabel: String?
-    ) -> RideActivitySecondLine? {
-        guard let leg, RideActivityCopy.showsCountdown(for: state.status) else { return nil }
+        // STALE OUTRANKS THE ETA. A figure the server has stopped confirming is
+        // still a number a rider reads as the answer, and the point of staleness is
+        // that we no longer have one. The whole headline swaps rather than the
+        // figure freezing — a frozen figure looks identical to a working one.
+        guard !isStale, let eta = state.etaDate else { return soon }
 
         switch leg {
         case .pickup:
-            // From the STATIC attributes, never off a push. §7.21.3's "Why the
-            // 'Meet at {pickup}' line is NOT on the wire" is explicit that a pickup
-            // cannot change for the life of a ride and that the app already holds
-            // it, so a client that waited for the server to send it would render no
-            // second line at all, forever, against a correct server.
-            let trimmed = (pickupLabel ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : .pickup(trimmed)
-        case .dropoff:
-            let trimmed = state.destination.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : .destination(trimmed)
+            return .pickupCountdown(RideActivityCountdown.parts(until: eta, now: now))
+        case .dropoff, .none:
+            return .dropoffClock(time(eta))
         }
     }
 
-    // MARK: - The chip's tone
+    // MARK: - Row 3 · the subline
 
-    private static func tone(for status: LiveActivityRideStatus) -> RideActivityTone {
-        switch status {
-        case .requested: return .pending
-        case .accepted, .arrived: return .active
-        case .enroute: return .riding
-        case .completed: return .complete
-        case .declined, .cancelled, .reservationExpired, .unrecognized: return .terminal
+    /// **ALWAYS A PLACE OR AN IDENTIFICATION, NEVER A STATUS.**
+    ///
+    /// The one exception in the board's own table is Dispatch, where there is no car
+    /// to name and no leg to be part-way along — and even there the line describes
+    /// what is happening TO the rider's request rather than restating the headline.
+    private static func subline(
+        state: RideActivityAttributes.ContentState,
+        vehicle: RideActivityVehicle?,
+        isStale: Bool,
+        time: (Date) -> String
+    ) -> String? {
+        // STALENESS OWNS THIS ROW ON EVERY LIVE STATE. It is the one sentence the
+        // card has room for, and putting it here rather than in a badge is the whole
+        // of the board's "exceptions are sentences".
+        //
+        // Terminal states are excluded: a cancelled ride is not waiting for an
+        // update, and "Last updated 3:31 PM" under "Ride cancelled" would suggest
+        // the outcome might still change. See `staleOwnsTheSubline` for why that
+        // gate is a list of statuses rather than "does this status have a leg" —
+        // `completed` has one.
+        if isStale, RideActivityCopy.staleOwnsTheSubline(for: state.status) {
+            guard let asOf = state.asOfDate else { return RideActivityCopy.waitingForAnUpdate }
+            return RideActivityCopy.lastUpdated(time(asOf))
+        }
+
+        switch state.status {
+        case .requested:
+            return RideActivityCopy.dispatchSubline
+        case .accepted, .arrived:
+            // The car, identified. From the STATIC attributes, never off a push —
+            // see `RideActivityVehicle` for why the vehicle cannot change for the
+            // life of an Activity and therefore does not belong on the wire.
+            return RideActivityVehicleDescriptor.compose(vehicle)
+        case .enroute:
+            let place = nonEmpty(state.destination)
+            return place.map(RideActivityCopy.headingTo)
+        case .completed:
+            // The place alone. The headline already says what happened, so
+            // "Heading to" would be the wrong tense and a preposition nobody needs.
+            return nonEmpty(state.destination)
+        case .declined, .cancelled:
+            return RideActivityCopy.nothingWasCharged
+        case .reservationExpired:
+            return RideActivityCopy.expiredSubline
+        case .unrecognized:
+            return RideActivityCopy.openTheApp
+        }
+    }
+
+    // MARK: - Row 4 · the rail
+
+    /// The board's §4 rail contract, in one function.
+    ///
+    /// ```
+    /// Dispatch                 0    idle    route known, car isn't
+    /// Enroute / Arriving       p    live    fills toward the pickup pin
+    /// Enroute · no telemetry   0    idle    no fraction has been reported
+    /// Arrived                  1    live    pin removed — the mark IS the marker
+    /// leg flip → On trip       0    live    RESET (the view's `.id(leg)` does it)
+    /// On trip                  p    live
+    /// Completed                1    live
+    /// Pushes stopped        hold    live    position held, and STILL GOLD
+    /// Declined/Cancelled/Expired/Unknown  0  idle
+    /// ```
+    ///
+    /// **`arrived` AND `completed` ARE FULL ON THE STATUS'S AUTHORITY, NOT ON THE
+    /// FRACTION'S.** Both send exactly `1` in practice, but a frame that omitted it
+    /// would still mean the leg is over — the car IS at the kerb, the rider HAS been
+    /// dropped off — so falling back to the idle rail there would draw an untravelled
+    /// route under "Your ride is here". Everywhere else an absent fraction is the
+    /// idle rail, which is the honest no-telemetry state and one of the board's own
+    /// fourteen rows.
+    private static func rail(for state: RideActivityAttributes.ContentState) -> RideActivityRailState {
+        switch state.status {
+        case .arrived, .completed:
+            return .live(state.progress ?? 1)
+        case .accepted, .enroute:
+            guard let progress = state.progress else { return .idle }
+            return .live(progress)
+        case .requested:
+            return .idle
+        case .declined, .cancelled, .reservationExpired, .unrecognized:
+            return .idle
         }
     }
 
     // MARK: - The compact island
 
-    /// The figure wins whenever there IS one, including when the card is stale.
+    /// A figure, a glyph, or the mark alone.
     ///
-    /// Gated on the same two facts the headline's countdown is — an instant on the
-    /// wire and a status that may count down — but deliberately NOT on `isStale`,
-    /// which is the one place the compact island and the lock card disagree on
-    /// purpose (handoff §1 change 7). The card has room to explain itself; the
-    /// island has room for one thing, and the last figure at 45% says more than
-    /// "Driving" at full strength.
+    /// **STALENESS DOES NOT CHANGE THIS SLOT**, deliberately, and it is the one place
+    /// the island and the card disagree on purpose: the card has room to explain
+    /// itself and swaps its headline for a sentence, the island has room for one
+    /// thing, and the last figure says more to a rider at a glance than an empty
+    /// pill. It is NOT dimmed either — v2 dropped it to 45%; v3 has one accent and no
+    /// dimming vocabulary at all.
     private static func compact(
         state: RideActivityAttributes.ContentState,
-        isStale: Bool,
-        now: Date
+        leg: RideActivityLeg?,
+        now: Date,
+        time: (Date) -> String
     ) -> RideActivityCompact {
-        if let eta = state.etaDate, RideActivityCopy.showsCountdown(for: state.status) {
-            return .figure(RideActivityCountdown.parts(until: eta, now: now), isStale: isStale)
+        switch state.status {
+        case .arrived: return .glyph(.wave)
+        case .completed: return .glyph(.check)
+        default: break
         }
-        return .word(RideActivityCopy.compactWord(for: state.status))
+
+        guard RideActivityCopy.showsFigure(for: state.status), let eta = state.etaDate else {
+            return .markOnly
+        }
+
+        switch leg {
+        case .pickup:
+            return .figure(RideActivityCountdown.parts(until: eta, now: now).text)
+        case .dropoff, .none:
+            return .figure(time(eta))
+        }
     }
 
-    // MARK: - Track
-
-    /// The fraction to draw, or `nil` for no track.
-    ///
-    /// Clamped to `0...1` and NOTHING ELSE. In particular it does not clamp AWAY
-    /// from the ends the way `TripProgressBar.clamped` does (0.05…0.95, so a zero
-    /// draws its orb 5% along): that floor is right for an illustrated bar and
-    /// wrong for a claim about a car, since `arrived` and `completed` send exactly
-    /// `1` on the ride record's authority and a track that stopped at 95% would
-    /// quietly contradict it.
-    private static func track(for state: RideActivityAttributes.ContentState) -> Double? {
-        guard let progress = state.progress else { return nil }
-        return min(1, max(0, progress))
+    private static func nonEmpty(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 
 // MARK: - The monotone hold
 
-/// The client's half of "the track never runs backwards".
+/// The client's half of "the rail never runs backwards".
 ///
 /// THE SERVER IS THE ENFORCER (§7.21.3 clamps every pushed fraction to the highest
 /// it has already DELIVERED to this Activity), and the widget honours whatever it
@@ -387,21 +433,21 @@ struct RideActivityCard: Equatable {
 /// carrying the last push's values forward — so this is where a lower value could
 /// otherwise reach the lock screen, and where the leg is known on both sides.
 ///
-/// UNCHANGED BY THE v2 REDESIGN. The handoff's "Monotone clamp upstream unchanged"
-/// is this.
+/// UNCHANGED BY THE v3 REDESIGN. The board's "one rail per leg … the leg flip is the
+/// only event allowed to send progress backward" is exactly this rule, restated.
 enum RideActivityProgress {
     /// The fraction a newly-composed frame should carry.
     ///
     /// THE LEG IS THE RESET KEY, and it has to be: leg one ends at exactly `1` and
     /// leg two opens at ~`0`, so a max taken across the flip would pin the drop-off
-    /// track at full for the entire ride. A leg change therefore adopts the new
-    /// leg's value verbatim, INCLUDING `nil` — "telemetry never seen this leg" is
-    /// an honest no-track, and holding leg one's `1` over it would draw a completed
-    /// journey the car has not started.
+    /// rail at full for the entire ride. A leg change therefore adopts the new leg's
+    /// value verbatim, INCLUDING `nil` — "telemetry never seen this leg" is the
+    /// board's own idle rail, and holding leg one's `1` over it would draw a
+    /// completed journey the car has not started.
     ///
     /// Within one leg it is `max`, and `nil` on either side simply defers to the
-    /// other — which is the same carry-forward `eta` gets, for the same reason: the
-    /// last fraction the car reported does not stop being the last fraction the car
+    /// other — the same carry-forward `eta` gets, for the same reason: the last
+    /// fraction the car reported does not stop being the last fraction the car
     /// reported.
     static func held(
         current: Double?,

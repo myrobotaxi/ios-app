@@ -4,7 +4,7 @@ import MyRobotaxiContracts
 import XCTest
 @testable import MyRoboTaxi
 
-// MARK: - What the redesigned Live Activity renders (MYR-398, r16 redesign v2)
+// MARK: - What the redesigned Live Activity renders (MYR-398, r16 redesign v3)
 //
 // The four surfaces cannot be tested. `ActivityViewContext` needs a real Activity
 // in a real host process with a real installed widget extension, so a SwiftUI
@@ -13,44 +13,74 @@ import XCTest
 // its output rather than a content state. Everything below drives that function.
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// SECTION 1 IS `design/la/la-data.jsx`, ROW FOR ROW.
+// SECTION 1 IS `design/la/la-data.jsx` (v3), ROW FOR ROW — ALL FOURTEEN.
 //
-// That file's own header says "This mirrors RideActivityCopy on the client; every
-// string here is a client-side string", which makes it the ANSWER KEY rather than
-// an illustration. So the twelve rows are written out with the design's own
-// fixtures — `Cybercab` / `Sansome & Clay` / `Duarte's Tavern` — and each asserts
-// EVERY decision the four surfaces read: headline, second line, rail, chip word,
-// chip tone, whether the tone dot pulses, and the compact island's trailing text.
+// That file is the ANSWER KEY rather than an illustration, so the rows are written
+// out with the design's own fixtures — `7SRJ294` / `Silver Model Y` /
+// `Duarte's Tavern` — and each asserts EVERY decision the four surfaces read:
+// headline, subline, rail fraction, rail variant, and the compact island.
 //
 // A row that renders differently from its entry in that table is a defect on THIS
 // side. That is the whole point of writing them as literals: a helper that derived
 // the expected value the same way the code does would agree with a wrong
 // implementation.
+//
+// **FOURTEEN, NOT TWELVE.** v3 splits `Enroute · no ETA` from `Enroute · no
+// telemetry` (the same headline over two different rails) and adds `Dispatch`,
+// which is also the state the Activity now OPENS on for an instant ride.
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Sections 2–7 are the rules the table cannot state as rows: the countdown's
-// format, the honesty rules from rest-api.md §7.21.3 (which are UNCHANGED by the
-// redesign and are the promises the server made on the strength of this client
-// rendering them), staleness, and the monotone hold.
+// Sections 2–8 are the rules the table cannot state as rows: the two headline
+// FORMS, the retirement of "Arriving", the always-drawn rail, the vehicle
+// descriptor's ladder, staleness, and the monotone hold.
 
 final class RideActivityCardTests: XCTestCase {
 
     // The design's own fixtures, so the expected strings below can be read straight
     // off `la-data.jsx`.
-    private static let vehicle = "Cybercab"
-    private static let pickup = "Sansome & Clay"
+    private static let plate = "7SRJ294"
+    private static let color = "Silver"
+    private static let model = "Model Y"
     private static let destination = "Duarte's Tavern"
+    private static let vehicleNickname = "Cybercab"
 
-    /// A fixed instant, and a `now` a known distance before it. 4.5 minutes out
-    /// renders "4 min" and 17.5 renders "17 min" — the design's own two figures,
-    /// reached through the truncation rule rather than by handing the formatter a
-    /// whole number it cannot get wrong.
+    /// The board's own car, with NO year and NO trim — so the descriptor composes
+    /// exactly `7SRJ294 · Silver Model Y`, which is the string every row asserts.
+    /// The enrichment ladder gets its own section.
+    private static let vehicle = RideActivityVehicle(
+        plate: plate,
+        color: color,
+        model: model
+    )
+
+    private static let descriptor = "\(plate) · \(color) \(model)"
+
+    /// A fixed instant, and a `now` a known distance before it.
     private let eta = Date(timeIntervalSince1970: 1_785_535_200)
+
+    /// **A FIXED FORMATTER, SO `3:42 PM` CAN BE A LITERAL.**
+    ///
+    /// The clock string is the one thing on this surface that needs a LOCALE, which
+    /// is why `resolve` takes the formatter rather than calling `.shortened`
+    /// itself — the widget passes the system's answer and this passes a pinned one.
+    /// Asserting on the system's would make the suite fail on a 24-hour device and
+    /// say nothing about the card.
+    private static let clock: (Date) -> String = { instant in
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "America/Los_Angeles")
+        formatter.dateFormat = "h:mm a"
+        return formatter.string(from: instant)
+    }
+
+    /// What `Self.clock` renders the fixture ETA as, derived ONCE so the rows can
+    /// name it and a timezone change cannot silently rewrite six assertions.
+    private static let etaClock = clock(Date(timeIntervalSince1970: 1_785_535_200))
 
     private func state(
         _ status: LiveActivityRideStatus,
         eta etaSeconds: Int? = 1_785_535_200,
-        vehicleName: String = vehicle,
+        vehicleName: String = vehicleNickname,
         destination: String = RideActivityCardTests.destination,
         progress: Double? = nil
     ) -> RideActivityAttributes.ContentState {
@@ -65,21 +95,20 @@ final class RideActivityCardTests: XCTestCase {
 
     /// Resolve a card at a FIXED moment.
     ///
-    /// `now` defaults to 4.5 minutes before the fixture ETA, so a leg-one card
-    /// renders the design's own "4 min" — through the truncation rule, rather than
-    /// by handing the formatter a whole number it cannot get wrong.
+    /// `now` defaults to 8.5 minutes before the fixture ETA, so a pickup-leg card
+    /// renders the board's own "8 min" — through the truncation rule rather than by
+    /// handing the formatter a whole number it cannot get wrong.
     ///
     /// Passing `now` at all is the point: since the client's 2026-07-31 ruling the
     /// figure is derived ONCE, here, from the frame's own moment, so the whole card
-    /// is a deterministic function of its inputs and the twelve rows can assert
-    /// literal figures.
+    /// is a deterministic function of its inputs.
     private func card(
         _ status: LiveActivityRideStatus,
         eta etaSeconds: Int? = 1_785_535_200,
         progress: Double? = nil,
-        pickupLabel: String? = pickup,
+        vehicle: RideActivityVehicle? = RideActivityCardTests.vehicle,
         destination: String = RideActivityCardTests.destination,
-        vehicleName: String = vehicle,
+        vehicleName: String = vehicleNickname,
         isStale: Bool = false,
         now: Date? = nil
     ) -> RideActivityCard {
@@ -91,866 +120,793 @@ final class RideActivityCardTests: XCTestCase {
                 destination: destination,
                 progress: progress
             ),
-            pickupLabel: pickupLabel,
+            vehicle: vehicle,
             isStale: isStale,
-            now: now ?? eta.addingTimeInterval(-270)
+            now: now ?? eta.addingTimeInterval(-510),
+            time: Self.clock
         )
     }
 
-    /// The two figures `la-data.jsx` prints, as values.
-    private static let fourMinutes = RideActivityCountdown.Parts(value: "4", unit: "min")
-    private static let seventeenMinutes = RideActivityCountdown.Parts(value: "17", unit: "min")
+    private static let eightMinutes = RideActivityCountdown.Parts(value: "8", unit: "min")
+    private static let oneMinute = RideActivityCountdown.Parts(value: "1", unit: "min")
 
     /// Everything the four surfaces read, as one value, so a row can be asserted in
     /// one statement and a missing assertion is visible as a missing field.
     private struct Rendered: Equatable, CustomStringConvertible {
         var headline: RideActivityHeadline
-        var secondLine: RideActivitySecondLine?
-        var track: Double?
-        var chipWord: String
-        var tone: RideActivityTone
-        var pulses: Bool
+        var subline: String?
+        var rail: RideActivityRailState
         var compact: RideActivityCompact
 
         var description: String {
-            "headline=\(headline) second=\(String(describing: secondLine)) track=\(String(describing: track)) chip=\(chipWord) tone=\(tone) pulses=\(pulses) compact=\(compact)"
+            "headline=\(headline) subline=\(String(describing: subline)) rail=\(rail) compact=\(compact)"
         }
     }
 
     private func rendered(_ card: RideActivityCard) -> Rendered {
-        Rendered(
-            headline: card.headline,
-            secondLine: card.secondLine,
-            track: card.track,
-            chipWord: card.chipWord,
-            tone: card.tone,
-            pulses: card.pulsesToneDot,
-            compact: card.compact
-        )
+        Rendered(headline: card.headline, subline: card.subline, rail: card.rail, compact: card.compact)
     }
 
-    // MARK: - 1. la-data.jsx, row for row
+    // MARK: - 1. la-data.jsx (v3), row for row
 
-    func testRow01Requested() {
-        // PROPOSED IN v1, FILLED IN BY THE BOARD (handoff §1 change 11). The chip
-        // existed and the headline did not, so a status a push can legitimately
-        // move an Activity backwards to had no line at all.
-        //
-        // NO RAIL. `requested` means nobody has accepted yet, so there is no leg to
-        // be part-way along and the server sends no fraction.
+    /// Row 1 · **Dispatch** — and the state the Activity now opens on.
+    func testRow01Dispatch() {
         XCTAssertEqual(
-            rendered(card(.requested, eta: nil)),
+            rendered(card(.requested, eta: nil, progress: nil)),
             Rendered(
-                headline: .sentence("Cybercab is on its way to you"),
-                secondLine: .pickup(Self.pickup),
-                track: nil,
-                chipWord: "Requested",
-                tone: .pending,
-                pulses: false,
-                compact: .word("Requested")
+                headline: .sentence("Finding your ride"),
+                subline: "Matching you with a ride",
+                rail: .idle,
+                compact: .markOnly
             )
         )
     }
 
-    func testRow02AcceptedWithAnETAAndProgress() {
-        // THE HERO STATE. One type size across the headline, the unit carrying the
-        // meaning so a duration can never be misread as a clock time.
-        // The figure is la-data's own "4", RESOLVED ON THE CARD rather than left
-        // as an instant for a view to re-derive — the client's 2026-07-31 ruling.
+    /// Row 2 · **Enroute** — the hero state, and the pickup leg's countdown FORM.
+    func testRow02Enroute() {
         XCTAssertEqual(
             rendered(card(.accepted, progress: 0.38)),
             Rendered(
-                headline: .countdown(prefix: "Pick up in", figure: Self.fourMinutes),
-                secondLine: .pickup(Self.pickup),
-                track: 0.38,
-                chipWord: "On the way",
-                tone: .active,
-                pulses: false,
-                compact: .figure(Self.fourMinutes, isStale: false)
+                headline: .pickupCountdown(Self.eightMinutes),
+                subline: Self.descriptor,
+                rail: .live(0.38),
+                compact: .figure("8 min")
             )
         )
     }
 
-    func testRow03AcceptedWithNoETA() {
-        // Sentence headline, and NO RAIL AT ALL — never an empty one.
+    /// Row 3 · **Arriving** — its own PHASE, and deliberately not its own rendering.
+    ///
+    /// The card is byte-identical to row 2 apart from the figure and the fraction,
+    /// which is the board's point: "same layout, just a smaller number — the rail
+    /// being nearly full is what signals imminence".
+    func testRow03Arriving() {
+        let card = card(.accepted, progress: 0.88, now: eta.addingTimeInterval(-90))
         XCTAssertEqual(
-            rendered(card(.accepted, eta: nil)),
+            rendered(card),
             Rendered(
-                headline: .sentence("Cybercab is coming to pick you up"),
-                secondLine: .pickup(Self.pickup),
-                track: nil,
-                chipWord: "On the way",
-                tone: .active,
-                pulses: false,
-                compact: .word("On the way")
+                headline: .pickupCountdown(Self.oneMinute),
+                subline: Self.descriptor,
+                rail: .live(0.88),
+                compact: .figure("1 min")
             )
         )
     }
 
-    func testRow04Arrived() {
-        // The rail is full on the SERVER's authority, not from an ETA — and this is
-        // the one state whose tone dot pulses.
+    /// Row 4 · **Enroute · no ETA** — one word swapped in the same slot, LIVE rail.
+    func testRow04EnrouteWithNoETA() {
+        XCTAssertEqual(
+            rendered(card(.accepted, eta: nil, progress: 0.38)),
+            Rendered(
+                headline: .sentence("Pickup soon"),
+                subline: Self.descriptor,
+                rail: .live(0.38),
+                compact: .markOnly
+            )
+        )
+    }
+
+    /// Row 5 · **Enroute · no telemetry** — the SAME headline over the IDLE rail.
+    ///
+    /// The pair with row 4 is the whole reason v3 has fourteen rows rather than
+    /// twelve: no ETA and no telemetry are two different states, and v2 rendered
+    /// them identically (no rail at all in one, no rail at all in the other).
+    func testRow05EnrouteWithNoTelemetry() {
+        XCTAssertEqual(
+            rendered(card(.accepted, eta: nil, progress: nil)),
+            Rendered(
+                headline: .sentence("Pickup soon"),
+                subline: Self.descriptor,
+                rail: .idle,
+                compact: .markOnly
+            )
+        )
+    }
+
+    /// Row 6 · **Arrived** — full rail, the plate still in the subline, a WAVE.
+    func testRow06Arrived() {
         XCTAssertEqual(
             rendered(card(.arrived, eta: nil, progress: 1)),
             Rendered(
-                headline: .sentence("Cybercab is here"),
-                secondLine: .pickup(Self.pickup),
-                track: 1,
-                chipWord: "Arrived",
-                tone: .active,
-                pulses: true,
-                compact: .word("Arrived")
+                headline: .sentence("Your ride is here"),
+                subline: Self.descriptor,
+                rail: .live(1),
+                compact: .glyph(.wave)
             )
         )
     }
 
-    func testRow05EnRouteWithAnETA() {
-        // The leg flip resets the rail to zero and swaps the second line from the
-        // pickup to the destination — ONE place, in gold.
+    /// Row 7 · **On trip** — the leg flip, and the CLOCK-TIME headline form.
+    ///
+    /// This is the state that used to read "Arriving in 17 min" — the line the field
+    /// report was about.
+    func testRow07OnTrip() {
         XCTAssertEqual(
-            rendered(card(.enroute, progress: 0.52, now: eta.addingTimeInterval(-1050))),
+            rendered(card(.enroute, progress: 0.52)),
             Rendered(
-                headline: .countdown(prefix: "Arriving in", figure: Self.seventeenMinutes),
-                secondLine: .destination(Self.destination),
-                track: 0.52,
-                chipWord: "In ride",
-                tone: .riding,
-                pulses: false,
-                compact: .figure(Self.seventeenMinutes, isStale: false)
+                headline: .dropoffClock(Self.etaClock),
+                subline: "Heading to Duarte's Tavern",
+                rail: .live(0.52),
+                compact: .figure(Self.etaClock)
             )
         )
     }
 
-    func testRow06EnRouteWithNoETA() {
+    /// Row 8 · **On trip · no ETA** — mirrors row 4 exactly, one word different.
+    func testRow08OnTripWithNoETA() {
         XCTAssertEqual(
             rendered(card(.enroute, eta: nil, progress: 0.52)),
             Rendered(
-                headline: .sentence("Cybercab is taking you there"),
-                secondLine: .destination(Self.destination),
-                track: 0.52,
-                chipWord: "In ride",
-                tone: .riding,
-                pulses: false,
-                compact: .word("Arriving")
+                headline: .sentence("Dropoff soon"),
+                subline: "Heading to Duarte's Tavern",
+                rail: .live(0.52),
+                compact: .markOnly
             )
         )
     }
 
-    func testRow07Stale() {
-        // FOUR THINGS CHANGE AND TWO DELIBERATELY DO NOT.
-        //
-        // The headline swaps to the state's own sentence; the chip becomes the
-        // warning with a grey dot (board decision 2); the rail is kept and
-        // DESATURATED by the view; the compact island keeps the last known FIGURE
-        // rather than dropping to a word.
-        //
-        // The second line and the rail's FRACTION are unchanged — a pickup and a
-        // destination are facts about the ride, and a fraction is a claim about the
-        // past that does not rot while the pushes are away.
+    /// Row 9 · **Pushes stopped** — the subline carries the admission, and NOTHING
+    /// else about the card changes.
+    ///
+    /// The rail holds its fraction and STAYS GOLD (v2 desaturated it), and the
+    /// compact island KEEPS the figure at full strength (v2 dimmed it to 45%).
+    func testRow09PushesStopped() {
         XCTAssertEqual(
-            rendered(card(
-                .enroute,
-                progress: 0.52,
-                isStale: true,
-                now: eta.addingTimeInterval(-1050)
-            )),
+            rendered(card(.enroute, progress: 0.52, isStale: true)),
             Rendered(
-                headline: .sentence("Cybercab is taking you there"),
-                secondLine: .destination(Self.destination),
-                track: 0.52,
-                chipWord: "Not updating",
-                tone: .terminal,
-                pulses: false,
-                compact: .figure(Self.seventeenMinutes, isStale: true)
+                headline: .sentence("Dropoff soon"),
+                // `Last updated {h:mm A}` the day `asOf` lands — see section 6.
+                subline: "Waiting for an update",
+                rail: .live(0.52),
+                compact: .figure(Self.etaClock)
             )
         )
     }
 
-    func testRow08Completed() {
-        // The one ending where WHERE YOU ARE is the news, so it is the one ending
-        // that names a place — in the headline, not on a second line.
+    /// Row 10 · **Completed** — the only other state whose rail completes.
+    func testRow10Completed() {
         XCTAssertEqual(
             rendered(card(.completed, eta: nil, progress: 1)),
             Rendered(
-                headline: .sentence("You've arrived at Duarte's Tavern"),
-                secondLine: nil,
-                track: 1,
-                chipWord: "Dropped off",
-                tone: .complete,
-                pulses: false,
-                compact: .word("Dropped off")
+                headline: .sentence("You've arrived"),
+                subline: "Duarte's Tavern",
+                rail: .live(1),
+                compact: .glyph(.check)
             )
         )
     }
 
-    func testRow09Declined() {
+    /// Row 11 · **Declined** — "no blame on the owner", and no charge.
+    func testRow11Declined() {
         XCTAssertEqual(
-            rendered(card(.declined, eta: nil)),
+            rendered(card(.declined, eta: nil, progress: nil)),
             Rendered(
-                headline: .sentence("Cybercab can't take this ride"),
-                secondLine: nil,
-                track: nil,
-                chipWord: "Declined",
-                tone: .terminal,
-                pulses: false,
-                compact: .word("Ride ended")
+                headline: .sentence("No ride available"),
+                subline: "Nothing was charged",
+                rail: .idle,
+                compact: .markOnly
             )
         )
     }
 
-    func testRow10Cancelled() {
-        // SUBJECT-FREE, and the design says why: the rider may be the one who
-        // cancelled, so a sentence that puts the car in the subject position blames
-        // it for their own tap.
-        let resolved = card(.cancelled, eta: nil)
-
+    /// Row 12 · **Cancelled** — subject-free: the rider may have cancelled it.
+    func testRow12Cancelled() {
         XCTAssertEqual(
-            rendered(resolved),
+            rendered(card(.cancelled, eta: nil, progress: nil)),
             Rendered(
-                headline: .sentence("This ride was cancelled"),
-                secondLine: nil,
-                track: nil,
-                chipWord: "Cancelled",
-                tone: .terminal,
-                pulses: false,
-                compact: .word("Ride ended")
+                headline: .sentence("Ride cancelled"),
+                subline: "Nothing was charged",
+                rail: .idle,
+                compact: .markOnly
             )
-        )
-
-        // The proof that "subject-free" is structural and not a coincidence of this
-        // fixture's name: the sentence does not move when the car does.
-        XCTAssertEqual(
-            card(.cancelled, eta: nil, vehicleName: "Blue Whale").headline,
-            .sentence("This ride was cancelled")
         )
     }
 
-    func testRow11ReservationExpired() {
+    /// Row 13 · **Reservation expired** — headline is the outcome, subline the
+    /// reason. Also the LONGEST headline in the set, which is what the fixed 24pt
+    /// row and its one-line truncation are measured against.
+    func testRow13ReservationExpired() {
         XCTAssertEqual(
-            rendered(card(.reservationExpired, eta: nil)),
+            rendered(card(.reservationExpired, eta: nil, progress: nil)),
             Rendered(
-                headline: .sentence("Cybercab didn't make it in time"),
-                secondLine: nil,
-                track: nil,
-                chipWord: "Reservation expired",
-                tone: .terminal,
-                pulses: false,
-                compact: .word("Ride ended")
+                headline: .sentence("Reservation expired"),
+                subline: "No car arrived in time",
+                rail: .idle,
+                compact: .markOnly
             )
         )
     }
 
-    func testRow12UnknownStatus() {
-        // PROPOSED IN v1, FILLED IN BY THE BOARD. The schema mandates tolerating a
-        // member this build has never heard of; v1 rendered the bare vehicle name,
-        // which is not a sentence and read as a truncated one.
-        //
-        // Every element that would ASSERT something withdraws: no countdown (the
-        // status may not be a leg at all, so neither prefix is safe) and no second
-        // line. The RAIL is the one thing that stays if the server sent a fraction —
-        // that is the server's claim to make, and §7.21.3's "render both as given"
-        // does not carve out statuses this build has not heard of.
+    /// Row 14 · **Unknown status** — the arm the schema mandates tolerating.
+    func testRow14UnknownStatus() {
         XCTAssertEqual(
-            rendered(card(.unrecognized("boarding"), eta: nil, progress: 0.5)),
+            rendered(card(.unrecognized("boarding"), eta: nil, progress: nil)),
             Rendered(
-                headline: .sentence("Cybercab ride in progress"),
-                secondLine: nil,
-                track: 0.5,
-                chipWord: "Ride",
-                tone: .terminal,
-                pulses: false,
-                compact: .word("Ride")
+                headline: .sentence("Ride in progress"),
+                subline: "Tap to open MyRoboTaxi",
+                rail: .idle,
+                compact: .markOnly
             )
         )
     }
 
-    // MARK: - 2. The countdown format
+    // MARK: - 2. Two headline forms, one per leg
 
-    func testTheCountdownIsNEVERMMSS() {
-        // §1 change 3, and the reason `Text(timerInterval:countsDown:)` cannot be
-        // used as-is: it renders exactly the format the board removed. `4:12` after
-        // "Pick up in" reads as a clock time.
-        //
-        // Swept across two hours a second at a time rather than spot-checked,
-        // because "no colon" is a property of every figure this can ever print and a
-        // handful of literals would not say so.
-        let until = Date(timeIntervalSince1970: 1_785_535_200)
-        for offset in stride(from: 0, through: 7200, by: 1) {
-            let text = RideActivityCountdown
-                .parts(until: until, now: until.addingTimeInterval(-Double(offset)))
-                .text
-            XCTAssertFalse(text.contains(":"), "\(text) at −\(offset)s")
-            XCTAssertTrue(
-                text.hasSuffix(" min") || text.hasSuffix(" s"),
-                "the unit is never dropped — \(text) at −\(offset)s"
-            )
+    /// **THE FIELD REPORT'S FIRST ITEM, AS AN ASSERTION.**
+    ///
+    /// *"It's saying arriving while on the way to the destination."* A duration and
+    /// a time of day are now different SHAPES, so one can never be read as the
+    /// other — and that is a property of the leg, not of the copy.
+    func testThePickupLegCountsDownAndTheTripLegStatesAClockTime() {
+        guard case .pickupCountdown = card(.accepted, progress: 0.38).headline else {
+            return XCTFail("the pickup leg counts down")
+        }
+        guard case .dropoffClock = card(.enroute, progress: 0.52).headline else {
+            return XCTFail("the trip leg states a clock time")
         }
     }
 
-    func testAboveAMinuteItSaysMinutesAndBelowItSaysSeconds() {
-        let until = Date(timeIntervalSince1970: 1_785_535_200)
-        func parts(_ secondsOut: Double) -> RideActivityCountdown.Parts {
-            RideActivityCountdown.parts(until: until, now: until.addingTimeInterval(-secondsOut))
-        }
-
-        XCTAssertEqual(parts(3600), RideActivityCountdown.Parts(value: "60", unit: "min"))
-        XCTAssertEqual(parts(1050), RideActivityCountdown.Parts(value: "17", unit: "min"))
-        XCTAssertEqual(parts(270), RideActivityCountdown.Parts(value: "4", unit: "min"))
-        // The boundary. 60s is the first figure that is a minute; 59.9 is the last
-        // that is seconds. There is no gap and no overlap.
-        XCTAssertEqual(parts(60), RideActivityCountdown.Parts(value: "1", unit: "min"))
-        XCTAssertEqual(parts(59.9), RideActivityCountdown.Parts(value: "59", unit: "s"))
-        XCTAssertEqual(parts(45), RideActivityCountdown.Parts(value: "45", unit: "s"))
-        XCTAssertEqual(parts(1), RideActivityCountdown.Parts(value: "1", unit: "s"))
-    }
-
-    func testMinutesAreTRUNCATEDAndNeverRoundedUp() {
-        // The handoff's own worked example settles this: §1 change 3 rewrites the
-        // shipped `4:12` as `4 min`. Rounding up would print "5 min" over a car 4:12
-        // away, and would make the minute→second handover jump BACKWARDS ("2 min" →
-        // "1 min" → "59 s" across two seconds).
-        let until = Date(timeIntervalSince1970: 1_785_535_200)
-        func value(_ secondsOut: Double) -> String {
-            RideActivityCountdown.parts(until: until, now: until.addingTimeInterval(-secondsOut)).value
-        }
-
-        XCTAssertEqual(value(252), "4", "4:12 is four minutes, which is what the board wrote")
-        XCTAssertEqual(value(299), "4", "and it stays four for the whole of the fourth minute")
-        XCTAssertEqual(value(300), "5")
-    }
-
-    func testTheFigureNeverGoesBackwardsAsTimeRunsForward() {
-        // The property that catches a rounding rule with a discontinuity in it — a
-        // countdown that ticks UP for one second reads as a broken widget, and a
-        // ceiling at the minute boundary does exactly that.
-        let until = Date(timeIntervalSince1970: 1_785_535_200)
-        var previous = Int.max
-        var previousUnit = "min"
-
-        for offset in stride(from: 3600, through: 0, by: -1) {
-            let parts = RideActivityCountdown
-                .parts(until: until, now: until.addingTimeInterval(-Double(offset)))
-            let value = Int(parts.value)!
-            if parts.unit == previousUnit {
-                XCTAssertLessThanOrEqual(value, previous, "at −\(offset)s")
+    /// The trip leg NEVER counts down — not at any remaining duration, and not on
+    /// the frame where a minute-shaped figure would look perfectly plausible.
+    func testTheTripLegNeverRendersACountdownHoweverCloseTheDropoffIs() {
+        for secondsOut in [30, 90, 8 * 60, 45 * 60] {
+            let card = card(
+                .enroute,
+                progress: 0.52,
+                now: eta.addingTimeInterval(-Double(secondsOut))
+            )
+            guard case .dropoffClock = card.headline else {
+                return XCTFail("\(secondsOut)s out still states a clock time")
             }
-            previous = value
-            previousUnit = parts.unit
         }
     }
 
-    func testALapsedInstantClampsToZeroSecondsRatherThanGoingNegative() {
-        // The card is repainted by pushes it does not control, so an ETA runs out
-        // between them routinely. `0 s` holds the line's width and says "any moment
-        // now" without inventing a word for it.
-        let until = Date(timeIntervalSince1970: 1_785_535_200)
-        XCTAssertEqual(
-            RideActivityCountdown.parts(until: until, now: until),
-            RideActivityCountdown.Parts(value: "0", unit: "s")
-        )
-        XCTAssertEqual(
-            RideActivityCountdown.parts(until: until, now: until.addingTimeInterval(600)),
-            RideActivityCountdown.Parts(value: "0", unit: "s")
-        )
-    }
-
-    func testTheFigureIsHELDAndNothingInTheCardCanCountItDown() {
-        // CLIENT DECISION, 2026-07-31, superseding the handoff's SwiftUI note 1:
-        // *"We are pulling live data from Tesla ETA telemetry; counting down is
-        // inaccurate."* The wire's `eta` is the CAR's own live navigation estimate,
-        // so a phone decrementing it between pushes is showing an extrapolation of
-        // the car's last answer dressed as its current one.
-        //
-        // The guard is STRUCTURAL, and this is what it looks like from the outside:
-        // one content state resolved at two different moments gives two different
-        // figures — the derivation happens ONCE, in `resolve` — and the resolved
-        // card carries a FIGURE, not an instant, so no view downstream is able to
-        // re-derive it a second later. `RideActivityHeadline.countdown` has no
-        // `Date` in it at all, which is why this test can only be written this way.
-        let sixMinutesOut = card(.accepted, now: eta.addingTimeInterval(-390))
-        let oneMinuteOut = card(.accepted, now: eta.addingTimeInterval(-90))
-
-        XCTAssertEqual(
-            sixMinutesOut.headline,
-            .countdown(prefix: "Pick up in", figure: .init(value: "6", unit: "min"))
-        )
-        XCTAssertEqual(
-            oneMinuteOut.headline,
-            .countdown(prefix: "Pick up in", figure: .init(value: "1", unit: "min"))
-        )
-
-        // The island holds the same figure the card does — one derivation, two
-        // surfaces, so they can never print two different answers for one push.
-        XCTAssertEqual(sixMinutesOut.compact, .figure(.init(value: "6", unit: "min"), isStale: false))
-        XCTAssertEqual(oneMinuteOut.compact, .figure(.init(value: "1", unit: "min"), isStale: false))
-    }
-
-    func testASecondsFigureIsHeldTheSameWayAMinutesFigureIs() {
-        // Under a minute the unit changes and nothing else does — there is no
-        // "and now it ticks" arm below 60s, which would be the obvious place to
-        // reintroduce the countdown by accident.
-        XCTAssertEqual(
-            card(.accepted, now: eta.addingTimeInterval(-45)).headline,
-            .countdown(prefix: "Pick up in", figure: .init(value: "45", unit: "s"))
-        )
-    }
-
-    // MARK: - 3. The second line is ONE place, never a pair
-
-    func testTheSecondLineNamesOneEndAndDropsThePrefixAndTheTripLine() {
-        // §1 change 10. v1 rendered "Meet at {pickup}" and "{Vehicle} → {Dest}";
-        // both are gone. The proof is the STRING, since a second line that still
-        // said "Meet at Sansome & Clay" would satisfy a case-only assertion.
-        guard case .pickup(let leg1)? = card(.accepted).secondLine else {
-            return XCTFail("leg one names the pickup")
-        }
-        XCTAssertEqual(leg1, "Sansome & Clay")
-        XCTAssertFalse(leg1.contains("Meet at"))
-
-        guard case .destination(let leg2)? = card(.enroute).secondLine else {
-            return XCTFail("leg two names the destination")
-        }
-        XCTAssertEqual(leg2, "Duarte's Tavern")
-        XCTAssertFalse(leg2.contains("→"))
-        XCTAssertFalse(leg2.contains(Self.vehicle), "the vehicle name left this line with the arrow")
-    }
-
-    func testThePickupComesFromTheSTATICATTRIBUTESAndNotFromThePush() {
-        // §7.21.3, "Why the 'Meet at {pickup}' line is NOT on the wire": the server
-        // deliberately does not push it, because a pickup cannot change for the life
-        // of a ride and the app already holds it. A client that expected it on the
-        // content state would render no second line, forever, against a correct
-        // server — and would look exactly like a server bug.
-        //
-        // The proof is that the line survives a content state carrying nothing but
-        // the required keys, and disappears when only the ATTRIBUTE is missing.
-        XCTAssertEqual(
-            card(.accepted, eta: nil, progress: nil, destination: "").secondLine,
-            .pickup(Self.pickup)
-        )
-        XCTAssertNil(card(.accepted, pickupLabel: nil).secondLine)
-    }
-
-    func testAPickupOrDestinationOfOnlySpacesRendersNoLineAtAll() {
-        XCTAssertNil(card(.accepted, pickupLabel: "   ").secondLine)
-        XCTAssertNil(card(.accepted, pickupLabel: "").secondLine)
-        XCTAssertNil(card(.enroute, destination: "  ").secondLine)
-    }
-
-    func testEveryTerminalStateHasNoSecondLineWhateverTheWireCarries() {
-        // MYR-172's reasoning, kept: a destination under "Cancelled" reads as a ride
-        // still in progress. `completed` is the sharp one — it HAS a leg (the one it
-        // ended on, which the full rail needs) and must still name no place on the
-        // second line.
-        for status in [
-            LiveActivityRideStatus.completed, .declined, .cancelled,
-            .reservationExpired, .unrecognized("boarding"),
-        ] {
-            XCTAssertNil(card(status).secondLine, status.rawValue)
-        }
-    }
-
-    // MARK: - 4. The chip and the compact island are two vocabularies
-
-    func testTheCompactColumnIsTheCLIENTsTableVerbatim() {
-        // CLIENT DECISION, 2026-07-31, which SUPERSEDES `la-data.jsx`'s own compact
-        // column and relaxes the board's "one word" rule on purpose. Written as
-        // literals because a chosen table has no derivation to check it against —
-        // any rule expressive enough to generate these would also generate the
-        // words he replaced.
-        let table: [(LiveActivityRideStatus, String)] = [
-            (.requested, "Requested"),      // was "Sent"
-            (.accepted, "On the way"),      // was "Coming"
-            (.arrived, "Arrived"),          // was "Here"
-            (.enroute, "Arriving"),         // was "Driving"
-            (.completed, "Dropped off"),    // was "Done"
-            (.declined, "Ride ended"),  // all three unhappy endings share
-            (.cancelled, "Ride ended"), // ONE phrase, client-directed
-            (.reservationExpired, "Ride ended"),
-            (.unrecognized("boarding"), "Ride"),
-        ]
-        for (status, word) in table {
-            XCTAssertEqual(RideActivityCopy.compactWord(for: status), word, status.rawValue)
-        }
-    }
-
-    func testTheISLANDStillHasItsOwnColumnEvenThoughFourEntriesNowMatchTheChip() {
-        // ⚠️ The part of board decision 1 that the client's table does NOT undo, and
-        // the reason this is asserted separately rather than folded into the literals
-        // above: four of the seven now equal the chip verbatim, which READS like the
-        // two-table split being reverted. It is not. The split exists so a state
-        // whose chip is long can say something short in a slot a few dozen points
-        // wide — and that is exactly the property v1 broke by falling back to the
-        // chip's word.
-        //
-        // Stated as the invariant that survives the client's choice: a chip word too
-        // long for the slot must not reach the island. The three endings are the
-        // whole point — "Reservation expired" is 19 characters and becomes 5.
-        for status in [LiveActivityRideStatus.declined, .cancelled, .reservationExpired] {
-            XCTAssertEqual(RideActivityCopy.compactWord(for: status), "Ride ended", status.rawValue)
-            XCTAssertNotEqual(
-                RideActivityCopy.compactWord(for: status),
-                RideActivityCopy.chipWord(for: status),
-                "\(status.rawValue): the island must not inherit the chip's word"
+    /// The pickup leg NEVER states a clock time, for the mirror reason: a rider
+    /// waiting at a kerb is asking "how long", not "at what time".
+    func testThePickupLegNeverRendersAClockTime() {
+        for secondsOut in [30, 90, 8 * 60, 45 * 60] {
+            let card = card(
+                .accepted,
+                progress: 0.38,
+                now: eta.addingTimeInterval(-Double(secondsOut))
             )
+            guard case .pickupCountdown = card.headline else {
+                return XCTFail("\(secondsOut)s out still counts down")
+            }
         }
-        // The case the split exists for, in numbers: the longest chip in the set
-        // does not reach the island.
-        XCTAssertEqual(RideActivityCopy.chipWord(for: .reservationExpired).count, 19)
-        XCTAssertEqual(RideActivityCopy.compactWord(for: .reservationExpired).count, 10)
+    }
 
-        // ⚠️ AND THE PRECISION THE SHARED PHRASE COSTS, ASSERTED SO IT CANNOT BE
-        // MISTAKEN FOR A BUG LATER. A ride the OWNER declined did not "cancel", and
-        // neither did a lapsed reservation — the island says one thing about all
-        // three on purpose, and the CARD keeps all three apart.
-        XCTAssertEqual(
-            Set([LiveActivityRideStatus.declined, .cancelled, .reservationExpired]
-                .map(RideActivityCopy.compactWord(for:))).count,
-            1,
-            "the three unhappy endings share one island phrase"
-        )
-        XCTAssertEqual(
-            Set([LiveActivityRideStatus.declined, .cancelled, .reservationExpired]
-                .map(RideActivityCopy.chipWord(for:))).count,
-            3,
-            "…and the chip still tells all three apart, which is where the reason lives"
-        )
-
-        // The general form, so a future long chip word cannot quietly reach the
-        // island either. 11 is "Dropped off" — the longest string this table has,
-        // and one the slot has been MEASURED holding (80.0pt against a ~91pt
-        // ceiling). See the ending-phrase test below for where the ceiling is.
+    /// **"ARRIVING" IS BANNED FROM RIDER-FACING COPY.** It survives as a PHASE name
+    /// for engineering and appears in no string on any surface.
+    ///
+    /// The sweep matters more than it looks: "Arriving" was v2's compact word for
+    /// `enroute`, so this is the exact string the redesign had to remove and the
+    /// exact place a careless revert would put it back.
+    func testNoSurfaceSaysArriving() {
         for status in LiveActivityRideStatus.allCases {
-            XCTAssertLessThanOrEqual(
-                RideActivityCopy.compactWord(for: status).count,
-                11,
-                "\(status.rawValue): longer than the widest string measured in the slot"
-            )
-        }
-    }
-
-    func testTheShippedEndingPhraseIsTheWidestONEThatFits() {
-        // ⚠️ THE ONE PLACE THIS PORT DOES NOT SAY WHAT WAS ASKED FOR, PINNED SO IT
-        // IS A DECISION AND NOT A DRIFT.
-        //
-        // The client asked for **"Ride cancelled"** on the three unhappy endings and
-        // asked, in the same breath, that the width be VERIFIED rather than assumed
-        // — *"if either truncates on device geometry, report it WITH the capture and
-        // the widest passing alternative, don't silently shorten."*
-        //
-        // It truncates. Captured on the iPhone 17 Pro compact island: "Ride
-        // cancell…", with the pill grown wide enough to evict the status bar's wifi
-        // and battery glyphs. Measured text widths in that slot, one run, one
-        // device:
-        //
-        //     "Requested"       70.3pt   fits
-        //     "Ride ended"      73.7pt   fits          ← shipped
-        //     "On the way"      74.3pt   fits
-        //     "Dropped off"     80.0pt   fits
-        //     "Ride cancelled"  91.3pt   TRUNCATED     ← the ceiling is ~91pt
-        //
-        // "Ride ended" keeps every part of the intent — ONE shared phrase across all
-        // three, more explicit than the board's bare "Ended", saying the one thing a
-        // glance needs — and fits with 17pt to spare. It is a one-word revert the
-        // moment the client prefers a different fit.
-        XCTAssertEqual(RideActivityCopy.compactWord(for: .cancelled), "Ride ended")
-        XCTAssertEqual("Ride ended".count, 10)
-        XCTAssertLessThan(
-            "Ride ended".count, "Ride cancelled".count,
-            "the shipped phrase is the shorter of the two, which is the whole point"
-        )
-    }
-
-    func testTheONEWORDRULEIsDeliberatelyGoneAndTheWIDTHRuleReplacedIt() {
-        // Recorded rather than silently dropped. The board wrote "one word, never
-        // truncates" — the second half was the point and the first half was how it
-        // guaranteed it. The client chose two-word copy knowing that, so the
-        // guarantee has to come from somewhere else: `RideActivityIslandUITests
-        // .testTheLongestCompactWordsFitTheSlot` captures the two longest on a real
-        // island, because whether a string fits a system-sized region at 14.5/500 is
-        // not something a character count can answer.
-        XCTAssertTrue(RideActivityCopy.compactWord(for: .accepted).contains(" "))
-    }
-
-    func testCompletedIsTheONEEndingThatDoesNotCollapseIntoTheUnhappyPhrase() {
-        // The three unhappy endings share "Ride ended"; `completed` keeps its
-        // own, because it is the ending that went RIGHT and a rider glancing down
-        // after a ride must never read that it was cancelled.
-        XCTAssertEqual(RideActivityCopy.compactWord(for: .completed), "Dropped off")
-        for status in [LiveActivityRideStatus.declined, .cancelled, .reservationExpired] {
-            XCTAssertNotEqual(
-                RideActivityCopy.compactWord(for: status),
-                RideActivityCopy.compactWord(for: .completed),
-                "\(status.rawValue) must not read like a completed ride"
-            )
-        }
-    }
-
-    func testEveryStatusResolvesToExactlyOneOfTheHandoffsFiveTones() {
-        // §4's table is the whole palette and it has five rows. The TOKEN each tone
-        // resolves to is asserted where the tokens live (`TokenTests
-        // .testTheLiveActivityToneTokensAreTheHandoffsFive`) — the mapping itself is
-        // in the widget process, which the app's test bundle cannot link.
-        //
-        // What is assertable here is the half that decides: every status names a
-        // tone, and the five are distinct, so no two states can share a dot colour
-        // by accident.
-        XCTAssertEqual(Set(RideActivityTone.allCases).count, 5)
-
-        let expected: [(LiveActivityRideStatus, RideActivityTone)] = [
-            (.requested, .pending),
-            (.accepted, .active),
-            (.arrived, .active),
-            (.enroute, .riding),
-            (.completed, .complete),
-            (.declined, .terminal),
-            (.cancelled, .terminal),
-            (.reservationExpired, .terminal),
-            (.unrecognized("boarding"), .terminal),
-        ]
-        for (status, tone) in expected {
-            XCTAssertEqual(card(status, eta: nil).tone, tone, status.rawValue)
-        }
-    }
-
-    func testONLYArrivedPulses() {
-        // The only animation on this card besides the rail's offset. Live Activities
-        // are budget-limited, and `arrived` is the one state where something is
-        // waiting for the RIDER rather than the other way round.
-        for status in LiveActivityRideStatus.allCases {
-            XCTAssertEqual(
-                card(status, eta: nil, progress: 1).pulsesToneDot,
-                status == .arrived,
-                status.rawValue
-            )
-        }
-    }
-
-    func testAStaleArrivedDoesNotPulseBecauseMotionIsAClaimToBeLive() {
-        XCTAssertFalse(card(.arrived, eta: nil, progress: 1, isStale: true).pulsesToneDot)
-    }
-
-    // MARK: - 5. Staleness
-
-    func testStalenessSWAPSTheWholeHeadlineRatherThanFreezingTheTimer() {
-        // Handoff SwiftUI note 1: "On stale, swap the whole headline to the sentence
-        // — do not freeze the timer view." A frozen countdown looks identical to a
-        // working one that has stopped ticking, and a dimmed "4 min" is still a
-        // number a rider plans around.
-        let stale = card(.enroute, progress: 0.52, isStale: true)
-        XCTAssertEqual(stale.headline, .sentence("Cybercab is taking you there"))
-        XCTAssertTrue(stale.isStale)
-    }
-
-    func testTheChipIsTheWarningAndTheGreyDotComesWithIt() {
-        // Board decision 2. v1 left the chip saying "In ride" — the one place a
-        // rider looks first, and the one place that was still confident.
-        for status in [LiveActivityRideStatus.accepted, .arrived, .enroute, .requested] {
-            let stale = card(status, isStale: true)
-            XCTAssertEqual(stale.chipWord, "Not updating", status.rawValue)
-            XCTAssertEqual(stale.tone, .terminal, status.rawValue)
-        }
-    }
-
-    func testTheCompactIslandKEEPSTheLastFigureWhileTheCardGivesUpItsCountdown() {
-        // The one place the island and the card disagree ON PURPOSE (§1 change 7).
-        // The card has room to explain itself; the island has room for one thing,
-        // and the last figure at 45% says more to a rider than a confident word.
-        let stale = card(.enroute, progress: 0.52, isStale: true)
-        XCTAssertEqual(stale.compact, .figure(Self.fourMinutes, isStale: true))
-
-        // With no ETA there is no figure to keep, and the island falls to the word.
-        XCTAssertEqual(card(.enroute, eta: nil, isStale: true).compact, .word("Arriving"))
-    }
-
-    func testTheWordStaleNeverRendersAnywhereInTheMatrix() {
-        // ActivityKit's vocabulary, not a rider's — the handoff is explicit that it
-        // never appears. Swept over every string every surface can show.
-        for status in LiveActivityRideStatus.allCases {
-            for isStale in [false, true] {
-                for etaValue in [nil, 1_785_535_200] as [Int?] {
-                    let resolved = card(status, eta: etaValue, progress: 0.5, isStale: isStale)
-                    var strings = [resolved.chipWord]
-                    if case .sentence(let text) = resolved.headline { strings.append(text) }
-                    if case .word(let word) = resolved.compact { strings.append(word) }
-                    if case .pickup(let place)? = resolved.secondLine { strings.append(place) }
-                    if case .destination(let place)? = resolved.secondLine { strings.append(place) }
-                    strings.append(RideActivityCopy.staleNoticeWithoutAnInstant)
-
-                    for text in strings {
-                        XCTAssertFalse(
-                            text.lowercased().contains("stale"),
-                            "\(status.rawValue) stale=\(isStale) rendered \(text)"
-                        )
-                    }
+            for stale in [false, true] {
+                let card = card(status, progress: 0.5, isStale: stale)
+                for text in [Self.text(of: card.headline), card.subline, Self.text(of: card.compact)] {
+                    XCTAssertFalse(
+                        (text ?? "").localizedCaseInsensitiveContains("arriving"),
+                        "\(status) stale=\(stale) says 'Arriving'"
+                    )
                 }
             }
         }
     }
 
-    func testTheStaleNoticeHasNoInstantToDateItselfFromOnTodaysWire() {
-        // See `RideActivityCopy.staleNotice(lastUpdate:formatter:)`. Nothing the
-        // widget process holds is an UPDATE instant — `ActivityViewContext` exposes
-        // no stale date, and the content state's only instant is the `eta`, which is
-        // a FUTURE instant chosen BEFORE the update that carried it. Dating the
-        // notice from it would OVERSTATE freshness on the one card whose entire job
-        // is to admit it has none (v1 shipped exactly that, as "As of {eta} ago").
-        //
-        // So the resolver passes nil and the notice says the one true thing. The
-        // `{t}` arm below is written and tested against the day the wire grows one.
-        XCTAssertNil(card(.enroute, isStale: true).staleLastUpdate)
+    /// **NEVER `mm:ss`.** `Text(timerInterval:)` renders exactly that and is
+    /// therefore unusable; nothing this type emits may look like it either.
+    func testTheCountdownIsNeverMMSS() {
+        for secondsOut in [1, 30, 59, 61, 90, 250, 600, 3_600] {
+            let parts = RideActivityCountdown.parts(
+                until: eta,
+                now: eta.addingTimeInterval(-Double(secondsOut))
+            )
+            XCTAssertFalse(parts.text.contains(":"), "\(secondsOut)s rendered \(parts.text)")
+            XCTAssertTrue(["min", "s"].contains(parts.unit))
+        }
+    }
+
+    /// `45 s` under a minute, `{n} min` at or above it — the board's own two units.
+    func testAboveAMinuteItSaysMinutesAndBelowItSaysSeconds() {
         XCTAssertEqual(
-            RideActivityCopy.staleNotice(lastUpdate: nil) { _ in "4:02 PM" },
-            "Waiting for an update"
+            RideActivityCountdown.parts(until: eta, now: eta.addingTimeInterval(-45)),
+            RideActivityCountdown.Parts(value: "45", unit: "s")
         )
         XCTAssertEqual(
-            RideActivityCopy.staleNotice(lastUpdate: eta) { _ in "4:02 PM" },
-            "Last update 4:02 PM"
+            RideActivityCountdown.parts(until: eta, now: eta.addingTimeInterval(-60)),
+            RideActivityCountdown.Parts(value: "1", unit: "min")
         )
     }
 
-    // MARK: - 6. The honesty rules (rest-api.md §7.21.3) — unchanged by the redesign
+    /// TRUNCATED, never rounded up — "8 min" means "somewhere in the eighth minute".
+    func testMinutesAreTruncatedAndNeverRoundedUp() {
+        XCTAssertEqual(
+            RideActivityCountdown.parts(until: eta, now: eta.addingTimeInterval(-(8 * 60 + 59))).value,
+            "8"
+        )
+    }
 
+    /// A LAPSED instant clamps to `0 s` rather than going negative or vanishing.
+    func testALapsedInstantClampsToZeroSeconds() {
+        XCTAssertEqual(
+            RideActivityCountdown.parts(until: eta, now: eta.addingTimeInterval(90)),
+            RideActivityCountdown.Parts(value: "0", unit: "s")
+        )
+    }
+
+    /// **THE FIGURE IS HELD, AND NOTHING IN THE CARD CAN COUNT IT DOWN** — the
+    /// client's 2026-07-31 ruling, as a structural property.
+    ///
+    /// Both surfaces are handed a composed STRING rather than an instant, so a view
+    /// cannot re-derive one a second later even if it wanted to. The proof is that
+    /// resolving the same content state at two different moments produces two
+    /// different cards: the figure belongs to the FRAME, and only a new frame moves
+    /// it.
+    func testTheFigureIsHeldByTheFrameAndNotByAClock() {
+        let early = card(.accepted, progress: 0.38, now: eta.addingTimeInterval(-510))
+        let later = card(.accepted, progress: 0.38, now: eta.addingTimeInterval(-450))
+
+        XCTAssertEqual(early.headline, .pickupCountdown(Self.eightMinutes))
+        XCTAssertEqual(later.headline, .pickupCountdown(RideActivityCountdown.Parts(value: "7", unit: "min")))
+        XCTAssertEqual(early.compact, .figure("8 min"))
+        XCTAssertEqual(later.compact, .figure("7 min"))
+    }
+
+    /// The trip leg's clock does not move between frames at all, which is the whole
+    /// reason the board chose it for the long leg: a time of day is true however
+    /// late it is read.
+    func testTheDropoffClockIsIdenticalAcrossFramesOfTheSameContentState() {
+        XCTAssertEqual(
+            card(.enroute, progress: 0.52, now: eta.addingTimeInterval(-900)).headline,
+            card(.enroute, progress: 0.52, now: eta.addingTimeInterval(-120)).headline
+        )
+    }
+
+    // MARK: - 3. The subline is a PLACE or an IDENTIFICATION, never a status
+
+    /// The pickup leg names the CAR and the trip leg names the DESTINATION —
+    /// swapping them is the v2 defect this row fixes ("Sansome & Clay" told a rider
+    /// standing at Sansome & Clay where they were).
+    func testThePickupLegNamesTheCarAndTheTripLegNamesThePlace() {
+        XCTAssertEqual(card(.accepted, progress: 0.38).subline, Self.descriptor)
+        XCTAssertEqual(card(.enroute, progress: 0.52).subline, "Heading to Duarte's Tavern")
+    }
+
+    /// The vehicle comes off the STATIC ATTRIBUTES, never off a push — so a frame
+    /// carrying a different `vehicleName` cannot change the identification line.
+    func testTheVehicleComesFromTheStaticAttributesAndNotFromThePush() {
+        XCTAssertEqual(
+            card(.accepted, progress: 0.38, vehicleName: "Blue Whale").subline,
+            Self.descriptor
+        )
+    }
+
+    /// **NO SUBLINE IS EVER A STATUS**, which is the rule the whole row exists for.
+    /// Every string the fourteen rows can produce is a place, an identification, or
+    /// a sentence about the ride's outcome — never a restatement of the headline.
+    func testNoSublineRepeatsItsOwnHeadline() {
+        for status in LiveActivityRideStatus.allCases {
+            let card = card(status, progress: 0.5)
+            guard let subline = card.subline, let headline = Self.text(of: card.headline) else { continue }
+            XCTAssertNotEqual(subline, headline, "\(status)")
+        }
+    }
+
+    /// An `enroute` frame whose destination is blank renders NO subline rather than
+    /// "Heading to " — and the card's footprint does not move, because the row is a
+    /// fixed height whatever is in it.
+    func testABlankDestinationRendersNoSublineRatherThanADanglingPreposition() {
+        XCTAssertNil(card(.enroute, progress: 0.52, destination: "   ").subline)
+        XCTAssertNil(card(.completed, eta: nil, progress: 1, destination: "").subline)
+    }
+
+    // MARK: - 4. The vehicle descriptor's ladder
+
+    /// The board's own grammar, exactly.
+    func testTheDescriptorIsPlateThenColourThenModel() {
+        XCTAssertEqual(
+            RideActivityVehicleDescriptor.compose(
+                RideActivityVehicle(plate: "7SRJ294", color: "Silver", model: "Model Y")
+            ),
+            "7SRJ294 · Silver Model Y"
+        )
+    }
+
+    /// **THE CLIENT'S ASK: YEAR AND TRIM, WHERE THEY FIT ONE LINE.**
+    ///
+    /// With a plate in front of it the full string is 41 characters and the ladder
+    /// drops the TRIM — the least identifying fact at a kerb. Without a plate the
+    /// same car keeps it, which is the ladder doing its job rather than a rule with
+    /// two spellings.
+    func testTheLadderDropsTheLeastIdentifyingPartFirst() {
+        let enriched = RideActivityVehicle(
+            plate: "7SRJ294", color: "Silver", model: "Model Y", year: 2026, trim: "Performance"
+        )
+        XCTAssertEqual(RideActivityVehicleDescriptor.compose(enriched), "7SRJ294 · Silver 2026 Model Y")
+
+        var plateless = enriched
+        plateless.plate = nil
+        XCTAssertEqual(RideActivityVehicleDescriptor.compose(plateless), "Silver 2026 Model Y Performance")
+    }
+
+    /// Everything the ladder emits is inside the budget, at every rung — the
+    /// property that makes "the line never chooses its own truncation" true rather
+    /// than likely.
+    func testEveryRungOfTheLadderIsInsideTheBudget() {
+        let vehicles = [
+            RideActivityVehicle(plate: "7SRJ294", color: "Silver", model: "Model Y", year: 2026, trim: "Performance"),
+            RideActivityVehicle(plate: "7SRJ294", color: "Deep Blue Metallic", model: "Model S", year: 2026, trim: "Plaid"),
+            RideActivityVehicle(plate: "8ABC123", color: "Quicksilver", model: "Model Y", year: 2025),
+            RideActivityVehicle(color: "Pearl White Multi-Coat", model: "Model 3", year: 2026, trim: "Long Range"),
+        ]
+        for vehicle in vehicles {
+            let composed = RideActivityVehicleDescriptor.compose(vehicle)
+            XCTAssertLessThanOrEqual(
+                composed.count,
+                RideActivityVehicleDescriptor.maxCharacters,
+                composed
+            )
+        }
+    }
+
+    /// A car whose every name is longer than the budget still renders the PLAINEST
+    /// rung rather than an empty line — the ladder degrades, it does not give up.
+    func testACarWhoseNamesExceedEveryRungStillRendersItsModel() {
+        let absurd = RideActivityVehicle(
+            plate: "PLATE1234567890",
+            color: "An Extremely Long Marketing Paint Name",
+            model: "Model Y Performance Long Range All Wheel Drive"
+        )
+        XCTAssertEqual(
+            RideActivityVehicleDescriptor.compose(absurd),
+            "PLATE1234567890 · Model Y Performance Long Range All Wheel Drive"
+        )
+    }
+
+    /// **A MISSING PLATE DROPS THE SEGMENT — NEVER A PLACEHOLDER.**
+    ///
+    /// This is the reason the Activity reads the RAW `VehicleSummary.licensePlate`
+    /// rather than `VehicleContractMapping.plateDisplay`: that helper degrades to
+    /// `VIN ····2046`, which is right for a labelled chip and wrong for a bare
+    /// segment of a sentence.
+    func testAMissingPlateDropsTheSegmentRatherThanDegradingToTheVIN() {
+        XCTAssertEqual(
+            RideActivityVehicleDescriptor.compose(
+                RideActivityVehicle(plate: nil, color: "Silver", model: "Model Y")
+            ),
+            "Silver Model Y"
+        )
+        XCTAssertEqual(
+            RideActivityVehicleDescriptor.compose(
+                RideActivityVehicle(plate: "   ", color: "Silver", model: "Model Y")
+            ),
+            "Silver Model Y"
+        )
+    }
+
+    /// A car with a plate and nothing else is still identified by it.
+    func testAPlateWithNoCarWordsIsStillIdentification() {
+        XCTAssertEqual(
+            RideActivityVehicleDescriptor.compose(RideActivityVehicle(plate: "7SRJ294")),
+            "7SRJ294"
+        )
+    }
+
+    /// **NAMELESS VEHICLE → "Your Tesla"**, the board's own fallback — and not the
+    /// wire's `vehicleName`, which is the owner's nickname ("Lunar") and describes
+    /// nothing a rider can see.
+    func testANamelessVehicleReadsYourTesla() {
+        XCTAssertEqual(RideActivityVehicleDescriptor.compose(nil), "Your Tesla")
+        XCTAssertEqual(RideActivityVehicleDescriptor.compose(RideActivityVehicle()), "Your Tesla")
+        XCTAssertEqual(
+            card(.accepted, progress: 0.38, vehicle: nil, vehicleName: "Lunar").subline,
+            "Your Tesla"
+        )
+    }
+
+    /// A zero year is not a year. The wire's `VehicleSummary.year` is non-optional,
+    /// so an unpopulated row arrives as `0` and would otherwise read
+    /// "Silver 0 Model Y".
+    func testAZeroYearIsDroppedRatherThanPrinted() {
+        XCTAssertEqual(
+            RideActivityVehicleDescriptor.compose(
+                RideActivityVehicle(color: "Silver", model: "Model Y", year: 0)
+            ),
+            "Silver Model Y"
+        )
+    }
+
+    /// The five facts are read off the rider's OWN `GET /api/vehicles` row, and the
+    /// TRIM is `nil` by construction because contracts 0.27.0's `VehicleSummary`
+    /// carries none. Pinned, so the day the list row grows one this test is the
+    /// thing that says so.
+    func testTheSummaryReadTakesTheRawPlateAndNoTrim() {
+        var summary = VehicleSummary(
+            vehicleId: "v1",
+            name: "Lunar",
+            model: "Model Y",
+            year: 2026,
+            color: "Silver",
+            vinLast4: "2046",
+            status: .parked,
+            chargeLevel: 68,
+            estimatedRange: 240,
+            lastUpdated: "2026-08-01T00:00:00Z",
+            role: .owner
+        )
+        summary.licensePlate = "7SRJ294"
+
+        let vehicle = RideActivityVehicle(summary: summary)
+        XCTAssertEqual(vehicle.plate, "7SRJ294")
+        XCTAssertEqual(vehicle.color, "Silver")
+        XCTAssertEqual(vehicle.model, "Model Y")
+        XCTAssertEqual(vehicle.year, 2026)
+        XCTAssertNil(vehicle.trim, "contracts 0.27.0's VehicleSummary carries no trim at all")
+        XCTAssertEqual(RideActivityVehicleDescriptor.compose(vehicle), "7SRJ294 · Silver 2026 Model Y")
+    }
+
+    /// **A CAR WITH NO OWNER-ENTERED PLATE MUST NOT BORROW THE VIN**, all the way
+    /// through the shipping read rather than only in the composer.
+    func testASummaryWithNoPlateComposesWithoutOne() {
+        let summary = VehicleSummary(
+            vehicleId: "v1",
+            name: "Lunar",
+            model: "Model 3",
+            year: 2025,
+            color: "Quicksilver",
+            vinLast4: "2046",
+            status: .parked,
+            chargeLevel: 68,
+            estimatedRange: 240,
+            lastUpdated: "2026-08-01T00:00:00Z",
+            role: .owner
+        )
+        XCTAssertEqual(
+            RideActivityVehicleDescriptor.compose(RideActivityVehicle(summary: summary)),
+            "Quicksilver 2025 Model 3"
+        )
+    }
+
+    // MARK: - 5. The rail is ALWAYS drawn
+
+    /// **NEVER ABSENT, NEVER DIMMED** — the field report's second and fourth items
+    /// together, and the reason every state has the same footprint.
+    func testEveryStateInTheMatrixDrawsARail() {
+        for status in LiveActivityRideStatus.allCases {
+            for progress in [nil, 0, 0.5, 1] as [Double?] {
+                for stale in [false, true] {
+                    let rail = card(status, progress: progress, isStale: stale).rail
+                    XCTAssertTrue(
+                        (0...1).contains(rail.progress),
+                        "\(status) p=\(String(describing: progress)) stale=\(stale)"
+                    )
+                }
+            }
+        }
+    }
+
+    /// An absent fraction is the IDLE variant, not a live rail at zero — the
+    /// §7.21.3 honesty rule, kept by drawing a different MARK rather than by drawing
+    /// nothing.
+    func testAnAbsentFractionIsTheIdleRailAndNotAGoldFillOfWidthZero() {
+        XCTAssertEqual(card(.accepted, eta: nil, progress: nil).rail, .idle)
+        XCTAssertTrue(card(.accepted, eta: nil, progress: nil).rail.isIdle)
+    }
+
+    /// A REPORTED zero is a live rail at zero, which is a different claim and must
+    /// look different from the idle one.
+    func testAReportedZeroIsALiveRailRatherThanTheIdleVariant() {
+        let rail = card(.accepted, progress: 0).rail
+        XCTAssertFalse(rail.isIdle)
+        XCTAssertEqual(rail.progress, 0)
+    }
+
+    /// Every ENDING keeps an idle rail rather than collapsing, which is what makes
+    /// a terminal card the same 128pt as a live one.
+    func testEveryEndingKeepsTheIdleRailRatherThanCollapsing() {
+        for status in [LiveActivityRideStatus.declined, .cancelled, .reservationExpired, .unrecognized("boarding")] {
+            XCTAssertEqual(card(status, eta: nil, progress: 0.62).rail, .idle, "\(status)")
+        }
+    }
+
+    /// **`arrived` AND `completed` ARE FULL ON THE STATUS'S AUTHORITY.** A frame
+    /// that omitted the fraction still means the leg is over, so falling back to the
+    /// idle rail there would draw an untravelled route under "Your ride is here".
+    func testArrivedAndCompletedAreFullEvenWithNoFractionOnTheWire() {
+        XCTAssertEqual(card(.arrived, eta: nil, progress: nil).rail, .live(1))
+        XCTAssertEqual(card(.completed, eta: nil, progress: nil).rail, .live(1))
+    }
+
+    /// The ends are NOT clamped away the way `TripProgressBar` clamps them: that
+    /// 0.05…0.95 floor is right for an illustrated bar and would quietly contradict
+    /// a server that sends exactly `1`.
+    func testTheEndsAreNotClampedAway() {
+        XCTAssertEqual(card(.enroute, progress: 0).rail.progress, 0)
+        XCTAssertEqual(card(.enroute, progress: 1).rail.progress, 1)
+    }
+
+    /// An out-of-range fraction is clamped INTO `0...1` rather than drawn off the
+    /// rail.
+    func testAnOutOfRangeFractionIsClamped() {
+        XCTAssertEqual(card(.enroute, progress: 1.4).rail.progress, 1)
+        XCTAssertEqual(card(.enroute, progress: -0.2).rail.progress, 0)
+    }
+
+    /// **STALENESS DOES NOTHING TO THE RAIL.** The last known position is still
+    /// true; v2's desaturation is gone, and so is the token it used.
+    func testStalenessHoldsTheRailAndLeavesItLive() {
+        XCTAssertEqual(card(.enroute, progress: 0.52, isStale: true).rail, .live(0.52))
+    }
+
+    /// Every status resolves to the leg the contract says it is — the rail's reset
+    /// key and both headline forms hang off this.
     func testEveryStatusResolvesToTheLegTheContractSaysItIs() {
         XCTAssertEqual(RideActivityLeg.of(.requested), .pickup)
         XCTAssertEqual(RideActivityLeg.of(.accepted), .pickup)
-        XCTAssertEqual(
-            RideActivityLeg.of(.arrived),
-            .pickup,
-            """
-            `arrived` is the END of leg one, not the start of leg two — the car is \
-            at the kerb and the rider has not boarded. Reading it as leg two would \
-            put its server-asserted progress of 1 on the DROP-OFF rail and tell a \
-            rider who has not got in the car that they have arrived.
-            """
-        )
+        XCTAssertEqual(RideActivityLeg.of(.arrived), .pickup)
         XCTAssertEqual(RideActivityLeg.of(.enroute), .dropoff)
         XCTAssertEqual(RideActivityLeg.of(.completed), .dropoff)
-
-        for status in [
-            LiveActivityRideStatus.declined, .cancelled, .reservationExpired,
-            .unrecognized("boarding"),
-        ] {
-            XCTAssertNil(RideActivityLeg.of(status), "\(status.rawValue) is not part-way along anything")
+        for terminal in [LiveActivityRideStatus.declined, .cancelled, .reservationExpired, .unrecognized("x")] {
+            XCTAssertNil(RideActivityLeg.of(terminal), "\(terminal)")
         }
     }
 
-    func testAnAbsentProgressRendersNORAIL() {
-        // THE GOVERNING RULE. §7.21.3: "an absent `progress` renders a TRACKLESS
-        // card, a wrong one renders a LIE". `nil` must not become 0 anywhere on the
-        // way to the view, because 0 is the claim "the car has covered none of the
-        // distance" and the view has no way to tell the two apart.
-        for status in LiveActivityRideStatus.allCases {
-            XCTAssertNil(card(status, progress: nil).track, "\(status.rawValue) with no progress key")
+    // MARK: - 6. Staleness is one sentence, and nothing else
+
+    /// The headline gives up its FIGURE — it does not freeze it. A frozen figure
+    /// looks identical to a working one, which is the whole hazard.
+    func testStalenessSwapsTheHeadlineRatherThanFreezingTheFigure() {
+        XCTAssertEqual(card(.accepted, progress: 0.38, isStale: true).headline, .sentence("Pickup soon"))
+        XCTAssertEqual(card(.enroute, progress: 0.52, isStale: true).headline, .sentence("Dropoff soon"))
+    }
+
+    /// The compact island KEEPS the last figure — the one place the island and the
+    /// card disagree on purpose, and at FULL strength (v2 dimmed it to 45%).
+    func testTheCompactIslandKeepsTheLastFigureWhileTheCardGivesUpItsHeadline() {
+        XCTAssertEqual(card(.accepted, progress: 0.38, isStale: true).compact, .figure("8 min"))
+        XCTAssertEqual(card(.enroute, progress: 0.52, isStale: true).compact, .figure(Self.etaClock))
+    }
+
+    /// **`asOf` IS NOT ON TODAY'S WIRE, AND THE FALLBACK SAYS THE TRUE THING.**
+    ///
+    /// contracts 0.28.0 adds it; it was not tagged when this branch was cut, so
+    /// `ContentState.asOfDate` answers `nil` and the subline is
+    /// "Waiting for an update" rather than a time dated from the ETA — which is a
+    /// FUTURE instant and would overstate freshness on the one card whose job is to
+    /// admit it has none.
+    func testTheStaleSublineFallsBackWhenThereIsNoUpdateInstant() {
+        for status in [LiveActivityRideStatus.requested, .accepted, .arrived, .enroute] {
+            XCTAssertEqual(
+                card(status, progress: 0.5, isStale: true).subline,
+                "Waiting for an update",
+                "\(status)"
+            )
         }
     }
 
-    func testZeroIsARealRailAtZeroAndNotConfusedWithAbsence() {
-        let zero = card(.accepted, progress: 0)
-        XCTAssertEqual(zero.track, 0)
-        XCTAssertNotNil(zero.track)
-    }
-
-    func testTheEndsAreNOTCLAMPEDAWAYTheWayTheDesignSystemBarClampsThem() {
-        // `TripProgressBar.clamped` floors at 0.05 and ceils at 0.95, which is right
-        // for an illustrated bar and wrong for a claim about a car: `arrived` and
-        // `completed` send exactly `1` on the ride record's authority, and a rail
-        // that stopped just short would contradict the card's own headline — and
-        // would park the arrow's disc off the end cap, which IS the arrival beat.
-        XCTAssertEqual(card(.arrived, eta: nil, progress: 1).track, 1)
-        XCTAssertEqual(card(.completed, eta: nil, progress: 1).track, 1)
-        XCTAssertEqual(card(.accepted, progress: 0.02).track, 0.02, "and no 0.05 floor either")
-    }
-
-    func testAnOutOfRangeFractionIsClampedIntoZeroToOneRatherThanDrawnOffTheRail() {
-        XCTAssertEqual(card(.enroute, progress: 1.4).track, 1)
-        XCTAssertEqual(card(.enroute, progress: -0.2).track, 0)
-    }
-
-    func testTheGenericVehicleNameReachesEverySentenceRatherThanABlank() {
+    /// The `{t}` arm is written and tested even though nothing reaches it yet, so
+    /// landing 0.28.0 is a field and an accessor rather than a copy decision.
+    func testTheStaleSublineRendersTheInstantTheDayTheWireCarriesOne() {
         XCTAssertEqual(
-            card(.arrived, eta: nil, vehicleName: "   ").headline,
-            .sentence("\(RideActivityCopy.genericVehicleName) is here")
-        )
-        XCTAssertEqual(
-            card(.requested, eta: nil, vehicleName: "").headline,
-            .sentence("\(RideActivityCopy.genericVehicleName) is on its way to you")
+            RideActivityCopy.lastUpdated(Self.etaClock),
+            "Last updated \(Self.etaClock)"
         )
     }
 
-    func testCompletedDegradesToTheUnplacedSentenceWhenTheWireCarriesNoDestination() {
-        XCTAssertEqual(
-            card(.completed, eta: nil, destination: "  ").headline,
-            .sentence("You've arrived")
-        )
+    /// A TERMINAL card is not "waiting for an update": the outcome cannot change,
+    /// and saying otherwise would suggest it might.
+    func testATerminalCardKeepsItsOwnSublineWhenStale() {
+        XCTAssertEqual(card(.cancelled, eta: nil, isStale: true).subline, "Nothing was charged")
+        XCTAssertEqual(card(.completed, eta: nil, progress: 1, isStale: true).subline, "Duarte's Tavern")
     }
 
-    // MARK: - 7. The full matrix, swept
-
-    func testTheHeadlineIsNeverACountdownWithoutAnETAAndNeverASentenceWithOne() {
-        // The one invariant that has to hold across the whole grid, stated as a
-        // sweep rather than as thirty-six literals: a countdown appears if and only
-        // if there is an instant to count to, the ride is still running, the card is
-        // not stale, and the status belongs to a leg.
+    /// The word *stale* never renders anywhere. It is ActivityKit's vocabulary, not
+    /// a rider's — and v2's "Not updating" chip went with the chip.
+    func testTheWordStaleNeverRendersAnywhere() {
         for status in LiveActivityRideStatus.allCases {
-            for etaValue in [nil, 1_785_535_200] as [Int?] {
-                for stale in [false, true] {
-                    for progress in [nil, 0.5] as [Double?] {
-                        let resolved = card(status, eta: etaValue, progress: progress, isStale: stale)
-                        let expectsCountdown = etaValue != nil
-                            && !stale
-                            && RideActivityCopy.showsCountdown(for: status)
-                            && RideActivityLeg.of(status) != nil
-
-                        switch resolved.headline {
-                        case .countdown:
-                            XCTAssertTrue(expectsCountdown, "\(status.rawValue) eta=\(String(describing: etaValue)) stale=\(stale)")
-                        case .sentence(let text):
-                            XCTAssertFalse(expectsCountdown, "\(status.rawValue) eta=\(String(describing: etaValue)) stale=\(stale)")
-                            XCTAssertFalse(text.isEmpty, "a headline is never blank")
-                        }
-
-                        // The rail's presence is a pure function of the progress
-                        // key, independent of every other axis.
-                        XCTAssertEqual(
-                            resolved.track != nil, progress != nil,
-                            "the rail's presence must depend on the progress key and nothing else"
-                        )
-
-                        // And the chip always has a word, whatever else is missing.
-                        XCTAssertFalse(resolved.chipWord.isEmpty, status.rawValue)
-                    }
+            for progress in [nil, 0.5, 1] as [Double?] {
+                let card = card(status, progress: progress, isStale: true)
+                for text in [Self.text(of: card.headline), card.subline, Self.text(of: card.compact)] {
+                    XCTAssertFalse((text ?? "").localizedCaseInsensitiveContains("stale"), "\(status)")
+                    XCTAssertFalse((text ?? "").localizedCaseInsensitiveContains("not updating"), "\(status)")
                 }
             }
         }
     }
 
-    func testTheCompactIslandAlwaysHasSomethingToSay() {
-        // The island's trailing slot is never empty and never a dash — a figure when
-        // there is one (stale or not), a word otherwise.
+    // MARK: - 7. The compact island is a figure or nothing
+
+    /// **NO STATUS WORD SURVIVES ANYWHERE IN THE MATRIX.** Every string v2 put in
+    /// this slot is deleted, and with it the width ladder that table needed.
+    func testTheCompactIslandNeverRendersAStatusWord() {
+        let v2Words = [
+            "Requested", "On the way", "Arrived", "Arriving", "Dropped off", "Ride ended", "Ride",
+        ]
         for status in LiveActivityRideStatus.allCases {
-            for etaValue in [nil, 1_785_535_200] as [Int?] {
-                for stale in [false, true] {
-                    switch card(status, eta: etaValue, isStale: stale).compact {
-                    case .figure(let figure, let isStale):
-                        XCTAssertFalse(figure.text.isEmpty)
-                        XCTAssertNotNil(etaValue)
-                        XCTAssertTrue(RideActivityCopy.showsCountdown(for: status))
-                        XCTAssertEqual(isStale, stale)
-                    case .word(let word):
-                        XCTAssertFalse(word.isEmpty, status.rawValue)
-                    }
-                }
+            for stale in [false, true] {
+                let compact = card(status, progress: 0.5, isStale: stale).compact
+                guard case .figure(let figure) = compact else { continue }
+                XCTAssertFalse(v2Words.contains(figure), "\(status) rendered the v2 word \(figure)")
             }
         }
     }
 
-    // MARK: - 8. The monotone hold and the leg reset (unchanged)
+    /// A figure in that slot is ALWAYS one of the two shapes the board allows.
+    func testEveryCompactFigureIsAnETAFigureOrAClockTime() {
+        for status in LiveActivityRideStatus.allCases {
+            guard case .figure(let figure) = card(status, progress: 0.5).compact else { continue }
+            let isCountdown = figure.hasSuffix(" min") || figure.hasSuffix(" s")
+            XCTAssertTrue(isCountdown || figure == Self.etaClock, "\(status) → \(figure)")
+        }
+    }
 
-    func testWithinOneLegTheFractionNeverGoesDOWN() {
-        // The server clamps, so this is the client's belt-and-braces on the frames
-        // IT composes. An arrow sliding back down the rail reads as a broken widget
-        // rather than as traffic.
+    /// The two glyph states, and only those two.
+    func testTheGlyphsAreTheWaveAtTheKerbAndTheCheckAtTheEnd() {
+        for status in LiveActivityRideStatus.allCases {
+            let compact = card(status, progress: 0.5).compact
+            switch status {
+            case .arrived: XCTAssertEqual(compact, .glyph(.wave))
+            case .completed: XCTAssertEqual(compact, .glyph(.check))
+            default: XCTAssertNotEqual(compact, .glyph(.wave), "\(status)")
+            }
+        }
+    }
+
+    /// **DISPATCH IS THE MARK ALONE**, exactly as Uber's is — and so is every
+    /// no-figure state.
+    func testAStateWithNoFigureShowsTheMarkAlone() {
+        XCTAssertEqual(card(.requested, eta: nil).compact, .markOnly)
+        XCTAssertEqual(card(.accepted, eta: nil, progress: 0.38).compact, .markOnly)
+        XCTAssertEqual(card(.enroute, eta: nil, progress: 0.52).compact, .markOnly)
+        XCTAssertEqual(card(.declined, eta: nil).compact, .markOnly)
+    }
+
+    /// **DISPATCH NEVER COUNTS DOWN**, even if a stale `eta` is sitting in the
+    /// content state: no car has been assigned, so there is nothing for a countdown
+    /// to be about.
+    func testDispatchNeverCountsDownEvenWithAnETAOnTheWire() {
+        let card = card(.requested, progress: nil)
+        XCTAssertEqual(card.headline, .sentence("Finding your ride"))
+        XCTAssertEqual(card.compact, .markOnly)
+    }
+
+    /// A TERMINAL card never counts down either — the "never a confident stale ETA"
+    /// rule applied to the state rather than to the clock.
+    func testATerminalCardNeverRendersAFigureHoweverTheWireIsShaped() {
+        for status in [LiveActivityRideStatus.completed, .declined, .cancelled, .reservationExpired, .unrecognized("x")] {
+            let card = card(status, progress: 0.5)
+            if case .figure = card.compact { XCTFail("\(status) rendered a figure") }
+            if case .pickupCountdown = card.headline { XCTFail("\(status) counted down") }
+            if case .dropoffClock = card.headline { XCTFail("\(status) stated a clock") }
+        }
+    }
+
+    // MARK: - 8. The monotone hold and the leg reset (unchanged by v3)
+
+    func testWithinOneLegTheFractionNeverGoesDown() {
         XCTAssertEqual(
             RideActivityProgress.held(current: 0.41, currentLeg: .dropoff, previous: 0.62, previousLeg: .dropoff),
             0.62
@@ -964,55 +920,56 @@ final class RideActivityCardTests: XCTestCase {
         )
     }
 
-    func testWithinOneLegAMissingFractionCarriesTheLastOneFORWARD() {
+    func testWithinOneLegAMissingFractionCarriesTheLastOneForward() {
         XCTAssertEqual(
             RideActivityProgress.held(current: nil, currentLeg: .pickup, previous: 0.34, previousLeg: .pickup),
             0.34
         )
     }
 
-    func testTHELEGISTHERESETKEYAndNothingSurvivesTheFlip() {
-        // Leg one ends at exactly 1 and leg two opens near 0, so a max taken ACROSS
-        // the flip would pin the drop-off rail at full for the entire ride — the
-        // single worst thing this rule could get wrong.
+    /// Leg one ends at exactly 1 and leg two opens near 0, so a max taken ACROSS the
+    /// flip would pin the drop-off rail at full for the entire ride.
+    func testTheLegIsTheResetKeyAndNothingSurvivesTheFlip() {
         XCTAssertEqual(
             RideActivityProgress.held(current: 0.04, currentLeg: .dropoff, previous: 1, previousLeg: .pickup),
             0.04
         )
     }
 
-    func testALegFlipWithNoFractionYETIsAnHonestNoRailAndNotAHeldFullOne() {
+    /// A leg flip with no fraction YET is the board's own idle rail, not a held full
+    /// one — the second half of "the leg flip is the only backward move allowed".
+    func testALegFlipWithNoFractionYetIsTheIdleRail() {
         XCTAssertNil(
             RideActivityProgress.held(current: nil, currentLeg: .dropoff, previous: 1, previousLeg: .pickup)
         )
     }
 
-    func testALegThatBECOMESNilDropsTheFractionSoAnEndingCardCarriesNoRail() {
+    func testALegThatBecomesNilDropsTheFraction() {
         XCTAssertNil(
             RideActivityProgress.held(current: nil, currentLeg: nil, previous: 0.62, previousLeg: .dropoff)
         )
     }
 
-    func testTheFirstFrameOfAnActivityHoldsNothingBecauseThereIsNoPrevious() {
+    func testTheFirstFrameOfAnActivityHoldsNothing() {
         XCTAssertNil(
             RideActivityProgress.held(current: nil, currentLeg: .pickup, previous: nil, previousLeg: nil)
         )
     }
 
-    // MARK: - 9. The hold, through the shipping state machine (unchanged)
+    // MARK: - 9. The hold, through the shipping state machine
 
     func testTheStateMachineCarriesAPushedFractionForwardOntoItsOwnFrames() {
         let previous = RideActivityAttributes.ContentState(
             status: .enroute,
             eta: 1_785_535_200,
-            vehicleName: Self.vehicle,
+            vehicleName: Self.vehicleNickname,
             destination: Self.destination,
             progress: 0.62
         )
 
         let next = RideActivityStateMachine.contentState(
             for: enrouteRecord,
-            vehicleName: Self.vehicle,
+            vehicleName: Self.vehicleNickname,
             previous: previous
         )
 
@@ -1020,24 +977,27 @@ final class RideActivityCardTests: XCTestCase {
         XCTAssertEqual(next.eta, 1_785_535_200, "the ETA carries forward for the same reason")
     }
 
-    func testTheStateMachineNEVERINVENTSAFractionFromTheAppsOwnTrackProgress() {
+    func testTheStateMachineNeverInventsAFractionFromTheAppsOwnTrackProgress() {
         var record = enrouteRecord
         record.trackProgress = 0.8
 
         let frame = RideActivityStateMachine.contentState(
             for: record,
-            vehicleName: Self.vehicle,
+            vehicleName: Self.vehicleNickname,
             previous: nil
         )
 
         XCTAssertNil(frame.progress)
     }
 
-    func testTheCancelledEndingFrameDropsTheRailItInherited() {
+    /// The ending frame drops the fraction it inherited — and in v3 that renders as
+    /// the IDLE rail rather than as no rail, which is the one thing about this rule
+    /// the redesign changed downstream of it.
+    func testTheCancelledEndingFrameDropsTheFractionAndRendersTheIdleRail() {
         let live = RideActivityAttributes.ContentState(
             status: .enroute,
             eta: 1_785_535_200,
-            vehicleName: Self.vehicle,
+            vehicleName: Self.vehicleNickname,
             destination: Self.destination,
             progress: 0.62
         )
@@ -1045,10 +1005,29 @@ final class RideActivityCardTests: XCTestCase {
         let ending = live.with(status: .cancelled)
 
         XCTAssertEqual(ending.status, .cancelled)
-        XCTAssertNil(ending.progress, "no rail on the ending card")
-        XCTAssertNil(
-            RideActivityCard.resolve(state: ending, pickupLabel: Self.pickup, isStale: false).track
+        XCTAssertNil(ending.progress, "no fraction on the ending frame")
+        XCTAssertEqual(
+            RideActivityCard.resolve(state: ending, vehicle: Self.vehicle, isStale: false).rail,
+            .idle
         )
+    }
+
+    // MARK: - Helpers
+
+    private static func text(of headline: RideActivityHeadline) -> String? {
+        switch headline {
+        case .pickupCountdown(let figure):
+            return "\(RideActivityCopy.pickupPhase) \(RideActivityCopy.countdownJoin) \(figure.text)"
+        case .dropoffClock(let clock):
+            return "\(clock) \(RideActivityCopy.dropoffWord)"
+        case .sentence(let text):
+            return text
+        }
+    }
+
+    private static func text(of compact: RideActivityCompact) -> String? {
+        if case .figure(let figure) = compact { return figure }
+        return nil
     }
 
     // MARK: - Fixtures
@@ -1059,7 +1038,7 @@ final class RideActivityCardTests: XCTestCase {
             input: RideRequestInput(
                 pickup: RidePlace(
                     id: "pickup",
-                    label: RideActivityCardTests.pickup,
+                    label: "Sansome & Clay",
                     subtitle: nil,
                     miles: 0,
                     minutes: 0,

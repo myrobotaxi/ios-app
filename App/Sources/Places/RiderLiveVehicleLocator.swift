@@ -67,6 +67,22 @@ final class RiderLiveVehicleLocator {
     /// battery/availability), or `nil` until the vehicle list has loaded.
     var fleetMember: FleetMember? { fleetMembers.first }
 
+    /// MYR-398 v3 — the head row's IDENTIFICATION, as the Live Activity's pickup
+    /// subline needs it (`7SRJ294 · Silver Model Y`).
+    ///
+    /// Published beside `fleetMembers` off the SAME list read rather than derived
+    /// from it, because `FleetMember.plate` is `VehicleContractMapping.plateDisplay`
+    /// — the owner's plate OR the `VIN ····2046` degrade — and the board's rule for
+    /// this line is that a missing plate DROPS the segment rather than substituting
+    /// four characters of hex nobody can read off a bumper. So the raw
+    /// `VehicleSummary.licensePlate` has to survive the mapping, and the honest way
+    /// to keep it is to keep the row's own fields.
+    ///
+    /// The HEAD, deliberately: the ride is created against `vehicles.first`
+    /// (MYR-212/MYR-343), so the car the Activity describes is the car the request
+    /// was made against, by construction rather than by a second lookup.
+    private(set) var activityVehicle: RideActivityVehicle?
+
     /// MYR-336 — the watched vehicle's live telemetry source, or `nil` before a
     /// vehicle has been adopted. Handed up to `SharedViewerState.telemetrySource`,
     /// so the rider map reads the same `VehicleTelemetrySnapshot` shape it always
@@ -195,6 +211,9 @@ final class RiderLiveVehicleLocator {
             // charge, VIN, status). `first` stays the head of this list, so
             // `fleetMember` is unchanged.
             self?.fleetMembers = vehicles.map(LiveFleetMemberMapping.fleetMember(from:))
+            // MYR-398 v3 — the same rows, kept RAW for the Live Activity's static
+            // vehicle attribute. See `activityVehicle`.
+            self?.activityVehicle = vehicles.first.map(RideActivityVehicle.init(summary:))
             // MYR-336 — the FALLBACK adoption, and it exists to preserve MYR-211's
             // guarantee exactly. The shell's adoption (`watch(vehicleID:)`, owned
             // first then the first grant) is the authority and always wins because

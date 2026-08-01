@@ -2534,128 +2534,157 @@ system.
 SIMCTL_CHILD_MRT_SCENE=riderLiveActivity xcrun simctl launch <udid> app.myrobotaxi.ios
 # then background the app so the island shows it, and screenshot the SYSTEM:
 xcrun simctl launch <udid> com.apple.Preferences && xcrun simctl io <udid> screenshot di.png
-# MRT_ACTIVITY_STATE — the whole twelve-row matrix (default enroute):
-#   requested | accepted | noProgress | arrived | enroute | enrouteNoETA
-#   | stale | completed | declined | cancelled | expired | unknown
+# MRT_ACTIVITY_STATE — all FOURTEEN v3 board rows (default enroute):
+#   dispatch | accepted | arriving | pickupNoETA | noTelemetry | arrived
+#   | enroute | enrouteNoETA | stale | completed | declined | cancelled
+#   | expired | unknown
+# (`requested` and `noProgress` survive as v2 aliases of dispatch / noTelemetry.)
 ```
 
-**THE LIVE ACTIVITY IS THE CLIENT'S BOARD** (MYR-398 v2, **CLIENT-DIRECTED** — the
-third deliberate client-authored surface after MYR-346's FSD celebration and
-MYR-347's Share tab, and the same standing precedent: **client outranks
-prototype**). v1 (#161) answered his first ask — an ETA and a picture of where the
-car is — and he then designed what those should LOOK like, in three files now
-mirrored into this repo: `design/Handoff-Live-Activity.md`, `design/la/la-data.jsx`
-(every state's strings/tones/compact words as data) and `design/la/la-kit.jsx` (the
-five parts + four surfaces as JSX). **`app/surfaces.jsx` is superseded for this
-surface.** The state machine, content-state decoding, push handling and lifecycle
-semantics are UNCHANGED by all of it — only what each of the twelve states renders.
+**THE LIVE ACTIVITY IS THE CLIENT'S BOARD, AND v3 IS THE UBER-REFERENCE REBUILD**
+(MYR-398 v3, **CLIENT-DIRECTED** — the same standing precedent as MYR-346's FSD
+celebration and MYR-347's Share tab: **client outranks prototype**). v1 (#161)
+answered his first ask; v2 (#165) was his first board; **v3 REPLACES v2's whole
+presentation**, designed against the field report of that build with **Uber's ride
+Live Activity as the explicit structural and copy reference**. Three files, mirrored
+into this repo and REPLACING the v2 mirrors: `design/Handoff-Live-Activity.md`,
+`design/la/la-data.jsx` (fourteen rows of strings/rails/compact as data),
+`design/la/la-kit.jsx` (exact geometry). **`app/surfaces.jsx` is superseded for this
+surface.** Content-state decoding, push handling and MYR-405's adopt/reap/dismissal
+semantics are UNCHANGED; ONE lifecycle moment moved (see the start point below).
 
-- **FIVE PARTS, FOUR SURFACES, ONE LAYOUT.** `ActivityConfiguration` composes the
-  same five views the `DynamicIsland { }` does, at different sizes: brand row,
-  headline, second line, rail, chip (+ stale notice). v1 had already grown a second
-  composition in the expanded island that spelled the trip line differently from the
-  card's — the handoff's SwiftUI note 1 forbids the fork by name.
-- **`la-data.jsx` IS THE ANSWER KEY, NOT AN ILLUSTRATION.** Its own header says it
-  mirrors `RideActivityCopy`, so `RideActivityCardTests` walks its twelve rows as
-  literals with the design's own fixtures (`Cybercab` / `Sansome & Clay` /
-  `Duarte's Tavern`), asserting every decision all four surfaces read at once.
-- **THE ETA FIGURE IS `{n} min` / `{n} s` AND IT DOES NOT COUNT DOWN.** Two rulings
-  stacked. The board removed `mm:ss` (`4:12` after "Pick up in" reads as a clock
-  time), which rules out `Text(timerInterval:)` outright since that is the only
-  thing it renders. Then the client ruled out local counting altogether, 2026-07-31:
+- **FOUR FIXED ROWS IN A FIXED 350 × 128 CARD, IN EVERY STATE.** wordmark 20 /
+  headline 24 / subline 17 / rail 18, `space-between`, `lineLimit(1)` everywhere.
+  The field report's fourth item was *"all banners the same width and height"*, so
+  terminal states keep an IDLE rail rather than collapsing to a shorter card.
+  `RideActivityMetrics` moved into `App/ActivityShared` precisely so
+  `RideActivityGeometryTests` can measure the arithmetic and the longest strings —
+  v2 kept those numbers beside the views, where nothing could assert on them, and a
+  promise about geometry that no test reads is a promise about a comment.
+- **TWO HEADLINE FORMS, ONE PER LEG — THE ACTUAL FIX FOR THE REPORT'S FIRST ITEM.**
+  *"It's saying arriving while on the way to the destination."* The pickup leg
+  COUNTS DOWN (`Pickup in 8 min`, `45 s` under a minute, never `mm:ss`); the trip leg
+  states a CLOCK TIME (`3:42 PM dropoff`, a formatted `Date` recomputed only on a new
+  server ETA). A duration and a time of day are different SHAPES now, so one cannot
+  be read as the other. **"Arriving" is BANNED from rider-facing copy** — phase name
+  only — and `testNoSurfaceSaysArriving` sweeps for it.
+- **THE FIGURE STILL DOES NOT TICK.** The client's 2026-07-31 ruling stands and
+  OUTRANKS the v3 handoff's own §9 `TimelineView` note, exactly as it outranked v2's:
   *"We are pulling live data from Tesla ETA telemetry; counting down is
-  inaccurate."* The wire's `eta` is the CAR's own live navigation estimate, so a
-  phone decrementing it shows an extrapolation of the car's last answer dressed as
-  its current one. `RideActivityCard.resolve(now:)` derives the figure ONCE per
-  content state and every surface is handed `RideActivityCountdown.Parts` rather
-  than a `Date` — **there is no clock in the widget process at all**, which is the
-  structural form of the rule rather than the disciplined one.
-  **The platform agrees, and this was measured**: the handoff's own proposed 1s
-  `TimelineView(.periodic)` was implemented first and photographed — one Activity,
-  two SpringBoard captures 70s apart, 6-minute ETA, status bar advancing 10:44 →
-  10:45, compact island reading `5 min` in both. ActivityKit does not tick a
-  periodic timeline between content updates.
-- **THE CARD GROUND IS A REAL `ZStack` OF TWO GRADIENTS, NOT `.ultraThinMaterial`.**
-  v1's glass was the system default for a Live Activity with no background given,
-  not a choice. It is the logo tile's own opaque brown-black now, so it survives any
-  wallpaper. **The island stays true black — that one is the hardware.**
-- **THE ARROW IS BANKED DUE EAST, AS A FIXED ASSET.** `ArrowMarkEast` (DesignSystem,
-  beside `ArrowMark`) is the mark's polygons rotated 90° ONCE — *"a north-pointing
-  arrow travelling east reads as a bug"*. Nothing rotates it at runtime and nothing
-  rotates it per progress; the rail moves it, it never turns. Same MYR-348 rule that
-  keeps there being one hexagon.
-- **THE STATE'S COLOUR LIVES IN A 5pt DOT AND NOWHERE ELSE**, and the chip's label
-  is always 82% white. Twelve states × coloured text is a dozen colours competing
-  with gold. The five tones map to EXISTING tokens (`gold` / `goldDeepSoft` /
-  `driving` / `parked` / `offline`) — the redesign adds **one** raw hex in total,
-  `activityRailStale` `#5C5A54`, and `TokenTests` pins that there are exactly five
-  tones and that they are pairwise distinct.
-- **THE CHIP AND THE ISLAND SPEAK TWO VOCABULARIES.** `chipWord` is the long one
-  ("Reservation expired"); `compactWord` is the island's own
-  (Requested / On the way / Arrived / Arriving / Dropped off / Ride ended / Ride).
-  One table served both in v1, which is why the island was rendering the chip's
-  word in a slot that fits five characters.
-  **The compact column is the CLIENT's, 2026-07-31, and it supersedes la-data's** —
-  he chose the ride's own vocabulary over the car talking about itself, and the
-  three unhappy endings share ONE phrase with the specific reason left on the card.
-  Five entries now equal the chip verbatim, which reads as the split being reverted
-  and is not: the split exists so a LONG chip word cannot reach the island, and
-  "Reservation expired" (19) still becomes 10.
-  **⚠️ IT ALSO RELAXES THE BOARD'S "ONE WORD" RULE — AND THAT RULE WAS HOW "NEVER
-  TRUNCATES" WAS GUARANTEED**, so the guarantee had to move to a measurement, and
-  the measurement immediately caught one. The directed phrase for the endings was
-  "Ride cancelled"; it renders **"Ride cancell…"** and evicts the status bar's wifi
-  and battery glyphs. Measured text width in that slot, one device, one run:
-  Requested 70.3 · **Ride ended 73.7 (shipped)** · On the way 74.3 · Dropped off
-  80.0 · Ride cancelled 91.3 **TRUNCATED**, ceiling ~91pt. The shipped phrase is
-  the widest passing alternative and keeps every part of the intent; it is a
-  one-word revert. `RideActivityIslandUITests.testTheLongestCompactWordsFitTheSlot`
-  is the capture and `testTheShippedEndingPhraseIsTheWidestONEThatFits` the pin.
-  **A copy table with no width rule needs a capture, not a character count.**
-- **STALE: THE CHIP BECOMES THE WARNING.** "Not updating" + a grey dot, the headline
-  swaps to the state's own sentence (never a frozen timer — a frozen countdown looks
-  identical to a working one), the rail keeps its fraction desaturated to `#5C5A54`,
-  and **the compact island keeps the last figure at 45%** rather than dropping to a
-  word. The word *stale* never renders; a sweep asserts it.
-- **⚠️ `Last update {t}` HAS NO SOURCE ON THIS WIRE, AND FAKING IT WOULD OVERSTATE
-  FRESHNESS.** The widget process holds three things — static attributes, content
-  state, `context.isStale` — and none is an update instant (`ActivityViewContext`
-  exposes no `staleDate`; checked against the SDK interface, iOS 26.5). The content
-  state's only instant is the `eta`, which is a FUTURE instant chosen BEFORE the
-  update that carried it, so dating the notice from it over-claims freshness on the
-  one card whose entire job is to admit it has none — **v1 shipped exactly that**, as
-  `"As of {eta} ago"`, which renders "in 4 minutes ago" whenever the ETA has not yet
-  elapsed. The `{t}` arm is written and tested and takes `lastUpdate: Date?`;
-  `resolve` passes `nil`, and the notice keeps its shape (hollow 5pt ring, 11.5pt at
-  42%) reading "Waiting for an update". One line the day the wire grows an instant.
-- **THE RAIL'S HEAD NEEDS SOMEWHERE TO HANG, AND THE TWO SURFACES DIFFER.** The 20pt
-  disc is centred ON the fraction, so it overhangs the rail's ends by 10pt. The
-  card's 15pt padding absorbs that (la-kit's own geometry); the expanded island's
-  44pt corner radius does NOT, and the first captures on this branch show the disc
-  cut in half at `progress == 1` on `arrived`/`completed`. `RideActivityRail
-  .headClearance` insets the rail on the island only — insetting moves the CAP with
-  it, so the completed state's "arrow parked on the destination cap" beat stays
-  concentric, which clamping the disc's offset instead would have broken by 7.5pt.
-- **THE PULSE IS THE ONLY ANIMATION BESIDES THE RAIL'S OFFSET** (`arrived` only,
-  1.6s ease-in-out 1 → 0.35; Reduce Motion → static). Its `TimelineView` is anchored
-  to the FRAME rather than to the absolute clock, deliberately: given the measurement
-  above, a schedule sampled once must land on step 0 (full opacity). Phasing off
-  `timeIntervalSinceReferenceDate` would make a single sample a coin toss and leave
-  the dot sitting at 35% for no reason.
+  inaccurate."* Both forms arrive on the card already composed, so **there is no
+  clock in the widget process at all**. v2 measured that ActivityKit would not have
+  ticked one anyway (one Activity, two captures 70s apart, status bar 10:44 → 10:45,
+  island reading `5 min` in both).
+- **THE SUBLINE IS A PLACE OR AN IDENTIFICATION, NEVER A STATUS.** Pickup leg =
+  `{plate} · {color} {model}`; trip leg = `Heading to {dest}`; completed = `{dest}`;
+  stale = `Last updated {h:mm A}`; the endings get their one sentence. v2 put the
+  PICKUP PLACE there, which tells a rider standing at Sansome & Clay where they are.
+- **THE CAR IS A STATIC ATTRIBUTE, WHICH IS WHY THIS NEEDED NO WIRE CHANGE.**
+  `RideActivityVehicle` (plate/colour/model/year/trim) hangs off
+  `RideActivityAttributes`, read ONCE at `Activity.request` from the rider's own
+  `GET /api/vehicles` head row — §7.8 cannot re-assign a ride's car, so it clears the
+  same bar the ride id does. No content-state field, no schema bump, no server work,
+  and `RideActivityContentStateTests`' raw-key cross-pin is untouched. It reads the
+  RAW `VehicleSummary.licensePlate`, **not** `VehicleContractMapping.plateDisplay`:
+  that helper degrades to `VIN ····2046`, which is right for a labelled chip and
+  wrong for a bare segment of a sentence — a missing plate DROPS the `{plate} · `
+  segment. `pickupLabel` was DELETED from the attributes with the line it fed.
+  - **The descriptor is a LADDER, not a format string**, because the client asked
+    for year and trim "where it fits one line" and the thing a truncation would eat
+    is the MODEL. Fullest → plainest, dropping the least identifying part first:
+    `plate · colour year model trim` → drop trim → drop year → drop colour; the plate
+    and the model are never dropped. So `7SRJ294 · Silver 2026 Model Y` with a plate,
+    and `Silver 2026 Model Y Performance` without one — the budget buys the trim
+    back. Nameless → `Your Tesla` (never the wire's `vehicleName`, which is the
+    owner's NICKNAME and describes nothing a rider can see).
+  - **TRIM IS WIRED AND UNREACHABLE ON THE RIDER PATH TODAY, and that is a contract
+    fact.** `trimLabel` lives on `VehicleState` (the owner's SNAPSHOT); contracts
+    0.27.0's `VehicleSummary` carries no trim of any kind. The field exists so the
+    day the list row grows one is a one-line change, and a test pins the `nil`.
+  - **The budget (34 chars) is a COPY rule and the measurement is the guard.** A
+    character count cannot answer "does it fit"; a measurement cannot answer "is it
+    worth reading". Both are asked. ⚠️ Measure against REAL cars, not
+    `String(repeating: "M", …)` — 34 M's is 394pt in a 320pt row and would force the
+    budget to 27, dropping the year out of every descriptor to survive a string no
+    car can produce.
+- **THE RAIL IS ALWAYS DRAWN AND ALWAYS GOLD WHEN LIVE.** Two variants only, `live`
+  and `idle` — track and pin drawn, no fill, 50% puck at the origin: *"an untravelled
+  route, not an error"*. That is how v3 keeps §7.21.3's honesty rule (absent
+  `progress` ≠ `0`) while still drawing a row in every state: a different MARK, not a
+  zero-valued one. **Stale HOLDS its position and STAYS GOLD** — v2's `#5C5A54`
+  desaturation and its raw hex are deleted, and so are the five tone colours with the
+  chip that carried them. The surface has ONE accent now, and `TokenTests` pins the
+  absence.
+  - **The puck is CLAMPED — `11 + (W − 22) × p`.** v2 centred a disc ON the fraction,
+    which overhung by half its width and had to be inset on the island where the
+    corner radius cut it in half at `p == 1`; v3's clamp needs no clearance anywhere
+    and the geometry is identical on both surfaces. **At `p = 1` the destination pin
+    is REMOVED** and the mark stands in its place — two markers on one point reads as
+    a rendering bug.
+  - `arrived` / `completed` are FULL on the STATUS's authority, not the fraction's: a
+    frame that omitted it still means the leg is over, and an idle rail under "Your
+    ride is here" would draw an untravelled route.
+- **NO CHIPS, NO BADGES, NO STATUS WORDS, NO PULSE, ON ANY SURFACE.** `chipWord`,
+  `compactWord`, the five tones, the tone dot, the pulse and the stale-notice row are
+  all DELETED. The compact island is **a figure or nothing** — `8 min` / `1 min` /
+  `3:42 PM` at 15/600 tabular, `hand.wave.fill` (17) at the kerb,
+  `checkmark.circle.fill` (15) at the end, the mark alone everywhere else. **That
+  retires v2's whole width ladder**: the ~91pt ceiling, the "Ride cancelled" →
+  "Ride ended" measurement and `testTheLongestCompactWordsFitTheSlot` are all moot,
+  because a slot holding only a short figure or a symbol cannot truncate. The width
+  question moved to the card's fixed 24pt headline row.
+- **THE EXPANDED ISLAND IS THE CARD'S TWO CONTENT ROWS AND NOTHING ELSE** — 372 × 96,
+  answering the report's sixth item (*"a lot of black space"*), which was the bottom
+  band v2 reserved for a chip v3 does not have. The BOX and its radius are the
+  system's; the padding, gap, 28pt tile and 19/600 type are the kit's.
+- **THE ACTIVITY NOW STARTS AT REQUEST**, reversing MYR-172's "start at ACCEPTED —
+  a pending request is the app's job". The board answers that with a STATE: Dispatch,
+  `Finding your ride` / `Matching you with a ride`, idle rail, mark-only island. The
+  wait for a car is the part of an instant ride a rider is most likely to be staring
+  at a locked phone through. **A SCHEDULED ride still starts nothing until due**, and
+  that falls out of the existing `RideReservation.isDormant` guard rather than out of
+  the status switch — a `pending` reservation is dormant at every moment before
+  dispatch, so it never reaches the new arm. Without that guard, booking a car for
+  Saturday would have put "Finding your ride" on the lock screen and left it there.
+  MYR-405's adopt / reap / dismissal all now run one status earlier and are tested
+  there explicitly.
+- **⚠️ `Last updated {t}` STILL HAS NO SOURCE, AND THE FALLBACK IS THE HONEST ARM.**
+  contracts **0.28.0** adds `asOf` (unix seconds) to the content state; it was NOT
+  tagged when this branch shipped (latest `v0.27.0`), so `ContentState.asOfDate`
+  answers `nil` and the subline reads **"Waiting for an update"**. Landing it is
+  three steps in order — bump the Kit pin, add `var asOf: Int?` **spelled exactly**
+  (a wrong key on an OPTIONAL decodes silently to `nil`, the MYR-362 trap `eta` and
+  `progress` already carry), then return the mapped `Date` and extend the raw-key
+  cross-pin. Dating the notice from the `eta` instead is what v1 shipped and it
+  renders "in 4 minutes ago": a FUTURE instant chosen BEFORE the update that carried
+  it OVERSTATES freshness on the one card whose job is to admit it has none.
+- **ISLAND AUTO-EXPAND ON THE SIX PHASE CHANGES IS SERVER-SIDE** (an alert config on
+  the push). Nothing client-side does it or can; the client's job is only not to
+  break alert rendering, and the expansion arrives with the backend half.
+- **COMPLETED LINGERS FIVE MINUTES.** Explicit client decision (2026-07-31) and
+  already deployed server-side; the v3 handoff's "~15 min" note in its own
+  `completed` row is STALE and was not adopted with the rest of the mirror.
 - **The gaps are unchanged and still honest.** The LOCK-SCREEN card has no headless
   capture route at all (`simctl` has no lock command, XCUITest cannot lock a device,
   Simulator ▸ Device ▸ Lock is a menu a human clicks), so every claim about it in a
-  PR is a claim about code and not about a picture. And the STALE presentation still
-  cannot be photographed: the Activity genuinely goes stale (visible in `log show
-  --predicate 'subsystem == "com.apple.activitykit"'`) but the island is not
-  re-rendered when the deadline passes, so `context.isStale` never reaches a render —
-  the same root cause as the timeline finding, measured again on this branch as an
-  un-dimmed figure at t+18s.
+  PR is a claim about code and not about a picture. And STALENESS still cannot be
+  photographed as a CHANGE: the Activity genuinely goes stale (`log show --predicate
+  'subsystem == "com.apple.activitykit"'`) but the island is not re-rendered when the
+  deadline passes. In v3 that is doubly ambiguous and the PR says so — v3 SPECIFIES
+  that the compact island is unchanged by staleness, so two identical frames are
+  equally consistent with the rule working and with nothing having re-rendered.
 
-`App/UITests/RideActivityIslandUITests.swift` sweeps the whole matrix (compact +
+`App/UITests/RideActivityIslandUITests.swift` sweeps all fourteen rows (compact +
 SpringBoard long-press expanded, per state), photographs the stale deadline from
-both sides, and holds the ETA figure across 70 seconds as the regression guard for
-the client's ruling.
+both sides, captures the two longest strings, and holds the ETA figure across 70
+seconds as the regression guard for the client's ruling.
+
+⚠️ **A CAPTURE TRAP THE FIGURE-HOLD RULE CREATES.** The figure is resolved when the
+frame is composed and then held, so a scene seeded N minutes out has already decayed
+by the time a script has installed, launched, waited out the sweep and backgrounded
+the app. The `arriving` scene's first run photographed `58 s` — the seconds unit
+rendering correctly, and the wrong row of the board. It seeds TWO minutes so the
+capture lands on the board's own `1 min`.
 
 **TWO BANNERS FOR ONE RIDE, AND THE ONE THE SERVER PUSHED TO WAS NOT THE ONE
 STARVING** (MYR-405, client defect, build `202607312110`) — probe

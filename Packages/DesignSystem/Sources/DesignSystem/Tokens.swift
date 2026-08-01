@@ -178,19 +178,16 @@ enum Hex {
     static let requesterAvatarStart: UInt32 = 0x6D8EFF
     static let requesterAvatarEnd: UInt32 = 0x9D7CFF
 
-    // MYR-398 (r16 redesign v2) — the Live Activity's progress rail, DESATURATED
-    // for the stale frame. `la/Handoff-Live-Activity.md` §4: "Rail fill when stale:
-    // `#5C5A54` (gold desaturated, same value — the rail stays legible without
-    // reading live)."
+    // MYR-398 (r16 redesign v3) — **THE LIVE ACTIVITY ADDS NO RAW HEX AT ALL.**
     //
-    // The ONE new raw hex the redesign needs. Everything else it draws is either an
-    // existing base (`gold`, `goldDeepSoft`, `driving`, `parked`, `offline`, the
-    // three `logoTile*` stops) or an alpha composition of one — see the
-    // `mrtActivity*` block in the `Color` extension. It is a new raw value because
-    // it is deliberately NOT gold at an alpha: an alpha-composed gold over the
-    // card's brown-black ground stays warm, and the whole point of this fill is
-    // that a stale rail must stop reading as the live gold one.
-    static let activityRailStale: UInt32 = 0x5C5A54
+    // v2 needed exactly one, `activityRailStale = 0x5C5A54`, for a rail desaturated
+    // on the stale frame. v3 DELETES it with the treatment: "there is no dimmed
+    // variant — when pushes stop, the last known position is still true, so the rail
+    // keeps its gold and the subline says `Last updated 3:31 PM`" (handoff §4). v2's
+    // five status TONES went the same way with the chip that carried them; the
+    // surface has one accent now, `gold`, and everything else it draws is either an
+    // existing base (the three `logoTile*` stops) or an alpha composition of `text`
+    // — see the `mrtActivity*` block in the `Color` extension.
 }
 
 // MARK: - Color tokens
@@ -737,53 +734,23 @@ public extension Color {
     /// The track's inset top highlight — rgba(255,255,255,0.07). What makes a 5pt
     /// rail read as recessed rather than as a flat grey bar.
     static let mrtActivityRailTrackHighlight = Color(hex: Hex.text, alpha: 0.07)
-    /// Rail fill once the content is stale — `#5C5A54`. See `Hex.activityRailStale`
-    /// for why this is a raw value and not gold at an alpha.
-    static let mrtActivityRailStale = Color(hex: Hex.activityRailStale)
-
-    /// Status-chip fill — rgba(255,255,255,0.07).
-    static let mrtActivityChipFill = Color(hex: Hex.text, alpha: 0.07)
-    /// Status-chip 0.5pt hairline — rgba(255,255,255,0.10).
-    static let mrtActivityChipHairline = Color(hex: Hex.text, alpha: 0.10)
-    /// The chip's LABEL, always — 82% white, whatever the tone.
+    /// The 11pt destination pin's 2pt ring — rgba(255,255,255,0.32).
     ///
-    /// Handoff §1 change 4: "Status colour collapses into a 5pt tone dot inside the
-    /// chip. Chip label is always 82% white." Twelve states × coloured text is a
-    /// dozen colours competing with gold; the dot carries the state and the word
-    /// carries the meaning.
-    static let mrtActivityChipLabel = Color(hex: Hex.text, alpha: 0.82)
+    /// The pin is REMOVED at `p = 1` rather than recoloured: once the car is there,
+    /// the mark IS the marker, and two markers stacked on one point reads as a
+    /// rendering bug.
+    static let mrtActivityRailPin = Color(hex: Hex.text, alpha: 0.32)
 
-    /// The text ladder's second step — 62% white. The countdown's prefix and unit,
-    /// the leg-1 second line, the expanded island's kicker.
+    /// The text ladder's second step — 62% white. `in`, the countdown's unit, and
+    /// the trip headline's `dropoff`.
     static let mrtActivityTextSecondary = Color(hex: Hex.text, alpha: 0.62)
-    /// The ladder's third and last step — 42% white. The wordmark and the stale
-    /// notice, i.e. everything that is furniture rather than content.
+    /// The SUBLINE — 58% white. Its own step because the subline is the one row that
+    /// is neither the headline's companion (62%) nor furniture (42%): it is content,
+    /// set quieter than the line above it.
+    static let mrtActivityTextSubline = Color(hex: Hex.text, alpha: 0.58)
+    /// The ladder's last step — 42% white. The wordmark, i.e. everything that is
+    /// furniture rather than content.
     static let mrtActivityTextQuiet = Color(hex: Hex.text, alpha: 0.42)
-    /// The stale notice's hollow 5pt ring — rgba(255,255,255,0.34).
-    static let mrtActivityStaleRing = Color(hex: Hex.text, alpha: 0.34)
-
-    /// The compact island's LAST KNOWN FIGURE once the content is stale — 45%
-    /// white (handoff §5). The figure is kept rather than dropped because it is
-    /// still the last thing the car said; the opacity is the admission that it is
-    /// no longer being confirmed.
-    static let mrtActivityCompactStale = Color(hex: Hex.text, alpha: 0.45)
-    /// The compact island's word on a TERMINAL state — 50% white. A ride that has
-    /// ended is not urgent, and the island is shared with whatever the rider is
-    /// doing next.
-    static let mrtActivityCompactTerminal = Color(hex: Hex.text, alpha: 0.5)
-
-    /// The EXPANDED island's countdown kicker ("Pick up in") — 55% white.
-    ///
-    /// Off the card's 100/62/42 ladder ON PURPOSE, and la-kit's own value. That
-    /// ladder is stated "over the ground" — the card's warm brown-black — and the
-    /// island is TRUE BLACK, which is the hardware and not a surface we chose. The
-    /// same alpha reads differently on the two, so the island carries its own two
-    /// steps rather than pretending the card's apply.
-    static let mrtActivityIslandKicker = Color(hex: Hex.text, alpha: 0.55)
-    /// The expanded island's affordance line ("Tap to open MyRoboTaxi") — 34%
-    /// white. The quietest thing on any of the four surfaces, because it is the
-    /// only one that is about the app rather than about the ride.
-    static let mrtActivityIslandHint = Color(hex: Hex.text, alpha: 0.34)
 }
 
 // MARK: - Hex init

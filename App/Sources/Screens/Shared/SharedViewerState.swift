@@ -1283,6 +1283,22 @@ public final class SharedViewerState {
         return [head] + tail
     }
 
+    /// MYR-398 v3 — the car the Live Activity's pickup subline identifies, or `nil`
+    /// on the simulated path and before the list lands.
+    ///
+    /// Gated on `isLiveLocation` exactly as `liveFleetMember` is, so a SIMULATED ride
+    /// can never put a fixture plate on a real lock screen (MYR-228). The Activity
+    /// itself is inert in simulated mode anyway, which makes this the second of two
+    /// independent gates rather than the only one.
+    /// Internal rather than `public` like its neighbours, because
+    /// `RideActivityVehicle` is: the type is shared with the WIDGET target as a
+    /// source folder rather than as a package, so it has no `public` surface to
+    /// inherit and does not need one.
+    var liveActivityVehicle: RideActivityVehicle? {
+        guard isLiveLocation else { return nil }
+        return liveVehicleLocator?.activityVehicle
+    }
+
     /// MYR-352 — the idle sheet's banner, or `nil` when there is nothing honest to
     /// say. Composed here (not in the view) so the whole matrix is a pure value.
     public var idleAvailabilityBanner: RiderIdleAvailability? {

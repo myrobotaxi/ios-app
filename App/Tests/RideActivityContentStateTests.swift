@@ -267,10 +267,15 @@ final class RideActivityContentStateTests: XCTestCase {
         let state = try JSONDecoder().decode(RideActivityAttributes.ContentState.self, from: payload)
 
         XCTAssertEqual(state.vehicleName, "")
+        // v3 NEVER RENDERS THE NICKNAME AT ALL — the pickup subline identifies the
+        // car by plate, colour and model (a nickname is a name FOR a car, not a
+        // description OF one), so the empty-string case reaches the descriptor's own
+        // fallback instead. The field is still decoded and still pinned, because the
+        // wire carries it and a future surface may want it.
         XCTAssertEqual(
-            RideActivityCopy.vehicleDisplayName(state.vehicleName),
+            RideActivityVehicleDescriptor.compose(nil),
             RideActivityCopy.genericVehicleName,
-            "an unnamed car gets the client's generic fallback, never a blank"
+            "an unidentifiable car gets the client's generic fallback, never a blank"
         )
     }
 
@@ -366,7 +371,7 @@ final class RideActivityContentStateTests: XCTestCase {
         XCTAssertEqual(state?.status, .reservationExpired)
         XCTAssertEqual(state?.isTerminal, true)
         XCTAssertFalse(
-            RideActivityCopy.showsCountdown(for: .reservationExpired),
+            RideActivityCopy.showsFigure(for: LiveActivityRideStatus.reservationExpired),
             "a lapsed reservation must never count down to an arrival that is not coming"
         )
     }

@@ -59,13 +59,24 @@ enum RideActivityDebugLauncher {
         )
     }
 
-    /// The pickup the sample Activity is collecting from — the static attribute
-    /// behind MYR-398's "Meet at {pickup}" line.
+    /// The car the sample Activity identifies — the STATIC attribute behind
+    /// MYR-398 v3's pickup subline, `7SRJ294 · Silver Model Y`.
     ///
-    /// It lives here rather than in the content state because that is where the
-    /// contract puts it (§7.21.3), and a capture that seeded it on the wire instead
-    /// would photograph a code path the server will never exercise.
-    static let samplePickupLabel = "Ferry Building"
+    /// It is the board's own fixture, so a capture can be read straight against
+    /// `design/la/la-data.jsx`. It lives in the ATTRIBUTES rather than in the content
+    /// state because that is where the shipping path puts it — a capture that seeded
+    /// it on the wire would photograph a code path the server will never exercise.
+    ///
+    /// The YEAR is real and the TRIM is deliberately `nil`: contracts 0.27.0's
+    /// `VehicleSummary` carries no trim at all, so a scene that supplied one would
+    /// photograph a subline no live rider can reach. See `RideActivityVehicle.trim`.
+    static let sampleVehicle = RideActivityVehicle(
+        plate: "7SRJ294",
+        color: "Silver",
+        model: "Model Y",
+        year: 2026,
+        trim: nil
+    )
 
     /// Start a sample Activity through the SHIPPING presenter.
     ///
@@ -76,7 +87,7 @@ enum RideActivityDebugLauncher {
         state: RideActivityAttributes.ContentState,
         staleDate: Date?,
         rideID: String = "debug-ride",
-        pickupLabel: String? = samplePickupLabel
+        vehicle: RideActivityVehicle? = sampleVehicle
     ) async {
         // END ANY ACTIVITY LEFT OVER FROM A PREVIOUS CAPTURE FIRST.
         //
@@ -116,7 +127,7 @@ enum RideActivityDebugLauncher {
         let presenter = SystemRideActivityPresenter()
         held = presenter
         _ = await presenter.start(
-            attributes: RideActivityAttributes(rideID: rideID, pickupLabel: pickupLabel),
+            attributes: RideActivityAttributes(rideID: rideID, vehicle: vehicle),
             state: state,
             staleDate: staleDate
         )
@@ -151,7 +162,7 @@ enum RideActivityDebugLauncher {
             let presenter = SystemRideActivityPresenter()
             held = presenter
             _ = await presenter.start(
-                attributes: RideActivityAttributes(rideID: probeRideID, pickupLabel: samplePickupLabel),
+                attributes: RideActivityAttributes(rideID: probeRideID, vehicle: sampleVehicle),
                 state: sampleState(status: .enroute),
                 staleDate: RideActivityStaleness.date()
             )

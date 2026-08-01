@@ -31,17 +31,46 @@ final class RideActivityStateMachineTests: XCTestCase {
         XCTAssertEqual(state.destination, "Home")
     }
 
-    func testAPendingRequestDoesNotStartAnActivity() {
-        // "start at ACCEPTED — a pending request is the app's job" (MYR-172). A
-        // request nobody has answered has no car assigned and nothing to count
-        // down.
+    /// **THE ACTIVITY NOW STARTS AT REQUEST** — MYR-398 v3, client-directed, and the
+    /// reversal of MYR-172's "start at ACCEPTED".
+    ///
+    /// The v3 board answers "a pending request is the app's job" with a STATE:
+    /// Dispatch, "Finding your ride" over an idle rail. The wait for a car is the
+    /// part of an instant ride a rider is most likely to be staring at a locked
+    /// phone through, so it is the part that most needs a lock-screen card.
+    func testAnINSTANTRequestSTARTSTheActivityAtRequestedTime() {
+        let record = makeRecord(status: .pending)
+
         let action = RideActivityStateMachine.action(
             phase: .idle,
-            record: makeRecord(status: .pending),
+            record: record,
             vehicleName: "Blue Whale"
         )
 
-        XCTAssertEqual(action, .none)
+        guard case .start(let rideID, let state) = action else {
+            return XCTFail("expected .start, got \(action)")
+        }
+        XCTAssertEqual(rideID, record.id)
+        XCTAssertEqual(state.status, .requested, "the wire status behind the Dispatch card")
+        XCTAssertNil(state.eta, "no car is assigned, so there is nothing to count down")
+        XCTAssertNil(state.progress, "and nothing to be part-way along — the rail is idle")
+    }
+
+    /// **A SCHEDULED RIDE STILL STARTS NOTHING AT REQUEST TIME**, and that is the
+    /// half of the new start point that could have gone wrong quietly.
+    ///
+    /// It falls out of the DORMANCY guard rather than out of the status switch: a
+    /// `pending` reservation is dormant at every moment before it is dispatched, so
+    /// it never reaches the `.pending` arm at all. An implementation that opened the
+    /// arm without that guard would have put "Finding your ride" on the lock screen
+    /// the moment somebody booked a car for Saturday, and left it there.
+    func testAScheduledRequestStillStartsNothing() {
+        let scheduled = makeRecord(status: .pending, schedule: RideSchedule(day: "Sat", time: "5:30 PM"))
+
+        XCTAssertEqual(
+            RideActivityStateMachine.action(phase: .idle, record: scheduled, vehicleName: "Blue Whale"),
+            .none
+        )
     }
 
     func testNoRideAtAllDoesNothing() {
@@ -265,17 +294,45 @@ final class RideActivityStateMachineTests: XCTestCase {
         XCTAssertEqual(state.status, .accepted)
     }
 
+    /// A DIFFERENT ride that cannot open a card of its own just ends the old one.
+    ///
+    /// **The fixture had to change with the v3 start point**: this used to be a
+    /// `pending` ride, which is now startable (Dispatch), so the case is reached with
+    /// a DORMANT reservation instead — still the only kind of open ride that may hold
+    /// no Activity.
     func testADIFFERENTRideThatIsNotStartableJustEndsTheOldOne() {
         let phase = RideActivityPhase.live(rideID: "ride-1", state: liveState(.enroute))
-        let newPending = makeRecord(id: "ride-2", status: .pending)
+        let dormant = makeRecord(
+            id: "ride-2",
+            status: .accepted,
+            schedule: RideSchedule(day: "Sat", time: "5:30 PM")
+        )
 
-        let action = RideActivityStateMachine.action(phase: phase, record: newPending, vehicleName: "Blue Whale")
+        let action = RideActivityStateMachine.action(phase: phase, record: dormant, vehicleName: "Blue Whale")
 
         guard case .end(let rideID, _, let dismissal) = action else {
             return XCTFail("expected .end, got \(action)")
         }
         XCTAssertEqual(rideID, "ride-1")
         XCTAssertEqual(dismissal, .immediate)
+    }
+
+    /// **A NEW INSTANT REQUEST NOW RESTARTS**, which is the other side of the same
+    /// change: a rider whose previous ride ended while the app was away and who has
+    /// already requested another gets the second ride's Dispatch card rather than
+    /// nothing at all.
+    func testADIFFERENTRideThatIsANewREQUESTRestarts() {
+        let phase = RideActivityPhase.live(rideID: "ride-1", state: liveState(.enroute))
+        let newRequest = makeRecord(id: "ride-2", status: .pending)
+
+        let action = RideActivityStateMachine.action(phase: phase, record: newRequest, vehicleName: "Blue Whale")
+
+        guard case .restart(let endingID, _, let rideID, let state) = action else {
+            return XCTFail("expected .restart, got \(action)")
+        }
+        XCTAssertEqual(endingID, "ride-1")
+        XCTAssertEqual(rideID, "ride-2")
+        XCTAssertEqual(state.status, .requested)
     }
 
     // MARK: - Status mapping

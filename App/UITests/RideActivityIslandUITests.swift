@@ -1,6 +1,6 @@
 import XCTest
 
-// MARK: - MYR-398 v2 — photographing a surface this app does not draw
+// MARK: - MYR-398 v3 — photographing a surface this app does not draw
 //
 // The redesigned Live Activity is rendered by the `MyRoboTaxiWidgets` process onto
 // the SYSTEM's own surfaces, so booting a screen and screenshotting the app
@@ -14,22 +14,32 @@ import XCTest
 // situation, and the same answer. This suite synthesizes that press and attaches
 // what comes back.
 //
-// v2 SWEEPS THE WHOLE TWELVE-ROW MATRIX rather than four frames, because the
-// redesign changed what every one of them renders and six had no capture route at
-// all before this round. The rows are `design/la/la-data.jsx`'s, in its order, so
-// the attachments can be read straight against the board.
+// v3 SWEEPS ALL FOURTEEN BOARD ROWS, because the redesign changed what every one of
+// them renders and two of them did not exist before this round. The rows are
+// `design/la/la-data.jsx`'s, in its order, so the attachments can be read straight
+// against the board.
 //
 // WHAT THIS SUITE DELIBERATELY DOES NOT CLAIM. The LOCK-SCREEN card still has no
 // route: `simctl` has no lock command, XCUITest cannot lock a device, and the
 // Simulator's own Device ▸ Lock is a menu a human clicks. That gap is stated in the
 // PR rather than papered over — a capture of the expanded island is not a capture
-// of the lock screen, and the two lay out differently (different tile size,
-// different chip placement, a ground we draw versus one the hardware owns).
+// of the lock screen, and the two lay out differently (a 20pt tile vs a 28pt one, a
+// ground we draw versus one the hardware owns, and the card's wordmark row, which
+// the island has no equivalent of at all).
 //
 // It is also NOT a pass/fail assertion about pixels. What it asserts is that an
 // Activity is genuinely RUNNING (so a green run cannot be a photograph of nothing)
 // and that the press was delivered; the frames are evidence for the PR, read by a
 // person.
+//
+// ⚠️ **WHAT v3 RETIRED FROM THIS SUITE.** v2's
+// `testTheLongestCompactWordsFitTheSlot` measured a status-word width ladder in the
+// compact trailing slot. **v3 has no status words there at all** — a figure
+// (`8 min` / `1 min` / `3:42 PM`), a glyph, or nothing — so the ladder, the ~91pt
+// ceiling it found, and the "Ride cancelled" truncation it caught are all moot. The
+// width question moved to the CARD's fixed 24pt headline row and its
+// `lineLimit(1)`, which `RideActivityGeometryTests` measures directly and
+// `testTheLongestStringsAreCaptured` photographs.
 final class RideActivityIslandUITests: XCTestCase {
 
     override func setUp() {
@@ -97,41 +107,55 @@ final class RideActivityIslandUITests: XCTestCase {
         app.terminate()
     }
 
-    /// la-data rows 1-6 — everything that is still happening.
+    /// la-data rows 1-6 — the PICKUP LEG, end to end.
     ///
-    /// The set is chosen so the island's two trailing vocabularies are both covered
-    /// and can be told apart at a glance: `accepted` / `enroute` carry the FIGURE
-    /// (15/600 tabular), and `requested` / `noProgress` / `arrived` / `enrouteNoETA`
-    /// carry the four status strings (14.5/500) from the client's own compact table
-    /// — Requested / On the way / Arrived / Arriving. v1 rendered the chip's long
-    /// word in that slot.
-    func testTheIslandRendersEveryLiveState() throws {
-        for state in ["requested", "accepted", "noProgress", "arrived", "enroute", "enrouteNoETA"] {
+    /// The set is chosen so every compact vocabulary is covered and can be told
+    /// apart at a glance: `accepted` / `arriving` carry the FIGURE (15/600 tabular),
+    /// `arrived` carries the WAVE glyph, and `dispatch` / `pickupNoETA` /
+    /// `noTelemetry` carry the MARK ALONE with nothing trailing it.
+    ///
+    /// The pair that matters most is `pickupNoETA` vs `noTelemetry`: identical cards
+    /// except the RAIL, which is live at 0.38 in one and idle at zero in the other.
+    /// That distinction is the whole of "no ETA and no telemetry are two different
+    /// states", and v2 could photograph neither of them.
+    func testTheIslandRendersTheWholePickupLeg() throws {
+        for state in ["dispatch", "accepted", "arriving", "pickupNoETA", "noTelemetry", "arrived"] {
             captureBothIslandStates(state)
         }
     }
 
-    /// la-data rows 8-12 — the endings.
+    /// la-data rows 7, 8 and 10-14 — the TRIP LEG and the endings.
     ///
-    /// All five collapse to `Done` / `Ended` / `Ride` on the island while keeping
-    /// five different chips on the card, which is the pair the frames are read for.
-    /// `expired` is the width case: "Reservation expired" is the widest chip in the
-    /// set and is what the brand row has to hold without reflowing.
-    func testTheIslandRendersEveryEnding() throws {
-        for state in ["completed", "declined", "cancelled", "expired", "unknown"] {
+    /// `enroute` is the row the field report was about: it must read `3:42 PM` on the
+    /// island and `3:42 PM dropoff` on the expanded card, and nothing anywhere may
+    /// say "Arriving". The four endings differ from each other in exactly two lines
+    /// of text and are otherwise identical — same footprint, same idle rail, same
+    /// mark-only island — which is what the four frames are read for.
+    func testTheIslandRendersTheTripLegAndEveryEnding() throws {
+        for state in ["enroute", "enrouteNoETA", "completed", "declined", "cancelled", "expired", "unknown"] {
             captureBothIslandStates(state)
         }
     }
 
-    /// la-data row 7 — staleness, which cannot be seeded and has to be WAITED FOR.
+    /// la-data row 9 — staleness, which cannot be seeded and has to be WAITED FOR.
     ///
     /// ActivityKit offers no way to force `isStale`, and a stale-date already in the
     /// past at `request` time is ignored or clamped (established by capture in
     /// MYR-172, not by reading), so the scene hands it a date ~8s out and this test
-    /// waits for the deadline to pass. Both sides are photographed from ONE
-    /// Activity, which is what makes the pair a before/after of exactly staleness:
-    /// the fresh frame carries the confident figure, and the stale one should keep
-    /// that figure at 45% while the chip becomes "Not updating".
+    /// waits for the deadline to pass. Both sides are photographed from ONE Activity,
+    /// which is what makes the pair a before/after of exactly staleness.
+    ///
+    /// **WHAT SHOULD AND SHOULD NOT CHANGE ACROSS IT, IN v3**: the compact island
+    /// should be BYTE-IDENTICAL (the figure is kept, at full strength — v2 dimmed it
+    /// to 45%), and the expanded card should change in exactly two rows — the
+    /// headline drops its clock for "Dropoff soon" and the subline becomes
+    /// "Waiting for an update". The rail must be unchanged and still GOLD.
+    ///
+    /// ⚠️ **AND IT MAY WELL SHOW NOTHING**, which is v2's own honest finding carried
+    /// forward: the Activity genuinely goes stale (visible in `log show --predicate
+    /// 'subsystem == "com.apple.activitykit"'`) but the island is not re-rendered
+    /// when the deadline passes, so `context.isStale` never reaches a render. The
+    /// frames are attached either way and the PR says which happened.
     func testTheStaleFrameIsPhotographedFromBothSidesOfItsDeadline() throws {
         let app = startActivity(state: "stale")
 
@@ -158,36 +182,24 @@ final class RideActivityIslandUITests: XCTestCase {
         app.terminate()
     }
 
-    /// **DO THE TWO LONGEST COMPACT STRINGS FIT?**
+    /// **THE LONGEST STRINGS, PHOTOGRAPHED ON THE SURFACE THAT HAS TO HOLD THEM.**
     ///
-    /// The board's rule was "one word, never truncates" — and the first half was
-    /// how the second half was guaranteed. The client's 2026-07-31 compact table
-    /// breaks it repeatedly: **"Dropped off"** (11), **"Ride ended"** (10), **"On
-    /// the way"** (10) and **"Requested"** (9). So the guarantee has to come from a
-    /// measurement instead — a character count cannot answer whether a string fits a
-    /// system-sized region at 14.5/500 beside a 16pt arrow, and the compact pill's
-    /// own width grows only until the leading region's budget runs out.
+    /// v3's card is a FIXED 350 × 128 with four FIXED rows and `lineLimit(1)`
+    /// everywhere, so the failure mode is no longer a truncated island word — it is a
+    /// headline or a subline that wraps and pushes the rail out of a card that cannot
+    /// grow. `RideActivityGeometryTests` measures both rows against the widest
+    /// strings through UIKit's text engine; this is the picture of the two worst
+    /// cases actually rendering.
     ///
-    /// ⚠️ **THIS TEST ALREADY EARNED ITS KEEP.** The client's directed phrase for
-    /// the three unhappy endings was **"Ride cancelled"** (14), and the first run of
-    /// this method photographed it rendering as **"Ride cancell…"** with the pill
-    /// grown wide enough to evict the status bar's wifi and battery glyphs. Measured
-    /// in that capture: 91.3pt of text where the slot's ceiling is ~91pt. The
-    /// shipped phrase is the widest passing alternative — see
-    /// `RideActivityCopy.compactWord` for the full ladder and the reasoning.
+    ///   • `expired` — **"Reservation expired"**, the longest headline in the set.
+    ///   • `enroute` — the trip subline over the scene's destination, plus the
+    ///     `3:42 PM dropoff` headline, which is the widest of the two figure forms.
     ///
-    /// All four are captured. A truncation shows as an ellipsis in the trailing
-    /// slot, and the finding goes in the PR **with the capture and the widest
-    /// passing alternative** rather than the copy being quietly shortened.
-    func testTheLongestCompactWordsFitTheSlot() throws {
-        // cancelled → "Ride ended"  · completed → "Dropped off"
-        // noProgress → "On the way" · requested → "Requested"
-        for state in ["cancelled", "completed", "noProgress", "requested"] {
-            let app = startActivity(state: state)
-            XCUIDevice.shared.press(.home)
-            Thread.sleep(forTimeInterval: 3)
-            attach(XCUIScreen.main.screenshot(), named: "island-compact-width-\(state)")
-            app.terminate()
+    /// Read the frames for an ellipsis in the headline row (there must not be one)
+    /// and for a rail that is still on the card.
+    func testTheLongestStringsAreCaptured() throws {
+        for state in ["expired", "enroute"] {
+            captureBothIslandStates(state)
         }
     }
 
@@ -203,12 +215,10 @@ final class RideActivityIslandUITests: XCTestCase {
     /// screenshots advances a minute — which is what makes the pair evidence rather
     /// than a still.
     ///
-    /// It is also the regression guard for the mechanism: this test FAILED to hold
-    /// still on the first implementation of this branch, which followed the
-    /// handoff's SwiftUI note 1 and put a 1s `TimelineView(.periodic)` in the
-    /// headline. (In the event it held still there too — ActivityKit does not tick a
-    /// periodic timeline between content updates — so the ruling and the platform
-    /// agree, and this build now has no clock in the widget process at all.)
+    /// It is also the regression guard for the mechanism, and it carried over from v2
+    /// unchanged because the ruling did: this build has no clock in the widget
+    /// process at all, and v2 measured that ActivityKit would not have ticked one
+    /// anyway.
     func testTheCountdownFigureHOLDSBetweenPushes() throws {
         let app = startActivity(state: "accepted")
 
