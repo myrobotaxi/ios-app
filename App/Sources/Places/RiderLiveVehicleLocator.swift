@@ -152,6 +152,39 @@ final class RiderLiveVehicleLocator {
     func start() {
         started = true
         telemetrySource?.start()
+        loadFleet()
+    }
+
+    /// MYR-402 — RE-READ `GET /api/vehicles`.
+    ///
+    /// **THE LIST WAS A ONE-SHOT, AND ONE OF ITS FIELDS IS A GATE.** Until this
+    /// issue the only caller of the list load was `start()`, i.e. the rider map
+    /// mounting, and `handleForeground` below refreshed the SOCKET's snapshot and
+    /// nothing else. So `fleetMembers` — and with it `VehicleSummary.hasActiveRide`,
+    /// which `LiveFleetMemberMapping.unavailability` turns into MYR-233's `.busy` —
+    /// was fixed for the life of the process, and a **cold launch was the only thing
+    /// in the app that could correct it.** That is exactly the client's "the app
+    /// should not have to be forced closed" signature (MYR-402).
+    ///
+    /// It is worse than a stale read, because the staleness is MASKED while the ride
+    /// runs and only surfaces when it ends: MYR-233's own-ride exception clears
+    /// `.busy` for the rider holding the ride, so the gate opens the moment the ride
+    /// is erased and the stale row underneath it becomes load-bearing. The rider's
+    /// idle sheet therefore got MORE restrictive after their ride ended than during
+    /// it — no ETA line, and MYR-352's "no rides right now" banner over a free car.
+    ///
+    /// Cheap and safe to call often: it coalesces onto any load already in flight,
+    /// makes no request while the map is off screen, and a failed read changes
+    /// nothing (MYR-326's rule — a list that did not answer is not evidence about a
+    /// car).
+    func refreshFleet() {
+        guard started else { return }
+        loadFleet()
+    }
+
+    /// The one list read. Coalesced on `loadTask` so the mount, the foreground and a
+    /// ride ending in the same second cost one request rather than three.
+    private func loadFleet() {
         guard loadTask == nil else { return }
         let rest = self.rest
         loadTask = Task { [weak self] in
@@ -201,6 +234,12 @@ final class RiderLiveVehicleLocator {
 
     func handleForeground() {
         guard started else { return }
+        // MYR-402 — the LIST too, not only the socket. A ride can end while the app
+        // is suspended (the client's case: cancelled server-side), and then the WS
+        // frame that would have erased it never reaches this process. The snapshot
+        // refetch below re-reads where the car IS; this re-reads whether it can take
+        // a request, which is the other half and the half that was missing.
+        refreshFleet()
         let socket = self.socket
         let vehicleID = watchedVehicleID
         Task {

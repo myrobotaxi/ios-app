@@ -1772,17 +1772,20 @@ struct SharedViewerScreen: View {
     /// state. A ride is "owned and open" while a record exists in a non-terminal
     /// status; `declined`/`completed` are terminal, so the exception lifts and a
     /// genuinely busy car reads Busy again on the next list fetch.
+    ///
+    /// MYR-402 — the sentence above ("a genuinely busy car reads Busy again on the
+    /// next list fetch") was written as if a next list fetch existed. It did not:
+    /// `RiderLiveVehicleLocator` read `GET /api/vehicles` once per mount and nothing
+    /// re-read it, so what came back on the far side of a ride was the row from
+    /// BEFORE the ride — `hasActiveRide: true`, now unmasked by the lifted
+    /// exception. The rider's own finished ride was reported to them as the car
+    /// being busy, until a force-quit. `setRiderOwnsActiveRide` performs the re-read
+    /// on the lifting edge, and it is `private(set)`'s only door, so this cannot be
+    /// half-wired.
     private func syncRiderOwnsActiveRide() {
-        guard let status = rideRequestService.activeRequest?.status else {
-            viewerState.riderOwnsActiveRide = false
-            return
-        }
-        switch status {
-        case .pending, .accepted, .arrived, .enroute:
-            viewerState.riderOwnsActiveRide = true
-        case .completed, .declined:
-            viewerState.riderOwnsActiveRide = false
-        }
+        viewerState.setRiderOwnsActiveRide(
+            RiderOwnRideException.holdsOpenRide(status: rideRequestService.activeRequest?.status)
+        )
     }
 
     /// The actor named in the declined card. MYR-220 deliverable 2: in LIVE mode

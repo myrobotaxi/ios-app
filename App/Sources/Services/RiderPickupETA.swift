@@ -108,6 +108,37 @@ struct StableFixAnchor {
     }
 }
 
+// MARK: - RiderIdleGate (MYR-402 — WHICH gate is holding the line back)
+
+/// MYR-341's honesty gates, named.
+///
+/// The gates themselves are unchanged; what did not exist was any way to ask
+/// which one is closed. MYR-402 is a defect about a gate that STAYS closed after
+/// the reason for closing it is gone, and "the placeholder is still `["Where
+/// to?"]`" is the same observation for all three — so a test written against the
+/// items array can prove that recovery failed without being able to say what
+/// failed to recover, and a test that names the wrong gate passes anyway.
+///
+/// `RiderIdlePlaceholder.items` is DERIVED from this, so the two cannot drift.
+///
+/// The order is the guard order in `suppressingGate`, and it is the reporting
+/// precedence too: with a ride in flight nothing else is worth naming.
+enum RiderIdleGate: String, CaseIterable, Sendable {
+    /// The prototype's `reqActive` (screens.jsx:1964) — a request is in flight.
+    /// Its input is the rider's active slot (`RideRequestService.activeRequest`).
+    case requestInFlight
+    /// MYR-233's `FleetUnavailability` — the car cannot take an instant request.
+    /// Its input is the `GET /api/vehicles` list row (`hasActiveRide`, `status`,
+    /// `rideShareEnabled`), folded by `LiveFleetMemberMapping.unavailability`.
+    case carAvailability
+    /// No estimate at all: no device fix, or no vehicle coordinate, or both. The
+    /// two endpoints collapse into one `Int?` by construction — `RiderPickupETA
+    /// .minutes` returns `nil` for either — so they are one gate here and are
+    /// told apart by the ANCHORS (`idleRiderAnchor` / `pickupETAVehicleAnchor`),
+    /// which is where a test that needs the difference looks.
+    case pickupEstimate
+}
+
 // MARK: - RiderIdlePlaceholder (MYR-341 — the gating matrix)
 
 /// The rider idle sheet's rotating placeholder items, and the ONE place the
@@ -149,12 +180,33 @@ enum RiderIdlePlaceholder {
         unavailability: FleetUnavailability?,
         hasActiveRequest: Bool
     ) -> [String] {
-        guard !hasActiveRequest,
-              unavailability == nil,
-              let minutes = pickupETAMinutes,
-              minutes > 0
-        else { return [destinationPrompt] }
+        guard suppressingGate(
+            pickupETAMinutes: pickupETAMinutes,
+            unavailability: unavailability,
+            hasActiveRequest: hasActiveRequest
+        ) == nil, let minutes = pickupETAMinutes else { return [destinationPrompt] }
         return [destinationPrompt, etaLine(minutes: minutes)]
+    }
+
+    /// MYR-402 — the gate that is holding the line back, or `nil` when the ETA may
+    /// be spoken. `items` is derived from this, so a caller and a test can never be
+    /// looking at two different matrices.
+    ///
+    /// **EVERY INPUT HERE IS OBSERVED STATE THAT MUST RE-PUBLISH WHEN A RIDE ENDS**
+    /// (MYR-402's invariant). That is not a property of this function — it is pure —
+    /// but of the three things fed into it, and it is the property MYR-402 restored:
+    /// `hasActiveRequest` was releasable only by a WS frame, and `unavailability`
+    /// came from a `GET /api/vehicles` list fetched exactly once per launch. See
+    /// `SharedViewerState.refreshRideEndGateInputs()`.
+    static func suppressingGate(
+        pickupETAMinutes: Int?,
+        unavailability: FleetUnavailability?,
+        hasActiveRequest: Bool
+    ) -> RiderIdleGate? {
+        if hasActiveRequest { return .requestInFlight }
+        if unavailability != nil { return .carAvailability }
+        guard let minutes = pickupETAMinutes, minutes > 0 else { return .pickupEstimate }
+        return nil
     }
 
     /// screens.jsx:15-19 `FLEET[0].etaMin` — the SIMULATED path's fixture ETA.
