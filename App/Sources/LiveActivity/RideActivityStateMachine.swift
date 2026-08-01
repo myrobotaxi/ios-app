@@ -342,18 +342,40 @@ enum RideActivityStateMachine {
         guard RideReservation.isLiveRide(record, now: now) else { return nil }
 
         switch record.status {
+        case .pending:
+            // ⚠️ **THE ACTIVITY NOW STARTS AT REQUEST — MYR-398 v3, CLIENT-DIRECTED,
+            // AND IT REVERSES MYR-172's "start at ACCEPTED".**
+            //
+            // That rule said "a pending request is the app's job": nothing to count
+            // down, no car assigned, and the app's own pending pill is the right
+            // surface. The v3 board answers it with a STATE rather than with an
+            // argument — **Dispatch**, "Finding your ride" / "Matching you with a
+            // ride", an idle rail and the mark alone on the island. It is Uber's
+            // first phase, and the whole point of it is that the wait for a car is
+            // the part of the ride a rider is most likely to be staring at a locked
+            // phone through.
+            //
+            // Nothing else about the card changes to accommodate it, which is the
+            // reason it is cheap: the footprint is fixed in every state, the rail's
+            // idle variant already existed for no-telemetry, and no ETA is a word
+            // rather than a gap. It also needs no server work — §7.21 registers a
+            // token for any NON-TERMINAL ride, `requested` included.
+            //
+            // **A SCHEDULED RIDE STILL STARTS NOTHING**, and that falls out of the
+            // dormancy guard above rather than out of this switch: a `pending`
+            // reservation is dormant by `RideReservation.isDormant`'s first arm, at
+            // every moment before it is dispatched, so it never reaches here. Only an
+            // INSTANT request does — which is exactly the client's "instant rides
+            // start at request", enforced by the predicate both pipelines already
+            // share rather than by a second reading of `scheduledFor`.
+            return contentState(for: record, vehicleName: vehicleName, previous: nil)
+
         case .accepted, .arrived, .enroute:
             // `arrived`/`enroute` start too, not just `accepted`. The app adopts a
             // rider's already-open ride on cold launch (MYR-230), so a rider who
             // force-quit mid-ride and reopened the app would otherwise get no
             // Activity for the rest of the trip.
             return contentState(for: record, vehicleName: vehicleName, previous: nil)
-
-        case .pending:
-            // "start at ACCEPTED — a pending request is the app's job" (MYR-172). A
-            // request nobody has answered has nothing to count down and no car
-            // assigned; the app's own pending pill is the right surface for it.
-            return nil
 
         case .completed, .declined:
             // Already over. Starting an Activity in order to immediately end it

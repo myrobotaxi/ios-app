@@ -19,7 +19,8 @@ enum RideActivityComposition {
     static func makeCoordinator(
         mode: AppMode,
         sessionTokenProvider: SessionTokenProvider? = nil,
-        vehicleName: @escaping @MainActor () -> String = { "" }
+        vehicleName: @escaping @MainActor () -> String = { "" },
+        vehicle: @escaping @MainActor () -> RideActivityVehicle? = { nil }
     ) -> RideActivityCoordinator {
         guard let config = TelemetryComposition.liveFleetConfig(
             mode: mode,
@@ -29,7 +30,8 @@ enum RideActivityComposition {
                 presenter: SystemRideActivityPresenter(),
                 endpoint: nil,
                 isLive: false,
-                vehicleName: vehicleName
+                vehicleName: vehicleName,
+                vehicle: vehicle
             )
         }
         let client = RestClient(environment: config.environment, tokenProvider: config.tokenProvider)
@@ -37,7 +39,8 @@ enum RideActivityComposition {
             presenter: SystemRideActivityPresenter(),
             endpoint: client,
             isLive: true,
-            vehicleName: vehicleName
+            vehicleName: vehicleName,
+            vehicle: vehicle
         )
     }
 }

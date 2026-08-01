@@ -36,13 +36,13 @@ struct RideLiveActivityWidget: Widget {
             } compactTrailing: {
                 RideActivityIslandTrailing(card: card)
             } minimal: {
-                // MYR-398 v2 — THE MINIMAL STATE IS THE EAST-BANKED ARROW.
+                // MYR-398 — THE MINIMAL STATE IS THE EAST-BANKED ARROW.
                 //
                 // MYR-172 put a bare gold dot here (phone-frame.jsx:29-33); v1 made
-                // it the mark at its own -22° bank; v2 banks it due east like every
-                // other instance of it on these four surfaces. One glyph, one
-                // orientation, four surfaces — an arrow that pointed north here and
-                // east on the rail would read as two different marks.
+                // it the mark at its own -22° bank; v2 banked it due east like every
+                // other instance of it on these four surfaces, and v3 keeps that. One
+                // glyph, one orientation, four surfaces — an arrow that pointed north
+                // here and east on the rail would read as two different marks.
                 RideActivityIslandMinimal(card: card)
             }
             // Tapping any region opens the app, which routes to the rider's own
@@ -63,14 +63,15 @@ struct RideLiveActivityWidget: Widget {
     /// (`RideActivityCardTests`), which is the only way any of it is assertable at
     /// all: an `ActivityViewContext` cannot be constructed in a test.
     ///
-    /// The PICKUP LABEL comes off the static attributes, never off `context.state`.
-    /// §7.21.3 deliberately does not push it — a pickup cannot change for the life
-    /// of a ride and the app already holds it — so a widget that looked for it on
-    /// the wire would render no meet-at line, forever, against a correct server.
+    /// The VEHICLE comes off the static attributes, never off `context.state`
+    /// (MYR-398 v3). A ride's car is fixed at accept time, so pushing five
+    /// identification strings ~40 times a ride would tell the phone facts it read off
+    /// `GET /api/vehicles` before this Activity started — and the content-state
+    /// schema, its raw-key cross-pin and the server all stay untouched.
     private func card(_ context: ActivityViewContext<RideActivityAttributes>) -> RideActivityCard {
         RideActivityCard.resolve(
             state: context.state,
-            pickupLabel: context.attributes.pickupLabel,
+            vehicle: context.attributes.vehicle,
             isStale: context.isStale
         )
     }

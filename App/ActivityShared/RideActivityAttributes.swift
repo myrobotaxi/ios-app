@@ -26,13 +26,23 @@ import MyRobotaxiContracts
 /// way for a push to correct it. So the bar for a static field is that the fact
 /// genuinely CANNOT change for the life of the Activity.
 ///
-/// Two fields clear it. The ride id is what the Activity IS. The PICKUP LABEL is
-/// the MYR-398 addition and is the contract's own instruction rather than a client
-/// convenience (rest-api.md §7.21.3, "Why the 'Meet at {pickup}' line is NOT on the
-/// wire"): a ride's pickup is fixed at creation, §7.8 has no endpoint that edits it
-/// and MYR-192's reschedule negotiates the TIME, so the server deliberately does
-/// not push it. Pushing it would put a second P1 place label through APNs ~40 times
-/// a ride to tell the phone a string it typed in itself.
+/// Two fields clear it. The ride id is what the Activity IS. The VEHICLE is the
+/// MYR-398 v3 addition (`RideActivityVehicle`) and clears it for the same kind of
+/// reason: §7.8 has no endpoint that re-assigns a ride's car, and a ride whose car
+/// changed would be a different ride. Pushing five identification strings through
+/// APNs ~40 times a ride to tell the phone facts it read off `GET /api/vehicles`
+/// before the Activity started would be the same waste §7.21.3 already refuses for
+/// the pickup label.
+///
+/// ⚠️ **`pickupLabel` IS GONE IN v3.** v2's second line was the pickup PLACE
+/// ("Meet at Sansome & Clay"), which names where the rider is already standing; the
+/// v3 board's leg-one subline is the CAR (`7SRJ294 · Silver Model Y`), which is what
+/// somebody at a kerb is actually looking for. Nothing renders the label any more,
+/// and a stored attribute nothing reads is the MYR-369 shape — a field that looks
+/// wired and is not. Removing it is safe in the one direction that matters: an
+/// Activity started by the v2 build carries an extra key, and a synthesized Swift
+/// decoder IGNORES unknown keys. (Adding a NON-OPTIONAL one is what would break that
+/// decode, which is why `vehicle` below is optional.)
 struct RideActivityAttributes: ActivityAttributes {
     /// The SERVER's ride-request id (`RideRequest.id`), which is also
     /// `RideRequestRecord.id` on the live path. It is the path component of
@@ -40,17 +50,16 @@ struct RideActivityAttributes: ActivityAttributes {
     /// could not name its server ride could never be registered for pushes.
     var rideID: String
 
-    /// The rider's own label for where the car is collecting them, e.g. "Ferry
-    /// Building" — what the leg-1 card renders as "Meet at {pickup}".
+    /// The car, as the pickup leg's subline identifies it — plate, colour, model,
+    /// year, trim (MYR-398 v3, MYR-279/286/320).
     ///
     /// OPTIONAL, for two independent reasons. (1) An Activity started by a build
     /// that predates this field is DECODED by the system after an app update, and a
     /// non-optional addition would fail that decode and take a live ride's card off
-    /// the lock screen on upgrade day. (2) A ride created from the rider's current
-    /// position may carry no label worth showing, and `RideActivityCard` renders no
-    /// meet-at line at all rather than "Meet at " — the same rule the empty
-    /// `vehicleName` gets.
-    var pickupLabel: String?
+    /// the lock screen on upgrade day. (2) A ride whose vehicle the app has not
+    /// resolved yet is a real state, and `RideActivityVehicleDescriptor` answers it
+    /// with "Your Tesla" rather than with a blank line.
+    var vehicle: RideActivityVehicle?
 
     /// The mutable half — the exact shape the server sends as `aps.content-state`
     /// on an ActivityKit remote update.
@@ -159,13 +168,37 @@ struct RideActivityAttributes: ActivityAttributes {
         /// pair, and a client that tries to reconcile them hides the true one.
         var progress: Double?
 
+        /// When the SERVER last learned something about this ride, as an ABSOLUTE
+        /// unix timestamp in SECONDS (MYR-398 v3, contracts 0.28.0).
+        ///
+        /// The source for the board's stale subline, `Last updated 3:31 PM` — and it
+        /// had to be its own key rather than being derived, because it is the MIRROR
+        /// IMAGE of `eta`. That one is a FUTURE instant chosen BEFORE the update that
+        /// carried it, so dating a freshness notice from it OVERSTATES freshness on
+        /// the one card whose entire job is to admit it has none (v1 shipped exactly
+        /// that, rendering "in 4 minutes ago"). Nothing else the widget process holds
+        /// is an update instant: `ActivityViewContext` exposes no `staleDate`,
+        /// checked against the SDK interface on iOS 26.5.
+        ///
+        /// OMITTED ENTIRELY by a server that does not track it — **absent means
+        /// "this server does not say", never "just now"**. `RideActivityCard` renders
+        /// the wordless `Waiting for an update` in that case rather than inventing an
+        /// instant, which is what keeps an older server graceful.
+        ///
+        /// It carries the same silent-mis-key trap `eta` and `progress` do: optional
+        /// on the wire AND optional here, so a MISSPELLED key decodes to `nil` with
+        /// no throw and no log, and simply renders the fallback for ever. The name
+        /// here IS the wire key. Cross-pinned by `RideActivityContentStateTests`.
+        var asOf: Int?
+
         init(
             v: Int = RideActivityContentVersion.current,
             status: LiveActivityRideStatus,
             eta: Int? = nil,
             vehicleName: String,
             destination: String,
-            progress: Double? = nil
+            progress: Double? = nil,
+            asOf: Int? = nil
         ) {
             self.v = v
             self.status = status
@@ -173,6 +206,7 @@ struct RideActivityAttributes: ActivityAttributes {
             self.vehicleName = vehicleName
             self.destination = destination
             self.progress = progress
+            self.asOf = asOf
         }
     }
 }
@@ -193,6 +227,22 @@ extension RideActivityAttributes.ContentState {
     /// of one is made visible.
     var etaDate: Date? {
         eta.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+    }
+
+    /// When the server last had something to say — the instant the stale subline
+    /// dates itself from (`Last updated 3:31 PM`).
+    ///
+    /// ⚠️ **`nil` MEANS "THIS SERVER DOES NOT SAY", NEVER "JUST NOW".** contracts
+    /// 0.28.0 added the field and an older server omits it entirely, so the fallback
+    /// arm is a live path rather than dead code: `RideActivityCard.subline` renders
+    /// `Waiting for an update`, which says the true thing without a number nobody
+    /// can source.
+    ///
+    /// Same seconds-not-milliseconds unit as `etaDate`, and named for the same
+    /// reason: every other timestamp this app reads off a wire is an ISO-8601
+    /// string, so a reader arriving here is primed to expect a parse.
+    var asOfDate: Date? {
+        asOf.map { Date(timeIntervalSince1970: TimeInterval($0)) }
     }
 
     /// True when the ride has reached a state that will never be pushed to again.

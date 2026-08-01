@@ -530,7 +530,8 @@ final class RideActivityCoordinatorTests: XCTestCase {
     // MARK: - Harness
 
     private func makeCoordinator(
-        sandbox: Bool = true
+        sandbox: Bool = true,
+        vehicle: @escaping @MainActor () -> RideActivityVehicle? = { nil }
     ) -> (RideActivityCoordinator, StubRideActivityPresenter, SpyRideActivityEndpoint) {
         let presenter = StubRideActivityPresenter()
         let endpoint = SpyRideActivityEndpoint()
@@ -540,6 +541,7 @@ final class RideActivityCoordinatorTests: XCTestCase {
             isLive: true,
             sandbox: sandbox,
             vehicleName: { "Blue Whale" },
+            vehicle: vehicle,
             // MYR-405 — the restore budget is real seconds in production and zero
             // here. The POLL still runs, read for read; only the waiting is skipped,
             // so `restoreReads` remains a true count of how hard the coordinator
@@ -547,6 +549,93 @@ final class RideActivityCoordinatorTests: XCTestCase {
             sleep: { _ in }
         )
         return (coordinator, presenter, endpoint)
+    }
+
+    // MARK: - MYR-398 v3: the new start point and the static vehicle
+
+    /// **THE ACTIVITY STARTS AT REQUEST**, through the whole coordinator rather than
+    /// only through the pure decision — because the start path is where MYR-405 put
+    /// the restore budget, the adoption and the reap, and every one of those now runs
+    /// one status earlier than it used to.
+    func testAnInstantRequestStartsAnActivityThroughTheRealStartPath() async throws {
+        let (coordinator, presenter, _) = makeCoordinator()
+
+        await coordinator.handleRideChange(makeRecord(status: .pending))
+        await settle()
+
+        XCTAssertEqual(presenter.startCount, 1)
+        XCTAssertEqual(coordinator.phase.rideID, "ride-1")
+        XCTAssertEqual(coordinator.phase.state?.status, .requested)
+    }
+
+    /// **AND MYR-405's SEMANTICS ARE UNCHANGED AT THE NEW START POINT.** The reap of
+    /// a prior orphan, the adoption of a card for this same ride, and the refusal to
+    /// resurrect a dismissal all have to hold one status earlier — that is the whole
+    /// risk of moving a start point into a state machine somebody else's issue owns.
+    func testTheNewStartPointStillADOPTSTheSameRidesRestoredCard() async throws {
+        let (coordinator, presenter, _) = makeCoordinator()
+        presenter.restored = [snapshot("ride-1")]
+
+        await coordinator.handleRideChange(makeRecord(status: .pending))
+        await settle()
+
+        XCTAssertEqual(presenter.adopted, ["ride-1"])
+        XCTAssertEqual(presenter.startCount, 0, "adopt, never duplicate — at requested too")
+    }
+
+    func testTheNewStartPointStillREAPSAPriorOrphan() async throws {
+        let (coordinator, presenter, _) = makeCoordinator()
+        presenter.restored = [snapshot("ride-0")]
+
+        await coordinator.handleRideChange(makeRecord(status: .pending))
+        await settle()
+
+        XCTAssertEqual(presenter.endedActivities.map(\.rideID), ["ride-0"])
+        XCTAssertEqual(presenter.startCount, 1)
+    }
+
+    func testTheNewStartPointStillHonoursADismissal() async throws {
+        let (coordinator, presenter, _) = makeCoordinator()
+        presenter.restored = [snapshot("ride-1", .dismissed)]
+
+        await coordinator.handleRideChange(makeRecord(status: .pending))
+        await settle()
+
+        XCTAssertEqual(presenter.startCount, 0, "the rider swiped this ride away")
+        XCTAssertEqual(coordinator.phase, .idle)
+    }
+
+    /// **THE CAR TRAVELS AS A STATIC ATTRIBUTE**, read once at `Activity.request`.
+    ///
+    /// This is what keeps the feature off the wire entirely: no content-state field,
+    /// no schema bump, no server work. A test that only checked the card's subline
+    /// would pass with the attribute never plumbed.
+    func testTheStaticVehicleReachesActivityRequest() async throws {
+        let vehicle = RideActivityVehicle(
+            plate: "7SRJ294", color: "Silver", model: "Model Y", year: 2026
+        )
+        let (coordinator, presenter, _) = makeCoordinator(vehicle: { vehicle })
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        await settle()
+
+        XCTAssertEqual(presenter.startedAttributes.first?.vehicle, vehicle)
+        XCTAssertEqual(
+            RideActivityVehicleDescriptor.compose(presenter.startedAttributes.first?.vehicle),
+            "7SRJ294 · Silver 2026 Model Y"
+        )
+    }
+
+    /// A ride whose vehicle the app has not resolved yet starts anyway, with no
+    /// attribute — and the card says "Your Tesla" rather than nothing.
+    func testAnUnresolvedVehicleStillStartsTheActivity() async throws {
+        let (coordinator, presenter, _) = makeCoordinator()
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        await settle()
+
+        XCTAssertEqual(presenter.startCount, 1)
+        XCTAssertNil(presenter.startedAttributes.first?.vehicle)
     }
 
     /// The account as the app can state it, for the launch/foreground entry point.
@@ -611,6 +700,9 @@ final class StubRideActivityPresenter: RideActivityPresenting {
     var allowsStart = true
 
     private(set) var startCount = 0
+    /// MYR-398 v3 — the STATIC attributes each start was given, so a test can assert
+    /// the vehicle reached `Activity.request` rather than only that a card appeared.
+    private(set) var startedAttributes: [RideActivityAttributes] = []
     private(set) var updates: [RideActivityAttributes.ContentState] = []
     private(set) var endedWith: (state: RideActivityAttributes.ContentState, dismissal: RideActivityDismissal)?
     private(set) var isPresenting = false
@@ -684,6 +776,7 @@ final class StubRideActivityPresenter: RideActivityPresenting {
         // and records it, letting a test catch the duplicate instead of having the
         // fake quietly prevent what production does not.
         startCount += 1
+        startedAttributes.append(attributes)
         isPresenting = true
         endedWith = nil
         heldRideID = attributes.rideID

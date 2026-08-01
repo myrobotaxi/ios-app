@@ -366,12 +366,6 @@ struct RootView: View {
             mode: mode,
             sessionTokenProvider: auth.sessionTokenProvider
         ))
-        // MYR-172 — the rider's Live Activity, bound to the same session. Inert in
-        // simulated mode, exactly like the push coordinator above.
-        _rideActivityCoordinator = State(initialValue: RideActivityComposition.makeCoordinator(
-            mode: mode,
-            sessionTokenProvider: auth.sessionTokenProvider
-        ))
         // MYR-349 — the account's notification preferences (§7.19), bound to the
         // same session. Simulated off the live path, so no DEBUG scene reaches the
         // network and the Settings captures are unchanged.
@@ -402,6 +396,20 @@ struct RootView: View {
             seams: seams,
             recentDestinationsStore: Self.recentDestinationsStore()
         )
+        // MYR-172 — the rider's Live Activity, bound to the same session. Inert in
+        // simulated mode, exactly like the push coordinator above.
+        //
+        // Composed AFTER `viewer` (MYR-398 v3) because the Activity's static vehicle
+        // attribute is read off the rider's own already-loaded fleet — the same list
+        // `liveFleetMember` reads, through the one seam that gates it on
+        // `isLiveLocation`. A closure and not a snapshot: the list lands
+        // asynchronously, so a value captured here would be `nil` for the session,
+        // and it is read once per `Activity.request` rather than per frame.
+        _rideActivityCoordinator = State(initialValue: RideActivityComposition.makeCoordinator(
+            mode: mode,
+            sessionTokenProvider: auth.sessionTokenProvider,
+            vehicle: { [weak viewer] in viewer?.liveActivityVehicle }
+        ))
         // MYR-214 — the Drive Summary place labeler drops the fixture saved
         // places in live mode (see the `placeLabeler` property comment): a live
         // endpoint near the SF fixture coords must not be labeled "Home".

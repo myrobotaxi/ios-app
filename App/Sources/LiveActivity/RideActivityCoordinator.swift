@@ -26,6 +26,16 @@ final class RideActivityCoordinator {
     /// authoritative — see `RideActivityStateMachine.contentState`.
     private let vehicleName: @MainActor () -> String
 
+    /// Resolves the car's IDENTIFICATION — plate, colour, model, year, trim — for
+    /// the pickup leg's subline (MYR-398 v3).
+    ///
+    /// Read ONCE, at `Activity.request`, because it is a STATIC attribute: a ride's
+    /// vehicle is fixed at accept time and the server pushes nothing about it. That
+    /// is also its one accepted cost — a plate the owner edits mid-ride reaches the
+    /// rider's `GET /api/vehicles` but not an Activity already up (MYR-286: there is
+    /// no WS delta for the plate either).
+    private let vehicle: @MainActor () -> RideActivityVehicle?
+
     private(set) var phase: RideActivityPhase = .idle
 
     /// The token last successfully registered, and the ride it was registered
@@ -58,6 +68,7 @@ final class RideActivityCoordinator {
         isLive: Bool,
         sandbox: Bool = PushEnvironment.isSandbox,
         vehicleName: @escaping @MainActor () -> String = { "" },
+        vehicle: @escaping @MainActor () -> RideActivityVehicle? = { nil },
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
         self.presenter = presenter
@@ -65,6 +76,7 @@ final class RideActivityCoordinator {
         self.isLive = isLive
         self.sandbox = sandbox
         self.vehicleName = vehicleName
+        self.vehicle = vehicle
         self.sleep = sleep
     }
 
@@ -93,12 +105,7 @@ final class RideActivityCoordinator {
             return
 
         case .start(let rideID, let state):
-            await performStart(
-                rideID: rideID,
-                state: state,
-                pickupLabel: pickupLabel(of: record),
-                record: record
-            )
+            await performStart(rideID: rideID, state: state, record: record)
 
         case .update(let rideID, let state):
             await presenter.update(state: state, staleDate: RideActivityStaleness.date())
@@ -109,28 +116,8 @@ final class RideActivityCoordinator {
 
         case .restart(let endingRideID, let endingState, let rideID, let state):
             await performEnd(rideID: endingRideID, state: endingState, dismissal: .immediate)
-            await performStart(
-                rideID: rideID,
-                state: state,
-                pickupLabel: pickupLabel(of: record),
-                record: record
-            )
+            await performStart(rideID: rideID, state: state, record: record)
         }
-    }
-
-    /// The rider's own label for where the car is collecting them — the MYR-398
-    /// "Meet at {pickup}" line, read off the ride record the Activity is being
-    /// started FROM.
-    ///
-    /// It is a STATIC attribute rather than a pushed field on the contract's own
-    /// instruction (§7.21.3): a pickup cannot change for the life of a ride, so
-    /// pushing it would repeat a P1 place label ~40 times a ride to tell the phone
-    /// a string it typed in itself. This accessor is the one place the app answers
-    /// it, and it answers `nil` — never `""` — when there is nothing to name, so
-    /// the card renders no meet-at line rather than "Meet at ".
-    private func pickupLabel(of record: RideRequestRecord?) -> String? {
-        let label = record?.input.pickup.label.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (label?.isEmpty ?? true) ? nil : label
     }
 
     /// Signing out ends the Activity at once. A lock-screen card naming a
@@ -273,7 +260,6 @@ final class RideActivityCoordinator {
     private func performStart(
         rideID: String,
         state: RideActivityAttributes.ContentState,
-        pickupLabel: String?,
         record: RideRequestRecord?
     ) async {
         let settled = await settledInputs {
@@ -301,7 +287,7 @@ final class RideActivityCoordinator {
         if adopted { return }
 
         let started = await presenter.start(
-            attributes: RideActivityAttributes(rideID: rideID, pickupLabel: pickupLabel),
+            attributes: RideActivityAttributes(rideID: rideID, vehicle: vehicle()),
             state: state,
             staleDate: RideActivityStaleness.date()
         )

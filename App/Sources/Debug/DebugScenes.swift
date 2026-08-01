@@ -205,20 +205,26 @@ enum DebugScene: String, CaseIterable {
     /// a genuine Activity through the SHIPPING `SystemRideActivityPresenter` and
     /// then gets out of the way; the picture is of the system, not of the app.
     ///
-    /// `MRT_ACTIVITY_STATE` selects which frame. **MYR-398 v2 opened the whole
-    /// twelve-row matrix**, because the redesign changed what every one of them
-    /// renders and six of them had no capture route at all:
+    /// `MRT_ACTIVITY_STATE` selects which frame. **MYR-398 v3 covers all FOURTEEN
+    /// board rows** — v2's twelve plus the two states v3 invented:
     ///
-    /// `requested` · `accepted` · `noProgress` (accepted, no ETA) · `arrived` ·
-    /// `enroute` (default) · `enrouteNoETA` · `stale` · `completed` · `declined` ·
-    /// `cancelled` · `expired` · `unknown`
+    /// `dispatch` · `accepted` · `arriving` · `pickupNoETA` · `noTelemetry` ·
+    /// `arrived` · `enroute` (default) · `enrouteNoETA` · `stale` ·
+    /// `staleNoInstant` · `completed` · `declined` · `cancelled` · `expired` ·
+    /// `unknown`
     ///
-    /// The names are the SCENE's, and they map onto `design/la/la-data.jsx`'s rows
-    /// in order — that file is the answer key the captures are read against.
+    /// The names are the SCENE's, and they map onto `design/la/la-data.jsx`'s rows in
+    /// order — that file is the answer key the captures are read against. `requested`
+    /// and `noProgress` survive as ALIASES of `dispatch` and `noTelemetry` so v2's
+    /// capture scripts keep resolving.
     ///
-    /// `noProgress` is the honestly-degraded card for a car with no active nav
-    /// route, which sends neither `eta` nor `progress`, so the capture is the
-    /// sentence headline over the pickup with NO rail and no invented number.
+    /// The two new rows are the pair the v3 rail contract turns on. `dispatch` is the
+    /// state the Activity now OPENS on for an instant ride (MYR-398 v3's lifecycle
+    /// change): no car, no ETA, an IDLE rail and the mark alone on the island.
+    /// `noTelemetry` is the same idle rail reached the other way — a car that IS
+    /// assigned and has reported no fraction — and `pickupNoETA` is its clean
+    /// one-field diff, live rail, no number.
+    ///
     /// `stale` is the honest-staleness arm and is seeded by handing ActivityKit a
     /// stale-date a few seconds in the FUTURE — there is no API to force staleness,
     /// so the only way to photograph `context.isStale` is to actually become stale.
@@ -2251,12 +2257,16 @@ enum DebugScene: String, CaseIterable {
         guard startsSampleLiveActivity else { return nil }
 
         switch ProcessInfo.processInfo.environment["MRT_ACTIVITY_STATE"] ?? "enroute" {
-        case "requested":
-            // MYR-398 v2 — la-data row 1, which had no headline before this round
-            // and therefore no reason to be captured. NO RAIL: nobody has accepted
-            // yet, so there is no leg to be part-way along and the server sends no
-            // fraction. The chip's dot is the only `pending` (goldDeepSoft) in the
-            // whole set, so this is also the only frame that photographs it.
+        case "dispatch", "requested":
+            // MYR-398 v3 — la-data row 1, **DISPATCH**, and the state the Activity
+            // now OPENS on for an instant ride ("Finding your ride" / "Matching you
+            // with a ride"). Nobody has accepted yet, so there is no ETA and no
+            // fraction — which is exactly the IDLE rail: track and pin drawn, no
+            // gold fill, the puck at half strength on the origin. The compact island
+            // is the mark ALONE, with nothing trailing it at all.
+            //
+            // `requested` is kept as an alias so the v2 capture scripts and the
+            // existing UI-test sweep keep resolving.
             return (
                 RideActivityDebugLauncher.sampleState(
                     status: .requested,
@@ -2266,11 +2276,11 @@ enum DebugScene: String, CaseIterable {
                 nil
             )
         case "accepted":
-            // MYR-398 — LEG ONE, the full card: "Pick up in 6 min", the pickup at
-            // 62% (the STATIC attribute, not the wire), and a rail a third of the
-            // way along. `0.38` is la-data's own figure for this row, so the
-            // capture can be measured against the board rather than against a
-            // round number nobody drew.
+            // MYR-398 v3 — LEG ONE, the hero card: "Pickup in 6 min" over
+            // "7SRJ294 · Silver 2026 Model Y" (the STATIC vehicle attribute, not the
+            // wire), and a live gold rail a third of the way along. `0.38` is
+            // la-data's own figure for this row, so the capture can be measured
+            // against the board rather than against a round number nobody drew.
             return (
                 RideActivityDebugLauncher.sampleState(
                     status: .accepted,
@@ -2279,16 +2289,19 @@ enum DebugScene: String, CaseIterable {
                 ),
                 nil
             )
-        case "noProgress":
-            // MYR-398 — THE TRACKLESS DEGRADE, which is the state the honesty rules
-            // are for and which no other arm reaches. A car with no active
-            // navigation route yields NO `progress` key and NO `eta` key (§7.21.3's
-            // second envelope example, verbatim), so the card must compose to
-            // headline + meet-at with no rail and no fabricated number.
+        case "noTelemetry", "noProgress":
+            // MYR-398 v3 — la-data row 5, **ENROUTE · NO TELEMETRY**, and the row
+            // that proves the rail is never absent. A car with no active navigation
+            // route yields NO `progress` key and NO `eta` key (§7.21.3's second
+            // envelope example, verbatim), so the card reads "Pickup soon" over the
+            // vehicle line with the rail drawn IDLE at zero — not missing, which is
+            // what v2 rendered, and not a zero-width gold fill, which would be the
+            // other way to get it wrong.
             //
             // Both keys are omitted TOGETHER because that is the situation the
             // contract describes — one absent input, two absent outputs — and
             // seeding only one would photograph a state the server does not emit.
+            // For the no-ETA-but-WITH-telemetry row (4), see `pickupNoETA`.
             return (
                 RideActivityDebugLauncher.sampleState(
                     status: .accepted,
@@ -2297,11 +2310,51 @@ enum DebugScene: String, CaseIterable {
                 ),
                 nil
             )
+        case "pickupNoETA":
+            // MYR-398 v3 — la-data row 4, **ENROUTE · NO ETA**, which is the row
+            // `noTelemetry` is a clean one-field diff against: the same "Pickup soon"
+            // headline and the same vehicle subline, but the rail is LIVE at 0.38
+            // because telemetry is arriving and only the car's nav estimate is
+            // missing. The pair is the whole of "no ETA and no telemetry are two
+            // different states", which v2 could not photograph at all.
+            return (
+                RideActivityDebugLauncher.sampleState(
+                    status: .accepted,
+                    etaMinutesFromNow: nil,
+                    progress: 0.38
+                ),
+                nil
+            )
+        case "arriving":
+            // MYR-398 v3 — la-data row 3. Its own phase under two minutes exactly as
+            // Uber splits it, and deliberately NOT its own rendering: same layout,
+            // one-digit figure, and a rail at 0.88 doing the work of saying the car
+            // is nearly here. The capture exists to prove the card does not change
+            // shape when the number loses a digit — and that the word "Arriving"
+            // appears nowhere on it.
+            //
+            // **SEEDED AT TWO MINUTES, NOT ONE, AND THAT IS A CAPTURE FINDING.** The
+            // figure is resolved when the frame is composed and then HELD, so a
+            // 1-minute seed has already decayed below 60s by the time a capture
+            // script has installed, launched, waited out the sweep and backgrounded
+            // the app — the first run of this scene photographed `58 s`, which is
+            // the SECONDS unit rendering correctly and the wrong row of the board.
+            // Two minutes lands the capture squarely on the board's own `1 min`.
+            return (
+                RideActivityDebugLauncher.sampleState(
+                    status: .accepted,
+                    etaMinutesFromNow: 2,
+                    progress: 0.88
+                ),
+                nil
+            )
         case "arrived":
             // A car that is HERE has nothing to count down to, so the frame carries
             // no ETA — the same omission a real server sends. Its `progress` is
             // exactly 1, asserted by the ride record rather than estimated, so the
-            // PICKUP track renders FULL beside "Blue Whale is here".
+            // PICKUP rail renders FULL, **the destination pin is REMOVED and the mark
+            // stands in its place**, beside "Your ride is here". The compact island
+            // swaps its figure for a WAVE.
             return (
                 RideActivityDebugLauncher.sampleState(
                     status: .arrived,
@@ -2311,10 +2364,10 @@ enum DebugScene: String, CaseIterable {
                 nil
             )
         case "enrouteNoETA":
-            // MYR-398 v2 — la-data row 6. Leg TWO with a rail and no number, which
-            // is the one combination that proves the second line is the
-            // DESTINATION in gold rather than a countdown's companion: nothing else
-            // on the card is gold except the rail.
+            // MYR-398 v3 — la-data row 8, **ON TRIP · NO ETA**. Leg TWO with a live
+            // rail and no number: "Dropoff soon" over "Heading to Home", which is the
+            // mirror of the pickup leg's own no-ETA row — same slot, same geometry,
+            // one word different.
             return (
                 RideActivityDebugLauncher.sampleState(
                     status: .enroute,
@@ -2324,6 +2377,11 @@ enum DebugScene: String, CaseIterable {
                 nil
             )
         case "completed":
+            // la-data row 10. Rail FULL with the mark standing where the destination
+            // pin was, "You've arrived" over the place alone, and a CHECK on the
+            // island. It lingers FIVE MINUTES (MYR-405, client 2026-07-31 —
+            // superseding both MYR-194's ~15 and the stale "~15 min" note in this
+            // row's own la-data comment).
             return (
                 RideActivityDebugLauncher.sampleState(
                     status: .completed,
@@ -2333,19 +2391,21 @@ enum DebugScene: String, CaseIterable {
                 nil
             )
         case "declined", "cancelled", "expired", "unknown":
-            // MYR-398 v2 — la-data rows 9-12, THE ENDINGS. None had a capture route
-            // before this round and all four changed: `cancelled` became
-            // subject-free, `unknown` gained a sentence where it had only a vehicle
-            // name, and all four now collapse to one word on the island while
-            // keeping four different chips on the card.
+            // MYR-398 v3 — la-data rows 11-14, THE ENDINGS.
             //
-            // They share an arm because they are one shape — no ETA, no rail, no
-            // second line — and differ only in the status, which is the whole point
-            // of capturing them: the four frames should differ in exactly the chip
-            // and the sentence.
+            // They share an arm because they are one shape — no ETA, an IDLE rail at
+            // zero, and the mark alone on the island — and differ only in the status,
+            // which is the whole point of capturing them: the four frames should
+            // differ in exactly two lines of text and in nothing else at all.
+            //
+            // **The rail is what changed here**: v2 rendered no rail on an ending and
+            // the cards were four different heights. v3 keeps the idle rail so a
+            // terminal card is the same 128pt footprint as a live one — the field
+            // report's fourth item.
             //
             // `expired` is the one to measure the row against: "Reservation expired"
-            // is the widest chip in the set and sets the brand row's width.
+            // is the longest headline in the set, and the frame to check the fixed
+            // 24pt row and its one-line truncation against.
             let ending: LiveActivityRideStatus
             switch ProcessInfo.processInfo.environment["MRT_ACTIVITY_STATE"] {
             case "declined": ending = .declined
@@ -2365,6 +2425,18 @@ enum DebugScene: String, CaseIterable {
                 nil
             )
         case "stale":
+            // la-data row 9, **PUSHES STOPPED**. The subline swaps to
+            // **"Last updated {h:mm A}"**, dated from contracts 0.28.0's `asOf` — a
+            // PAST instant the server stamps, seeded here 4 minutes back so the
+            // rendered time is visibly BEHIND the status-bar clock in the same frame.
+            // That contrast is the capture's whole point: an `eta`-dated notice would
+            // read AHEAD of it.
+            //
+            // The headline drops its clock for "Dropoff soon", **the rail HOLDS its
+            // position and STAYS GOLD**, and the compact island KEEPS the last
+            // figure. v2 desaturated the rail and dimmed the figure to 45%; both are
+            // gone.
+            //
             // A stale-date a few seconds in the FUTURE, which then passes.
             //
             // The obvious seeding — a stale-date in the PAST, so the frame is born
@@ -2381,13 +2453,34 @@ enum DebugScene: String, CaseIterable {
                 RideActivityDebugLauncher.sampleState(
                     status: .enroute,
                     etaMinutesFromNow: 4,
-                    progress: 0.62
+                    progress: 0.62,
+                    asOfMinutesAgo: 4
+                ),
+                Date().addingTimeInterval(8)
+            )
+        case "staleNoInstant":
+            // The SAME stale frame from a server that predates contracts 0.28.0 and
+            // omits `asOf` entirely. The pair with `stale` is a clean one-key diff of
+            // exactly the subline: "Last updated 3:31 PM" vs "Waiting for an update".
+            //
+            // It earns its own arm because absence is a LIVE state rather than a
+            // leftover — every installed build talking to an un-upgraded server takes
+            // this path, and the alternative (dating the notice from the `eta`) is
+            // what v1 shipped and renders "in 4 minutes ago".
+            return (
+                RideActivityDebugLauncher.sampleState(
+                    status: .enroute,
+                    etaMinutesFromNow: 4,
+                    progress: 0.62,
+                    asOfMinutesAgo: nil
                 ),
                 Date().addingTimeInterval(8)
             )
         default:
-            // LEG TWO, the routine ETA tick — §7.21.4's first envelope example,
-            // whose `progress` is `0.62`.
+            // LEG TWO, the routine ETA tick — §7.21.4's first envelope example, whose
+            // `progress` is `0.62`. In v3 this is the CLOCK-TIME headline
+            // ("3:42 PM dropoff") over "Heading to Home", and the frame that proves a
+            // trip-leg card can no longer be read as a countdown.
             return (
                 RideActivityDebugLauncher.sampleState(
                     status: .enroute,

@@ -189,7 +189,26 @@ let package = Package(
         // is cross-pinned against, and all three targets resolve one version.
         // `v` stays `1`: an additive optional key is not a meaning change, so an
         // installed pre-r16 build decodes the new payload exactly as it always did.
-        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.27.0")
+        //
+        // MYR-398 v3 — 0.28.0 adds ONE more optional key to the same shape:
+        // `LiveActivityContentState.asOf`, an ABSOLUTE unix-SECONDS instant naming
+        // when the server last LEARNED something about this ride. It is the source
+        // for the v3 board's stale subline, `Last updated 3:31 PM`.
+        //
+        // It is the mirror image of `eta` and that is the whole reason it had to be
+        // its own key rather than being derived: `eta` is a FUTURE instant chosen
+        // BEFORE the update that carried it, so dating a freshness notice from it
+        // OVERSTATES freshness on the one card whose entire job is to admit it has
+        // none (v1 shipped exactly that, rendering "in 4 minutes ago"). Nothing else
+        // the widget process holds is an update instant — `ActivityViewContext`
+        // exposes no `staleDate`, checked against the SDK interface on iOS 26.5.
+        //
+        // **ABSENT MEANS "THIS SERVER DOES NOT SAY"**, never "just now": an older
+        // server omits the key entirely and the card falls back to the wordless
+        // "Waiting for an update" rather than inventing an instant. Same tolerant
+        // decode as `rideShareEnabled` and `hasActiveRide`, for the same reason.
+        // `v` stays `1` again, on the same additive-optional reasoning.
+        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.28.0")
     ],
     targets: [
         .target(

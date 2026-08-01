@@ -24,7 +24,12 @@ enum RideActivityStaleness {
     /// value wins — the server knows when it next intends to speak, and the client
     /// does not. So this number governs exactly one window: from a locally-started
     /// Activity until the first push lands.
-    static let window: TimeInterval = 3 * 60
+    ///
+    /// MYR-398 v3 — it is `RideActivityFreshness.window` rather than a second `3 *
+    /// 60`, because the widget now applies the SAME horizon to the server's `asOf`.
+    /// Two copies could drift into a card calling itself stale over data the app
+    /// still considered fresh, or the reverse.
+    static let window: TimeInterval = RideActivityFreshness.window
 
     static func date(from reference: Date = Date()) -> Date {
         reference.addingTimeInterval(window)
