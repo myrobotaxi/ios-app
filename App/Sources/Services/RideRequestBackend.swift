@@ -253,7 +253,7 @@ enum RideRequestContractMapping {
 
     /// Map the wire lifecycle onto the app's sheet status (MYR-270 — owner-driven
     /// dispatch v2). `requested → pending`; `accepted → accepted` (leg 1, car → pickup);
-    /// `arrived → arrived` (rider picked up, awaiting the rider's Start — a DISTINCT
+    /// `arrived → arrived` (car at the curb, awaiting the rider's Start — a DISTINCT
     /// app state now, no longer folded into enroute); `enroute → enroute` (leg 2, ride
     /// started, car → dropoff); `completed → completed` (dropped off); `declined →
     /// declined`. `cancelled` (and anything unrecognized) returns `nil`: the caller

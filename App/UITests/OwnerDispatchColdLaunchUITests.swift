@@ -38,10 +38,10 @@ final class OwnerDispatchColdLaunchUITests: XCTestCase {
             status.waitForExistence(timeout: 20),
             "owner Home rendered no trace of the ride in progress after a relaunch")
 
-        let pickedUp = app.buttons["Picked up"]
-        XCTAssertTrue(pickedUp.waitForExistence(timeout: 5), "the phase control came back with the card")
-        XCTAssertTrue(pickedUp.isHittable)
-        XCTAssertGreaterThanOrEqual(pickedUp.frame.height, 44 - 0.5, "min tap target is 44pt")
+        let arrivedAtPickup = app.buttons["Arrived at pickup"]
+        XCTAssertTrue(arrivedAtPickup.waitForExistence(timeout: 5), "the phase control came back with the card")
+        XCTAssertTrue(arrivedAtPickup.isHittable)
+        XCTAssertGreaterThanOrEqual(arrivedAtPickup.frame.height, 44 - 0.5, "min tap target is 44pt")
     }
 
     /// THE NAME IS THE SERVER'S. The restored record travels the same
@@ -73,6 +73,6 @@ final class OwnerDispatchColdLaunchUITests: XCTestCase {
     func testTheSimulatedDispatchSceneIsUnchanged() {
         let app = launch(scene: "ownerDispatched")
         XCTAssertTrue(app.staticTexts["En route to pickup \u{00B7} Sam"].waitForExistence(timeout: 20))
-        XCTAssertTrue(app.buttons["Picked up"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Arrived at pickup"].waitForExistence(timeout: 5))
     }
 }

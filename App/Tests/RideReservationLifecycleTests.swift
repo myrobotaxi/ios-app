@@ -111,7 +111,7 @@ final class RideReservationLifecycleTests: XCTestCase {
     func testTheOwnerDispatchCardIsWithheldUntilTheReservationGoesLive() {
         let dormant = StubRideRequestService()
         dormant.activeRequest = Self.reservation(status: .accepted, scheduledFor: Self.tomorrow)
-        XCTAssertNil(dormant.ownerDispatch, "no card, no 'En route to pickup', no 'Picked up' button")
+        XCTAssertNil(dormant.ownerDispatch, "no card, no 'En route to pickup', no 'Arrived at pickup' button")
 
         var dispatched = Self.reservation(status: .accepted, scheduledFor: Self.tomorrow)
         dispatched.dispatchedAt = Date()

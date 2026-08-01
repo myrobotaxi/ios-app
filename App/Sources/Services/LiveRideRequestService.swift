@@ -134,7 +134,8 @@ final class LiveRideRequestService: RideRequestService {
     /// MYR-376 — AND EXCLUDES A DORMANT RESERVATION. A ride the owner accepted for
     /// tomorrow is `accepted` today, so status alone put the live dispatch card up
     /// the instant he tapped Accept: "En route to pickup · Thomas" over a parked
-    /// car, and a "Picked up" button that the server took, stranding the ride on
+    /// car, and a live pickup-confirm button (then labelled "Picked up", now MYR-411's
+    /// "Arrived at pickup") that the server took, stranding the ride on
     /// "waiting for Thomas to start" for a pickup that had not happened. The gate
     /// is the shared `RideReservation.isLiveRide`, so the card and every other
     /// surface answer this from one predicate.
@@ -809,7 +810,9 @@ final class LiveRideRequestService: RideRequestService {
     // car never entered (MYR-265 review — reset the optimistic advance when the server
     // never confirmed it). Never an auto-retry of the same POST (§7.8).
 
-    /// OWNER "Picked up" — `accepted → arrived`. No nav push here (that is `start`).
+    /// OWNER "Arrived at pickup" — `accepted → arrived`. No nav push here (that is
+    /// `start`). MYR-411 relabelled the BUTTON only: this method, the §7.8
+    /// `/picked-up` write and the status it lands on are all unchanged.
     /// MYR-325: an OWNER CTA, so it advances the OWNER pipeline.
     func pickedUp() {
         guard var request = ownerRequest, request.status == .accepted else { return }
@@ -1716,7 +1719,7 @@ final class LiveRideRequestService: RideRequestService {
     ///    become a back door around "a live dispatch is never displaced".
     ///  • **Dormancy is the shared predicate** (MYR-376). A reservation accepted
     ///    for tomorrow is `accepted` today, and adopting it as a live dispatch
-    ///    would put "En route to pickup" and a live "Picked up" over a parked car —
+    ///    would put "En route to pickup" and a live "Arrived at pickup" over a parked car —
     ///    that issue's defect, re-entered by a new door. `RideReservation
     ///    .isAdoptableLiveRide` is consulted, never re-implemented. The pointer
     ///    SURVIVES a dormant answer, because dormancy is time-bounded: the same

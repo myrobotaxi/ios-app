@@ -47,7 +47,7 @@ public protocol RideRequestService: AnyObject, Observable {
 
     /// MYR-325 — the OWNER's ACCEPTED ride through to drop-off (`accepted` →
     /// `arrived` → `enroute` → `completed`), i.e. what `OwnerDispatchCard` narrates
-    /// and what the owner's "Picked up"/"Dropped off" CTAs advance. `nil` for a
+    /// and what the owner's "Arrived at pickup"/"Dropped off" CTAs advance. `nil` for a
     /// pending request (that is `incomingRequest`) and for a declined one (no owner
     /// surface renders it). The "Dropped off ✓ until acknowledged" rule stays in the
     /// pure `OwnerRideStatusLine.dispatchCardVisible` resolver.
@@ -392,7 +392,7 @@ public extension RideRequestService {
 
     /// Default: no-op. The simulated service has no server ride to advance — its
     /// tracking is driven by the `trackProgress` ticker, and the dispatch v2 CTAs
-    /// (owner "Picked up" / "Dropped off", rider "Start ride") are gated to the LIVE
+    /// (owner "Arrived at pickup" / "Dropped off", rider "Start ride") are gated to the LIVE
     /// path (`SharedViewerState.isLiveLocation`), so these never reach the sim. Only
     /// `LiveRideRequestService` overrides them (MYR-270).
     func pickedUp() {}
@@ -451,11 +451,14 @@ public enum RideRequestStatus: String, Sendable, Equatable {
     /// Sent, awaiting the owner's decision.
     case pending
     /// MYR-270 leg 1 — owner accepted; car en route to the PICKUP. The owner's
-    /// "Picked up" (`pickedUp()`) is the affordance out of this state.
+    /// "Arrived at pickup" (`pickedUp()`, relabelled by MYR-411 — the method and the
+    /// §7.8 `/picked-up` write keep the wire's name) is the affordance out of this state.
     case accepted
-    /// MYR-270 — the rider has been picked up (owner confirmed); the car is at the
-    /// pickup, awaiting the rider's "Start ride" (`start()`). NOT yet moving to the
-    /// dropoff. The rider's Start CTA is gated to exactly this state.
+    /// MYR-270 — the car is AT THE PICKUP; the owner has confirmed it reached the
+    /// curb and the rider is boarding, awaiting their "Start ride" (`start()`). NOT
+    /// yet moving to the dropoff. The rider's Start CTA is gated to exactly this
+    /// state. MYR-411 — this state has never meant "the rider is aboard"; the copy
+    /// that said so is what sent owners to the button a boarding too late.
     case arrived
     /// MYR-270 leg 2 — the ride has STARTED; car en route to the DROPOFF (the rider
     /// tapped Start, the backend flipped `arrived → enroute` and pushed the dropoff

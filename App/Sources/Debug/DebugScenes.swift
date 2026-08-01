@@ -455,8 +455,14 @@ enum DebugScene: String, CaseIterable {
     /// accepted owner ride). `…Enroute` seeds the leg-2 "<Name> aboard · heading
     /// to <dropoff>" state.
     case ownerDispatched
-    /// MYR-270 — owner Home in the `arrived` state: "Picked up · waiting for <Name> to
-    /// start" status line, NO owner CTA (the rider must start). Status-only capture.
+    /// MYR-270 — owner Home in the `arrived` state: "At pickup · waiting for <Name>
+    /// to start" status line, NO owner CTA (the rider must start). Status-only capture.
+    ///
+    /// MYR-411 CHANGED THIS FRAME ON PURPOSE. The line used to open "Picked up ·",
+    /// which claimed a boarding that has not happened — `arrived` means the car is
+    /// at the curb. Its pair is `ownerDispatched`, whose CTA is relabelled by the
+    /// same issue; the two are a clean before/after of the whole handshake's copy,
+    /// and no other owner scene moves.
     case ownerDispatchedArrived
     case ownerDispatchedEnroute
     /// MYR-292 — owner Home holding a `completed` ride: the "Dropped off ✓"
@@ -493,7 +499,7 @@ enum DebugScene: String, CaseIterable {
     ///
     /// THE PAIR'S OTHER HALF IS `ownerDispatched`, and the diff is the whole issue:
     /// the same accepted record, the same owner Home, and NO DISPATCH CARD — no "En
-    /// route to pickup", no "Picked up" button, because the ride is not happening
+    /// route to pickup", no "Arrived at pickup" button, because the ride is not happening
     /// yet. On TestFlight r13 this scene's frame was `ownerDispatched`'s, a day
     /// early, over a car parked in the client's driveway.
     ///

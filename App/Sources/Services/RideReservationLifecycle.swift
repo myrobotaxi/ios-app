@@ -9,7 +9,9 @@ import MyRobotaxiContracts
 // Thomas" over a tappable "Picked up" — for a car that was parked in his
 // driveway, a day early, with `dispatch_status` still NULL. He tapped Picked up,
 // which the server took, and the ride sat on "Picked up · waiting for Thomas to
-// start" forever. His verbatim summary of the other half: *"Rider flow is
+// start" forever. (Both quotes are r13's copy verbatim; MYR-411 has since
+// relabelled that button "Arrived at pickup" and that line "At pickup · …".
+// Nothing about this gate moved with it — it is the same transition.) His verbatim summary of the other half: *"Rider flow is
 // completely broken."*
 //
 // THE MODEL, and it is one sentence: **between the owner's ACCEPT and the ride's

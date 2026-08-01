@@ -714,7 +714,7 @@ launch proves the rule is what the screen consults.
 defect, build `202607311641`) — scene `ownerDispatchColdAdopted`. TestFlight,
 Jul 31: *"When I close out the app the owner loses the UI of the current ride in
 progress."* Force-quit mid-ride, relaunch, and owner Home renders as if no ride
-exists — no dispatch card, no status line, no Picked-up / Dropped-off control.
+exists — no dispatch card, no status line, no pickup-confirm / Dropped-off control.
 
 - **THE CAUSE IS AN ABSENCE, AND IT IS A GAP IN THE CONTRACT, not a missing
   fetch.** `LiveRideRequestService.start()` made exactly two cold-launch reads:
@@ -749,8 +749,8 @@ exists — no dispatch card, no status line, no Picked-up / Dropped-off control.
   held makes **no request at all**.
 - **DORMANCY IS THE SHARED PREDICATE** (MYR-376), not a second copy of the rule.
   A reservation accepted for tomorrow is `accepted` today, so an adoption keyed
-  on status alone would put "En route to pickup" and a live "Picked up" over a
-  parked car — that issue's defect, re-entered by a new door.
+  on status alone would put "En route to pickup" and a live "Arrived at pickup"
+  (MYR-411; "Picked up" at the time) over a parked car — that issue's defect, re-entered by a new door.
   `RideReservation.isAdoptableLiveRide` is consulted verbatim. **The pointer
   SURVIVES a dormant answer**, because dormancy is time-bounded: the same
   reservation is a live ride at its due moment. That answer also feeds
@@ -810,6 +810,45 @@ exists — no dispatch card, no status line, no Picked-up / Dropped-off control.
 ```sh
 SIMCTL_CHILD_MRT_SCENE=ownerDispatchColdAdopted xcrun simctl launch <udid> app.myrobotaxi.ios
 ```
+
+**THE ARRIVED STATE MEANS THE CURB, AND THE BUTTON THAT REACHED IT SAID
+"PICKED UP"** (MYR-411, **CLIENT-DIRECTED**, with the LA §0 round) — scenes
+`ownerDispatched` / `ownerDispatchedArrived`, both of which **CHANGE ON PURPOSE**.
+
+`accepted → arrived` means *the car is at the pickup*. The owner's button for it
+read **"Picked up"**, so owners tapped it once the rider was in the car — a whole
+boarding later than the moment the status stands for. The rider's LA v3 wave
+(`hand.wave.fill`, "Your ride is here") is pushed off that status, so **the wave
+fired late every time**, for a reason nothing on either screen could show.
+
+- **It is a RELABEL, not a new control.** The button is **"Arrived at pickup"**;
+  the exact transition is unchanged — same `HomeScreen.dispatchAction` handler,
+  same `RideRequestService.pickedUp()`, same §7.8 `/picked-up` write, same status
+  landing on `.arrived`. **The method and the endpoint keep the wire's name
+  deliberately**: renaming them would make a copy pass look like a contract
+  change in every diff and every log line ever after.
+- **The rider's circular "Start ride" stays the ONE AND ONLY `arrived → enroute`
+  trigger**, so `OwnerRideStatusLine.actionTitle(for: .arrived)` is still `nil`.
+  A second owner button here would be a way to take a ride enroute with nobody in
+  the car, which is the transition the rider's own tap exists to authorize.
+- **The arrived LINE was the same claim in the other grammar**: "Picked up ·
+  waiting for Maya to start" asserted a boarding that has not happened. It reads
+  **"At pickup · waiting for Maya to start"** now (neutral: "At pickup · waiting
+  to start") — state, then the rider's move, which is the line's existing
+  `<state> · waiting for <Name> to <verb>` shape and the same length, so the
+  one-line pill's truncation behaviour is unchanged.
+- **THE LABEL AND THE TRANSITION ARE ASSERTED TOGETHER**, in one test
+  (`LiveRideRequestServiceTests
+  .testTheRelabelledAcceptedCTAStillDrivesTheIdenticalTransition`): the new title,
+  then exactly ONE `/picked-up` on the server id, ZERO `/start` and ZERO
+  `/dropped-off`, and `.arrived` on both pipelines. A copy pass is exactly the
+  change that can quietly take a call site with it, and a test that only pins
+  strings would not notice.
+- **The two capture changes are the whole visible diff**: `ownerDispatched`'s CTA
+  and `ownerDispatchedArrived`'s status line. `ownerDispatchColdAdopted` carries
+  the relabelled CTA too (it is `ownerDispatched`'s pair). No other owner scene
+  and no rider scene moves — the rider side is untouched, server-side and
+  contracts are untouched, and the owner's "Dropped off" button is byte-identical.
 
 Booking/pending/tracking scenes are seeded WITHOUT arming any timers, so they hold still for a screenshot instead of auto-advancing.
 

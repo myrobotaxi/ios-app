@@ -17,7 +17,7 @@ final class RideDispatchStatusTests: XCTestCase {
         typealias M = RideRequestContractMapping
         XCTAssertEqual(M.status(.requested), .pending)
         XCTAssertEqual(M.status(.accepted), .accepted, "leg 1 — car → pickup")
-        XCTAssertEqual(M.status(.arrived), .arrived, "picked up, awaiting rider start — DISTINCT, not folded into enroute")
+        XCTAssertEqual(M.status(.arrived), .arrived, "at the curb, awaiting rider start — DISTINCT, not folded into enroute")
         XCTAssertEqual(M.status(.enroute), .enroute, "leg 2 — ride started, car → dropoff")
         XCTAssertEqual(M.status(.completed), .completed, "dropped off")
         XCTAssertEqual(M.status(.declined), .declined)
@@ -129,11 +129,19 @@ final class RideDispatchStatusTests: XCTestCase {
         XCTAssertFalse(OwnerRideStatusLine.arriving(status: .arrived, isDriving: true, etaMinutes: 1))
     }
 
+    /// MYR-411 — the arrived line states WHERE THE CAR IS and names the rider's move
+    /// out of the state. It used to open "Picked up ·", which asserted a boarding
+    /// that has not happened: `arrived` is the curb.
     func testOwnerStatusLineArrived() {
         XCTAssertEqual(OwnerRideStatusLine.text(status: .arrived, riderName: "Maya", dropoffLabel: "SFO"),
-                       "Picked up \u{00B7} waiting for Maya to start")
+                       "At pickup \u{00B7} waiting for Maya to start")
         XCTAssertEqual(OwnerRideStatusLine.text(status: .arrived, riderName: nil, dropoffLabel: "SFO"),
-                       "Picked up \u{00B7} waiting to start", "neutral when no rider name")
+                       "At pickup \u{00B7} waiting to start", "neutral when no rider name")
+        for line in [OwnerRideStatusLine.text(status: .arrived, riderName: "Maya", dropoffLabel: "SFO"),
+                     OwnerRideStatusLine.text(status: .arrived, riderName: nil, dropoffLabel: nil)] {
+            XCTAssertFalse(line?.contains("Picked up") ?? true,
+                           "the arrived line must not claim the rider is aboard (MYR-411)")
+        }
     }
 
     func testOwnerStatusLineEnroute() {
@@ -159,10 +167,10 @@ final class RideDispatchStatusTests: XCTestCase {
         XCTAssertNil(OwnerRideStatusLine.text(status: .declined, riderName: "Maya", dropoffLabel: "SFO"))
     }
 
-    // MARK: owner action gating (Picked up / Dropped off)
+    // MARK: owner action gating (Arrived at pickup / Dropped off)
 
     func testOwnerActionTitleGating() {
-        XCTAssertEqual(OwnerRideStatusLine.actionTitle(for: .accepted), "Picked up")
+        XCTAssertEqual(OwnerRideStatusLine.actionTitle(for: .accepted), "Arrived at pickup")
         XCTAssertEqual(OwnerRideStatusLine.actionTitle(for: .enroute), "Dropped off")
         XCTAssertNil(OwnerRideStatusLine.actionTitle(for: .arrived), "arrived is the rider's move (Start) — owner waits")
         XCTAssertNil(OwnerRideStatusLine.actionTitle(for: .completed))

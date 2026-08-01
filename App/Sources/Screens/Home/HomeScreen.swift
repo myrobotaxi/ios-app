@@ -57,8 +57,8 @@ struct HomeScreen: View {
     /// `handleAccept` the moment `IncomingRequestSheet`'s local choreography
     /// finishes; cleared by the toast's own auto-dismiss timer.
     @State private var routeSentToast: RouteSentToastContent?
-    /// MYR-270 — double-tap guard for the owner dispatch CTA ("Picked up"/"Dropped
-    /// off"). Reset on every status change so a re-shown button is tappable again
+    /// MYR-270 — double-tap guard for the owner dispatch CTA ("Arrived at
+    /// pickup"/"Dropped off"). Reset on every status change so a re-shown button is tappable again
     /// (MYR-265 review: never leave the CTA permanently greyed after one advance).
     @State private var dispatchInFlight = false
 
@@ -231,10 +231,14 @@ struct HomeScreen: View {
             status: status, isDriving: snapshot.status == .driving, etaMinutes: snapshot.etaMinutes)
     }
 
-    /// The owner's dispatch CTA for the current state — "Picked up" (accepted →
-    /// arrived) / "Dropped off" (enroute → completed); `nil` for arrived (awaiting
-    /// the rider's Start) and completed. Optimistic + 409-reconcile happen inside the
-    /// service; `dispatchInFlight` only guards a double-tap within one frame.
+    /// The owner's dispatch CTA for the current state — "Arrived at pickup"
+    /// (accepted → arrived) / "Dropped off" (enroute → completed); `nil` for arrived
+    /// (awaiting the rider's Start) and completed. Optimistic + 409-reconcile happen
+    /// inside the service; `dispatchInFlight` only guards a double-tap within one frame.
+    ///
+    /// MYR-411 relabelled the accepted title and changed nothing here: the handler
+    /// still calls `rideRequestService.pickedUp()`, which is still the one
+    /// `accepted → arrived` write.
     private var dispatchAction: OwnerDispatchAction? {
         guard let status = dispatchedRide?.status,
               let title = OwnerRideStatusLine.actionTitle(for: status) else { return nil }
@@ -406,7 +410,7 @@ struct HomeScreen: View {
         .animation(.easeOut(duration: 0.28), value: dispatchStatusLine)
         // MYR-270: reset the CTA double-tap latch whenever the dispatched status
         // changes (optimistic advance or WS reconcile), so the next state's button
-        // ("Picked up" → later "Dropped off") is immediately tappable.
+        // ("Arrived at pickup" → later "Dropped off") is immediately tappable.
         .onChange(of: dispatchedRide?.status) { _, status in
             dispatchInFlight = false
             scheduleDroppedOffDismiss(for: status)

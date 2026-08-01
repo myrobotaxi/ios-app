@@ -469,6 +469,49 @@ final class LiveRideRequestServiceTests: XCTestCase {
         await eventually { service.ownerDispatch?.status == .arrived }
     }
 
+    /// MYR-411 — **THE RELABEL IS COPY ONLY, AND THIS IS THE TEST THAT SAYS SO.**
+    /// The accepted-state button reads "Arrived at pickup" instead of "Picked up",
+    /// and the two facts a copy pass could quietly take with it are asserted HERE,
+    /// in one test, against the LABEL the owner taps:
+    ///
+    ///  • the same executor method (`pickedUp()`) and the same §7.8 write — exactly
+    ///    ONE `/picked-up` POST on the server id, and NOTHING on `/start` or
+    ///    `/dropped-off`, so the relabel cannot have quietly become a different or
+    ///    an extra call;
+    ///  • the same status write (`accepted → arrived`, on BOTH pipelines).
+    ///
+    /// And the state it lands on still offers the owner NO button, which is what
+    /// keeps the rider's circular "Start ride" the one and only `arrived → enroute`
+    /// trigger. `RideDispatchStatusTests` pins the strings; this pins that the
+    /// string names this transition and no other.
+    func testTheRelabelledAcceptedCTAStillDrivesTheIdenticalTransition() async {
+        XCTAssertEqual(OwnerRideStatusLine.actionTitle(for: .accepted), "Arrived at pickup",
+                       "the button under test is the relabelled one")
+
+        let (service, api) = await acceptedService(id: "srv-411")
+        await api.setAdvance(Self.wireRide(id: "srv-411", status: .arrived, accepted: true))
+        await api.setDetail(Self.wireRide(id: "srv-411", status: .arrived, accepted: true))
+
+        // What `HomeScreen.dispatchAction` invokes for `.accepted` — unchanged.
+        service.pickedUp()
+
+        XCTAssertEqual(service.ownerDispatch?.status, .arrived, "same optimistic status write")
+        await eventually { await api.pickedUpCount == 1 }
+        await eventually { service.activeRequest?.status == .arrived }
+
+        let pickedUpCount = await api.pickedUpCount
+        let startCount = await api.startCount
+        let droppedOffCount = await api.droppedOffCount
+        let advanceID = await api.lastAdvanceID
+        XCTAssertEqual(pickedUpCount, 1, "exactly one /picked-up — no second call, no retry")
+        XCTAssertEqual(startCount, 0, "the owner's button never starts the ride (MYR-411)")
+        XCTAssertEqual(droppedOffCount, 0, "and never completes it")
+        XCTAssertEqual(advanceID, "srv-411", "still the server-assigned id")
+
+        XCTAssertNil(OwnerRideStatusLine.actionTitle(for: .arrived),
+                     "no second owner button: arrived → enroute is the rider's Start alone")
+    }
+
     /// RIDER `start()` optimistically flips arrived → enroute, seeds the leg-2
     /// tracking anchor (past `pickupCut`), and POSTs `/start` on the server id.
     func testStartAdvancesArrivedToEnrouteSeedsLeg2AndPostsOnServerID() async {
@@ -556,7 +599,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
     }
 
     /// `start()` before pickup is confirmed is a no-op locally: from `.accepted`
-    /// (owner has not tapped Picked up), the CTA is not even shown, and the guard
+    /// (owner has not tapped "Arrived at pickup"), the CTA is not even shown, and the guard
     /// makes `start()` post nothing — the rider cannot skip the pickup confirmation.
     func testStartFromAcceptedIsGuardedNoOp() async {
         let (service, api) = await acceptedService(id: "srv-guard")
