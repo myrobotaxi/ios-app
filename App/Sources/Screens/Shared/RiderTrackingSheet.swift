@@ -29,16 +29,15 @@ import DesignSystem
 // Both are built by ONE `RideRequestTrackingContent` (see `TrackingSheetLayer`), so
 // the peek's ETA is by construction the number the card above it is showing.
 //
-// **THE CHROME RIDES THE EDGE.** `settledHeight` is still reported for anything
-// that legitimately wants a resting number, but the recenter + expand controls no
-// longer position off it — they are laid out at the peek detent and translated by
-// the engine per drag frame and through the settle (`SheetEdgeAnchor`). That is
-// MYR-397 item 3: before, they stood still through the whole drag and jumped once
-// at settle, which is what the client's three screenshots caught.
+// **THE CHROME RIDES THE EDGE, AND `settledHeight` IS GONE WITH THE PROBLEM.**
+// MYR-271 published the sheet's settled height so the recenter button and the map
+// camera could re-anchor off it; MYR-397 removes both consumers — the controls are
+// laid out at the PEEK detent and translated by the engine per drag frame and
+// through the settle (`SheetEdgeAnchor`), and the camera inset is a constant
+// (MYR-338's cap). Publishing a settled height with nothing reading it is exactly
+// the MYR-369 shape — a signal that makes a surface look wired — so the binding is
+// deleted rather than left for a future caller to reach for the wrong number.
 struct RiderTrackingSheet<Peek: View, Full: View>: View {
-    /// The sheet's current settled visible height (points from the physical bottom
-    /// edge).
-    @Binding var settledHeight: CGFloat
     /// The PEEK detent's resolved height, published so the host can lay its
     /// edge-following chrome out against it (the anchor's base).
     @Binding var peekHeight: CGFloat
@@ -93,9 +92,6 @@ struct RiderTrackingSheet<Peek: View, Full: View>: View {
             reduceMotion: reduceMotion,
             accessibilityIdentifier: "mrt.trackingSheet",
             accessibilityLabel: "Ride tracking sheet",
-            onSettle: { index in
-                settledHeight = detents[min(max(index, 0), detents.count - 1)]
-            },
             // MYR-397 — the two compositions, dissolved by the drag progress at the
             // UIKit layer. At rest the alphas are EXACTLY 0/1 (`crossfadeRamp`), so
             // a settled capture is pixel-clean rather than half-faded.
@@ -112,8 +108,6 @@ struct RiderTrackingSheet<Peek: View, Full: View>: View {
         }
         .ignoresSafeArea(edges: .bottom)
         .onChange(of: detents) { _, new in
-            let clamped = min(max(selection, 0), new.count - 1)
-            settledHeight = new[clamped]
             // The anchor's base is the PEEK detent: the chrome is laid out there
             // and translated up by however much taller the sheet currently is.
             peekHeight = new[0]
@@ -122,7 +116,6 @@ struct RiderTrackingSheet<Peek: View, Full: View>: View {
         .onAppear {
             peekHeight = detents[0]
             edgeAnchor.setBaseHeight(detents[0])
-            settledHeight = detents[min(max(selection, 0), detents.count - 1)]
         }
     }
 

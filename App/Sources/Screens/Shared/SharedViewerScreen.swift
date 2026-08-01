@@ -81,10 +81,6 @@ struct SharedViewerScreen: View {
     /// the schedule picker OPEN and re-floored, so the correction is the very next
     /// thing they touch.
     @State private var showScheduleWindowToast = false
-    /// MYR-271 — the tracking sheet's settled visible height, reported by
-    /// `RiderTrackingSheet` on every settle. The recenter button + the tracking map
-    /// camera inset re-anchor ABOVE this so both clear the card in every detent.
-    @State private var trackingSettledHeight: CGFloat = MRTMetrics.trackingMapBottomInset
     /// MYR-397 — the tracking sheet's PEEK detent, measured by the sheet. The
     /// recenter + expand controls are laid out against THIS (the lowest detent) and
     /// then translated by the engine as the sheet grows, so they ride its edge
@@ -117,9 +113,9 @@ struct SharedViewerScreen: View {
     /// MYR-352 — the availability banner's own measured height, reported by
     /// `RiderIdleAvailabilityBannerView` through `RiderIdleBannerHeightKey`. `0`
     /// whenever no banner is up, which is every simulated boot and every
-    /// pre-existing DEBUG scene. The same precedent as `trackingSettledHeight`
-    /// directly above: a live-only element that reports what it measures so the
-    /// chrome around it can reserve exactly that much.
+    /// pre-existing DEBUG scene. The same precedent as `trackingPeekHeight`
+    /// above: a live-only element that reports what it measures so the chrome
+    /// around it can reserve exactly that much.
     @State private var idleBannerHeight: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -636,7 +632,6 @@ struct SharedViewerScreen: View {
                 // — a clean brief-summary peek and the full details — plus the edge
                 // anchor the map controls follow.
                 RiderTrackingSheet(
-                    settledHeight: $trackingSettledHeight,
                     peekHeight: $trackingPeekHeight,
                     edgeAnchor: trackingEdgeAnchor,
                     peekContent: { trackingContent(totalHeight: totalHeight, layer: .peek) },
@@ -679,9 +674,12 @@ struct SharedViewerScreen: View {
     // up by however much taller it currently is, per finger frame and through the
     // settle spring. See `SheetEdgeFollower`.
     //
-    // Before this they were positioned at `trackingSettledHeight + gap`, a value the
-    // engine publishes only AFTER a settle commits: through the whole drag they sat
-    // still over a moving sheet and then jumped in one un-animated layout pass.
+    // Before this they were positioned at the sheet's SETTLED height plus a gap — a
+    // value the engine publishes only AFTER a settle commits, so through the whole
+    // drag they sat still over a moving sheet and then jumped in one un-animated
+    // layout pass. That binding is deleted along with its other consumer (the camera
+    // inset below), so there is no longer a path by which sheet geometry reaches
+    // either piece of chrome.
     private var trackingMapControls: some View {
         // The stack gap reproduces the pre-MYR-397 placement exactly: the expand
         // chip's bottom edge sat `trackingExpandButtonStackGap` (52) above the
@@ -912,8 +910,8 @@ struct SharedViewerScreen: View {
                 carCoordinate: trackingMarkerCoordinate,
                 carHeading: trackingCarPosition.headingDegrees,
                 legProgress: trackingLegProgress,
-                // MYR-397 — CAPPED, per MYR-338. This used to be
-                // `trackingSettledHeight`, i.e. the sheet's own live geometry: so
+                // MYR-397 — CAPPED, per MYR-338. This used to be the sheet's own
+                // SETTLED height, i.e. its live geometry: so
                 // dragging the sheet down re-fitted the camera at every settle and
                 // the map slid out from under the rider mid-gesture — the client's
                 // *"Map should stay fixed"* on the rider's side of it. The inset is
