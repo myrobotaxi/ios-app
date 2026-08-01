@@ -499,4 +499,112 @@ final class TokenTests: XCTestCase {
         XCTAssertEqual(MRTMetrics.rideRequestSearchSheetHeight, 712)
         XCTAssertEqual(MRTMetrics.rideRequestPinDropMapInset, 280)
     }
+
+    // MARK: - MYR-398 (r16 Live Activity redesign v2)
+
+    /// The five colours `design/Handoff-Live-Activity.md` §4 names for the status
+    /// chip's tone dot — **and the assertion that there are only five**.
+    ///
+    /// The dot is the ONLY place a state's colour appears on that card (§1 change
+    /// 4), so this table is the redesign's entire status palette. Every entry is an
+    /// EXISTING token: the redesign introduces no status colour, and a sixth would
+    /// mean the collapse-into-one-dot decision had quietly been reopened.
+    ///
+    /// The mapping from tone to token lives in the widget process, which this
+    /// package cannot see; what is pinned here is that the five values are the
+    /// handoff's and that they are pairwise distinct, so no two states can share a
+    /// dot by accident.
+    func testTheLiveActivityToneTokensAreTheHandoffsFive() {
+        let table: [(name: String, hex: UInt32, color: Color)] = [
+            ("gold · active tone dot", 0xC9A84C, .mrtGold),
+            ("goldDeepSoft · pending tone dot", 0xB49A56, .mrtGoldDeepSoft),
+            ("driving · in-ride tone dot", 0x30D158, .mrtDriving),
+            ("parked · dropped-off tone dot", 0x3B82F6, .mrtParked),
+            ("offline · terminal + stale tone dot", 0x6B6B6B, .mrtOffline),
+        ]
+
+        var seen = Set<UInt32>()
+        for (name, hex, color) in table {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            XCTAssertTrue(UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a), name)
+            XCTAssertEqual(UInt32(round(r * 255)), (hex >> 16) & 0xFF, "\(name): red")
+            XCTAssertEqual(UInt32(round(g * 255)), (hex >> 8) & 0xFF, "\(name): green")
+            XCTAssertEqual(UInt32(round(b * 255)), hex & 0xFF, "\(name): blue")
+            XCTAssertEqual(a, 1.0, accuracy: 0.001, "\(name): a tone dot is never translucent")
+            XCTAssertTrue(seen.insert(hex).inserted, "\(name): two tones may not share a colour")
+        }
+    }
+
+    /// The card ground, the rail and the chrome — the values a widget would
+    /// otherwise have typed as hex.
+    ///
+    /// `activityRailStale` is the ONE new raw hex the redesign adds, and it is
+    /// deliberately not gold at an alpha (see `Hex.activityRailStale`): an
+    /// alpha-composed gold over the card's warm ground stays warm, and the whole
+    /// point of this fill is that a stale rail stops reading as the live one.
+    func testTheLiveActivityCardHexes() {
+        let cases: [(name: String, hex: UInt32, color: Color)] = [
+            ("activityRailStale", 0x5C5A54, .mrtActivityRailStale),
+            // The ground is the LOGO TILE's own gradient, reused rather than
+            // re-picked — the card is meant to read as that tile enlarged.
+            ("activityGroundTop", 0x1B1407, .mrtActivityGroundTop),
+            ("activityGroundMid", 0x0D0B06, .mrtActivityGroundMid),
+            ("activityGroundBottom", 0x090806, .mrtActivityGroundBottom),
+        ]
+        for (name, hex, color) in cases {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            XCTAssertTrue(UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a), name)
+            XCTAssertEqual(UInt32(round(r * 255)), (hex >> 16) & 0xFF, "\(name): red")
+            XCTAssertEqual(UInt32(round(g * 255)), (hex >> 8) & 0xFF, "\(name): green")
+            XCTAssertEqual(UInt32(round(b * 255)), hex & 0xFF, "\(name): blue")
+            XCTAssertEqual(a, 1.0, accuracy: 0.001, "\(name): the ground is OPAQUE")
+        }
+
+        // The disc the rail's east arrow rides in is the ground's own middle stop,
+        // not a fourth near-black. Pinned because it is the kind of value a later
+        // edit re-picks by eye.
+        XCTAssertEqual(Hex.activityRailStale, 0x5C5A54)
+        XCTAssertEqual(UIColor(Color.mrtActivityGroundMid), UIColor(Color.mrtLogoTileMid))
+    }
+
+    /// The white-opacity ladder and the two gold alphas.
+    ///
+    /// **THE CARD'S LADDER IS 100 / 62 / 42 AND NOTHING BETWEEN IT** (handoff §3),
+    /// which is a rule and therefore worth a test: the failure mode is somebody
+    /// adding a 0.5 or a 0.7 that looks fine on its own and turns three steps into
+    /// five. The two ISLAND values (0.55, 0.34) are deliberately off that ladder —
+    /// the island's ground is true black rather than the card's warm brown, so the
+    /// same alpha reads differently and la-kit gives it its own two steps.
+    func testTheLiveActivityAlphaLadder() {
+        let cases: [(name: String, alpha: CGFloat, color: Color)] = [
+            // The card's three steps.
+            ("activityTextSecondary · 62%", 0.62, .mrtActivityTextSecondary),
+            ("activityTextQuiet · 42%", 0.42, .mrtActivityTextQuiet),
+            // Chrome.
+            ("activityGroundBloom", 0.13, .mrtActivityGroundBloom),
+            ("activityCardHairline", 0.16, .mrtActivityCardHairline),
+            ("activityRailTrack", 0.13, .mrtActivityRailTrack),
+            ("activityRailTrackHighlight", 0.07, .mrtActivityRailTrackHighlight),
+            ("activityChipFill", 0.07, .mrtActivityChipFill),
+            ("activityChipHairline", 0.10, .mrtActivityChipHairline),
+            ("activityChipLabel · 82%", 0.82, .mrtActivityChipLabel),
+            ("activityStaleRing", 0.34, .mrtActivityStaleRing),
+            // The island's own two, plus the compact dimming.
+            ("activityCompactStale · 45%", 0.45, .mrtActivityCompactStale),
+            ("activityCompactTerminal · 50%", 0.5, .mrtActivityCompactTerminal),
+            ("activityIslandKicker · 55%", 0.55, .mrtActivityIslandKicker),
+            ("activityIslandHint · 34%", 0.34, .mrtActivityIslandHint),
+        ]
+        for (name, alpha, color) in cases {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            XCTAssertTrue(UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a), name)
+            XCTAssertEqual(a, alpha, accuracy: 0.001, "\(name): alpha")
+        }
+
+        // The ladder itself: the CARD's text steps are exactly three, and the top
+        // one is plain white rather than a fourth alpha.
+        var a: CGFloat = 0, r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0
+        UIColor(Color.mrtText).getRed(&r, green: &g, blue: &b, alpha: &a)
+        XCTAssertEqual(a, 1.0, accuracy: 0.001, "the ladder's first step is 100%, not 0.95")
+    }
 }

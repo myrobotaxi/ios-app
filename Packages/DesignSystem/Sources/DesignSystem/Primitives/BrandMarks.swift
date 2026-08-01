@@ -65,6 +65,59 @@ public struct ArrowMark: View {
     }
 }
 
+/// The SAME two facets, banked due EAST — the brand mark's one other fixed
+/// orientation (MYR-398 r16 redesign v2).
+///
+/// `la/la-kit.jsx`'s `LAArrowEast` is the mark's own polygons inside a
+/// `<g transform="rotate(90 50 50)">`, with the mark's usual `rotate(-22 50 50)`
+/// dropped: the arrow rides a horizontal rail and points along it, and the
+/// handoff's reason is blunt — *"a north-pointing arrow travelling east reads as
+/// a bug"*.
+///
+/// ⚠️ **THIS IS A FIXED ASSET, NOT A ROTATION A CALLER PERFORMS.** The 90° lives
+/// here, once, exactly as the -22° lives in `ArrowGlyph`; nothing may rotate
+/// either glyph at runtime and nothing may rotate this one PER PROGRESS. An arrow
+/// whose angle tracked the rail would be a second mark by another name — the
+/// MYR-348 hexagon lesson — and would also be claiming a heading the content
+/// state does not carry. The rail moves it; it never turns.
+struct EastArrowGlyph: View {
+    var body: some View {
+        ZStack {
+            // <polygon points="50,12 50,64 18,85" fill="#E4D08A" />
+            ArrowFacetShape(points: [
+                CGPoint(x: 50, y: 12), CGPoint(x: 50, y: 64), CGPoint(x: 18, y: 85),
+            ])
+            .fill(Color.mrtArrowFacetLight)
+            // <polygon points="50,12 82,85 50,64" fill="#9C7E2C" />
+            ArrowFacetShape(points: [
+                CGPoint(x: 50, y: 12), CGPoint(x: 82, y: 85), CGPoint(x: 50, y: 64),
+            ])
+            .fill(Color.mrtArrowFacetDark)
+        }
+        .rotationEffect(.degrees(90))
+    }
+}
+
+/// The east-banked facet arrow, bare — the Live Activity's rail head, its compact
+/// island leading slot, and its minimal presentation.
+///
+/// Same relationship to `EastArrowGlyph` that `ArrowMark` has to `ArrowGlyph`, and
+/// it takes no `glow`: every surface it appears on is either a 20pt `#0d0b06` disc
+/// or the island's true black, and a drop shadow at 13–17pt on those grounds is
+/// invisible work.
+public struct ArrowMarkEast: View {
+    private let size: CGFloat
+
+    public init(size: CGFloat = 16) {
+        self.size = size
+    }
+
+    public var body: some View {
+        EastArrowGlyph()
+            .frame(width: size, height: size)
+    }
+}
+
 /// Brand mark — flat two-tone gold facet arrow on a matte near-black tile
 /// with a radial gold sheen. (Name kept as `HexLogo` so call sites match the
 /// prototype source.)
@@ -79,8 +132,13 @@ public struct HexLogo: View {
 
     // CSS `linear-gradient(155deg, …)`: 0deg points up, angles run clockwise.
     // dx = sin(155°)/2 ≈ 0.2113, dy = -cos(155°)/2 ≈ 0.4532.
-    static let tileGradientStart = UnitPoint(x: 0.5 - 0.2113, y: 0.5 - 0.4532)
-    static let tileGradientEnd = UnitPoint(x: 0.5 + 0.2113, y: 0.5 + 0.4532)
+    //
+    // PUBLIC because MYR-398's Live Activity card ground is the same 155° gradient
+    // over the same three `logoTile*` stops, drawn at card scale by a process
+    // OUTSIDE this package. Two transcriptions of one angle is two places to get
+    // 155° wrong, and the card is supposed to read as this tile enlarged.
+    public static let tileGradientStart = UnitPoint(x: 0.5 - 0.2113, y: 0.5 - 0.4532)
+    public static let tileGradientEnd = UnitPoint(x: 0.5 + 0.2113, y: 0.5 + 0.4532)
 
     public var body: some View {
         ZStack {
@@ -141,11 +199,26 @@ public struct Wordmark: View {
     private let size: CGFloat
     private let color: Color?
     private let withLogo: Bool
+    private let tracking: CGFloat?
 
-    public init(size: CGFloat = 24, color: Color? = nil, withLogo: Bool = false) {
+    /// `tracking` overrides the jsx's own `size × 0.04` rule.
+    ///
+    /// Added for MYR-398's Live Activity brand row, which sets 10pt/0.9 — 2.25× the
+    /// rule — because that row is a 10pt kicker beside a 20pt tile rather than a
+    /// wordmark at its natural size, and the design's letter-spacing is what makes
+    /// it read as a label instead of as shrunken branding. A parameter rather than a
+    /// second `Text` in the widget: one wordmark, one place its casing and weight
+    /// are decided.
+    public init(
+        size: CGFloat = 24,
+        color: Color? = nil,
+        withLogo: Bool = false,
+        tracking: CGFloat? = nil
+    ) {
         self.size = size
         self.color = color
         self.withLogo = withLogo
+        self.tracking = tracking
     }
 
     public var body: some View {
@@ -153,7 +226,7 @@ public struct Wordmark: View {
             if withLogo { HexLogo(size: size * 1.25) }
             Text("myrobotaxi")
                 .font(.system(size: size, weight: .medium))
-                .tracking(size * 0.04)
+                .tracking(tracking ?? size * 0.04)
                 .textCase(.uppercase)
                 .foregroundStyle(color ?? Color.mrtText)
         }
