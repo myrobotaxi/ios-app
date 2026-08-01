@@ -32,6 +32,17 @@ struct DebugRideRequestEndpoint: RideRequestAPI {
     /// different endpoint answering a different question, so it is a different
     /// array rather than the same one served twice.
     var rides: [MyRobotaxiContracts.RideRequest] = []
+    /// MYR-396 — the owner's LIVE DISPATCH, reachable by ID AND BY NOTHING ELSE.
+    ///
+    /// A third array rather than a row added to either of the two above, because
+    /// the whole defect is that this ride is on NO list an owner can read: §7.8's
+    /// incoming feed is status `requested` only, and `rideRequests` is the rider's.
+    /// Putting it on either would model a server that does not exist and would let
+    /// `ownerDispatchColdAdopted` pass for the wrong reason (MYR-362's lesson: a
+    /// stub that agrees with a fiction proves nothing). Only `rideRequest(id:)` —
+    /// the party-only detail read — serves it, which is exactly the client's
+    /// situation.
+    var dispatched: [MyRobotaxiContracts.RideRequest] = []
 
     func upcomingReservations(vehicleID: String, cursor: String?, limit: Int) async throws -> RideRequestsListResponse {
         // ONE page, final: `hasMore: false` + a null cursor, the shape the endpoint
@@ -41,7 +52,7 @@ struct DebugRideRequestEndpoint: RideRequestAPI {
     }
 
     func declineRideRequest(id: String) async throws -> RideRequest {
-        guard let ride = (reservations + rides).first(where: { $0.id == id }) else {
+        guard let ride = (reservations + rides + dispatched).first(where: { $0.id == id }) else {
             throw RestError.http(status: 404, code: nil, message: nil, subCode: nil)
         }
         return ride
@@ -67,6 +78,21 @@ struct DebugRideRequestEndpoint: RideRequestAPI {
     func incomingRideRequests(cursor: String?, limit: Int) async throws -> RideRequestsListResponse {
         RideRequestsListResponse(items: [], hasMore: false)
     }
+}
+
+// MARK: - DebugInertRideSocket (MYR-396)
+
+/// A `RideEventStreaming` that connects and then says nothing, ever.
+///
+/// `ownerDispatchColdAdopted`'s whole subject is the state a launch reaches
+/// BEFORE any frame arrives — the reads `start()` performs. A socket that
+/// delivered anything would let the capture be produced by a frame instead, which
+/// is exactly the state the client did NOT have (his socket had nothing to say
+/// about a ride whose status had not changed since he force-quit).
+struct DebugInertRideSocket: RideEventStreaming {
+    func rideEvents() async -> AsyncStream<RideRequestEvent> { AsyncStream { _ in } }
+    func connect() async {}
+    func disconnect() async {}
 }
 
 // MARK: - The scenes' wire payloads
@@ -126,6 +152,40 @@ extension DebugRideRequestEndpoint {
     /// Computed relative to `now` rather than hardcoded, for the same reason
     /// `DebugScene.sampleServiceEnd` is: a literal drifts into the past and the
     /// endpoint's own future-only predicate would then exclude it.
+    /// MYR-396 — one LIVE dispatch on `vehicleID`, shaped as §7.8 emits an instant
+    /// ride the owner has already answered: no `scheduledFor` (so
+    /// `RideReservation.isAdoptableLiveRide` takes its instant arm), a real
+    /// `acceptedAt`, and a status somewhere in `accepted → arrived → enroute`.
+    static func dispatch(
+        id: String,
+        vehicleID: String,
+        requesterName: String?,
+        status: MyRobotaxiContracts.RideRequestStatus = .accepted,
+        acceptedAgo: TimeInterval = 4 * 60
+    ) -> MyRobotaxiContracts.RideRequest {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        iso.timeZone = TimeZone(secondsFromGMT: 0)
+        let accepted = Date().addingTimeInterval(-acceptedAgo)
+        return MyRobotaxiContracts.RideRequest(
+            id: id,
+            riderId: "cluser0000000000rider0",
+            ownerId: "cluser0000000000owner0",
+            vehicleId: vehicleID,
+            pickup: MyRobotaxiContracts.RidePlace(
+                lat: 37.7817, lng: -122.4103, label: "Union Square",
+                address: "333 Post St, San Francisco"),
+            dropoff: MyRobotaxiContracts.RidePlace(
+                lat: 37.6156, lng: -122.3900,
+                label: "SFO \u{00B7} Terminal 2", address: "San Francisco International"),
+            status: status,
+            createdAt: iso.string(from: accepted.addingTimeInterval(-60)),
+            updatedAt: iso.string(from: accepted),
+            acceptedAt: iso.string(from: accepted),
+            requesterName: requesterName
+        )
+    }
+
     static func sampleReservationDate(
         daysAhead: Int = 0,
         hour: Int = 17,

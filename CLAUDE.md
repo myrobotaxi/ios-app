@@ -701,6 +701,107 @@ SIMCTL_CHILD_MRT_SCENE=ownerNoFixMap xcrun simctl launch <udid> app.myrobotaxi.i
 `OwnerColdLaunchHonestyTests`: the pure suite proves the RULE, and only a real
 launch proves the rule is what the screen consults.
 
+**THE OWNER'S RIDE IN PROGRESS DID NOT SURVIVE A FORCE-QUIT** (MYR-396, client
+defect, build `202607311641`) — scene `ownerDispatchColdAdopted`. TestFlight,
+Jul 31: *"When I close out the app the owner loses the UI of the current ride in
+progress."* Force-quit mid-ride, relaunch, and owner Home renders as if no ride
+exists — no dispatch card, no status line, no Picked-up / Dropped-off control.
+
+- **THE CAUSE IS AN ABSENCE, AND IT IS A GAP IN THE CONTRACT, not a missing
+  fetch.** `LiveRideRequestService.start()` made exactly two cold-launch reads:
+  `adoptOpenRiderRide()` → `GET /api/ride-requests`, which §7.8 defines as *the
+  authenticated RIDER's own requests* (`ListByRiderPage`, `rider_id = :sub`), and
+  `refreshIncoming()` → `GET /api/ride-requests/incoming`, which is status
+  **`requested` ONLY** — *"decided rows leave the feed by construction"*. So the
+  ACCEPT is the very thing that removes the ride from the only owner-scoped list
+  there is, and `?upcomingForVehicle=` cannot help either: it is `accepted` AND
+  **strictly future**, i.e. precisely the reservations that are NOT live. **On
+  this wire an owner cannot ask which ride they are driving.** The rider side has
+  had cold-launch adoption since MYR-230 and gained MYR-377's gone-live arm; the
+  owner side, split out by MYR-325, never had the equivalent — `ownerDispatch` is
+  a projection of a pipeline that starts every process empty and was filled only
+  by a live accept and the WS frames that followed it.
+- **WHAT THE OWNER *CAN* ASK IS `GET /api/ride-requests/{id}`**, which is
+  party-only and therefore theirs. All it needs is the id — a fact this device
+  knew and threw away when the process died. `OwnerDispatchPointer` is that one
+  string, persisted (`AccountStorage`/`RecentDestinations`/
+  `LastKnownVehiclePosition` precedent: `Codable` DTO, reverse-DNS key,
+  `init(defaults:)`, 30-day expiry), and `refreshOwnerDispatch()` is the read it
+  enables — run inside `start()`, on every foreground, and after an owner push
+  tap. **A pointer is not a ride**: it is a question, and the SERVER's answer
+  decides every arm, so a stale, terminal or dormant pointer can never put a card
+  on screen.
+- **THE ORDER IS LOAD-BEARING**: the dispatch is adopted BEFORE the incoming
+  feed, so a live ride owns the owner's slot and the still-`requested` requests
+  queue behind it — the arrangement those same two reads produce when they happen
+  live. The displacement guard is the SAME `canAdoptIncoming` every other
+  adoption site uses, so this cannot become a back door around "a live dispatch
+  is never displaced", and a redundant foreground adopt over the ride already
+  held makes **no request at all**.
+- **DORMANCY IS THE SHARED PREDICATE** (MYR-376), not a second copy of the rule.
+  A reservation accepted for tomorrow is `accepted` today, so an adoption keyed
+  on status alone would put "En route to pickup" and a live "Picked up" over a
+  parked car — that issue's defect, re-entered by a new door.
+  `RideReservation.isAdoptableLiveRide` is consulted verbatim. **The pointer
+  SURVIVES a dormant answer**, because dormancy is time-bounded: the same
+  reservation is a live ride at its due moment. That answer also feeds
+  `ownerDueReservation` into the ONE due-timer both pipelines share — the owner
+  half of MYR-377's `riderDueReservation`, which could not exist before, since a
+  relaunch left the owner pipeline empty and there was nothing to arm from. The
+  wake goes through `refreshOwnerDispatch`, **not** `applyRemote`:
+  `integrateOwner` has no arm for a non-pending ride the pipeline does not hold
+  (it reads that as a queued row resolving elsewhere), so a plain refetch would
+  fetch the record and drop it. Terminal (`completed`/`declined`/`cancelled`) forgets it — a
+  re-adopted `completed` ride would also raise MYR-292's "Dropped off ✓" banner
+  on every launch forever, since that acknowledgement is deliberately
+  session-scoped. A `pending` ride is left to the feed, and **a read that FAILS
+  adopts nothing and forgets nothing** (MYR-326's "loading ≠ unavailable",
+  pointed at a pointer).
+- **THE OWNER SLOT HAS ONE WRITE PATH NOW**, and that is what makes the pointer
+  reliable rather than diligent. Every assignment to `ownerRequest` goes through
+  `setOwnerRequest(_:serverID:)`, which derives the pointer from the slot's own
+  status — MYR-389's lesson (*exit-side cleanup is only ever as complete as the
+  exit list was on the day it was written*) applied before it could bite. An
+  EMPTY slot clears NOTHING, deliberately: the pointer's whole job is to outlive
+  a process that has no slot at all, so clearing is a statement about the RIDE,
+  made only where one is known to be over. It is released on **sign-out** with
+  the profile and the view mode.
+- **Self-rides keep working on both pipelines** (MYR-325's same-account duality):
+  the rider half comes back through MYR-230's list adoption and the owner half
+  through this one, legitimately holding the same id.
+- The scene is **live-path-only by construction** — the simulated service holds
+  one in-process record and has no server to re-read, so both new seam methods
+  are protocol no-ops there and every simulated owner capture is byte-identical.
+  `ownerDispatchColdAdopted` composes the PRODUCTION `LiveRideRequestService`
+  over a scripted `DebugRideRequestEndpoint` and lets the real `start()` sequence
+  run. **The wire is what makes it proof**: the ride is served ONLY by
+  `rideRequest(id:)` (`DebugRideRequestEndpoint.dispatched`, a third array on
+  purpose) with an empty rider list and an empty incoming feed, so a stub that
+  also listed it would let the scene pass with the adoption deleted. Its pair is
+  `ownerDispatched` — the same leg-1 card reached by a live accept — so the two
+  differ by provenance and by one name ("Mira" off `requesterName` vs the
+  simulated "Sam"; the scene joins `rendersLiveIncomingRequest` so the restored
+  record is narrated by the wire rather than the fixture persona).
+- **The pure suite proves the RULE; only a launch proves the screen consults it**
+  — `OwnerDispatchColdLaunchUITests` beside `OwnerDispatchColdLaunchTests`, the
+  MYR-387 pattern, and it matters here because `ownerDispatch` reaches the screen
+  through `HomeScreen.dispatchedRide`, which layers
+  `OwnerRideStatusLine.dispatchCardVisible` and the `OwnerHomeState`
+  acknowledgement on top of it.
+- **Known and NOT closed here**: a ride accepted on ANOTHER device is not
+  restorable by this client at all — there is no owner-scoped read that returns
+  it, and a pointer only remembers what this device did. The honest fix is
+  server-side (an owner "active rides" slice of the §7.8 feed, the shape
+  `?upcomingForVehicle=` already set); until then a second device learns about
+  the ride from its next `ride_status_changed` frame — and `integrateOwner`'s
+  `else` arm DROPS that frame, because it has no case for a live ride the
+  pipeline does not hold. Both halves of that are one server-side read away and
+  neither is reachable from this client today.
+
+```sh
+SIMCTL_CHILD_MRT_SCENE=ownerDispatchColdAdopted xcrun simctl launch <udid> app.myrobotaxi.ios
+```
+
 Booking/pending/tracking scenes are seeded WITHOUT arming any timers, so they hold still for a screenshot instead of auto-advancing.
 
 **Owner sheet peek band** (MYR-315 → MYR-345) — the peek band is the prototype's 210/280 **plus** the room each LIVE-ONLY qualifier line the hero actually renders costs: `MRTHomePeekQualifier.freshnessStamp` (25) and `.serviceCompletion` (16). The prototype's hero has neither line, so appending them to a fixed band spent the clearance `BottomSheet` reserves above the floating nav (`components.jsx:542` `padding: '6px 24px 100px'`; the nav's own top edge is 86pt from the physical edge) — the client's "the stamp crowds the menu". Simulated scenes render zero such lines, so they land on 210/280 exactly and stay byte-identical; the in-service and freshness scenes sit 16–41pt taller by design (and their map `bottomContentInset` follows).
