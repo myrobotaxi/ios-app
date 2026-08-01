@@ -224,6 +224,26 @@ public protocol RideRequestService: AnyObject, Observable {
     /// the same adoption a cold launch already performs. Sim is a no-op.
     func refreshActiveRide() async
 
+    /// MYR-396 — re-sync the OWNER's live dispatch: the accepted / arrived /
+    /// enroute ride they are currently driving.
+    ///
+    /// The owner's counterpart to `refreshActiveRide`, and the one that did not
+    /// exist. Nothing on the owner side reads an answered ride back — §7.8's
+    /// incoming feed is status `requested` ONLY — so before this the in-progress
+    /// card, its status line and its Picked-up / Dropped-off controls simply did
+    /// not survive a force-quit. Run at cold launch (inside `start()`), on every
+    /// foreground, and after an owner push tap.
+    ///
+    /// Costs nothing when there is nothing to restore: it makes no request unless
+    /// this device remembers a ride it accepted, and none when the pipeline already
+    /// holds it. Sim is a no-op (no server, and one in-process record).
+    func refreshOwnerDispatch() async
+
+    /// MYR-396 — release what `refreshOwnerDispatch` reads. Called from the local
+    /// end-of-session sequence, so a signed-out device forgets the ride exactly as
+    /// it forgets the profile and the view mode. Sim is a no-op.
+    func forgetOwnerDispatch()
+
     /// MYR-376/377 — re-sync any held reservation whose DUE MOMENT has arrived.
     ///
     /// Dispatch produces no WebSocket frame — the reservation sweeper stamps the
@@ -333,6 +353,14 @@ public extension RideRequestService {
     /// (MYR-186), so a simulated run's behaviour is unchanged.
     func refreshIncoming() async {}
     func refreshActiveRide() async {}
+
+    /// Default: no-op. The simulated service has no server ride to re-read and no
+    /// second party — its ONE `activeRequest` is both roles' record and it lives
+    /// only as long as the process, so there is nothing to restore and nothing to
+    /// forget. Only `LiveRideRequestService` overrides these (MYR-396), which is
+    /// what keeps every simulated run and every DEBUG capture byte-identical.
+    func refreshOwnerDispatch() async {}
+    func forgetOwnerDispatch() {}
 
     /// Default: no-op. A simulated reservation is reserved into Drives → Upcoming
     /// and never dispatches (there is no sweeper and no clock to run one), so there

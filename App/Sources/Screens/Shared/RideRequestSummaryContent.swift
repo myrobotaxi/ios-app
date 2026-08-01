@@ -202,9 +202,15 @@ struct RideRequestSummaryContent: View {
 
     // MARK: Stats strip (ride-request.jsx:966-978)
 
+    /// MYR-395 — the trip duration as the hero stat's number + unit, from the
+    /// one shared grammar (`"32" / "min"`, `"1 hr 37" / "min"`, `"2" / "hr"`).
+    private var tripDuration: (value: String, unit: String) {
+        RideDuration.heroParts(minutes: tripMinutes)
+    }
+
     private var statsStrip: some View {
         HStack(spacing: 0) {
-            statTile(value: "\(tripMinutes)", unit: "min", label: "Trip", gold: false)
+            statTile(value: tripDuration.value, unit: tripDuration.unit, label: "Trip", gold: false)
             divider
             statTile(value: String(format: "%.1f", tripMiles), unit: "mi", label: "FSD miles", gold: true)
             divider

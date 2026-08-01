@@ -286,7 +286,20 @@ public final class SharedViewerState {
         // remains the provider's own on-failure fallback and the hermetic
         // test-injection provider (unit tests never hit the network). When the
         // Tesla route polyline lands, only this one line swaps.
+        #if DEBUG
+        // MYR-395 — `MRT_ROUTE_UNAVAILABLE=1` swaps in the provider's OWN
+        // documented degradation (`StraightLineRideRouteProvider` returns exactly
+        // the `[from, to]` pair `AppleRideRouteProvider` returns when MKDirections
+        // is throttled, offline or times out), so the honest no-road-geometry
+        // state has a headless capture route. It has no other one: on a healthy
+        // networked simulator MKDirections answers every pair in ~1s, which is why
+        // the client's frame could not be photographed before this issue.
+        rideRouteStore = RideRouteStore(provider: DebugScene.routeUnavailable
+            ? StraightLineRideRouteProvider()
+            : AppleRideRouteProvider())
+        #else
         rideRouteStore = RideRouteStore(provider: AppleRideRouteProvider())
+        #endif
     }
 
     public var snapshot: VehicleTelemetrySnapshot { telemetrySource.snapshot }

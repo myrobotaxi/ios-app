@@ -173,7 +173,7 @@ final class RiderTrackingSheetCompositionTests: XCTestCase {
             ladder: countdown
                 ? RiderTrackingLadderState(line: .headingYourWay, showsPickupCountdown: true)
                 : RiderTrackingLadderState(line: .waitingToStart(vehicle: "Lunar"), showsPickupCountdown: false),
-            minutesText: countdown ? "4" : nil,
+            duration: countdown ? ("4", "min") : nil,
             milesText: countdown ? "1.4 mi away" : nil,
             contextPrefix: "Picking you up at ",
             contextPlace: "Harbor Freight",

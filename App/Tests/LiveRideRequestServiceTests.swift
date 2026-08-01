@@ -16,6 +16,19 @@ import XCTest
 @MainActor
 final class LiveRideRequestServiceTests: XCTestCase {
 
+    /// MYR-396 — the service's DEFAULT owner-dispatch pointer is the real
+    /// `UserDefaults` one, because production must not be able to forget it. In a
+    /// test host that is the RUNNER's defaults, so a test that accepts a ride
+    /// leaves an id behind and the next test to `start()` would cold-adopt it —
+    /// a phantom `ownerRequest` from a neighbouring test, appearing or not
+    /// depending on execution order. Cleared before each test, the same rule
+    /// `RootView.recentDestinationsStore()` applies to recents: a persistent store
+    /// must never leak between runs.
+    override func setUp() {
+        super.setUp()
+        UserDefaultsOwnerDispatchPointer().clear()
+    }
+
     // MARK: pending → accepted
 
     /// MYR-325 — `accept()` is an OWNER action, so it is driven from the OWNER

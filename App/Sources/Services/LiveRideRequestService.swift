@@ -223,6 +223,11 @@ final class LiveRideRequestService: RideRequestService {
 
     private let api: any RideRequestAPI
     private let socket: any RideEventStreaming
+    /// MYR-396 — the one fact about the owner's live dispatch that survives a
+    /// force-quit: its ride id. See `OwnerDispatchPointer.swift` for why a
+    /// persisted id is what the contract leaves the client, and
+    /// `refreshOwnerDispatch` for the read it enables.
+    private let dispatchPointer: any OwnerDispatchPointerStoring
     private let reconcilePolicy: ReconcilePolicy
     /// Length of the booking grace window before the deferred create POST fires
     /// on its own — the same 10s the rider's "Sending request" fill animates
@@ -266,6 +271,13 @@ final class LiveRideRequestService: RideRequestService {
     /// is the only reason the service remembers it: something has to know when to
     /// look again.
     private var riderDueReservation: (rideID: String, at: Date)?
+    /// MYR-396 — the OWNER's remembered reservation while it is still DORMANT,
+    /// held outside the pipeline for exactly the reason `riderDueReservation` is:
+    /// adopting it would put tomorrow's ride on today's card, and something still
+    /// has to know when to look again. Before this it could not exist at all — a
+    /// relaunch left the owner pipeline empty, so a reservation accepted before the
+    /// force-quit had nothing waiting for its due moment on this device.
+    private var ownerDueReservation: (rideID: String, at: Date)?
 
     /// Asked this long AFTER the due instant, so the sweeper's own write has landed
     /// before the client reads.
@@ -294,12 +306,14 @@ final class LiveRideRequestService: RideRequestService {
         socket: any RideEventStreaming,
         autoStart: Bool = true,
         reconcilePolicy: ReconcilePolicy = .live,
-        sendWindow: Duration = .seconds(RideRequestTiming.sendFillDuration)
+        sendWindow: Duration = .seconds(RideRequestTiming.sendFillDuration),
+        dispatchPointer: any OwnerDispatchPointerStoring = UserDefaultsOwnerDispatchPointer()
     ) {
         self.api = api
         self.socket = socket
         self.reconcilePolicy = reconcilePolicy
         self.sendWindow = sendWindow
+        self.dispatchPointer = dispatchPointer
         if autoStart { start() }
     }
 
@@ -330,6 +344,12 @@ final class LiveRideRequestService: RideRequestService {
             // ride AND their incoming card, instead of the feed seed being suppressed
             // by whatever the rider happened to be holding.
             await self?.adoptOpenRiderRide()
+            // MYR-396 — and the OWNER's own open ride, which no list this client
+            // can read will hand back (see `refreshOwnerDispatch`). BEFORE the
+            // incoming feed, deliberately: a live dispatch owns the owner's slot
+            // and the still-`requested` requests queue behind it, which is exactly
+            // the arrangement those same two reads produce when they happen live.
+            await self?.refreshOwnerDispatch()
             await self?.refreshIncoming()
             for await event in stream {
                 guard let self else { break }
@@ -663,7 +683,11 @@ final class LiveRideRequestService: RideRequestService {
         if request.input.schedule == nil {
             request.trackProgress = RideRequestTiming.autoAcceptInitialProgress
         }
-        ownerRequest = request
+        // MYR-396 — the accept is the moment the owner becomes responsible for this
+        // ride, so it is also the moment the pointer has to exist: a force-quit in
+        // the second before the server's own record comes back must still leave the
+        // relaunch something to ask about.
+        setOwnerRequest(request)
         // MYR-277 C: the backend now 409s an accept for an in_service/offline
         // vehicle (parallel PR). A swallowed error would strand the owner on a
         // phantom "accepted" — so reconcile on failure instead of fire-and-forget.
@@ -738,7 +762,7 @@ final class LiveRideRequestService: RideRequestService {
         request.status = .pending
         request.acceptedAt = nil
         request.trackProgress = nil
-        ownerRequest = request
+        setOwnerRequest(request)
     }
 
     /// OWNER declines. MYR-325: the OWNER pipeline only — the rider's own
@@ -747,7 +771,7 @@ final class LiveRideRequestService: RideRequestService {
     func decline() {
         guard var request = ownerRequest, request.status == .pending else { return }
         request.status = .declined
-        ownerRequest = request
+        setOwnerRequest(request)
         postOwnerMutation { try await $0.declineRideRequest(id: $1) }
         // MYR-306 + MYR-317: a declined request releases the owner's slot, so the
         // next waiting request surfaces on the very next frame — instead of the old
@@ -777,7 +801,7 @@ final class LiveRideRequestService: RideRequestService {
     func pickedUp() {
         guard var request = ownerRequest, request.status == .accepted else { return }
         request.status = .arrived
-        ownerRequest = request
+        setOwnerRequest(request)
         advanceMutation(.owner, revertTo: .accepted) { try await $0.pickedUp(rideID: $1) }
     }
 
@@ -800,7 +824,7 @@ final class LiveRideRequestService: RideRequestService {
         guard var request = ownerRequest, request.status == .enroute else { return }
         request.status = .completed
         if request.input.schedule == nil { request.trackProgress = 1 }
-        ownerRequest = request
+        setOwnerRequest(request)
         advanceMutation(.owner, revertTo: .enroute) { try await $0.droppedOff(rideID: $1) }
     }
 
@@ -868,7 +892,73 @@ final class LiveRideRequestService: RideRequestService {
     }
 
     private func setRecord(_ value: RideRequestRecord?, _ pipeline: Pipeline) {
-        if pipeline == .rider { activeRequest = value } else { ownerRequest = value }
+        if pipeline == .rider { activeRequest = value } else { setOwnerRequest(value) }
+    }
+
+    // MARK: MYR-396 — the OWNER slot has ONE write path, and the pointer follows it
+    //
+    // `refreshOwnerDispatch` can only ask about a ride whose id this device wrote
+    // down before it died, so "when is the pointer written" has to be a fact about
+    // the pipeline rather than a list of call sites somebody keeps up to date.
+    // MYR-389's lesson, stated there about draft resets, is the general one:
+    // *exit-side cleanup is only ever as complete as the exit list was on the day
+    // it was written.* So every write to the owner slot goes through this one
+    // setter, and the pointer is derived from the slot — a new owner mutation
+    // cannot forget to keep it, because it has nowhere else to write.
+
+    /// Assign the OWNER slot (and, when the caller has one, its server id) and make
+    /// the persisted pointer agree.
+    private func setOwnerRequest(_ value: RideRequestRecord?, serverID: String? = nil) {
+        if let serverID { ownerServerRideID = serverID }
+        ownerRequest = value
+        syncOwnerDispatchPointer()
+    }
+
+    /// Make the pointer agree with the OWNER slot.
+    ///
+    /// It is written for every status the owner is ON THE HOOK for — `accepted`
+    /// through `enroute` — which deliberately INCLUDES a dormant reservation: that
+    /// ride is the owner's, it simply is not happening yet, and its due moment is
+    /// the very thing a later launch has to be able to notice (MYR-376's
+    /// time-bounded dormancy).
+    ///
+    /// A `pending` record UN-writes it, which is the MYR-277 C revert: an accept the
+    /// server refused leaves a still-`requested` ride the incoming feed restores
+    /// authoritatively, and a pointer naming it would be one wasted read per launch
+    /// until it expired. The clear is guarded on the ID, so the ordinary case — a
+    /// fresh incoming card adopted while a dormant reservation is remembered —
+    /// cannot erase the reservation.
+    ///
+    /// **An EMPTY slot clears nothing**, and that asymmetry is the point: the
+    /// pointer's whole job is to outlive a process that has no slot at all, so
+    /// "there is no record in memory" is never evidence about a ride. Clearing is a
+    /// statement about the RIDE, made only where one is known to be over — the
+    /// terminal arm below, `retireOwnerRide`, `refreshOwnerDispatch`, and sign-out.
+    private func syncOwnerDispatchPointer() {
+        guard let held = ownerRequest else { return }
+        let id = ownerServerRideID ?? held.id
+        switch held.status {
+        case .accepted, .arrived, .enroute: dispatchPointer.write(rideID: id)
+        case .completed, .declined, .pending: forgetOwnerDispatch(rideID: id)
+        }
+    }
+
+    /// Forget the pointer if — and only if — it names this ride. Guarded so a
+    /// terminal record for some OTHER ride (a stale queued row resolving elsewhere)
+    /// cannot erase the dispatch the owner is actually driving.
+    private func forgetOwnerDispatch(rideID: String) {
+        if ownerDueReservation?.rideID == rideID { ownerDueReservation = nil }
+        guard dispatchPointer.read() == rideID else { return }
+        dispatchPointer.clear()
+    }
+
+    /// MYR-396 — see `RideRequestService.forgetOwnerDispatch`. The pointer is a
+    /// SINGLE record on a device that holds exactly one session (the same reasoning
+    /// `UserDefaultsProfileStore` is written on), so it is released with the
+    /// session and the next account never inherits the previous one's ride.
+    func forgetOwnerDispatch() {
+        ownerDueReservation = nil
+        dispatchPointer.clear()
     }
 
     private func serverID(_ pipeline: Pipeline) -> String? {
@@ -1035,7 +1125,11 @@ final class LiveRideRequestService: RideRequestService {
         let held = [activeRequest, ownerRequest]
             .compactMap { $0 }
             .compactMap { record in RideReservation.dueInstant(record).map { (rideID: record.id, at: $0) } }
-        let due = (held + [riderDueReservation].compactMap { $0 }).min { $0.at < $1.at }
+        // MYR-396 adds the OWNER's dormant reservation to the same single timer,
+        // for the same reason the rider's is here: it is deliberately in no
+        // pipeline, so `held` cannot see it.
+        let due = (held + [riderDueReservation, ownerDueReservation].compactMap { $0 })
+            .min { $0.at < $1.at }
 
         guard let due else {
             // Nothing dormant is held — the reservation dispatched, was declined,
@@ -1085,6 +1179,18 @@ final class LiveRideRequestService: RideRequestService {
             // sees a free slot; the retry decrement below is what stops it from
             // re-arming forever on a sweeper that never runs.
             self.armedDue = nil
+            // MYR-396 — a reservation NOBODY HOLDS wakes through the owner
+            // adoption rather than through `applyRemote`. `integrateOwner` has no
+            // arm for a non-pending ride the pipeline does not hold — it reads that
+            // as a queued row resolving elsewhere and drops it — so a plain refetch
+            // would fetch the record and throw it away. `refreshOwnerDispatch` is
+            // the one path that can take it, and it re-arms (or gives up on the
+            // bounded retry) by itself.
+            if self.ownerDueReservation?.rideID == rideID, !self.ownerHolds(rideID) {
+                await self.refreshOwnerDispatch()
+                self.armDueRefetch()
+                return
+            }
             self.applyRemote(rideID: rideID)
         }
     }
@@ -1119,6 +1225,13 @@ final class LiveRideRequestService: RideRequestService {
         for id in Set(ids) {
             if let ride = try? await api.rideRequest(id: id) { integrate(ride) }
         }
+        // MYR-396 — the OWNER's own dormant reservation, which is likewise in no
+        // pipeline and, like the cold-launch case, can only be TAKEN by the owner
+        // adoption. `refreshOwnerDispatch` makes no request unless the pointer
+        // still names a ride this pipeline is not already holding.
+        if let ownerDue = ownerDueReservation, ownerDue.at <= now, !ownerHolds(ownerDue.rideID) {
+            await refreshOwnerDispatch()
+        }
         // Re-read the rider's own list too: a reservation booked on another device
         // since this one went to sleep is invisible until somebody asks.
         if activeRequest == nil { await adoptOpenRiderRide() }
@@ -1147,10 +1260,11 @@ final class LiveRideRequestService: RideRequestService {
             let refetched = RideRequestContractMapping.record(from: ride)!
             // `seedsTracking: false` — the owner surfaces read the STATUS, never
             // `trackProgress` (only the rider's tracking sheet does).
-            ownerRequest = Self.fold(ride, refetched: refetched,
-                                     onto: ownerRequest ?? refetched,
-                                     mapped: mapped, seedsTracking: false)
-            ownerServerRideID = ride.id
+            setOwnerRequest(
+                Self.fold(ride, refetched: refetched,
+                          onto: ownerRequest ?? refetched,
+                          mapped: mapped, seedsTracking: false),
+                serverID: ride.id)
             // MYR-317 — the held request reached a status that RELEASES the owner's
             // slot (`completed` — the drop-off — or `declined`): surface the next
             // queued request instead of sitting on a dead card until a fresh frame
@@ -1249,9 +1363,14 @@ final class LiveRideRequestService: RideRequestService {
     /// Used by a cancellation frame and by the rider's own `cancel()`.
     private func retireOwnerRide(id: String) {
         dequeueIncoming(id: id)
+        // MYR-396 — a retired ride is over for this owner however it ended
+        // (cancelled by the rider, resolved elsewhere), so nothing should ask about
+        // it again. Guarded on the id, so retiring a QUEUED row never forgets the
+        // dispatch on the card.
+        forgetOwnerDispatch(rideID: id)
         guard ownerHolds(id) else { return }
-        ownerRequest = nil
         ownerServerRideID = nil
+        setOwnerRequest(nil)
         advanceIncoming()
     }
 
@@ -1318,8 +1437,7 @@ final class LiveRideRequestService: RideRequestService {
                   let record = RideRequestContractMapping.record(from: next),
                   record.status == .pending
             else { continue }
-            ownerRequest = record
-            ownerServerRideID = next.id
+            setOwnerRequest(record, serverID: next.id)
             return true
         }
         return false
@@ -1498,6 +1616,96 @@ final class LiveRideRequestService: RideRequestService {
         guard let page = try? await api.rideRequests(cursor: nil, limit: 20) else { return nil }
         noteRiderDueReservation(in: page.items)
         return page.items.first(where: { RideReservation.isAdoptableLiveRide($0) })
+    }
+
+    // MARK: MYR-396 — adopt the OWNER's live dispatch
+
+    /// Cold-launch / foreground adoption for the OWNER pipeline: the mirror of
+    /// `adoptOpenRiderRide`, and the thing that did not exist.
+    ///
+    /// THE DEFECT (TestFlight r16): *"When I close out the app the owner loses the
+    /// UI of the current ride in progress."* Force-quit mid-ride, relaunch, and
+    /// owner Home has no dispatch card, no status line and no Picked-up /
+    /// Dropped-off controls — because `ownerDispatch` is a projection of a pipeline
+    /// that starts every process empty and nothing on the owner side fills it from
+    /// the server.
+    ///
+    /// WHY THE INCOMING FEED CANNOT DO THIS, and why a pointer is involved at all.
+    /// §7.8 gives an owner exactly one feed — `GET /api/ride-requests/incoming` —
+    /// and it is status `requested` ONLY: *"decided rows leave the feed by
+    /// construction"*. `GET /api/ride-requests` is the RIDER's list, and
+    /// `?upcomingForVehicle=` is `accepted` AND strictly FUTURE, i.e. precisely the
+    /// reservations that are NOT live. **On this wire an owner cannot ask which
+    /// ride they are driving** — the accept is what removes it from the only list
+    /// they can read. What they can ask is `GET /api/ride-requests/{id}`, which is
+    /// party-only and therefore theirs; all it needs is the id, and the id is a
+    /// fact this device knew and lost when the process died. Hence
+    /// `OwnerDispatchPointer`, written by the owner pipeline itself.
+    ///
+    /// THE STORED ID DECIDES NOTHING. It is a question, not an answer: the SERVER's
+    /// record decides every arm below, so a stale, terminal or dormant pointer can
+    /// never put a card on screen.
+    ///
+    ///  • **Non-destructive.** Holding this ride already → return without a request
+    ///    at all (the foreground case; re-folding a record nobody asked to change
+    ///    is how a surface flashes). Holding a LIVE ride → return; the guard is the
+    ///    same `canAdoptIncoming` every other adoption site uses, so this cannot
+    ///    become a back door around "a live dispatch is never displaced".
+    ///  • **Dormancy is the shared predicate** (MYR-376). A reservation accepted
+    ///    for tomorrow is `accepted` today, and adopting it as a live dispatch
+    ///    would put "En route to pickup" and a live "Picked up" over a parked car —
+    ///    that issue's defect, re-entered by a new door. `RideReservation
+    ///    .isAdoptableLiveRide` is consulted, never re-implemented. The pointer
+    ///    SURVIVES a dormant answer, because dormancy is time-bounded: the same
+    ///    reservation is a live ride at its due moment, and the next foreground is
+    ///    what notices.
+    ///  • **Terminal forgets.** `completed`/`declined`/`cancelled` are over. A
+    ///    re-adopted `completed` ride would also raise MYR-292's "Dropped off ✓"
+    ///    banner on every launch forever, since that acknowledgement is deliberately
+    ///    session-scoped.
+    ///  • **`pending` is the feed's**, and the feed is read on the very next line
+    ///    of `start()`. Adopting it here would put a pending record in the slot from
+    ///    a second source and race `adoptNextIncoming` for it.
+    ///  • **A read that fails changes nothing** — no adoption, and no forgetting.
+    ///    A network failure is not evidence that a ride ended (MYR-326's
+    ///    "loading ≠ unavailable", pointed at a pointer).
+    ///
+    /// The adopted record is built by `RideRequestContractMapping.record(from:)` —
+    /// the same fold `integrate` applies to a WS frame — so the card, the tracking
+    /// map's leg-1 pickup and the phase controls are exactly what a live accept
+    /// would have produced.
+    func refreshOwnerDispatch() async {
+        guard let rideID = dispatchPointer.read() else { return }
+        guard !ownerHolds(rideID) else { return }
+        guard canAdoptIncoming else { return }
+        guard let ride = try? await api.rideRequest(id: rideID) else { return }
+        guard let mapped = RideRequestContractMapping.status(ride.status) else {
+            forgetOwnerDispatch(rideID: rideID) // cancelled / unrecognized-terminal
+            return
+        }
+        switch mapped {
+        case .completed, .declined:
+            forgetOwnerDispatch(rideID: rideID)
+            return
+        case .pending:
+            return
+        case .accepted, .arrived, .enroute:
+            break
+        }
+        guard let record = RideRequestContractMapping.record(from: ride) else { return }
+        guard RideReservation.isAdoptableLiveRide(ride) else {
+            // DORMANT. Nothing is adopted and nothing is forgotten — but the due
+            // moment is now known, and MYR-376's dormancy is time-bounded, so the
+            // one timer both pipelines share is armed for it. Without this an owner
+            // who force-quit after accepting a reservation would get their card
+            // only if they happened to foreground the app after it came due.
+            ownerDueReservation = RideReservation.dueInstant(record).map { (ride.id, $0) }
+            armDueRefetch()
+            return
+        }
+        ownerDueReservation = nil
+        setOwnerRequest(record, serverID: ride.id)
+        armDueRefetch()
     }
 
     /// Owner incoming feed seed (open requests already in flight at connect time).

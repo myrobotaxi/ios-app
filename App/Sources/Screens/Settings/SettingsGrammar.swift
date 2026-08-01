@@ -553,9 +553,26 @@ struct SettingsSignOutButton: View {
     }
 }
 
-/// The centred page footer (shared-screens.jsx:525). The copy is role-specific
-/// and stays so — the owner's build stamp and the rider's "Guest access" line
-/// each say something true about the account looking at it.
+/// The centred page footer (shared-screens.jsx:525).
+///
+/// **MYR-395 — the copy is NO LONGER role-specific.** r16, the client: *"How come
+/// rider screen shows guest access at bottom and other shows version?"* MYR-354
+/// unified everything else about these two pages and left this line alone on the
+/// reasoning that each half "says something true about the account looking at
+/// it" — which was true of both and still the wrong call, because the FOOTER is
+/// page furniture and it was carrying two different kinds of fact. Whichever page
+/// you were on, the other one looked like a different app at the bottom.
+///
+/// The version wins, for the reason the client implies: it is the only thing on
+/// either page that a tester reading a bug report needs and cannot get anywhere
+/// else. **Nothing is lost with "Guest access":** the rider's role is already the
+/// gold **"Guest" badge in `SettingsProfileCard`** at the top of the same page
+/// (the prototype's own shared-screens.jsx:473), and what that role can actually
+/// DO per vehicle is MYR-354's vehicle section, which says it per row rather than
+/// as one flat claim. Re-homing it as a third statement is exactly the repetition
+/// MYR-366 deleted the Account-section name row for — and the flat claim is also
+/// simply FALSE for the account MYR-343 fixed, an owner in rider mode, who is not
+/// anybody's guest.
 struct SettingsFooter: View {
     let text: String
 
@@ -567,4 +584,33 @@ struct SettingsFooter: View {
             .padding(.top, 16)
             .padding(.bottom, 4)
     }
+
+    /// The ONE footer both Settings pages render. A `static` on the type rather
+    /// than the same literal typed on two screens, so a third page cannot invent
+    /// a third wording and the pair cannot drift apart again.
+    static var appVersion: SettingsFooter { SettingsFooter(text: AppVersionStamp.footerText) }
+}
+
+/// The build the tester is holding, as one string.
+///
+/// MYR-395 — the owner footer used to read a HARDCODED `"MyRoboTaxi v1.0 (24)"`.
+/// `project.yml` ships `MARKETING_VERSION 1.0.0` and a `CURRENT_PROJECT_VERSION`
+/// that RELEASING.md overrides per upload (r16 is `202607311641`), so build "24"
+/// has never existed — the one line on either page whose whole job is to identify
+/// the build was naming a build nobody could have installed. Now that BOTH roles
+/// show it, a wrong stamp would be wrong twice, and the person most likely to read
+/// it is the person filing the report.
+enum AppVersionStamp {
+    /// `CFBundleShortVersionString`, or a plain `"—"` rather than a guess.
+    static var shortVersion: String {
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "\u{2014}"
+    }
+    /// `CFBundleVersion` — the value that is unique per TestFlight upload and the
+    /// one that actually identifies a build.
+    static var build: String {
+        (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "\u{2014}"
+    }
+    /// `"MyRoboTaxi v1.0.0 (202607311641)"` — the owner footer's own shape,
+    /// unchanged apart from being true.
+    static var footerText: String { "MyRoboTaxi v\(shortVersion) (\(build))" }
 }

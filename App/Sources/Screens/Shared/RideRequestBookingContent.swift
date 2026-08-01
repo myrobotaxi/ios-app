@@ -206,7 +206,7 @@ struct RideRequestBookingContent: View {
                         Text(destinationLabel).font(.system(size: 15, weight: .semibold)).foregroundStyle(Color.mrtText)
                             .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 8)
-                        Text("\(String(format: "%.1f", tripMiles)) mi \u{00B7} \(tripMinutes) min")
+                        Text("\(String(format: "%.1f", tripMiles)) mi \u{00B7} \(RideDuration.text(minutes: tripMinutes))")
                             .font(.system(size: 12)).foregroundStyle(Color.mrtTextMuted).lineLimit(1)
                     }
                     if let destinationSub {

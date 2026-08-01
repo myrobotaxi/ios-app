@@ -193,7 +193,11 @@ struct RideRequestTrackingContent: View {
     private var peekLayer: some View {
         RiderTrackingPeekContent(
             ladder: ladder,
-            minutesText: peekShowsHero ? heroMinutesText : nil,
+            // MYR-395 — the peek's hero is the FULL card's hero, unit included:
+            // it takes the same `(value, unit)` pair rather than a number plus an
+            // assumption, so a 43-hour leg cannot read "2623" over a small "min"
+            // on one layer and "43 hr 43 min" on the other.
+            duration: peekShowsHero ? heroDuration : nil,
             milesText: peekShowsHero ? heroMilesText : nil,
             contextPrefix: atPickup ? "Dropping you off at " : "Picking you up at ",
             contextPlace: atPickup ? destination.label : pickupLabel,
@@ -241,15 +245,18 @@ struct RideRequestTrackingContent: View {
             // whole pair is withheld rather than replaced: nothing is being
             // fetched and no arrival is estimable, so there is no in-flight state
             // to render and a placeholder would be the MYR-294 shimmer again.
+            // MYR-395 — when it IS claimed, the number and its unit come from the
+            // ONE duration grammar (`heroDuration`), so a withheld countdown stays
+            // withheld and a long one reads "43 hr 43" / "min".
             if showsHeroPair {
                 VStack(alignment: .trailing, spacing: 5) {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text(heroMinutesText)
+                        Text(heroDuration.value)
                             .font(.system(size: 34, weight: .bold))
                             .monospacedDigit()
                             .tracking(-1)
                             .foregroundStyle(Color.mrtText)
-                        Text("min")
+                        Text(heroDuration.unit)
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(Color.mrtGold.opacity(0.8))
                     }
@@ -268,9 +275,16 @@ struct RideRequestTrackingContent: View {
     /// cannot see, and the ladder decides whether it is one we can make.
     private var showsHeroPair: Bool { atPickup || ladder.showsPickupCountdown }
 
-    private var heroMinutesText: String {
+    /// MYR-395 — the hero's number and its unit, from the ONE duration grammar.
+    ///
+    /// The unit is no longer a hardcoded `Text("min")` beside the number, because
+    /// on a long leg the number is not a count of minutes: an ETA of 2,623 sets
+    /// "43 hr 43" against a small "min", the same shape a 12-minute leg gets. The
+    /// sub-minute floor is untouched and still wins outright — "<1 min" is a
+    /// statement about arriving, not a duration to reformat.
+    private var heroDuration: (value: String, unit: String) {
         let minutes = atPickup ? remainMinutes : toPickupMinutes
-        return minutes < 1 ? "<1" : "\(minutes)"
+        return minutes < 1 ? ("<1", "min") : RideDuration.heroParts(minutes: minutes)
     }
 
     private var heroMilesText: String {
@@ -305,7 +319,7 @@ struct RideRequestTrackingContent: View {
                 place: destination.label,
                 clock: showsHeroPair ? arriveClock : RidePickupETADisplay.unknownClock,
                 filled: false,
-                note: atPickup ? "\(String(format: "%.1f", dropRemainMiles)) mi \u{00B7} \(remainMinutes) min" : "\(String(format: "%.1f", destination.miles)) mi trip",
+                note: atPickup ? "\(String(format: "%.1f", dropRemainMiles)) mi \u{00B7} \(RideDuration.text(minutes: remainMinutes))" : "\(String(format: "%.1f", destination.miles)) mi trip",
                 last: true
             )
         }
@@ -317,10 +331,15 @@ struct RideRequestTrackingContent: View {
     /// remaining-distance pair while the car is demonstrably approaching; and —
     /// pre-motion — the honest waiting sentence in place of a distance that is
     /// interpolated from a ticker rather than measured from the car.
+    ///
+    /// MYR-395 — when the pair IS rendered its duration goes through the shared
+    /// `RideDuration` grammar, exactly as it did before this row moved into a
+    /// helper: withholding decides WHETHER there is a number, the grammar decides
+    /// how it reads.
     private var pickupStopNote: String {
         if atPickup { return "Picked up" }
         guard showsHeroPair else { return "Not started yet" }
-        return "\(String(format: "%.1f", pickupRemainMiles)) mi \u{00B7} \(toPickupMinutes) min"
+        return "\(String(format: "%.1f", pickupRemainMiles)) mi \u{00B7} \(RideDuration.text(minutes: toPickupMinutes))"
     }
 
     private func stopRow(isDropoff: Bool, place: String, clock: String, filled: Bool, note: String, last: Bool) -> some View {
@@ -464,7 +483,7 @@ struct RideRequestTrackingContent: View {
                     .mrtTextShimmer(duration: 2.6)
                 Spacer(minLength: 8)
                 HStack(spacing: 8) {
-                    Text(remainMinutes < 1 ? "< 1 min" : "\(remainMinutes) min")
+                    Text(remainMinutes < 1 ? "< 1 min" : RideDuration.text(minutes: remainMinutes))
                         .font(.system(size: 17, weight: .semibold))
                         .monospacedDigit()
                         .foregroundStyle(Color.mrtText)

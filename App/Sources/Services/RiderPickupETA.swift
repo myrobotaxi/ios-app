@@ -119,7 +119,11 @@ enum RiderIdlePlaceholder {
     static let destinationPrompt = "Where to?"
 
     /// screens.jsx:1979 `A ride is ${sel.etaMin} min away` — copied exactly.
-    static func etaLine(minutes: Int) -> String { "A ride is \(minutes) min away" }
+    /// MYR-395 — the count of minutes became `RideDuration`, so a rider whose
+    /// only available car is two states away reads "A ride is 43 hr 12 min away"
+    /// rather than "A ride is 2592 min away". Sub-hour is byte-identical, which
+    /// is what keeps `riderIdleETA`'s capture and the prototype's own copy intact.
+    static func etaLine(minutes: Int) -> String { "A ride is \(RideDuration.awayText(minutes: minutes))" }
 
     /// THE matrix. The placeholder stays plain `["Where to?"]` unless every gate
     /// passes:
@@ -219,6 +223,6 @@ enum RidePickupETADisplay {
     /// The "N min away" note, or `nil` when there is no estimate — the caller
     /// renders nothing rather than "0 min away".
     static func awayNote(etaMin: Int) -> String? {
-        minutes(etaMin).map { "\($0) min away" }
+        minutes(etaMin).map(RideDuration.awayText(minutes:))
     }
 }

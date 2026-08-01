@@ -32,7 +32,12 @@ struct RiderTrackingPeekContent: View {
     /// The hero pair, already formatted by the full card's own rules. `nil`
     /// whenever `ladder.showsPickupCountdown` is false OR the stage is past
     /// pickup — the peek then reads as a status line alone.
-    let minutesText: String?
+    ///
+    /// MYR-395 — the UNIT travels with the value. This layer renders the two in
+    /// different type, and a hardcoded "min" beside a number the shared
+    /// `RideDuration` grammar may have written as "43 hr 43" is exactly the
+    /// four-digit-minutes render that issue removed.
+    let duration: (value: String, unit: String)?
     let milesText: String?
     /// The one-line context under the status ("Picking you up at …" /
     /// "Dropping you off at …").
@@ -69,15 +74,15 @@ struct RiderTrackingPeekContent: View {
                 }
             }
             Spacer(minLength: 8)
-            if let minutesText, let milesText {
+            if let duration, let milesText {
                 VStack(alignment: .trailing, spacing: 5) {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text(minutesText)
+                        Text(duration.value)
                             .font(.system(size: 34, weight: .bold))
                             .monospacedDigit()
                             .tracking(-1)
                             .foregroundStyle(Color.mrtText)
-                        Text("min")
+                        Text(duration.unit)
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(Color.mrtGold.opacity(0.8))
                     }

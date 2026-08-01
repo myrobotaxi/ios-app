@@ -124,7 +124,7 @@ final class RouteEtchContinuityTests: XCTestCase {
         let identity = RouteEtchIdentity(road(from: pickup, to: destination))
 
         let first = RouteEtchPresentation.resolve(
-            etch: true, reduceMotion: false, isRealRoute: true,
+            etch: true, reduceMotion: false, availability: .road,
             etchedProgress: ledger.progress(for: identity)
         )
         XCTAssertEqual(first, .init(opening: .etching, progress: 0), "the first arrival etches from zero")
@@ -133,7 +133,7 @@ final class RouteEtchContinuityTests: XCTestCase {
         ledger.record(identity, progress: 1)
 
         let afterFlip = RouteEtchPresentation.resolve(
-            etch: true, reduceMotion: false, isRealRoute: true,
+            etch: true, reduceMotion: false, availability: .road,
             etchedProgress: ledger.progress(for: identity)
         )
         XCTAssertEqual(
@@ -174,7 +174,7 @@ final class RouteEtchContinuityTests: XCTestCase {
     /// rather than a second collapse.
     func testBookingSettlesStaticOverAFinishedEtch() {
         let resolved = RouteEtchPresentation.resolve(
-            etch: false, reduceMotion: false, isRealRoute: true, etchedProgress: 1
+            etch: false, reduceMotion: false, availability: .road, etchedProgress: 1
         )
         XCTAssertEqual(resolved.opening, .settled)
     }
@@ -185,7 +185,7 @@ final class RouteEtchContinuityTests: XCTestCase {
         for etched in [0.0, 1.0] {
             XCTAssertEqual(
                 RouteEtchPresentation.resolve(
-                    etch: true, reduceMotion: true, isRealRoute: true, etchedProgress: etched
+                    etch: true, reduceMotion: true, availability: .road, etchedProgress: etched
                 ).opening,
                 .settled
             )
@@ -194,13 +194,126 @@ final class RouteEtchContinuityTests: XCTestCase {
 
     /// The straight `[pickup, destination]` fallback is never etched and never
     /// remembered as etched (MYR-237's client rule, MYR-293's one predicate).
+    ///
+    /// MYR-395 — the OPENING moved from `.loading` to `.lineless` here, because
+    /// `.unavailable` means the fetch answered: nothing is running, so nothing may
+    /// breathe. `.resolving` is the arm that still gets `.loading`, asserted below.
     func testTheStraightFallbackIsNeverEtched() {
         XCTAssertEqual(
             RouteEtchPresentation.resolve(
-                etch: true, reduceMotion: false, isRealRoute: false, etchedProgress: 1
+                etch: true, reduceMotion: false, availability: .unavailable, etchedProgress: 1
             ),
-            .init(opening: .loading, progress: 0),
+            .init(opening: .lineless, progress: 0),
             "a straight line is not a route, so there is nothing to have drawn"
+        )
+    }
+
+    // MARK: MYR-395 — no presentation may draw a line for a route that is not one
+
+    /// **THE INVARIANT, and the defect it forbids.**
+    ///
+    /// r16, the client, on a 1,049 mi Grayslake IL → Galleria Dallas booking:
+    /// *"Looks like your route etch update broke the line from being drawn: this
+    /// is a major regression."*
+    ///
+    /// The ledger was NOT the cause on the surface he photographed — but the arm
+    /// this test sweeps is real, and it is the one the issue named: MYR-390 put
+    /// the realness guard BELOW the `etch` guard, and the branch above it draws
+    /// the line WHOLE. So `etch: false` (the Booking sheet) and `reduceMotion:
+    /// true` (any rider with motion turned down) skipped the geometry question
+    /// entirely, took `.settled`, and rendered the provider's straight fallback as
+    /// a 949-mile gold route across five states. Reproduced before the fix with
+    /// `MRT_SCENE=booking MRT_ROUTE_UNAVAILABLE=1`.
+    ///
+    /// Stated against `Opening.drawsWholeLine` rather than against a list of two
+    /// case names, so an opening added later has to answer the question instead of
+    /// being quietly outside a test that enumerates `.pulsing` and `.settled`.
+    func testNoPresentationDrawsAWholeLineOverARouteThatIsNotOne() {
+        for availability in [RideRouteAvailability.resolving, .unavailable] {
+            for etch in [true, false] {
+                for reduceMotion in [true, false] {
+                    // Every ledger value, including the FULL one MYR-390 records
+                    // when a pass completes — the "identity marked seen" case.
+                    for etched in [0.0, 0.5, 1.0] {
+                        let resolved = RouteEtchPresentation.resolve(
+                            etch: etch, reduceMotion: reduceMotion,
+                            availability: availability, etchedProgress: etched
+                        )
+                        let label = "availability=\(availability) etch=\(etch) rm=\(reduceMotion) etched=\(etched)"
+                        XCTAssertFalse(
+                            resolved.opening.drawsWholeLine,
+                            "\(label): a straight fallback was presented as a drawn route"
+                        )
+                        XCTAssertEqual(
+                            resolved.progress, 0,
+                            "\(label): a route nobody can draw has no progress to open at"
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /// The two lineless states differ in MOTION and only in motion, and getting
+    /// that backwards is what made the client's map look busy forever.
+    ///
+    /// `.resolving` genuinely has a fetch running, so an etching surface breathes
+    /// MYR-237's head where the laser will start. `.unavailable` has finished
+    /// failing, so nothing anywhere may animate about it — that head is a claim
+    /// that work is in progress.
+    func testOnlyAnInFlightFetchIsAllowedToLookBusy() {
+        XCTAssertEqual(
+            RouteEtchPresentation.resolve(
+                etch: true, reduceMotion: false, availability: .resolving, etchedProgress: 0
+            ).opening,
+            .loading,
+            "MKDirections is working — the etch head breathes at the pickup"
+        )
+        XCTAssertEqual(
+            RouteEtchPresentation.resolve(
+                etch: true, reduceMotion: false, availability: .unavailable, etchedProgress: 0
+            ).opening,
+            .lineless,
+            "MKDirections answered and it was not a route — nothing is working, so nothing breathes"
+        )
+        // A static surface never breathes for either reason.
+        for availability in [RideRouteAvailability.resolving, .unavailable] {
+            XCTAssertEqual(
+                RouteEtchPresentation.resolve(
+                    etch: false, reduceMotion: false, availability: availability, etchedProgress: 0
+                ).opening,
+                .lineless,
+                "Booking is static: it draws no line and it does not animate about one"
+            )
+            XCTAssertEqual(
+                RouteEtchPresentation.resolve(
+                    etch: true, reduceMotion: true, availability: availability, etchedProgress: 0
+                ).opening,
+                .lineless,
+                "Reduce Motion is a promise, and it outranks the working cue"
+            )
+        }
+    }
+
+    /// A REAL route is untouched by the reordering — all four MYR-390 arms still
+    /// resolve exactly as they did, which is what keeps every route capture
+    /// byte-identical.
+    func testARealRouteResolvesExactlyAsItDidBeforeTheGuardMoved() {
+        XCTAssertEqual(
+            RouteEtchPresentation.resolve(etch: true, reduceMotion: false, availability: .road, etchedProgress: 0),
+            .init(opening: .etching, progress: 0)
+        )
+        XCTAssertEqual(
+            RouteEtchPresentation.resolve(etch: true, reduceMotion: false, availability: .road, etchedProgress: 1),
+            .init(opening: .pulsing, progress: 1)
+        )
+        XCTAssertEqual(
+            RouteEtchPresentation.resolve(etch: false, reduceMotion: false, availability: .road, etchedProgress: 0.4),
+            .init(opening: .settled, progress: 0.4)
+        )
+        XCTAssertEqual(
+            RouteEtchPresentation.resolve(etch: true, reduceMotion: true, availability: .road, etchedProgress: 1),
+            .init(opening: .settled, progress: 1)
         )
     }
 
@@ -218,7 +331,7 @@ final class RouteEtchContinuityTests: XCTestCase {
         )
         XCTAssertEqual(
             RouteEtchPresentation.resolve(
-                etch: true, reduceMotion: false, isRealRoute: true,
+                etch: true, reduceMotion: false, availability: .road,
                 etchedProgress: ledger.progress(for: newTrip)
             ),
             .init(opening: .etching, progress: 0)

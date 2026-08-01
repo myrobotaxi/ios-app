@@ -523,6 +523,13 @@ public enum MRTMetrics {
     /// device metric, like the other full-bleed physical-edge offsets (MYR-196).
     public static let trackingFitTopInset: CGFloat = 88
 
+    /// MYR-395 — the gap between the ride-request map's bottom chrome and the
+    /// route-availability caption ("Finding route…" / "Can't find a route right
+    /// now") that sits above it. Clear of MapKit's attribution band, which the
+    /// same `bottomInset` already lifts, and tight enough that the line reads as
+    /// belonging to the MAP rather than floating over the sheet.
+    public static let routeAvailabilityCaptionGap: CGFloat = 14
+
     /// Bottom offset for the rider recenter button on the live tracking map
     /// (MYR-177) — floats just above the content-sized tracking sheet, mirroring
     /// the idle map's `FloatingMapButton` placement/language.

@@ -608,7 +608,7 @@ private struct LiveTripBanner: View {
     /// when they do not, matching the hero's own promotion of speed.
     private var detailLine: Text {
         if showsTripFigures {
-            return Text("\(snapshot.etaMinutes) min ").foregroundStyle(Color.mrtDriving).fontWeight(.semibold)
+            return Text("\(RideDuration.text(minutes: snapshot.etaMinutes)) ").foregroundStyle(Color.mrtDriving).fontWeight(.semibold)
                 + Text("remaining · \(String(format: "%.1f", remainingMiles)) mi").foregroundStyle(Color.mrtTextSec)
         }
         return Text("\(snapshot.speedMPH) mph").foregroundStyle(Color.mrtTextSec)
@@ -696,7 +696,7 @@ private struct DriveRow: View {
                             .foregroundStyle(Color.mrtGoldTimeLabel)
                             .fixedSize()
                     }
-                    (Text("\(String(format: "%.1f", drive.miles)) mi · \(drive.mins) min · ")
+                    (Text("\(String(format: "%.1f", drive.miles)) mi · \(RideDuration.text(minutes: drive.mins)) · ")
                         .foregroundStyle(Color.mrtTextSec)
                         + Text("\(drive.fsdPercent)% FSD").foregroundStyle(Color.mrtGold).fontWeight(.semibold))
                         .font(.system(size: 12.5))

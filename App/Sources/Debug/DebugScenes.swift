@@ -80,6 +80,15 @@ enum DebugScene: String, CaseIterable {
     /// the map across that flip.
     case riderScheduledReviewRealPath
     case review
+    /// MYR-395 — `review` VERBATIM except for the two ENDPOINTS: the client's own
+    /// r16 trip, Grayslake IL → Galleria Dallas TX (949 road miles). It exists
+    /// because a cross-country pair is not a bigger version of `review`'s 18.4 mi
+    /// SFO run — it is the input that puts ~7,300 MKDirections vertices through a
+    /// per-frame screen-space overlay, and the ONLY route by which the client's
+    /// "no line at all" frame can be photographed. Everything else about the scene
+    /// (the fleet member, the sheet, the CTA) is `review`'s, so `review` itself
+    /// stays byte-identical and the pair is a clean two-coordinate diff.
+    case reviewLongDistance
     case reviewPicker
     case booking
     case pending           // minimized "Request sent" pill on the idle map
@@ -437,6 +446,29 @@ enum DebugScene: String, CaseIterable {
     /// `OwnerHomeState` (not view state), so it stays gone across a `HomeScreen`
     /// remount. Capture at t≈1s and t≈7s to see both halves.
     case ownerDispatchedCompleted
+    /// MYR-396 — owner Home holding a ride in progress that was **NOT seeded, but
+    /// READ BACK**: the cold-launch adoption, running for real.
+    ///
+    /// THE PAIR'S OTHER HALF IS `ownerDispatched`, and the diff is provenance
+    /// rather than pixels: the same leg-1 dispatch card, one arrived at by tapping
+    /// Accept in this process and one restored from the server after the process
+    /// that accepted it died. On TestFlight r16 this frame was BLANK — *"When I
+    /// close out the app the owner loses the UI of the current ride in progress."*
+    ///
+    /// It is LIVE-PATH-ONLY by construction and could not be otherwise: the
+    /// simulated service holds one in-process record and has no server to re-read,
+    /// so `refreshOwnerDispatch` is a no-op there and every simulated owner capture
+    /// is byte-identical. This scene composes the PRODUCTION
+    /// `LiveRideRequestService` over a scripted `DebugRideRequestEndpoint` and lets
+    /// its real `start()` sequence run — the same "real code path, injected wire"
+    /// precedent as `DebugShareEndpoint` / `DebugServiceWindowEndpoint`.
+    ///
+    /// **The wire is what makes it proof.** The ride is served ONLY by
+    /// `GET /api/ride-requests/{id}` (`DebugRideRequestEndpoint.dispatched`): the
+    /// rider list is empty and the incoming feed is empty, exactly as §7.8 leaves
+    /// an owner whose ride has been accepted. A stub that also listed it would let
+    /// this scene pass with the adoption deleted.
+    case ownerDispatchColdAdopted
     // MARK: MYR-376/377 — the reservation lifecycle
     /// MYR-376 — owner Home holding an ACCEPTED RESERVATION FOR TOMORROW.
     ///
@@ -1297,6 +1329,26 @@ enum DebugScene: String, CaseIterable {
     /// notice string.
     var refusesRideCancelOnBoot: Bool { self == .trackingCancelRefused }
 
+    /// MYR-395 capture modifier, orthogonal to the scene: `MRT_ROUTE_UNAVAILABLE=1`
+    /// (env or `-MRT_ROUTE_UNAVAILABLE 1` arg) swaps the rider's route provider for
+    /// `StraightLineRideRouteProvider` — which returns EXACTLY the `[from, to]`
+    /// pair `AppleRideRouteProvider` returns when MKDirections is throttled,
+    /// offline, or loses the 8s deadline race. Nothing else changes: the shipping
+    /// store caches it, the shipping `RideRoutePolyline.isReal` refuses it, and the
+    /// shipping `RouteEtchPresentation.resolve` decides what the surface says.
+    ///
+    /// It exists because that state has NO other headless capture route. On a
+    /// networked simulator MKDirections answers every pair — including the
+    /// client's 949-mile one — in about a second (measured), so the frame he
+    /// photographed cannot be reached by picking a longer trip. Unset, every
+    /// existing scene runs the real Apple provider and is byte-identical.
+    static var routeUnavailable: Bool {
+        if ProcessInfo.processInfo.environment["MRT_ROUTE_UNAVAILABLE"] == "1" { return true }
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-MRT_ROUTE_UNAVAILABLE"), i + 1 < args.count { return args[i + 1] == "1" }
+        return false
+    }
+
     /// MYR-346 — simulate an INCOMING universal link, orthogonal to the scene.
     ///
     /// `MRT_JOIN_LINK` (or `-MRT_JOIN_LINK <value>`) takes either a full URL
@@ -1549,7 +1601,44 @@ enum DebugScene: String, CaseIterable {
     /// identity it cannot authenticate for. Scoped to this ONE scene, so every
     /// other scene — `ownerScheduled` and `ownerIncoming` included — keeps its
     /// simulated, pixel-identical rendering (CLAUDE.md drift gate).
-    var rendersLiveIncomingRequest: Bool { self == .ownerScheduledLive }
+    ///
+    /// MYR-396 adds `ownerDispatchColdAdopted` for the same reason, pointed at the
+    /// DISPATCH card rather than the incoming one: the record it restores is a wire
+    /// record, so its rider name must come off `requesterName` too. Without this
+    /// the status line would read the fixture "Sam" over a ride the server named,
+    /// which is a capture of the shipping code telling a small lie.
+    var rendersLiveIncomingRequest: Bool {
+        self == .ownerScheduledLive || self == .ownerDispatchColdAdopted
+    }
+
+    /// MYR-396 — the PRODUCTION `LiveRideRequestService` over a scripted §7.8
+    /// endpoint, for the ONE scene whose subject is a cold read.
+    ///
+    /// `autoStart: true`, deliberately: what the capture has to show is the real
+    /// `start()` sequence — rider adoption, then `refreshOwnerDispatch`, then the
+    /// incoming feed — doing on a simulator exactly what it does on the client's
+    /// phone. The pointer is seeded IN MEMORY (`InMemoryOwnerDispatchPointer`, the
+    /// `RootView.recentDestinationsStore()` precedent), so a ride left behind by
+    /// hand-driving a live flow on the same simulator can never frame a capture,
+    /// and nothing this scene does outlives it.
+    @MainActor
+    var rideRequestServiceOverride: LiveRideRequestService? {
+        guard self == .ownerDispatchColdAdopted else { return nil }
+        let rideID = "ride_cold_adopted"
+        return LiveRideRequestService(
+            api: DebugRideRequestEndpoint(dispatched: [
+                DebugRideRequestEndpoint.dispatch(
+                    id: rideID,
+                    vehicleID: DebugVehicleDetailsFleet.vehicleID,
+                    requesterName: "Mira",
+                    status: .accepted
+                )
+            ]),
+            socket: DebugInertRideSocket(),
+            autoStart: true,
+            dispatchPointer: InMemoryOwnerDispatchPointer(rideID: rideID)
+        )
+    }
 
     /// MYR-315 — whether owner Home should render its LIVE surfaces even though the
     /// simulator composed the simulated app mode. Same precedent as
@@ -1806,6 +1895,8 @@ enum DebugScene: String, CaseIterable {
             || self == .ownerNoticeCharge || self == .ownerNoticeAsleep || self == .ownerNoticeSeat
             || self == .ownerDispatched || self == .ownerDispatchedArrived
             || self == .ownerDispatchedEnroute || self == .ownerDispatchedCompleted
+            // MYR-396 — the same owner Home, restored from a cold read.
+            || self == .ownerDispatchColdAdopted
             || self == .ownerFreshnessStale || self == .ownerFreshnessWaking
             || self == .ownerDrivingNoNav || self == .ownerDrivingResolvingDestination
             || self == .ownerFreshnessInService || self == .ownerFreshnessRefused
@@ -2293,6 +2384,34 @@ enum DebugScene: String, CaseIterable {
     /// with real distances/times (SFO · Terminal 2, 18.4 mi / 32 min).
     private static var sampleDestination: RidePlace { RideRequestFixtures.recentPlaces[1] }
 
+    /// MYR-395 — the client's own r16 endpoints, verbatim: a pickup in Grayslake
+    /// IL and Galleria Dallas TX. 949 road miles / ~7,300 MKDirections vertices —
+    /// the input the etch overlay was never measured against.
+    static let longDistancePickupCoordinate = CLLocationCoordinate2D(latitude: 42.3444, longitude: -88.0417)
+    static let longDistanceDestinationCoordinate = CLLocationCoordinate2D(latitude: 32.9308, longitude: -96.8206)
+
+    private static var longDistancePickup: RidePlace {
+        RidePlace(
+            id: "pin-grayslake",
+            label: "Grayslake",
+            subtitle: nil,
+            miles: 0, minutes: 0,
+            icon: "mappin.circle.fill",
+            coordinate: longDistancePickupCoordinate
+        )
+    }
+
+    private static var longDistanceDestination: RidePlace {
+        RidePlace(
+            id: "galleria-dallas",
+            label: "Galleria Dallas",
+            subtitle: "13350 Dallas Pkwy, Dallas, TX",
+            miles: 0, minutes: 0,
+            icon: "bag.fill",
+            coordinate: longDistanceDestinationCoordinate
+        )
+    }
+
     /// Sample pickup — a dropped-pin place, matching the shape `PinDrop`
     /// writes back into the draft.
     private static var samplePickup: RidePlace {
@@ -2722,6 +2841,14 @@ enum DebugScene: String, CaseIterable {
             viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
             viewer.sheetPhase = .review
+        case .reviewLongDistance:
+            // MYR-395 — `review`'s seeding with the client's own two endpoints
+            // swapped in. Nothing else is set, so whatever the capture shows about
+            // the route came from the shipping fetch, the shipping predicate and
+            // the shipping presentation.
+            viewer.draftPickup = DebugScene.longDistancePickup
+            viewer.draftDestination = DebugScene.longDistanceDestination
+            viewer.sheetPhase = .review
         case .riderScheduledReview:
             // MYR-389 — `review` VERBATIM plus a committed schedule, so the pair
             // is a clean one-field diff and the CTA becomes the scheduled one.
@@ -2830,6 +2957,9 @@ enum DebugScene: String, CaseIterable {
              .ownerNoticeRejectedInService,
              .ownerDispatched, .ownerDispatchedArrived, .ownerDispatchedEnroute,
              .ownerDispatchedCompleted,
+             // MYR-396 — the cold-adopted dispatch seeds NOTHING: its whole point
+             // is that the record comes off the wire through the shipping service.
+             .ownerDispatchColdAdopted,
              // MYR-376 — the two owner reservation scenes seed nothing about the
              // rider sheet; the dormant one's whole subject is a card that is NOT
              // rendered, and the upcoming one is the Drives tab.
