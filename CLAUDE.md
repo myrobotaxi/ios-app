@@ -2591,9 +2591,27 @@ semantics are UNCHANGED by all of it — only what each of the twelve states ren
   `activityRailStale` `#5C5A54`, and `TokenTests` pins that there are exactly five
   tones and that they are pairwise distinct.
 - **THE CHIP AND THE ISLAND SPEAK TWO VOCABULARIES.** `chipWord` is the long one
-  ("Reservation expired"); `compactWord` is one word that never truncates
-  (Sent/Coming/Here/Driving/Done/Ended/Ride). One table served both in v1, which is
-  why the island was rendering the chip's word in a slot that fits "Ended".
+  ("Reservation expired"); `compactWord` is the island's own
+  (Requested / On the way / Arrived / Arriving / Dropped off / Ride ended / Ride).
+  One table served both in v1, which is why the island was rendering the chip's
+  word in a slot that fits five characters.
+  **The compact column is the CLIENT's, 2026-07-31, and it supersedes la-data's** —
+  he chose the ride's own vocabulary over the car talking about itself, and the
+  three unhappy endings share ONE phrase with the specific reason left on the card.
+  Five entries now equal the chip verbatim, which reads as the split being reverted
+  and is not: the split exists so a LONG chip word cannot reach the island, and
+  "Reservation expired" (19) still becomes 10.
+  **⚠️ IT ALSO RELAXES THE BOARD'S "ONE WORD" RULE — AND THAT RULE WAS HOW "NEVER
+  TRUNCATES" WAS GUARANTEED**, so the guarantee had to move to a measurement, and
+  the measurement immediately caught one. The directed phrase for the endings was
+  "Ride cancelled"; it renders **"Ride cancell…"** and evicts the status bar's wifi
+  and battery glyphs. Measured text width in that slot, one device, one run:
+  Requested 70.3 · **Ride ended 73.7 (shipped)** · On the way 74.3 · Dropped off
+  80.0 · Ride cancelled 91.3 **TRUNCATED**, ceiling ~91pt. The shipped phrase is
+  the widest passing alternative and keeps every part of the intent; it is a
+  one-word revert. `RideActivityIslandUITests.testTheLongestCompactWordsFitTheSlot`
+  is the capture and `testTheShippedEndingPhraseIsTheWidestONEThatFits` the pin.
+  **A copy table with no width rule needs a capture, not a character count.**
 - **STALE: THE CHIP BECOMES THE WARNING.** "Not updating" + a grey dot, the headline
   swaps to the state's own sentence (never a frozen timer — a frozen countdown looks
   identical to a working one), the rail keeps its fraction desaturated to `#5C5A54`,

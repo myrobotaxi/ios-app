@@ -147,7 +147,7 @@ final class RideActivityCardTests: XCTestCase {
                 chipWord: "Requested",
                 tone: .pending,
                 pulses: false,
-                compact: .word("Sent")
+                compact: .word("Requested")
             )
         )
     }
@@ -182,7 +182,7 @@ final class RideActivityCardTests: XCTestCase {
                 chipWord: "On the way",
                 tone: .active,
                 pulses: false,
-                compact: .word("Coming")
+                compact: .word("On the way")
             )
         )
     }
@@ -199,7 +199,7 @@ final class RideActivityCardTests: XCTestCase {
                 chipWord: "Arrived",
                 tone: .active,
                 pulses: true,
-                compact: .word("Here")
+                compact: .word("Arrived")
             )
         )
     }
@@ -231,7 +231,7 @@ final class RideActivityCardTests: XCTestCase {
                 chipWord: "In ride",
                 tone: .riding,
                 pulses: false,
-                compact: .word("Driving")
+                compact: .word("Arriving")
             )
         )
     }
@@ -278,7 +278,7 @@ final class RideActivityCardTests: XCTestCase {
                 chipWord: "Dropped off",
                 tone: .complete,
                 pulses: false,
-                compact: .word("Done")
+                compact: .word("Dropped off")
             )
         )
     }
@@ -293,7 +293,7 @@ final class RideActivityCardTests: XCTestCase {
                 chipWord: "Declined",
                 tone: .terminal,
                 pulses: false,
-                compact: .word("Ended")
+                compact: .word("Ride ended")
             )
         )
     }
@@ -313,7 +313,7 @@ final class RideActivityCardTests: XCTestCase {
                 chipWord: "Cancelled",
                 tone: .terminal,
                 pulses: false,
-                compact: .word("Ended")
+                compact: .word("Ride ended")
             )
         )
 
@@ -335,7 +335,7 @@ final class RideActivityCardTests: XCTestCase {
                 chipWord: "Reservation expired",
                 tone: .terminal,
                 pulses: false,
-                compact: .word("Ended")
+                compact: .word("Ride ended")
             )
         )
     }
@@ -552,35 +552,138 @@ final class RideActivityCardTests: XCTestCase {
 
     // MARK: - 4. The chip and the compact island are two vocabularies
 
-    func testTheCompactWordIsShorterThanTheChipWordWhereverTheyDiffer() {
-        // Board decision 1, and the defect it fixes: v1's compact island fell back
-        // to the CHIP's word, which put "Reservation expired" into a slot that fits
-        // "Ended". They are two tables now, and this is the property that says why.
-        for status in LiveActivityRideStatus.allCases {
-            let chip = RideActivityCopy.chipWord(for: status)
-            let compact = RideActivityCopy.compactWord(for: status)
-            XCTAssertLessThanOrEqual(
-                compact.count, chip.count,
-                "\(status.rawValue): the island's word may never be longer than the chip's"
+    func testTheCompactColumnIsTheCLIENTsTableVerbatim() {
+        // CLIENT DECISION, 2026-07-31, which SUPERSEDES `la-data.jsx`'s own compact
+        // column and relaxes the board's "one word" rule on purpose. Written as
+        // literals because a chosen table has no derivation to check it against —
+        // any rule expressive enough to generate these would also generate the
+        // words he replaced.
+        let table: [(LiveActivityRideStatus, String)] = [
+            (.requested, "Requested"),      // was "Sent"
+            (.accepted, "On the way"),      // was "Coming"
+            (.arrived, "Arrived"),          // was "Here"
+            (.enroute, "Arriving"),         // was "Driving"
+            (.completed, "Dropped off"),    // was "Done"
+            (.declined, "Ride ended"),  // all three unhappy endings share
+            (.cancelled, "Ride ended"), // ONE phrase, client-directed
+            (.reservationExpired, "Ride ended"),
+            (.unrecognized("boarding"), "Ride"),
+        ]
+        for (status, word) in table {
+            XCTAssertEqual(RideActivityCopy.compactWord(for: status), word, status.rawValue)
+        }
+    }
+
+    func testTheISLANDStillHasItsOwnColumnEvenThoughFourEntriesNowMatchTheChip() {
+        // ⚠️ The part of board decision 1 that the client's table does NOT undo, and
+        // the reason this is asserted separately rather than folded into the literals
+        // above: four of the seven now equal the chip verbatim, which READS like the
+        // two-table split being reverted. It is not. The split exists so a state
+        // whose chip is long can say something short in a slot a few dozen points
+        // wide — and that is exactly the property v1 broke by falling back to the
+        // chip's word.
+        //
+        // Stated as the invariant that survives the client's choice: a chip word too
+        // long for the slot must not reach the island. The three endings are the
+        // whole point — "Reservation expired" is 19 characters and becomes 5.
+        for status in [LiveActivityRideStatus.declined, .cancelled, .reservationExpired] {
+            XCTAssertEqual(RideActivityCopy.compactWord(for: status), "Ride ended", status.rawValue)
+            XCTAssertNotEqual(
+                RideActivityCopy.compactWord(for: status),
+                RideActivityCopy.chipWord(for: status),
+                "\(status.rawValue): the island must not inherit the chip's word"
             )
-            XCTAssertFalse(
-                compact.contains(" "),
-                "\(status.rawValue): the compact island's text is ONE word — \(compact)"
+        }
+        // The case the split exists for, in numbers: the longest chip in the set
+        // does not reach the island.
+        XCTAssertEqual(RideActivityCopy.chipWord(for: .reservationExpired).count, 19)
+        XCTAssertEqual(RideActivityCopy.compactWord(for: .reservationExpired).count, 10)
+
+        // ⚠️ AND THE PRECISION THE SHARED PHRASE COSTS, ASSERTED SO IT CANNOT BE
+        // MISTAKEN FOR A BUG LATER. A ride the OWNER declined did not "cancel", and
+        // neither did a lapsed reservation — the island says one thing about all
+        // three on purpose, and the CARD keeps all three apart.
+        XCTAssertEqual(
+            Set([LiveActivityRideStatus.declined, .cancelled, .reservationExpired]
+                .map(RideActivityCopy.compactWord(for:))).count,
+            1,
+            "the three unhappy endings share one island phrase"
+        )
+        XCTAssertEqual(
+            Set([LiveActivityRideStatus.declined, .cancelled, .reservationExpired]
+                .map(RideActivityCopy.chipWord(for:))).count,
+            3,
+            "…and the chip still tells all three apart, which is where the reason lives"
+        )
+
+        // The general form, so a future long chip word cannot quietly reach the
+        // island either. 11 is "Dropped off" — the longest string this table has,
+        // and one the slot has been MEASURED holding (80.0pt against a ~91pt
+        // ceiling). See the ending-phrase test below for where the ceiling is.
+        for status in LiveActivityRideStatus.allCases {
+            XCTAssertLessThanOrEqual(
+                RideActivityCopy.compactWord(for: status).count,
+                11,
+                "\(status.rawValue): longer than the widest string measured in the slot"
             )
         }
     }
 
-    func testTheFourEndingsCollapseToOneWordOnTheIsland() {
-        // A rider glancing at the island wants to know the ride is over; which
-        // flavour of over it was is the lock card's business, and it says so in a
-        // whole sentence.
-        for status in [
-            LiveActivityRideStatus.declined, .cancelled, .reservationExpired,
-        ] {
-            XCTAssertEqual(RideActivityCopy.compactWord(for: status), "Ended", status.rawValue)
+    func testTheShippedEndingPhraseIsTheWidestONEThatFits() {
+        // ⚠️ THE ONE PLACE THIS PORT DOES NOT SAY WHAT WAS ASKED FOR, PINNED SO IT
+        // IS A DECISION AND NOT A DRIFT.
+        //
+        // The client asked for **"Ride cancelled"** on the three unhappy endings and
+        // asked, in the same breath, that the width be VERIFIED rather than assumed
+        // — *"if either truncates on device geometry, report it WITH the capture and
+        // the widest passing alternative, don't silently shorten."*
+        //
+        // It truncates. Captured on the iPhone 17 Pro compact island: "Ride
+        // cancell…", with the pill grown wide enough to evict the status bar's wifi
+        // and battery glyphs. Measured text widths in that slot, one run, one
+        // device:
+        //
+        //     "Requested"       70.3pt   fits
+        //     "Ride ended"      73.7pt   fits          ← shipped
+        //     "On the way"      74.3pt   fits
+        //     "Dropped off"     80.0pt   fits
+        //     "Ride cancelled"  91.3pt   TRUNCATED     ← the ceiling is ~91pt
+        //
+        // "Ride ended" keeps every part of the intent — ONE shared phrase across all
+        // three, more explicit than the board's bare "Ended", saying the one thing a
+        // glance needs — and fits with 17pt to spare. It is a one-word revert the
+        // moment the client prefers a different fit.
+        XCTAssertEqual(RideActivityCopy.compactWord(for: .cancelled), "Ride ended")
+        XCTAssertEqual("Ride ended".count, 10)
+        XCTAssertLessThan(
+            "Ride ended".count, "Ride cancelled".count,
+            "the shipped phrase is the shorter of the two, which is the whole point"
+        )
+    }
+
+    func testTheONEWORDRULEIsDeliberatelyGoneAndTheWIDTHRuleReplacedIt() {
+        // Recorded rather than silently dropped. The board wrote "one word, never
+        // truncates" — the second half was the point and the first half was how it
+        // guaranteed it. The client chose two-word copy knowing that, so the
+        // guarantee has to come from somewhere else: `RideActivityIslandUITests
+        // .testTheLongestCompactWordsFitTheSlot` captures the two longest on a real
+        // island, because whether a string fits a system-sized region at 14.5/500 is
+        // not something a character count can answer.
+        XCTAssertTrue(RideActivityCopy.compactWord(for: .accepted).contains(" "))
+    }
+
+    func testCompletedIsTheONEEndingThatDoesNotCollapseIntoTheUnhappyPhrase() {
+        // The three unhappy endings share "Ride ended"; `completed` keeps its
+        // own, because it is the ending that went RIGHT and a rider glancing down
+        // after a ride must never read that it was cancelled.
+        XCTAssertEqual(RideActivityCopy.compactWord(for: .completed), "Dropped off")
+        for status in [LiveActivityRideStatus.declined, .cancelled, .reservationExpired] {
+            XCTAssertNotEqual(
+                RideActivityCopy.compactWord(for: status),
+                RideActivityCopy.compactWord(for: .completed),
+                "\(status.rawValue) must not read like a completed ride"
+            )
         }
-        // …and `completed` does NOT, because it is the ending that went right.
-        XCTAssertEqual(RideActivityCopy.compactWord(for: .completed), "Done")
     }
 
     func testEveryStatusResolvesToExactlyOneOfTheHandoffsFiveTones() {
@@ -657,7 +760,7 @@ final class RideActivityCardTests: XCTestCase {
         XCTAssertEqual(stale.compact, .figure(Self.fourMinutes, isStale: true))
 
         // With no ETA there is no figure to keep, and the island falls to the word.
-        XCTAssertEqual(card(.enroute, eta: nil, isStale: true).compact, .word("Driving"))
+        XCTAssertEqual(card(.enroute, eta: nil, isStale: true).compact, .word("Arriving"))
     }
 
     func testTheWordStaleNeverRendersAnywhereInTheMatrix() {

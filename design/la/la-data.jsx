@@ -1,4 +1,14 @@
 // Live Activity + Dynamic Island — the state machine, as data.
+//
+// ⚠️ MIRROR NOTE (MYR-398 v2 port, 2026-07-31). This file is the client's, copied
+// verbatim EXCEPT for two later client decisions that arrived after he wrote it and
+// that the port asserts against. Both are marked inline below:
+//   • MYR-405 — the `completed` linger is ~5 min, not ~15.
+//   • The COMPACT column, in full: Sent→Requested, Coming→On the way,
+//     Here→Arrived, Driving→Arriving, Done→Dropped off, and all three unhappy
+//     endings collapse to ONE shared phrase, Ended→Ride ended.
+//     `RideActivityCopy.compactWord` is the shipping table and carries the
+//     reasoning, including why the shared phrase costs some precision on purpose.
 // One row per state the widget can render. This mirrors RideActivityCopy
 // on the client; every string here is a client-side string.
 
@@ -23,7 +33,7 @@ const LA_STATES = [
     headline: { kind: 'sentence', text: LA_VEHICLE + ' is on its way to you' },
     second: { pickup: true },
     track: null, chip: 'Requested', tone: 'pending',
-    compact: { text: 'Sent', tone: 'pending' },
+    compact: { text: 'Requested', tone: 'pending' }, // client 2026-07-31: was 'Sent'
   },
   {
     id: 'accepted-eta', label: 'Accepted · ETA + progress', group: 'live',
@@ -39,7 +49,7 @@ const LA_STATES = [
     headline: { kind: 'sentence', text: LA_VEHICLE + ' is coming to pick you up' },
     second: { pickup: true },
     track: null, chip: 'On the way', tone: 'active',
-    compact: { text: 'Coming', tone: 'active' },
+    compact: { text: 'On the way', tone: 'active' }, // client 2026-07-31: was 'Coming'
   },
   {
     id: 'arrived', label: 'Arrived', group: 'live',
@@ -47,7 +57,7 @@ const LA_STATES = [
     headline: { kind: 'sentence', text: LA_VEHICLE + ' is here' },
     second: { pickup: true },
     track: { p: 1, leg: 1 }, chip: 'Arrived', tone: 'active', pulse: true,
-    compact: { text: 'Here', tone: 'active' },
+    compact: { text: 'Arrived', tone: 'active' }, // client 2026-07-31: was 'Here'
   },
   {
     id: 'enroute-eta', label: 'En route · ETA', group: 'live',
@@ -61,7 +71,7 @@ const LA_STATES = [
     note: 'Sentence + destination. Rail shown only if progress is present.',
     headline: { kind: 'sentence', text: LA_VEHICLE + ' is taking you there' },
     second: { trip: true }, track: { p: 0.52, leg: 2 }, chip: 'In ride', tone: 'riding',
-    compact: { text: 'Driving', tone: 'riding' },
+    compact: { text: 'Arriving', tone: 'riding' }, // client 2026-07-31: was 'Driving'
   },
   {
     id: 'stale', label: 'Stale · pushes stopped', group: 'live',
@@ -79,28 +89,28 @@ const LA_STATES = [
     note: 'Lingers ~5 min. Full rail, arrow parked on the destination cap — the only arrival beat.',
     headline: { kind: 'sentence', text: "You've arrived at " + LA_DEST },
     second: null, track: { p: 1, leg: 2 }, chip: 'Dropped off', tone: 'done',
-    compact: { text: 'Done', tone: 'done' },
+    compact: { text: 'Dropped off', tone: 'done' }, // client 2026-07-31: was 'Done'
   },
   {
     id: 'declined', label: 'Declined', group: 'end',
     note: 'No second line, no rail. Chip carries the whole outcome.',
     headline: { kind: 'sentence', text: LA_VEHICLE + " can't take this ride" },
     second: null, track: null, chip: 'Declined', tone: 'dead',
-    compact: { text: 'Ended', tone: 'dead' },
+    compact: { text: 'Ride ended', tone: 'dead' }, // client 2026-07-31: was 'Ended'; asked as 'Ride cancelled', which TRUNCATES (91.3pt vs the slot's ~91pt ceiling) — see RideActivityCopy.compactWord
   },
   {
     id: 'cancelled', label: 'Cancelled', group: 'end',
     note: 'Subject-free sentence — the rider may be the one who cancelled.',
     headline: { kind: 'sentence', text: 'This ride was cancelled' },
     second: null, track: null, chip: 'Cancelled', tone: 'dead',
-    compact: { text: 'Ended', tone: 'dead' },
+    compact: { text: 'Ride ended', tone: 'dead' }, // client 2026-07-31: was 'Ended'; asked as 'Ride cancelled', which TRUNCATES (91.3pt vs the slot's ~91pt ceiling) — see RideActivityCopy.compactWord
   },
   {
     id: 'expired', label: 'Reservation expired', group: 'end',
     note: 'Longest chip in the set — sets the chip’s max width.',
     headline: { kind: 'sentence', text: LA_VEHICLE + " didn't make it in time" },
     second: null, track: null, chip: 'Reservation expired', tone: 'dead',
-    compact: { text: 'Ended', tone: 'dead' },
+    compact: { text: 'Ride ended', tone: 'dead' }, // client 2026-07-31: was 'Ended'; asked as 'Ride cancelled', which TRUNCATES (91.3pt vs the slot's ~91pt ceiling) — see RideActivityCopy.compactWord
   },
   {
     id: 'unknown', label: 'Unknown status · fallback', group: 'end',

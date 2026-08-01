@@ -102,8 +102,9 @@ final class RideActivityIslandUITests: XCTestCase {
     /// The set is chosen so the island's two trailing vocabularies are both covered
     /// and can be told apart at a glance: `accepted` / `enroute` carry the FIGURE
     /// (15/600 tabular), and `requested` / `noProgress` / `arrived` / `enrouteNoETA`
-    /// carry the four SHORT WORDS (14.5/500) that board decision 1 added —
-    /// Sent / Coming / Here / Driving. v1 rendered the chip's long word in that slot.
+    /// carry the four status strings (14.5/500) from the client's own compact table
+    /// — Requested / On the way / Arrived / Arriving. v1 rendered the chip's long
+    /// word in that slot.
     func testTheIslandRendersEveryLiveState() throws {
         for state in ["requested", "accepted", "noProgress", "arrived", "enroute", "enrouteNoETA"] {
             captureBothIslandStates(state)
@@ -155,6 +156,39 @@ final class RideActivityIslandUITests: XCTestCase {
         springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
         Thread.sleep(forTimeInterval: 1)
         app.terminate()
+    }
+
+    /// **DO THE TWO LONGEST COMPACT STRINGS FIT?**
+    ///
+    /// The board's rule was "one word, never truncates" — and the first half was
+    /// how the second half was guaranteed. The client's 2026-07-31 compact table
+    /// breaks it repeatedly: **"Dropped off"** (11), **"Ride ended"** (10), **"On
+    /// the way"** (10) and **"Requested"** (9). So the guarantee has to come from a
+    /// measurement instead — a character count cannot answer whether a string fits a
+    /// system-sized region at 14.5/500 beside a 16pt arrow, and the compact pill's
+    /// own width grows only until the leading region's budget runs out.
+    ///
+    /// ⚠️ **THIS TEST ALREADY EARNED ITS KEEP.** The client's directed phrase for
+    /// the three unhappy endings was **"Ride cancelled"** (14), and the first run of
+    /// this method photographed it rendering as **"Ride cancell…"** with the pill
+    /// grown wide enough to evict the status bar's wifi and battery glyphs. Measured
+    /// in that capture: 91.3pt of text where the slot's ceiling is ~91pt. The
+    /// shipped phrase is the widest passing alternative — see
+    /// `RideActivityCopy.compactWord` for the full ladder and the reasoning.
+    ///
+    /// All four are captured. A truncation shows as an ellipsis in the trailing
+    /// slot, and the finding goes in the PR **with the capture and the widest
+    /// passing alternative** rather than the copy being quietly shortened.
+    func testTheLongestCompactWordsFitTheSlot() throws {
+        // cancelled → "Ride ended"  · completed → "Dropped off"
+        // noProgress → "On the way" · requested → "Requested"
+        for state in ["cancelled", "completed", "noProgress", "requested"] {
+            let app = startActivity(state: state)
+            XCUIDevice.shared.press(.home)
+            Thread.sleep(forTimeInterval: 3)
+            attach(XCUIScreen.main.screenshot(), named: "island-compact-width-\(state)")
+            app.terminate()
+        }
     }
 
     /// **THE FIGURE HOLDS** — the client's 2026-07-31 ruling, photographed.

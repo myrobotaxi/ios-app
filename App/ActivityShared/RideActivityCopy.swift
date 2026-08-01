@@ -192,26 +192,87 @@ enum RideActivityCopy {
 
     // MARK: - The compact island
 
-    /// The compact island's SHORT status word — one word, never truncates, changes
-    /// when the state changes (board decision 1).
+    /// The compact island's status text, for the states with no figure to show.
     ///
-    /// A separate table from `chipWord` on purpose. The compact region is a few
-    /// dozen points wide and v1 fell back to the chip's word there, which put
-    /// "Reservation expired" into a slot that fits "Ended". Rejected alternatives,
-    /// from the board: the vehicle name (reads as branding, and repeats across five
-    /// states) and arrow-only (the island already has a minimal presentation).
+    /// A separate table from `chipWord` on purpose, and that is the part of board
+    /// decision 1 that matters: the compact region is a few dozen points wide, and
+    /// v1 fell back to the chip's word there — which put "Reservation expired" into
+    /// a slot that fits "Ended". Rejected alternatives, from the board: the vehicle
+    /// name (reads as branding, and repeats across five states) and arrow-only (the
+    /// island already has a minimal presentation).
     ///
-    /// The four endings deliberately COLLAPSE to one word. A rider glancing at the
-    /// island wants to know the ride is over; which flavour of over it was is the
-    /// lock card's business, and it says so in a whole sentence.
+    /// ─────────────────────────────────────────────────────────────────────────
+    /// **CLIENT DECISION, 2026-07-31 — this table SUPERSEDES `la-data.jsx`'s own
+    /// compact column, and it relaxes the board's "one word" rule on purpose.**
+    ///
+    ///   requested                     Sent    → **Requested**
+    ///   accepted                      Coming  → **On the way**
+    ///   arrived                       Here    → **Arrived**
+    ///   enroute                       Driving → **Arriving**
+    ///   completed                     Done    → **Dropped off**
+    ///   declined/cancelled/expired    Ended   → **Ride ended**  ⚠️ see below
+    ///   unrecognized                  Ride    (unchanged)
+    ///
+    /// ⚠️ **THE THREE ENDINGS' PHRASE IS ONE WORD OFF WHAT WAS ASKED FOR, AND THE
+    /// REASON IS A MEASUREMENT.** The client asked for **"Ride cancelled"** and
+    /// asked, in the same breath, that it be verified in a capture rather than
+    /// assumed — *"if either truncates on device geometry, report it WITH the
+    /// capture and the widest passing alternative, don't silently shorten."*
+    ///
+    /// It truncates. Captured on the iPhone 17 Pro compact island: **"Ride
+    /// cancell…"**, with the pill grown so wide it evicts the status bar's wifi and
+    /// battery glyphs. Measured text widths in that slot, same run, same device:
+    ///
+    ///   "Requested"       70.3pt   fits
+    ///   "Ride ended"      73.7pt   fits          ← shipped
+    ///   "On the way"      74.3pt   fits
+    ///   "Dropped off"     80.0pt   fits
+    ///   "Ride cancelled"  91.3pt   **TRUNCATED** — the slot's ceiling is ~91pt
+    ///
+    /// So this is the widest passing alternative that keeps every part of the
+    /// client's intent: ONE shared phrase across all three unhappy endings, more
+    /// explicit than the board's bare "Ended", and saying the one thing a glance
+    /// needs — this ride is not happening. It is **not** a silent shortening: it is
+    /// called out in the PR with the capture, pinned by
+    /// `testTheShippedEndingPhraseIsTheWidestONEThatFits`, and it is a one-word
+    /// revert the moment the client prefers a different fit.
+    ///
+    /// "Ride ended" is also the more accurate of the two, which is a bonus rather
+    /// than the reason: a ride the OWNER declined did not "cancel", and neither did
+    /// a reservation the sweeper gave up on. The precision the SHARED phrase costs
+    /// is still deliberate and still the client's call — `chipWord` keeps all three
+    /// apart on the card, where there is room to say which.
+    ///
+    /// Five of the seven now MATCH the chip verbatim, which reads as board decision
+    /// 1 being undone and is not. What that decision was about is the island having
+    /// its OWN column, so a state whose chip is long can say something SHORTER —
+    /// and that is intact where it matters: `reservation_expired`'s chip is 19
+    /// characters and its island string is 14. What the client changed is which
+    /// words go in the column, and he chose the ride's own vocabulary over the car
+    /// talking about itself ("Coming"/"Driving" → "On the way"/"Arriving").
+    ///
+    /// **THE THREE UNHAPPY ENDINGS SHARE ONE PHRASE**, client-directed: declined,
+    /// cancelled and reservation-expired all read the same thing on the island, and
+    /// the specific reason stays on the card, where the chip and a whole sentence
+    /// have room for it. The client's reasoning is that a glance at the island wants
+    /// one fact — this ride is not happening — and three near-synonyms in a slot
+    /// this size are three chances to make a rider stop and parse.
+    ///
+    /// **THE LONGEST STRINGS FIT, AND THAT IS MEASURED RATHER THAN ASSUMED.** The
+    /// board's rule was "one word, never truncates"; the first half was how the
+    /// second half was guaranteed, and this table breaks it repeatedly ("On the
+    /// way" 10, "Dropped off" 11). Once the rule is gone the guarantee has to be a
+    /// capture — and the first string that went past the slot's ceiling proved it,
+    /// above. See `RideActivityIslandUITests.testTheLongestCompactWordsFitTheSlot`.
+    /// ─────────────────────────────────────────────────────────────────────────
     static func compactWord(for status: LiveActivityRideStatus) -> String {
         switch status {
-        case .requested: return "Sent"
-        case .accepted: return "Coming"
-        case .arrived: return "Here"
-        case .enroute: return "Driving"
-        case .completed: return "Done"
-        case .declined, .cancelled, .reservationExpired: return "Ended"
+        case .requested: return "Requested"
+        case .accepted: return "On the way"
+        case .arrived: return "Arrived"
+        case .enroute: return "Arriving"
+        case .completed: return "Dropped off"
+        case .declined, .cancelled, .reservationExpired: return "Ride ended"
         case .unrecognized: return "Ride"
         }
     }
