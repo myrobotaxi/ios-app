@@ -23,26 +23,28 @@ struct RideLiveActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: RideActivityAttributes.self) { context in
             // The lock-screen / banner presentation.
-            RideActivityLockScreenView(state: context.state, isStale: context.isStale)
+            RideActivityLockScreenView(card: card(context))
 
         } dynamicIsland: { context in
-            DynamicIsland {
+            let card = card(context)
+            return DynamicIsland {
                 DynamicIslandExpandedRegion(.center) {
-                    RideActivityIslandExpanded(state: context.state, isStale: context.isStale)
+                    RideActivityIslandExpanded(card: card)
                 }
             } compactLeading: {
-                RideActivityIslandLeading(state: context.state)
+                RideActivityIslandLeading(card: card)
             } compactTrailing: {
-                RideActivityIslandTrailing(state: context.state, isStale: context.isStale)
+                RideActivityIslandTrailing(card: card)
             } minimal: {
-                // phone-frame.jsx:29-33 — the minimal state is a single gold dot
-                // with a glow, and nothing else. It is what the rider sees when
-                // another app owns the island, so it says only "your ride is
-                // running".
-                Circle()
-                    .fill(context.isStale ? Color.mrtTextMuted : Color.mrtGold)
-                    .frame(width: 8, height: 8)
-                    .shadow(color: context.isStale ? .clear : Color.mrtGoldGlow, radius: 4)
+                // MYR-398 — THE MINIMAL STATE IS THE ARROW.
+                //
+                // MYR-172 put a bare gold dot here (phone-frame.jsx:29-33). The
+                // client's direction makes the brand's facet arrow the ride's
+                // glyph everywhere it appears — the track, the compact leading
+                // slot, and here — and a dot is the one place it would still be
+                // anonymous. This is what the rider sees when another app owns the
+                // island, so it has one job: say WHOSE ride is running.
+                ArrowMark(size: 15, glow: !context.isStale)
             }
             // Tapping any region opens the app, which routes to the rider's own
             // tracking sheet. No deep-link URL is set: the app already reconciles
@@ -51,5 +53,26 @@ struct RideLiveActivityWidget: Widget {
             // second, divergent route to the same screen.
             .keylineTint(Color.mrtGold)
         }
+    }
+
+    /// The ONE place a context becomes a card.
+    ///
+    /// Every presentation below takes the resolved `RideActivityCard` rather than
+    /// the raw context, so the lock screen, the compact island and the expanded
+    /// island cannot each answer "which leg is this?" differently — and so the
+    /// whole decision is a pure function the app's test bundle can drive
+    /// (`RideActivityCardTests`), which is the only way any of it is assertable at
+    /// all: an `ActivityViewContext` cannot be constructed in a test.
+    ///
+    /// The PICKUP LABEL comes off the static attributes, never off `context.state`.
+    /// §7.21.3 deliberately does not push it — a pickup cannot change for the life
+    /// of a ride and the app already holds it — so a widget that looked for it on
+    /// the wire would render no meet-at line, forever, against a correct server.
+    private func card(_ context: ActivityViewContext<RideActivityAttributes>) -> RideActivityCard {
+        RideActivityCard.resolve(
+            state: context.state,
+            pickupLabel: context.attributes.pickupLabel,
+            isStale: context.isStale
+        )
     }
 }

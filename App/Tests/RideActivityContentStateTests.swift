@@ -28,12 +28,13 @@ final class RideActivityContentStateTests: XCTestCase {
 
     // MARK: - 1. Raw keys
 
-    func testTheContentStateEncodesExactlyTheFiveContractKeys() throws {
+    func testTheContentStateEncodesExactlyTheSixContractKeys() throws {
         let state = RideActivityAttributes.ContentState(
             status: .enroute,
             eta: 1_785_535_200,
             vehicleName: "Blue Whale",
-            destination: "Home"
+            destination: "Home",
+            progress: 0.62
         )
 
         let json = try XCTUnwrap(
@@ -42,11 +43,12 @@ final class RideActivityContentStateTests: XCTestCase {
 
         XCTAssertEqual(
             Set(json.keys),
-            ["v", "status", "eta", "vehicleName", "destination"],
+            ["v", "status", "eta", "vehicleName", "destination", "progress"],
             """
             The property NAMES are the wire keys — there are no CodingKeys on this \
             type and there must not be. Renaming a property to read better (etaAt, \
-            vehicle, destinationLabel) stops that key decoding from a real push.
+            vehicle, destinationLabel, legProgress) stops that key decoding from a \
+            real push.
             """
         )
     }
@@ -74,6 +76,29 @@ final class RideActivityContentStateTests: XCTestCase {
         XCTAssertEqual(Set(json.keys), ["v", "status", "vehicleName", "destination"])
     }
 
+    func testTheProgressKeyIsOmittedRatherThanZeroWhenThereIsNoFraction() throws {
+        // MYR-398, and this is the sharpest of the three optional-key rules because
+        // `0` is a legal value of the field. §7.21.3: "an absent progress renders a
+        // TRACKLESS card, a wrong one renders a LIE… `0` is not the humble answer,
+        // it is the claim 'the car has covered none of the distance'". So a client
+        // that encoded `nil` as `0` — or a renderer that read `nil` as `0` — would
+        // draw a car sitting at the kerb it left ten minutes ago.
+        let state = RideActivityAttributes.ContentState(
+            status: .accepted,
+            eta: nil,
+            vehicleName: "Blue Whale",
+            destination: "Home",
+            progress: nil
+        )
+
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(state)) as? [String: Any]
+        )
+
+        XCTAssertFalse(json.keys.contains("progress"))
+        XCTAssertEqual(Set(json.keys), ["v", "status", "vehicleName", "destination"])
+    }
+
     // MARK: - 2. Cross-pin against the generated type
 
     func testTheMirrorProducesTheSAMERAWKEYSAsTheGeneratedContractType() throws {
@@ -85,14 +110,16 @@ final class RideActivityContentStateTests: XCTestCase {
             status: .enroute,
             eta: 1_785_535_200,
             vehicleName: "Blue Whale",
-            destination: "Home"
+            destination: "Home",
+            progress: 0.62
         )
         let generated = LiveActivityContentState(
             v: 1,
             status: .enroute,
             eta: 1_785_535_200,
             vehicleName: "Blue Whale",
-            destination: "Home"
+            destination: "Home",
+            progress: 0.62
         )
 
         let mirrorKeys = try rawKeys(of: mirror)
@@ -108,6 +135,32 @@ final class RideActivityContentStateTests: XCTestCase {
         )
     }
 
+    func testTheMirrorAndTheGeneratedTypeAgreeOnWhichKeysVANISHWhenAbsent() throws {
+        // The key-set comparison above is taken with EVERY optional populated, so
+        // it proves the two agree about SPELLING and would stay green if one side
+        // encoded an explicit `null` where the other omitted the key. That
+        // difference is the whole `progress` contract ("never null"), so it is
+        // measured separately, on the empty end of both types.
+        let mirror = RideActivityAttributes.ContentState(
+            status: .accepted,
+            eta: nil,
+            vehicleName: "Blue Whale",
+            destination: "Home",
+            progress: nil
+        )
+        let generated = LiveActivityContentState(
+            v: 1,
+            status: .accepted,
+            eta: nil,
+            vehicleName: "Blue Whale",
+            destination: "Home",
+            progress: nil
+        )
+
+        XCTAssertEqual(try rawKeys(of: mirror), try rawKeys(of: generated))
+        XCTAssertEqual(try rawKeys(of: mirror), ["v", "status", "vehicleName", "destination"])
+    }
+
     func testTheGeneratedContractTypeCanDecodeWhatTheMirrorEncodes() throws {
         // Byte-level interchangeability in the direction that matters least
         // (the client never sends a content state) but which pins the VALUES —
@@ -116,7 +169,8 @@ final class RideActivityContentStateTests: XCTestCase {
             status: .arrived,
             eta: 1_785_535_200,
             vehicleName: "Blue Whale",
-            destination: "Home"
+            destination: "Home",
+            progress: 1
         )
 
         let decoded = try JSONDecoder().decode(
@@ -129,6 +183,7 @@ final class RideActivityContentStateTests: XCTestCase {
         XCTAssertEqual(decoded.eta, 1_785_535_200)
         XCTAssertEqual(decoded.vehicleName, "Blue Whale")
         XCTAssertEqual(decoded.destination, "Home")
+        XCTAssertEqual(decoded.progress, 1)
     }
 
     // MARK: - 3. Decode the schema's own printed examples
@@ -137,13 +192,16 @@ final class RideActivityContentStateTests: XCTestCase {
     /// `v: 1`, `eta: 1785535200`, `vehicleName: "Blue Whale"`,
     /// `destination: "Home"`. This is what ActivityKit hands the widget.
     func testDecodesTheSchemasPrintedExamplePayload() throws {
+        // rest-api.md §7.21.4, "A routine ETA update" — byte for byte, including
+        // MYR-398's `progress`.
         let payload = Data("""
         {
           "v": 1,
           "status": "enroute",
           "eta": 1785535200,
           "vehicleName": "Blue Whale",
-          "destination": "Home"
+          "destination": "Home",
+          "progress": 0.62
         }
         """.utf8)
 
@@ -154,6 +212,7 @@ final class RideActivityContentStateTests: XCTestCase {
         XCTAssertEqual(state.eta, 1_785_535_200)
         XCTAssertEqual(state.vehicleName, "Blue Whale")
         XCTAssertEqual(state.destination, "Home")
+        XCTAssertEqual(state.progress, 0.62)
 
         // The unit assertion. `x-unit: unix-seconds` — a mirror that read this as
         // milliseconds would put the ETA in 1970 and the countdown would render
@@ -166,8 +225,9 @@ final class RideActivityContentStateTests: XCTestCase {
     }
 
     func testDecodesAPayloadWithNoETAKeyAtAll() throws {
-        // "a car with no active nav route yields no key at all rather than an
-        // invented number".
+        // rest-api.md §7.21.4's SECOND printed envelope — "A car with no active
+        // navigation route — the same ride, honestly degraded. Both `eta` and
+        // `progress` are absent keys, not zeros".
         let payload = Data("""
         {"v":1,"status":"accepted","vehicleName":"Blue Whale","destination":"Home"}
         """.utf8)
@@ -177,6 +237,26 @@ final class RideActivityContentStateTests: XCTestCase {
         XCTAssertNil(state.eta)
         XCTAssertNil(state.etaDate)
         XCTAssertEqual(state.status, .accepted)
+        XCTAssertNil(
+            state.progress,
+            "an absent progress key must decode to nil, never to a zero fraction"
+        )
+    }
+
+    func testDecodesTheCompletedEnvelopesProgressOfExactlyOne() throws {
+        // §7.21.4's THIRD envelope. `1` is unquoted and un-decimalled on the wire,
+        // which is a JSON integer — a mirror that typed this field as `Int?` would
+        // decode it and then silently fail on the `0.62` in the routine tick above,
+        // and a mirror that typed it as a String would fail on both.
+        let payload = Data("""
+        {"v":1,"status":"completed","vehicleName":"Blue Whale","destination":"Home","progress":1}
+        """.utf8)
+
+        let state = try JSONDecoder().decode(RideActivityAttributes.ContentState.self, from: payload)
+
+        XCTAssertEqual(state.status, .completed)
+        XCTAssertEqual(state.progress, 1)
+        XCTAssertTrue(state.isTerminal)
     }
 
     func testDecodesAnUnnamedVehicleAsAnEmptyStringRatherThanFailing() throws {

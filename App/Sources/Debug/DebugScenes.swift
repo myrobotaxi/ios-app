@@ -205,8 +205,11 @@ enum DebugScene: String, CaseIterable {
     /// a genuine Activity through the SHIPPING `SystemRideActivityPresenter` and
     /// then gets out of the way; the picture is of the system, not of the app.
     ///
-    /// `MRT_ACTIVITY_STATE=enroute|accepted|arrived|completed|stale` selects which
-    /// frame. `stale` is the honest-staleness arm and is seeded by handing
+    /// `MRT_ACTIVITY_STATE=enroute|accepted|arrived|completed|noProgress|stale`
+    /// selects which frame. MYR-398 adds `noProgress` — the honestly-degraded card
+    /// for a car with no active nav route, which sends neither `eta` nor
+    /// `progress`, so the capture is the headline + meet-at line with NO track and
+    /// no invented number. `stale` is the honest-staleness arm and is seeded by handing
     /// ActivityKit a stale-date in the PAST — there is no API to force staleness, so
     /// the only way to photograph `context.isStale` is to actually be stale. Default
     /// `enroute`.
@@ -2197,13 +2200,58 @@ enum DebugScene: String, CaseIterable {
 
         switch ProcessInfo.processInfo.environment["MRT_ACTIVITY_STATE"] ?? "enroute" {
         case "accepted":
-            return (RideActivityDebugLauncher.sampleState(status: .accepted, etaMinutesFromNow: 6), nil)
+            // MYR-398 — LEG ONE, the full card: "Pick up in 6:00", "Meet at Ferry
+            // Building" (the STATIC attribute, not the wire), and a track a third
+            // of the way along. `0.34` rather than a round number so the arrow
+            // lands somewhere a reader can see is a measurement.
+            return (
+                RideActivityDebugLauncher.sampleState(
+                    status: .accepted,
+                    etaMinutesFromNow: 6,
+                    progress: 0.34
+                ),
+                nil
+            )
+        case "noProgress":
+            // MYR-398 — THE TRACKLESS DEGRADE, which is the state the honesty rules
+            // are for and which no other arm reaches. A car with no active
+            // navigation route yields NO `progress` key and NO `eta` key (§7.21.3's
+            // second envelope example, verbatim), so the card must compose to
+            // headline + meet-at with no rail and no fabricated number.
+            //
+            // Both keys are omitted TOGETHER because that is the situation the
+            // contract describes — one absent input, two absent outputs — and
+            // seeding only one would photograph a state the server does not emit.
+            return (
+                RideActivityDebugLauncher.sampleState(
+                    status: .accepted,
+                    etaMinutesFromNow: nil,
+                    progress: nil
+                ),
+                nil
+            )
         case "arrived":
             // A car that is HERE has nothing to count down to, so the frame carries
-            // no ETA — the same omission a real server sends.
-            return (RideActivityDebugLauncher.sampleState(status: .arrived, etaMinutesFromNow: nil), nil)
+            // no ETA — the same omission a real server sends. Its `progress` is
+            // exactly 1, asserted by the ride record rather than estimated, so the
+            // PICKUP track renders FULL beside "Blue Whale is here".
+            return (
+                RideActivityDebugLauncher.sampleState(
+                    status: .arrived,
+                    etaMinutesFromNow: nil,
+                    progress: 1
+                ),
+                nil
+            )
         case "completed":
-            return (RideActivityDebugLauncher.sampleState(status: .completed, etaMinutesFromNow: nil), nil)
+            return (
+                RideActivityDebugLauncher.sampleState(
+                    status: .completed,
+                    etaMinutesFromNow: nil,
+                    progress: 1
+                ),
+                nil
+            )
         case "stale":
             // A stale-date a few seconds in the FUTURE, which then passes.
             //
@@ -2218,11 +2266,24 @@ enum DebugScene: String, CaseIterable {
             // CAPTURE AT t ≳ 15s after launch. Before that the card is correctly
             // NOT stale and the capture is of the ordinary enroute frame.
             return (
-                RideActivityDebugLauncher.sampleState(status: .enroute, etaMinutesFromNow: 4),
+                RideActivityDebugLauncher.sampleState(
+                    status: .enroute,
+                    etaMinutesFromNow: 4,
+                    progress: 0.62
+                ),
                 Date().addingTimeInterval(8)
             )
         default:
-            return (RideActivityDebugLauncher.sampleState(status: .enroute, etaMinutesFromNow: 4), nil)
+            // LEG TWO, the routine ETA tick — §7.21.4's first envelope example,
+            // whose `progress` is `0.62`.
+            return (
+                RideActivityDebugLauncher.sampleState(
+                    status: .enroute,
+                    etaMinutesFromNow: 4,
+                    progress: 0.62
+                ),
+                nil
+            )
         }
     }
 

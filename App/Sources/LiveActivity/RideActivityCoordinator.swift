@@ -75,7 +75,7 @@ final class RideActivityCoordinator {
             return
 
         case .start(let rideID, let state):
-            await performStart(rideID: rideID, state: state)
+            await performStart(rideID: rideID, state: state, pickupLabel: pickupLabel(of: record))
 
         case .update(let rideID, let state):
             await presenter.update(state: state, staleDate: RideActivityStaleness.date())
@@ -86,8 +86,23 @@ final class RideActivityCoordinator {
 
         case .restart(let endingRideID, let endingState, let rideID, let state):
             await performEnd(rideID: endingRideID, state: endingState, dismissal: .immediate)
-            await performStart(rideID: rideID, state: state)
+            await performStart(rideID: rideID, state: state, pickupLabel: pickupLabel(of: record))
         }
+    }
+
+    /// The rider's own label for where the car is collecting them — the MYR-398
+    /// "Meet at {pickup}" line, read off the ride record the Activity is being
+    /// started FROM.
+    ///
+    /// It is a STATIC attribute rather than a pushed field on the contract's own
+    /// instruction (§7.21.3): a pickup cannot change for the life of a ride, so
+    /// pushing it would repeat a P1 place label ~40 times a ride to tell the phone
+    /// a string it typed in itself. This accessor is the one place the app answers
+    /// it, and it answers `nil` — never `""` — when there is nothing to name, so
+    /// the card renders no meet-at line rather than "Meet at ".
+    private func pickupLabel(of record: RideRequestRecord?) -> String? {
+        let label = record?.input.pickup.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (label?.isEmpty ?? true) ? nil : label
     }
 
     /// Signing out ends the Activity at once. A lock-screen card naming a
@@ -99,9 +114,13 @@ final class RideActivityCoordinator {
 
     // MARK: - Effects
 
-    private func performStart(rideID: String, state: RideActivityAttributes.ContentState) async {
+    private func performStart(
+        rideID: String,
+        state: RideActivityAttributes.ContentState,
+        pickupLabel: String?
+    ) async {
         let started = await presenter.start(
-            attributes: RideActivityAttributes(rideID: rideID),
+            attributes: RideActivityAttributes(rideID: rideID, pickupLabel: pickupLabel),
             state: state,
             staleDate: RideActivityStaleness.date()
         )
