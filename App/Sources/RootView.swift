@@ -812,6 +812,11 @@ struct RootView: View {
             guard screen == .sharedHome else { return }
             sharedTab = "shared"
             Task { await service.refreshActiveRide() }
+            // MYR-402 — the third of the invariant's three events. A `ride.cancelled`
+            // push is the clearest case: the tap lands on a rider whose ride is over,
+            // and the surface it lands on is the idle sheet, whose availability gate
+            // is still reading the list row from before the ride.
+            sharedViewerState.refreshRideEndGateInputs()
         }
     }
 
@@ -1462,6 +1467,18 @@ struct RootView: View {
                 // come back from the server. Costs no request unless this device
                 // remembers a ride it accepted and is not already holding it.
                 Task { await rideRequestService.refreshOwnerDispatch() }
+                // MYR-402 — and the RIDER's held ride, for the symmetrical reason
+                // and against the symmetrical gap. MYR-396 gave the owner pipeline a
+                // foreground re-read and the rider pipeline still had none: its only
+                // refresh was `refreshActiveRide`, which was adopt-only, so a ride
+                // cancelled server-side while the app was suspended stayed in the
+                // rider's slot and MYR-341's placeholder stayed shut behind it. The
+                // Live Activity's own foreground backstop two Tasks above is written
+                // on exactly this reasoning ("if the terminal PUSH was missed… the
+                // card is still sitting on the lock screen") — the ride's own record
+                // needed the same one. Costs no request unless this device holds a
+                // server-confirmed rider ride.
+                Task { await rideRequestService.refreshActiveRide() }
                 // MYR-343 — a rider whose vehicle list never answered is sitting on
                 // the honest "can't reach" line with nothing in flight behind it.
                 // Recovery is the low-friction one MYR-326 settled on (a resume

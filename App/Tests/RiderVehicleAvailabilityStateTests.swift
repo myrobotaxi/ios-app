@@ -22,7 +22,7 @@ final class RiderVehicleAvailabilityStateTests: XCTestCase {
     func testOtherRidersOpenRideSurfacesAsBusy() {
         let state = SharedViewerState()
         state.debugFleetMemberOverride = LiveFleetMemberMapping.fleetMember(from: busySummary())
-        state.riderOwnsActiveRide = false
+        state.setRiderOwnsActiveRide(false)
 
         XCTAssertEqual(state.liveFleetMember?.unavailability, .busy)
         XCTAssertEqual(state.liveFleetMember?.isRequestable, false)
@@ -33,7 +33,7 @@ final class RiderVehicleAvailabilityStateTests: XCTestCase {
     func testOwnOpenRideNeverSurfacesAsBusy() {
         let state = SharedViewerState()
         state.debugFleetMemberOverride = LiveFleetMemberMapping.fleetMember(from: busySummary())
-        state.riderOwnsActiveRide = true
+        state.setRiderOwnsActiveRide(true)
 
         XCTAssertNil(state.liveFleetMember?.unavailability, "their own active ride takes precedence")
         XCTAssertEqual(state.liveFleetMember?.isRequestable, true)
@@ -48,7 +48,7 @@ final class RiderVehicleAvailabilityStateTests: XCTestCase {
     func testOwnRideExceptionDoesNotMaskOfflineAtTheSeam() {
         let state = SharedViewerState()
         state.debugFleetMemberOverride = LiveFleetMemberMapping.fleetMember(from: busySummary(status: .offline))
-        state.riderOwnsActiveRide = true
+        state.setRiderOwnsActiveRide(true)
 
         XCTAssertEqual(state.liveFleetMember?.unavailability, .offline)
         XCTAssertEqual(state.liveFleetMember?.isRequestable, false)

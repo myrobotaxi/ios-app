@@ -48,6 +48,32 @@ enum RiderRouteLifetime {
     }
 }
 
+/// MYR-233 criterion 4, as a pure rule (MYR-402).
+///
+/// It lived as a `switch` inside `SharedViewerScreen.syncRiderOwnsActiveRide`, which
+/// is fine until the question is asked by a test — and MYR-402 is a defect about
+/// what happens the moment this answer goes from `true` to `false`, so the answer
+/// had to become something a test can compute without mounting a view. It sits here
+/// beside the other two terminal-ride rules because it is the third one: what a
+/// terminal ride may still SUPPRESS.
+enum RiderOwnRideException {
+    /// Does this rider hold an OPEN ride — one whose car must never read Busy to
+    /// them (`FleetUnavailability.busy` only; see `LiveFleetMemberMapping`)?
+    ///
+    /// `nil` is FALSE and is the case MYR-402 turns on: `LiveRideRequestService`
+    /// maps the wire's `cancelled` to no status at all and empties the slot
+    /// (MYR-172's erasure), so a cancelled ride reaches this rule as an absence.
+    ///
+    /// Exhaustive rather than a set membership test, so a status added later has to
+    /// be classified rather than defaulting into holding the exception open.
+    static func holdsOpenRide(status: RideRequestStatus?) -> Bool {
+        switch status {
+        case .pending, .accepted, .arrived, .enroute: return true
+        case .completed, .declined, .none: return false
+        }
+    }
+}
+
 /// Should the Ride-declined card be on screen?
 ///
 /// MYR-306 filed the `.declined` acknowledgment variant on 2026-07-27 and it never

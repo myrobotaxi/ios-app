@@ -339,6 +339,19 @@ actor RoutedHTTP: HTTPPerforming {
         return (failing ? route.failureBody : route.body, response)
     }
 
+    /// MYR-402 — REPLACE what a route answers, mid-test.
+    ///
+    /// Every stub before this one was a fixed script, which is the right shape for
+    /// "what does the client make of this payload". MYR-402's question is the other
+    /// one: *does the client ever ASK AGAIN?* — and a stub that cannot change its
+    /// answer makes a re-read indistinguishable from a cached value, so a test built
+    /// on one would pass on the broken build. The wire changing under a client that
+    /// did not notice IS the defect.
+    func setBody(suffix: String, body: Data) {
+        guard let index = routes.firstIndex(where: { $0.suffix == suffix }) else { return }
+        routes[index].body = body
+    }
+
     func paths() -> [String] { requests.compactMap { $0.url?.path } }
     /// MYR-381 — the whole requests, for the tests that assert the BYTES (method +
     /// path + the id inside it) rather than only which routes were touched. A path

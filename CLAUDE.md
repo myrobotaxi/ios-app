@@ -1196,6 +1196,88 @@ can never contradict each other (asserted across all four reasons).
   byte-stable scene) by ~913k pixels at max delta 13. The frame stays FIXED and
   the reserve is added to the number.
 
+**A GATE WHOSE INPUT ONLY A COLD LAUNCH CAN CORRECT IS A LATCH** (MYR-402, client
+defect, build `202607311641`) — his active ride was cancelled SERVER-SIDE and the
+idle sheet's "A ride is N min away" never came back. His rule, verbatim: *"if you
+had a ride in progress and then no longer in progress the app should not have to be
+forced closed for the ride is x min away to show up."*
+
+MYR-341's four honesty gates were all CORRECT. Two of their INPUTS could be
+corrected by nothing short of a relaunch, which is the whole defect and is the
+MYR-389 "works after a force-quit" signature for the third time.
+
+- **THE ONE THAT FIRES ON THE HAPPY PATH is the availability gate, and it CLOSES on
+  the transition that should OPEN it.** `FleetUnavailability` comes from
+  `VehicleSummary.hasActiveRide` on `GET /api/vehicles`, and
+  `RiderLiveVehicleLocator` read that list **exactly once per rider-map mount** —
+  `handleForeground` refreshed the SOCKET's snapshot and nothing refreshed the
+  LIST. Worse, the staleness was INVISIBLE for the entire ride: MYR-233's own-ride
+  exception suppresses `.busy` for the rider holding the ride, so the pre-ride row
+  (`hasActiveRide: true`) sat masked and became load-bearing the instant the ride
+  was erased. **The rider's own finished ride was then reported back to them as the
+  car being busy** — no ETA line, and MYR-352's "no rides right now" banner over a
+  free car. `syncRiderOwnsActiveRide`'s own comment had promised "a genuinely busy
+  car reads Busy again **on the next list fetch**"; there was no next list fetch.
+  **A masked stale value is worse than a visible one — every test and every
+  screenshot taken DURING the ride is correct.**
+- **THE SECOND is the rider's slot, and it was releasable by exactly one channel.**
+  `refreshActiveRide()` was `adoptOpenRiderRide()` alone, whose first line is
+  `guard activeRequest == nil` — **adopt-only**: it could fill an empty slot and
+  could never empty a full one. So a cancellation (MYR-172's ERASURE: mapped to no
+  status at all, the record simply disappears) reached the client only as a WS
+  `ride_status_changed` frame, and a socket that was down, backgrounded or
+  terminally `auth_failed` (MYR-387's own finding) left a cancelled ride in the slot
+  for the rest of the session. `RootView` had gained MYR-396's foreground re-read
+  for the OWNER pipeline and the rider pipeline still had none.
+- **TWO CALLERS WERE ALREADY WRITTEN AS THOUGH THE RE-READ HAPPENED.** MYR-397's
+  awaited cancel documents "the caller's `refreshActiveRide()` re-reads and
+  `integrate` maps the wire's `cancelled` to the record disappearing", then settles
+  on `RiderActiveRideCancel.stillStands(status: activeRequest?.status)` — reading
+  back the LOCAL optimistic record, and right only because a frame usually followed.
+  The push tap's comment says it "pokes the EXISTING refresh that repopulates" the
+  rider surface. **A doc comment describing a call's effect is not evidence the call
+  has it**, and both of these read as correct at their own call site.
+
+The fix is three doors into one funnel, plus one that cannot be left half-open:
+
+- `RiderLiveVehicleLocator.refreshFleet()` re-reads §7.0 (coalesced onto any load in
+  flight, silent while the map is off screen, and a failed read changes nothing —
+  MYR-326's rule). `SharedViewerState.refreshRideEndGateInputs()` is the ONE funnel
+  over it plus the anchor re-seat, so an input added later joins in one place and is
+  covered by all three events at once — MYR-389's entry-invariant lesson pointed at
+  READS rather than at writes.
+- `refreshActiveRide()` now re-reads the HELD ride before adopting, **through
+  `integrate`** — the same fold `applyRemote` applies to a frame — so a refetched
+  cancellation erases the slot by the identical code path and there is no second
+  definition of "this ride is over". Narrow on purpose: a server id is required (an
+  optimistic MYR-218 record has nothing to ask about), a record must be held (else
+  a dismissed summary would be resurrected), and a failed read changes nothing.
+- **`riderOwnsActiveRide` is `private(set)` and `setRiderOwnsActiveRide` is its only
+  door.** The exception LIFTING is the moment the masked row becomes load-bearing,
+  so the lift and the re-read are now one statement the compiler enforces rather
+  than two call sites one of which can be forgotten. It fires on the true→false EDGE
+  only — `syncRiderOwnsActiveRide` runs on every appearance and every status fold,
+  and a refetch on each would be a poll wearing an observer's clothes.
+- `RiderIdleGate` names the three gates and `RiderIdlePlaceholder.items` is DERIVED
+  from `suppressingGate`, so a test can say WHICH gate latched. Before it, every
+  failure mode produced the identical `["Where to?"]` and a test could prove that
+  recovery failed without being able to say what failed to recover.
+
+**THIS SURFACE STILL CANNOT BE DRIFT-GATED BY A SCREENSHOT** (MYR-341's own note —
+the trace border, the search glow and the 2800ms crossfade make two launches of the
+SAME binary diff), and MYR-402 adds that it cannot usefully be given a capture scene
+either: the rider locator has no HTTP-injection seam, and reaching the gate through
+`debugFleetMembersOverride` would bypass the very list read this issue is about — a
+scene that passed for the wrong reason, which is the `VehicleRideShare.display`
+lesson. The guard is `RiderIdleGateRecoveryTests`, which drives the REAL composition
+(production locator over a `RoutedHTTP` whose `/vehicles` body CHANGES mid-test,
+production `LiveRideRequestService` over a scripted API and a controllable stream)
+and sweeps every `RiderIdleGate` for in-process recovery. **`RoutedHTTP.setBody`
+exists for this**: every stub before it was a fixed script, which answers "what does
+the client make of this payload" and cannot answer "does the client ever ASK AGAIN"
+— a fixed stub makes a re-read indistinguishable from a cached value, so a test
+built on one passes on the broken build.
+
 **Never present over a live first responder** (MYR-353) — TestFlight, Jul 30:
 *"When I tap on schedule it pops up behind the keyboard. Needs to be fixed."*
 `RideSlideUpCard` is an in-hierarchy overlay, bottom-flush and

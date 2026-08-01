@@ -635,6 +635,47 @@ public final class SharedViewerState {
         return "\(rider?.latitude ?? .nan),\(rider?.longitude ?? .nan)|\(vehicle?.latitude ?? .nan),\(vehicle?.longitude ?? .nan)"
     }
 
+    // MARK: MYR-402 — a ride ending is a REFETCH, not only a transition
+    //
+    // THE INVARIANT: every input to `RiderIdlePlaceholder`'s honesty gates is
+    // observed state that updates from the same events that end a ride — a WS
+    // frame, a foreground refetch, a push tap. No gate may latch.
+    //
+    // It did not hold, and the way it failed is worth stating because the shape
+    // recurs. `RiderIdleGate.carAvailability` reads `VehicleSummary.hasActiveRide`
+    // off `GET /api/vehicles`, and that list was fetched exactly ONCE per rider-map
+    // mount. Nothing re-read it when a ride ended, when the app foregrounded, or
+    // when a push was tapped — **a cold launch was the only refresh in the app**,
+    // which is precisely the "works after a force-quit" signature MYR-389 named as
+    // this whole class's tell.
+    //
+    // And the staleness was INVISIBLE while it mattered least: MYR-233's own-ride
+    // exception suppresses `.busy` for the rider holding the ride, so the stale row
+    // was masked for the whole ride and became load-bearing the instant the ride was
+    // erased. The gate therefore CLOSED on the transition that should have opened
+    // it. A test that only checked the placeholder DURING a ride would see nothing.
+
+    /// Re-read every input to the idle placeholder's honesty gates that this object
+    /// owns, and re-seat the anchors over whatever lands.
+    ///
+    /// ONE funnel rather than a call per input at each of the three event sites: an
+    /// input added later joins here and is covered by all three at once, which is
+    /// the MYR-389 lesson (an entry invariant beats an exit list) pointed at reads.
+    /// `RiderIdleGate.requestInFlight`'s input is the ride service's slot and is
+    /// refreshed by `RideRequestService.refreshActiveRide()`, the one input this
+    /// object does not hold.
+    ///
+    /// No-op on the simulated path (there is no locator), so every simulated and
+    /// DEBUG capture is byte-identical.
+    public func refreshRideEndGateInputs() {
+        // `carAvailability` — the §7.0 list row.
+        liveVehicleLocator?.refreshFleet()
+        // `pickupEstimate` — re-seat from whatever the raw endpoints say now. Writes
+        // nothing unless an anchor genuinely moved, so this cannot invalidate a view
+        // on its own.
+        refreshPickupETAAnchors()
+    }
+
     /// Re-seat both ETA anchors from the current raw fixes. Idempotent and cheap;
     /// writes an observable property ONLY when an anchor actually moved, so a
     /// streaming fix does not invalidate any view.
@@ -1153,7 +1194,29 @@ public final class SharedViewerState {
     /// own — `SharedViewerScreen` mirrors the service's status onto it. When
     /// true, the vehicle carrying that ride is never shown as Busy: the rider
     /// sees it as their active ride, exactly as before this issue.
-    public var riderOwnsActiveRide = false
+    ///
+    /// **MYR-402 — `private(set)`, and the setter below is the only door.** The
+    /// exception LIFTING is not a cosmetic flag flip: it is the moment the list row
+    /// it was masking becomes load-bearing, and that row is a cached read. Leaving
+    /// this assignable meant a caller could lift the mask without re-reading what
+    /// was under it — which is exactly what shipped, and what the client saw. Making
+    /// the write go through `setRiderOwnsActiveRide` puts the two facts in one
+    /// statement the compiler enforces, rather than in two call sites one of which
+    /// can be forgotten.
+    public private(set) var riderOwnsActiveRide = false
+
+    /// MYR-233 criterion 4 / MYR-402 — mirror "this rider holds an open ride" onto
+    /// the viewer state, and re-read the gate inputs whenever the mirror goes DOWN.
+    ///
+    /// Only on the true→false EDGE: this is called on every appearance and every
+    /// status fold, and re-reading on each of those would be a poll wearing an
+    /// observer's clothes. Raising the exception needs no refetch — the mask is
+    /// going ON, so what is under it cannot matter yet.
+    public func setRiderOwnsActiveRide(_ owned: Bool) {
+        let lifted = riderOwnsActiveRide && !owned
+        riderOwnsActiveRide = owned
+        if lifted { refreshRideEndGateInputs() }
+    }
 
     #if DEBUG
     /// MYR-233 drift-gate hook: a live-shaped `FleetMember` a capture scene can

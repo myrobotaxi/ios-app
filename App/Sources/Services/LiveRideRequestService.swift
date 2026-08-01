@@ -1489,10 +1489,55 @@ final class LiveRideRequestService: RideRequestService {
 
     /// MYR-186 — the rider half of push-tap re-sync. Runs the SAME cold-launch
     /// adoption `start()` performs, so a rider who launched from a notification
-    /// lands in their open ride's flow. Self-guarding: a no-op when this device
-    /// already tracks a ride (the WS frames are then authoritative).
+    /// lands in their open ride's flow.
+    ///
+    /// **MYR-402 — IT NOW RE-READS BEFORE IT ADOPTS, AND THAT IS THE WHOLE POINT.**
+    /// This method used to be `adoptOpenRiderRide()` alone, whose first line is
+    /// `guard activeRequest == nil` — so it was ADOPT-ONLY: it could fill an empty
+    /// slot and could never empty a full one. The rider's held ride was therefore
+    /// releasable by exactly one channel, the WS `ride_status_changed` frame, and a
+    /// socket that was down, backgrounded or terminally `auth_failed` (MYR-387's own
+    /// finding) left a cancelled ride in the slot for the rest of the session.
+    /// `RiderIdleGate.requestInFlight` then held the placeholder shut until the
+    /// process died — the force-quit signature, arriving by a second road.
+    ///
+    /// Two callers were already written as though the re-read happened:
+    ///  • **MYR-397's awaited cancel** documents "the caller's `refreshActiveRide()`
+    ///    re-reads and `integrate` maps the wire's `cancelled` to the record
+    ///    disappearing", then checks `stillStands(status: activeRequest?.status)` —
+    ///    against a record nothing had re-read. It reported the local optimistic
+    ///    value and happened to be right only because a frame usually followed.
+    ///  • **The push tap** (`RootView.applyPushTapRoute`) pokes "the EXISTING
+    ///    refresh that repopulates" the rider surface. A `ride.cancelled` push
+    ///    tapped by a rider whose socket missed the frame repopulated nothing.
+    ///
+    /// The re-read goes through `integrate`, deliberately — the SAME fold
+    /// `applyRemote` applies to a frame — so a refetched cancellation erases the
+    /// slot by the identical code path a frame does, and there is no second
+    /// definition of "this ride is over" to drift from the first.
     func refreshActiveRide() async {
+        await resyncHeldRiderRide()
         await adoptOpenRiderRide()
+    }
+
+    /// MYR-402 — ask the server about the ride this device's rider is DISPLAYING.
+    ///
+    /// Narrow on purpose, and each guard is load-bearing:
+    ///  • **A server id is required.** An optimistic record from a create still in
+    ///    its MYR-218 grace window has no server ride to ask about; asking would
+    ///    404 and folding a 404 would discard a ride the rider is mid-way through
+    ///    booking.
+    ///  • **A record must be HELD.** `riderServerRideID` can outlive the record it
+    ///    named for a beat; re-integrating then would RESURRECT a summary the rider
+    ///    dismissed (`completeAndReset` clears both, but the order is not this
+    ///    method's to depend on).
+    ///  • **A read that fails changes nothing** — `refreshOwnerDispatch`'s rule
+    ///    verbatim (MYR-326: a request that did not answer is not evidence that a
+    ///    ride ended). The WS frame remains the primary channel; this is the backstop.
+    private func resyncHeldRiderRide() async {
+        guard let rideID = riderServerRideID, activeRequest != nil else { return }
+        guard let ride = try? await api.rideRequest(id: rideID) else { return }
+        integrate(ride)
     }
 
     /// May a brand-new incoming `pending` request take the OWNER's slot?
