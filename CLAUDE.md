@@ -2639,6 +2639,102 @@ SpringBoard long-press expanded, per state), photographs the stale deadline from
 both sides, and holds the ETA figure across 70 seconds as the regression guard for
 the client's ruling.
 
+**TWO BANNERS FOR ONE RIDE, AND THE ONE THE SERVER PUSHED TO WAS NOT THE ONE
+STARVING** (MYR-405, client defect, build `202607312110`) — probe
+`MRT_ACTIVITY_ORPHAN=seed|relaunch`. TestFlight, Jul 31: two simultaneous Live
+Activity cards for one completed ride — an orphan stuck on "IN RIDE · On the
+way · **Not updating**" beside a second card that had received "DROPPED OFF" —
+and a Dynamic Island still reading "In ride" long after the ride ended.
+
+**THE HYPOTHESIS WAS HALF RIGHT, AND THE OTHER HALF IS WORSE.** The issue
+predicted a race with ActivityKit's ASYNCHRONOUS restore of `Activity.activities`
+— the start path enumerating an empty list mid-restore and requesting a second
+card. That race is real and had bitten the CAPTURE tooling the same day
+(`RideActivityDebugLauncher`'s sweep, MYR-398). But **production never enumerated
+`Activity.activities` at all.** `SystemRideActivityPresenter.start`'s "never run
+two" guard is `activity == nil` — THIS PROCESS's instance variable, which is nil
+in every new process — so the duplicate is not a race the app sometimes loses. It
+is **deterministic on every relaunch into a live ride**. Measured, two processes,
+one ride: pre-fix `count=2 [ride/active, ride/active]`, fixed `count=1` with the
+coordinator's phase on the restored card. A guard on a process-local handle is not
+a guard on a lock screen that outlives the process.
+
+- **`Activity.activities` IS THE ONLY WAY TO SEE THE PREVIOUS PROCESS'S CARD, AND
+  IT SETTLES LATE.** `RideActivityPresenting` grows a plain synchronous
+  `presentedActivities` read and the WAITING is policy in the coordinator
+  (`RideActivityRestore`, ~2s in 250ms steps), so a stub can drive the
+  half-restored list a real ActivityKit never will. **An empty list is never
+  believed until the budget is spent**; a non-empty one is believed once it stops
+  changing. The wait is latched per process (`restoreSettled`) — the race is a
+  once-per-process phenomenon and a ride accepted while the app is open must not
+  sit two seconds behind its own card.
+- **ADOPT, NEVER DUPLICATE.** An Activity for the SAME ride is taken over
+  (`adopt(rideID:)`) and `registered` is cleared so ITS token is re-registered.
+  That clearing is the half that makes the kept banner live again: the server keys
+  one token per `(ride, rider)` and replaces it destructively, so until it hears
+  the adopted Activity's own token every push still addresses whatever this account
+  registered last — which, in the client's case, was the duplicate.
+- **ORPHAN REAPING generalizes §7.21's 409-means-end-now** to launch AND
+  foreground. Any on-screen Activity that is not the account's live ride ends
+  `.immediate`, and the server is told. **Two skips carry as much weight as the
+  reap**: `.ended` is left alone (it is living out its dismissal policy, including
+  this issue's own five minutes — reaping it would be the fix cancelling the fix),
+  and `.dismissed` is remembered rather than reaped.
+- **⚠️ THE REAPER'S INPUT IS THE DANGEROUS PART, AND IT NEEDED A THIRD ARM.**
+  `activeRequest == nil` is BOTH "this rider holds no ride" and "§7.8 has not
+  answered yet", and reaping on the second reading would take a live ride's card
+  off the lock screen every time the phone launched with no signal — MYR-326's
+  "loading ≠ unavailable" and MYR-343's "three situations, one boolean", with a
+  lock-screen card as the casualty. `RideActivityLiveRide.unresolved` reaps nothing
+  and adopts nothing, and `RideRequestService.hasResolvedActiveRide` is the fact
+  behind it: set only where a §7.8 read genuinely ANSWERED, never reset, and
+  defaulted `true` for the simulated service. ONE bounded budget polls the
+  Activity list and the ride pipeline together, because both settle at launch.
+- **ADOPT BEFORE REAP, and `endActivity` skips the HELD Activity.** Two cards can
+  carry the SAME ride id — that is the client's screenshot — so a reap keyed on the
+  id alone takes down the banner the adoption just kept. The adoption is what marks
+  which of two identically-named cards survives. The same rule spares the §7.21
+  DELETE (`isDuplicateOfAdopted`): the registration is keyed on the ride, so
+  deleting it for a duplicate would starve the survivor **from inside the fix**.
+  Both were found by a test, not by reading.
+- **COMPLETED LINGER = 5 MINUTES**, client decision, superseding MYR-194's ~15.
+  It is a CLIENT-SIDE END POLICY and is **not** the server's 24h-floored APNs
+  expiration (MYR-398 review) — that governs how long APNs keeps TRYING to deliver;
+  this governs how long a finished ride stays on the lock screen. **The server
+  still disagrees**: `activity_notifier.go`'s `terminalStatuses` sends its own
+  `event: end` with `dismissal-date = now + 15min` for `completed`, and whichever
+  instruction lands last wins. Server follow-up, not fixable here.
+- **A NEW RIDE ENDS EVERY PRIOR CARD**, and that is the same expression as the
+  duplicate heal rather than a second rule: for a genuinely new ride the plan
+  adopts nothing, so every prior Activity is in `reap`.
+- **THE RIDER'S SWIPE IS FINAL.** A dismissal is otherwise INVISIBLE — no callback,
+  no error, and `Activity.activities` keeps listing it — so the held Activity's
+  `activityStateUpdates` is consumed and `.dismissed` is recorded. It is an INPUT
+  to the state machine (`dismissedRideIDs`) rather than a phase case, deliberately:
+  it outlives the phase, it can arrive from the RESTORE list for a ride this
+  process never presented, and more than one ride can be in it. A dismissal is a
+  decision about ONE ride — a NEW ride starts normally, which is the client's "or
+  if new ride begins" — and the server is told to stop pushing to a card nobody can
+  see. The in-app tracking sheet carries the ride either way.
+- **THE REPRO IS TWO PROCESSES OR IT IS NOTHING.** The defect lives on a process
+  boundary, so no unit test and no single launch can produce it. `seed` starts a
+  card and force-quits (`simctl terminate` does NOT end Live Activities — that is
+  the whole point of the feature); `relaunch` runs the PRODUCTION coordinator over
+  the PRODUCTION presenter for the same ride and logs a census through `os_log`
+  (`--console` does not reliably carry a SwiftUI app's stdout; `log stream` is what
+  the MYR-222 camera probe already uses).
+
+```sh
+SIMCTL_CHILD_MRT_ACTIVITY_ORPHAN=seed xcrun simctl launch <udid> app.myrobotaxi.ios
+xcrun simctl terminate <udid> app.myrobotaxi.ios      # the card SURVIVES this
+SIMCTL_CHILD_MRT_ACTIVITY_ORPHAN=relaunch xcrun simctl launch <udid> app.myrobotaxi.ios
+xcrun simctl spawn <udid> log stream --level=info \
+  --predicate 'subsystem == "app.myrobotaxi.ios" AND category == "liveactivity"'
+# healthy: count=1 throughout, and one `coordinator phase=<rideID>` line.
+# Uninstall between runs — a Live Activity outlives the app, so a stale one
+# silently makes the next run a picture of the last.
+```
+
 **Invite links have an address** (MYR-346) — an invite is shared as
 `https://myrobotaxi.app/join/{CODE}`, a branded web page whose OG card renders in
 the thread and which, on a phone that has the app, opens it straight to the

@@ -97,6 +97,19 @@ final class LiveRideRequestService: RideRequestService {
     /// i.e. through a record the server confirmed.
     private(set) var activeRequest: RideRequestRecord?
 
+    /// MYR-405 — has the rider's own ride list ANSWERED on this device yet?
+    ///
+    /// Set only where a §7.8 read actually came back; a read that THREW leaves it
+    /// false, which is the rule the whole feature turns on ("a read that fails
+    /// changes nothing", MYR-326/MYR-402). Never reset: a later failed re-read does
+    /// not un-know what a successful one established.
+    private var didReadRiderRideList = false
+
+    /// See `RideRequestService.hasResolvedActiveRide`. Holding a record is itself
+    /// resolution — a rider mid-booking on an optimistic MYR-218 draft knows
+    /// perfectly well what they are doing, list or no list.
+    var hasResolvedActiveRide: Bool { didReadRiderRideList || activeRequest != nil }
+
     /// The OWNER's current incoming/dispatched request — see the pipeline note
     /// above. `internal` rather than private so the pipeline's own invariants have
     /// direct unit coverage; the SCREENS read the two projections below, never this.
@@ -1590,6 +1603,11 @@ final class LiveRideRequestService: RideRequestService {
     private func adoptOpenRiderRide() async {
         guard activeRequest == nil, riderServerRideID == nil else { return }
         guard let page = try? await api.rideRequests(cursor: nil, limit: 20) else { return }
+        // MYR-405 — the list ANSWERED. From here on `activeRequest == nil` means
+        // "this rider holds no ride", which is what lets the Live Activity reaper
+        // treat a card still on the lock screen as an orphan. Set before the
+        // adoption guards below, because every one of them is a real answer.
+        didReadRiderRideList = true
         // MYR-377 — note the rider's soonest DORMANT reservation off the SAME page.
         // It is not adopted (a ride that is tomorrow must not own the map), but the
         // client still needs to know when to look again: dispatch produces no WS

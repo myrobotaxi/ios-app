@@ -112,7 +112,9 @@ final class RideActivityStateMachineTests: XCTestCase {
 
     // MARK: - Ending
 
-    func testACompletedRideEndsWithTheFifteenMinuteLinger() {
+    func testACompletedRideEndsWithTheFiveMinuteLinger() {
+        // MYR-405 SUPERSEDES MYR-194's ~15 minutes, by client decision on
+        // 2026-07-31: "when ride is complete we should clear banners after 5min".
         let record = makeRecord(status: .completed)
         let phase = RideActivityPhase.live(rideID: record.id, state: liveState(.enroute))
 
@@ -123,7 +125,7 @@ final class RideActivityStateMachineTests: XCTestCase {
         }
         XCTAssertEqual(rideID, record.id)
         XCTAssertEqual(state.status, .completed)
-        XCTAssertEqual(dismissal, .linger(15 * 60))
+        XCTAssertEqual(dismissal, .linger(5 * 60))
         XCTAssertEqual(dismissal, .completedLinger)
     }
 
@@ -289,7 +291,207 @@ final class RideActivityStateMachineTests: XCTestCase {
         // map FROM — the wire's `cancelled` is an erasure client-side.
     }
 
+    // MARK: - MYR-405: reconciling what the SYSTEM restored
+
+    func testTheLIVERidesRestoredCardIsADOPTEDAndEveryOtherOneIsREAPED() {
+        let plan = RideActivityStateMachine.reconcile(
+            snapshots: [
+                snapshot("stale-orphan"),
+                snapshot("ride-1"),
+                snapshot("another-orphan", .stale)
+            ],
+            liveRide: .live(rideID: "ride-1")
+        )
+
+        XCTAssertEqual(plan.adopt, "ride-1")
+        XCTAssertEqual(plan.reap, ["stale-orphan", "another-orphan"])
+        XCTAssertTrue(
+            !plan.isDuplicateOfAdopted("stale-orphan"),
+            "an orphan's (ride, rider) registration is genuinely dead and should be dropped"
+        )
+    }
+
+    func testASECONDCardForTheSameRideIsReapedButItsREGISTRATIONIsNot() {
+        // The client's exact frame. One is kept; the other comes down. The §7.21
+        // delete is keyed on the RIDE, so issuing it would delete the registration
+        // belonging to the banner just adopted — re-creating the starvation this
+        // whole issue is about, from inside the fix.
+        let plan = RideActivityStateMachine.reconcile(
+            snapshots: [snapshot("ride-1"), snapshot("ride-1")],
+            liveRide: .live(rideID: "ride-1")
+        )
+
+        XCTAssertEqual(plan.adopt, "ride-1")
+        XCTAssertEqual(plan.reap, ["ride-1"])
+        XCTAssertTrue(plan.isDuplicateOfAdopted("ride-1"))
+    }
+
+    func testAnUNRESOLVEDRideReapsNothingAndAdoptsNothing() {
+        // `.unresolved` is a real third arm, and leaving it out is how the reaper
+        // would eat the card it exists to protect: on a cold launch a nil record
+        // means "§7.8 has not answered", not "this rider has no ride".
+        let plan = RideActivityStateMachine.reconcile(
+            snapshots: [snapshot("ride-1"), snapshot("ride-2")],
+            liveRide: .unresolved
+        )
+
+        XCTAssertTrue(plan.reap.isEmpty)
+        XCTAssertNil(plan.adopt)
+    }
+
+    func testAnACCOUNTWithNoRideMakesEveryOnScreenCardAnOrphan() {
+        let plan = RideActivityStateMachine.reconcile(
+            snapshots: [snapshot("ride-1"), snapshot("ride-2")],
+            liveRide: .none
+        )
+
+        XCTAssertEqual(plan.reap, ["ride-1", "ride-2"])
+        XCTAssertNil(plan.adopt)
+    }
+
+    func testAnENDEDCardIsSKIPPEDSoItsDismissalPolicyIsAllowedToRun() {
+        // `.ended` means the system is already taking it down on the policy it was
+        // given — for a completed ride, MYR-405's own five minutes.
+        let plan = RideActivityStateMachine.reconcile(
+            snapshots: [snapshot("ride-done", .ended)],
+            liveRide: .none
+        )
+
+        XCTAssertTrue(plan.reap.isEmpty)
+        XCTAssertNil(plan.adopt)
+        XCTAssertTrue(plan.dismissed.isEmpty, "ended is the APP's doing; dismissed is the RIDER's")
+    }
+
+    func testADISMISSEDCardIsRememberedRatherThanReapedOrAdopted() {
+        let plan = RideActivityStateMachine.reconcile(
+            snapshots: [snapshot("ride-1", .dismissed)],
+            liveRide: .live(rideID: "ride-1")
+        )
+
+        XCTAssertEqual(plan.dismissed, ["ride-1"])
+        XCTAssertTrue(plan.reap.isEmpty, "nothing is on screen to reap")
+        XCTAssertNil(plan.adopt, "and nothing is on screen to adopt")
+    }
+
+    // MARK: - MYR-405: resolving the account's ride
+
+    func testAnUnansweredPipelineResolvesUNRESOLVEDWhateverTheRecordSays() {
+        XCTAssertEqual(
+            RideActivityAccountRide(record: nil, isResolved: false).resolve(),
+            .unresolved
+        )
+        XCTAssertEqual(
+            RideActivityAccountRide(record: makeRecord(status: .enroute), isResolved: false).resolve(),
+            .unresolved
+        )
+    }
+
+    func testACOMPLETEDRideStillOWNSItsCard() {
+        // Not reaped as an orphan: the state machine has to be the one that ends it,
+        // because only the state machine knows to end it on the five-minute linger
+        // rather than immediately.
+        XCTAssertEqual(
+            RideActivityAccountRide(record: makeRecord(status: .completed), isResolved: true).resolve(),
+            .live(rideID: "ride-1")
+        )
+    }
+
+    func testADORMANTReservationOwnsNOCardAtAll() {
+        // The same `RideReservation.isLiveRide` gate `startState` consults, so
+        // "which ride may hold a card" is ONE rule rather than two that can drift.
+        // A reservation accepted for Saturday is not the ride the rider is on today.
+        let record = makeRecord(status: .accepted, schedule: RideSchedule(day: "Sat", time: "5:30 PM"))
+
+        XCTAssertEqual(
+            RideActivityAccountRide(record: record, isResolved: true).resolve(),
+            RideActivityLiveRide.none
+        )
+    }
+
+    // MARK: - MYR-405: the rider's swipe
+
+    func testADISMISSEDRideNeverStartsAgain() {
+        let action = RideActivityStateMachine.action(
+            phase: .idle,
+            record: makeRecord(status: .enroute),
+            vehicleName: "Blue Whale",
+            dismissedRideIDs: ["ride-1"]
+        )
+
+        XCTAssertEqual(action, .none)
+    }
+
+    func testADIFFERENTRideAfterADismissalStartsNormally() {
+        let action = RideActivityStateMachine.action(
+            phase: .idle,
+            record: makeRecord(id: "ride-2", status: .accepted),
+            vehicleName: "Blue Whale",
+            dismissedRideIDs: ["ride-1"]
+        )
+
+        guard case .start(let rideID, _) = action else {
+            return XCTFail("a dismissal is a decision about ONE ride, got \(action)")
+        }
+        XCTAssertEqual(rideID, "ride-2")
+    }
+
+    func testReplacingALiveRideWithADISMISSEDOneEndsRatherThanRestarts() {
+        let action = RideActivityStateMachine.action(
+            phase: .live(rideID: "ride-1", state: liveState(.enroute)),
+            record: makeRecord(id: "ride-2", status: .accepted),
+            vehicleName: "Blue Whale",
+            dismissedRideIDs: ["ride-2"]
+        )
+
+        guard case .end(let rideID, _, let dismissal) = action else {
+            return XCTFail("expected .end, got \(action)")
+        }
+        XCTAssertEqual(rideID, "ride-1")
+        XCTAssertEqual(dismissal, .immediate)
+    }
+
+    // MARK: - MYR-405: five minutes, and what it is NOT
+
+    func testTheCompletedLingerIsNotTheServersPushExpiration() {
+        // The linger is a CLIENT-SIDE END POLICY and has nothing to do with the
+        // server's 24h-floored APNs push expiration (MYR-398 review). That number
+        // governs how long APNs keeps TRYING to deliver a push; this one governs how
+        // long a finished ride stays on the rider's lock screen. Written down as an
+        // assertion because the two are one plausible refactor apart.
+        XCTAssertEqual(RideActivityDismissal.completedLinger, .linger(5 * 60))
+        XCTAssertNotEqual(RideActivityDismissal.completedLinger, .linger(24 * 60 * 60))
+    }
+
+    func testOnlyACompletedRideLingersAtAll() {
+        let completed = RideActivityStateMachine.action(
+            phase: .live(rideID: "ride-1", state: liveState(.enroute)),
+            record: makeRecord(status: .completed),
+            vehicleName: "Blue Whale"
+        )
+        guard case .end(_, _, let completedDismissal) = completed else {
+            return XCTFail("expected .end, got \(completed)")
+        }
+        XCTAssertEqual(completedDismissal, .completedLinger)
+
+        let declined = RideActivityStateMachine.action(
+            phase: .live(rideID: "ride-1", state: liveState(.enroute)),
+            record: makeRecord(status: .declined),
+            vehicleName: "Blue Whale"
+        )
+        guard case .end(_, _, let declinedDismissal) = declined else {
+            return XCTFail("expected .end, got \(declined)")
+        }
+        XCTAssertEqual(declinedDismissal, .immediate, "there is no arrival to admire")
+    }
+
     // MARK: - Fixtures
+
+    private func snapshot(
+        _ rideID: String,
+        _ lifecycle: RideActivitySnapshot.Lifecycle = .active
+    ) -> RideActivitySnapshot {
+        RideActivitySnapshot(rideID: rideID, lifecycle: lifecycle)
+    }
 
     private func makeRecord(
         id: String = "ride-1",

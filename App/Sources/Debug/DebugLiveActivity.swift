@@ -1,6 +1,8 @@
 #if DEBUG
+import CoreLocation
 import Foundation
 import ActivityKit
+import OSLog
 import MyRobotaxiContracts
 
 // MARK: - Live Activity capture hook (MYR-172)
@@ -119,6 +121,96 @@ enum RideActivityDebugLauncher {
             staleDate: staleDate
         )
     }
+
+    // MARK: - MYR-405: the two-process repro of the restore race
+
+    /// `MRT_ACTIVITY_ORPHAN=seed|relaunch` — orthogonal to the scene, read by
+    /// nothing else, and the ONLY way this defect can be photographed.
+    ///
+    /// The race is a property of a PROCESS BOUNDARY: `Activity.activities` is
+    /// restored asynchronously, so an in-process test can never produce the
+    /// half-restored read that starts a second card. Two `simctl launch`es can.
+    ///
+    ///  • **`seed`** starts an Activity for the ride and stops. `simctl terminate`
+    ///    then kills the app WITHOUT ending it — that is the whole point of a Live
+    ///    Activity, and it is what leaves the "previous process's card" behind.
+    ///  • **`relaunch`** runs the PRODUCTION `RideActivityCoordinator` over the
+    ///    PRODUCTION `SystemRideActivityPresenter` for the SAME ride, immediately,
+    ///    i.e. exactly what `RootView`'s ride observer does when a cold launch
+    ///    adopts an open ride. Nothing is stubbed but the endpoint (there is no
+    ///    server here), so the census below is the shipping start path's own answer.
+    ///
+    /// The census is the evidence: TWO Activities is the client's screenshot; ONE
+    /// Activity plus an `adopt` is the fix.
+    static func runOrphanProbe() async {
+        guard let mode = ProcessInfo.processInfo.environment["MRT_ACTIVITY_ORPHAN"] else { return }
+        census("t=0 (first turn of the run loop, mid-restore)")
+
+        switch mode {
+        case "seed":
+            let presenter = SystemRideActivityPresenter()
+            held = presenter
+            _ = await presenter.start(
+                attributes: RideActivityAttributes(rideID: probeRideID, pickupLabel: samplePickupLabel),
+                state: sampleState(status: .enroute),
+                staleDate: RideActivityStaleness.date()
+            )
+        case "relaunch":
+            let coordinator = RideActivityCoordinator(
+                presenter: SystemRideActivityPresenter(),
+                endpoint: nil,
+                isLive: true,
+                vehicleName: { "Blue Whale" }
+            )
+            heldCoordinator = coordinator
+            await coordinator.handleRideChange(probeRecord())
+            probeLog.info("MYR405-PROBE coordinator phase=\(coordinator.phase.rideID ?? "idle", privacy: .public)")
+        default:
+            return
+        }
+
+        for seconds in [1, 3, 6] {
+            try? await Task.sleep(for: .seconds(1))
+            census("t=\(seconds)s")
+        }
+    }
+
+    /// Emitted through `os_log` rather than `print`, following the MYR-222 camera
+    /// trace: `simctl launch --console` does not reliably carry a SwiftUI app's
+    /// stdout, and `log stream` is what the repo's other on-simulator probes read.
+    private static func census(_ label: String) {
+        let activities = Activity<RideActivityAttributes>.activities
+        let rows = activities
+            .map { "\($0.attributes.rideID)/\($0.activityState)" }
+            .joined(separator: ", ")
+        probeLog.info("MYR405-PROBE \(label, privacy: .public) count=\(activities.count, privacy: .public) [\(rows, privacy: .public)]")
+    }
+
+    private static let probeLog = Logger(subsystem: "app.myrobotaxi.ios", category: "liveactivity")
+
+    private static let probeRideID = "myr405-orphan-probe"
+
+    private static func probeRecord() -> RideRequestRecord {
+        let pickup = RidePlace(
+            id: "pickup", label: "Ferry Building", subtitle: nil, miles: 0, minutes: 0,
+            icon: "location.fill",
+            coordinate: CLLocationCoordinate2D(latitude: 37.7955, longitude: -122.3937)
+        )
+        let destination = RidePlace(
+            id: "dest", label: "Home", subtitle: nil, miles: 4.2, minutes: 12,
+            icon: "house.fill",
+            coordinate: CLLocationCoordinate2D(latitude: 37.77, longitude: -122.39)
+        )
+        var record = RideRequestRecord(
+            id: probeRideID,
+            input: RideRequestInput(pickup: pickup, destination: destination, fleetMemberID: "vehicle-1"),
+            status: .enroute
+        )
+        record.status = .enroute
+        return record
+    }
+
+    private static var heldCoordinator: RideActivityCoordinator?
 
     /// Retained for the life of the process so the Activity is not torn down when
     /// the starting scope exits.
