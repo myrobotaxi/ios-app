@@ -1347,6 +1347,9 @@ struct RootView: View {
             guard let frame = DebugScene.current?.sampleLiveActivityFrame else { return }
             await RideActivityDebugLauncher.start(state: frame.state, staleDate: frame.staleDate)
         }
+        // MYR-405 — `MRT_ACTIVITY_ORPHAN=seed|relaunch`, the two-process repro of
+        // the restore race. Orthogonal to the scene and unset for every capture.
+        .task { await RideActivityDebugLauncher.runOrphanProbe() }
         #endif
         // MYR-346 — same hand-off for universal links, and the drain of anything
         // the mailbox held through a cold launch.
@@ -1433,6 +1436,27 @@ struct RootView: View {
         .onChange(of: rideRequestService.activeRequest) { _, record in
             Task { await rideActivityCoordinator.handleRideChange(record) }
         }
+        // MYR-405 — RECONCILE THE LOCK SCREEN WITH THE ACCOUNT, AT LAUNCH.
+        //
+        // `onChange` above cannot do this and never could: it reasons from the
+        // coordinator's `phase`, which is THIS process's memory and is empty at
+        // launch, so an Activity started by a previous process is invisible to it.
+        // The client's orphan is exactly that Activity — "IN RIDE · Not updating",
+        // never ended, unreachable by every code path the app had. This is also
+        // where the ADOPT half lands: the start path used to enumerate
+        // `Activity.activities` mid-restore, read empty, and request a SECOND card.
+        //
+        // It runs once per process, ahead of any ride change, and reaps nothing
+        // until the rider's own ride list has answered (`hasResolvedActiveRide`) —
+        // a launch with no signal must never take a live ride's card down.
+        .task {
+            await rideActivityCoordinator.handleLaunchOrForeground {
+                RideActivityAccountRide(
+                    record: rideRequestService.activeRequest,
+                    isResolved: rideRequestService.hasResolvedActiveRide
+                )
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
             // MYR-222: the rider's location stream joins the owner fleet in
             // explicit suspend/resume handling — see `SharedViewerState
@@ -1452,7 +1476,21 @@ struct RootView: View {
                 // missed (prefs off, APNs dropped it, the phone was offline) the
                 // card is still sitting on the lock screen claiming a ride is
                 // running. Pushes are the primary channel; this is the backstop.
-                Task { await rideActivityCoordinator.handleRideChange(rideRequestService.activeRequest) }
+                //
+                // MYR-405 — and it now RECONCILES first. The backstop above only
+                // ever asked "does the record disagree with what I remember
+                // presenting"; a duplicate, an orphan from a previous process, or a
+                // card the rider swiped away are all invisible to that question.
+                // Reaping is still gated on the ride pipeline having answered, so a
+                // foreground with no network changes nothing.
+                Task {
+                    await rideActivityCoordinator.handleLaunchOrForeground {
+                        RideActivityAccountRide(
+                            record: rideRequestService.activeRequest,
+                            isResolved: rideRequestService.hasResolvedActiveRide
+                        )
+                    }
+                }
                 // MYR-376/377 — a reservation that came DUE while the app was
                 // suspended is still dormant on this device: the sweeper's stamp
                 // arrives with no WS frame, and a sleeping `Task` does not fire.

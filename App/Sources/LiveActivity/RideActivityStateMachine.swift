@@ -51,9 +51,108 @@ enum RideActivityDismissal: Equatable {
     /// pick it up.
     case linger(TimeInterval)
 
-    /// ~15 minutes, per MYR-194 ("~15 min linger for completed so the rider sees
-    /// the arrival state").
-    static let completedLinger = RideActivityDismissal.linger(15 * 60)
+    /// **FIVE MINUTES** — a client decision on 2026-07-31 that SUPERSEDES MYR-194's
+    /// "~15 min linger for completed" (MYR-405): *"when ride is complete we should
+    /// clear banners after 5min or if new ride begins or user dismisses."*
+    ///
+    /// This is a CLIENT-SIDE END POLICY and has nothing to do with the server's
+    /// APNs expiration, whose 24h floor came up in the MYR-398 review. That number
+    /// governs how long APNs will keep TRYING to deliver a push; this one governs
+    /// how long the rider's own phone keeps a finished ride's card on the lock
+    /// screen. Conflating them would either throw away pushes the server still
+    /// wants delivered or leave yesterday's arrival on this morning's lock screen.
+    ///
+    /// The clock starts when the ending frame is written (`uiPolicy` resolves
+    /// `.after(now + interval)`), i.e. at the moment the completed card renders —
+    /// which is what the client asked for.
+    static let completedLinger = RideActivityDismissal.linger(5 * 60)
+}
+
+/// What the app knows about the ACCOUNT's own live ride at reconcile time
+/// (MYR-405).
+///
+/// `.unresolved` is a real third arm rather than a missing value, and leaving it
+/// out is how the reaper would have eaten the card it exists to protect. On a cold
+/// launch the rider's own ride list (§7.8) has not answered yet, so a `nil` record
+/// means "we have not asked", NOT "this rider has no ride" — and reaping on that
+/// reading would take a live ride's Activity off the lock screen every time the
+/// phone launched with no signal. It is MYR-326's "loading ≠ unavailable" and
+/// MYR-343's "three situations told apart by one boolean", pointed at the lock
+/// screen.
+enum RideActivityLiveRide: Equatable {
+    /// The ride pipeline has not answered yet. Nothing may be reaped and nothing
+    /// may be adopted on this evidence.
+    case unresolved
+    /// The pipeline answered: this account holds no live ride at all. Every
+    /// Activity still on screen is therefore an orphan.
+    case none
+    /// The pipeline answered: this ride is live right now.
+    case live(rideID: String)
+
+    var rideID: String? {
+        if case .live(let id) = self { return id }
+        return nil
+    }
+}
+
+/// The account's own ride as the app can currently state it (MYR-405).
+///
+/// Two fields because `record == nil` is ambiguous and the ambiguity is what makes
+/// the reaper dangerous. `isResolved` is the rider pipeline's answer to "have I
+/// established what this account is doing?" — false during the cold-launch window
+/// and after a §7.8 read that FAILED, true once a list has answered or a record is
+/// held. See `RideRequestService.hasResolvedActiveRide`.
+struct RideActivityAccountRide: Equatable {
+    var record: RideRequestRecord?
+    var isResolved: Bool
+
+    /// The resolved, dormancy-aware answer the reconciler consumes.
+    ///
+    /// Dormancy is consulted through `RideReservation.isLiveRide` — the SAME
+    /// predicate `startState` uses — so "which ride may hold a card" is one rule.
+    /// A reservation accepted for Saturday resolves to `.none` today, and an
+    /// Activity sitting on the lock screen for it is an orphan by that rule rather
+    /// than by a second copy of it.
+    ///
+    /// A `completed` ride resolves to `.live`, deliberately: it is still the ride
+    /// this Activity is ABOUT, and reaping it here would take the arrival card down
+    /// with `.immediate` instead of letting the state machine end it on MYR-405's
+    /// five-minute linger. The reconciler establishes WHOSE card it is; the state
+    /// machine decides how it ends.
+    func resolve(now: Date = Date()) -> RideActivityLiveRide {
+        guard isResolved else { return .unresolved }
+        guard let record, RideReservation.isLiveRide(record, now: now) else { return .none }
+        return .live(rideID: record.id)
+    }
+}
+
+/// What to do about the Activities ActivityKit restored into this process
+/// (MYR-405) — the pure half of "adopt, never duplicate" and of orphan reaping.
+struct RideActivityReconciliation: Equatable {
+    /// Rides whose Activity must come off the lock screen NOW, in the order they
+    /// were found.
+    var reap: [String] = []
+
+    /// The restored Activity to TAKE OVER rather than duplicate. When this is
+    /// non-nil the start path must not call `Activity.request` at all.
+    var adopt: String?
+
+    /// Rides whose Activity the RIDER dismissed. Recorded, never resurrected.
+    var dismissed: [String] = []
+
+    /// Is this reap a SECOND card for the ride being kept, rather than an orphan
+    /// of some other ride?
+    ///
+    /// Two things hang off it, and both go wrong quietly if it is dropped:
+    ///
+    ///  • **No §7.21 delete.** The registration is keyed on `(ride, rider)`, so a
+    ///    delete issued for a duplicate would remove the row belonging to the banner
+    ///    just adopted — re-creating the starvation this issue exists to remove,
+    ///    from inside the fix.
+    ///  • **No local teardown.** The coordinator's own `phase` names the ride, not
+    ///    the Activity, so clearing it here would forget the card it just adopted
+    ///    and the next tick would adopt it all over again.
+    func isDuplicateOfAdopted(_ rideID: String) -> Bool { rideID == adopt }
 }
 
 /// The one thing to do about the Activity this tick.
@@ -76,6 +175,60 @@ enum RideActivityAction: Equatable {
 }
 
 enum RideActivityStateMachine {
+
+    // MARK: - Reconciling what the SYSTEM restored (MYR-405)
+
+    /// Decide what to do about every Activity ActivityKit handed back, given what
+    /// the account is actually doing.
+    ///
+    /// This is the whole of semantics 1, 2, 4 and half of 5 as one pure function
+    /// over a list — which is the point. The client's bug is not that any single
+    /// rule was wrong; it is that the start path asked ONE question ("do I hold an
+    /// Activity in this process?") when the lock screen can hold several this
+    /// process never started.
+    ///
+    /// Three rules, and the two skips matter as much as the reap:
+    ///
+    ///  1. **`.ended` is skipped.** It is already leaving on a dismissal policy —
+    ///     including MYR-405's own five-minute completed linger. Re-ending it with
+    ///     `.immediate` would take a just-completed ride's card away seconds after
+    ///     it appeared, i.e. this issue's own fix cancelling its own fix.
+    ///  2. **`.dismissed` is skipped and REMEMBERED.** Nothing is on screen to
+    ///     reap, and the rider's swipe is a decision (semantic 5).
+    ///  3. Of what is left, the one matching the live ride is ADOPTED and every
+    ///     other one is REAPED — terminal, unknown, another account's leftovers, or
+    ///     a duplicate of the very ride being adopted. `.unresolved` reaps and
+    ///     adopts nothing at all.
+    static func reconcile(
+        snapshots: [RideActivitySnapshot],
+        liveRide: RideActivityLiveRide
+    ) -> RideActivityReconciliation {
+        var plan = RideActivityReconciliation()
+
+        plan.dismissed = snapshots
+            .filter { $0.lifecycle == .dismissed }
+            .map(\.rideID)
+
+        // A read taken before the pipeline answered is not evidence about anything.
+        guard liveRide != .unresolved else { return plan }
+
+        for snapshot in snapshots where snapshot.lifecycle.isOnScreenAndOurs {
+            let isTheLiveRide = snapshot.rideID == liveRide.rideID
+            // The FIRST on-screen Activity for the live ride is the one kept. Any
+            // further one is a duplicate of it — the client's exact screenshot —
+            // and is reaped like any other orphan, which is what heals an install
+            // that is already in the broken state.
+            if isTheLiveRide, plan.adopt == nil, !plan.dismissed.contains(snapshot.rideID) {
+                plan.adopt = snapshot.rideID
+            } else {
+                plan.reap.append(snapshot.rideID)
+            }
+        }
+        return plan
+    }
+
+    // MARK: - The per-tick decision
+
     /// Decide what to do, given what we last did and what the rider's ride looks
     /// like now.
     ///
@@ -86,10 +239,18 @@ enum RideActivityStateMachine {
     /// one: reservation dormancy is TIME-BOUNDED, so "may this ride open an
     /// Activity" is a question about the clock as well as the record. Defaulted, so
     /// every existing call site is unchanged.
+    ///
+    /// `dismissedRideIDs` (MYR-405, semantic 5) is the set of rides whose Activity
+    /// the RIDER swiped away. It is an INPUT rather than a phase case deliberately:
+    /// a dismissal outlives the phase (the coordinator drops to `.idle` the moment
+    /// the system reports one), it can arrive from the restore list for a ride this
+    /// process never presented, and more than one ride can be in it. Modelling it
+    /// as one more `.dismissed` phase would have made all three of those wrong.
     static func action(
         phase: RideActivityPhase,
         record: RideRequestRecord?,
         vehicleName: String,
+        dismissedRideIDs: Set<String> = [],
         now: Date = Date()
     ) -> RideActivityAction {
         switch phase {
@@ -97,6 +258,13 @@ enum RideActivityStateMachine {
             guard let record, let state = startState(for: record, vehicleName: vehicleName, now: now) else {
                 return .none
             }
+            // NEVER RESURRECT A DISMISSED CARD. The rider swiped this ride's
+            // Activity away while the ride was still running; starting a second one
+            // for the same ride — on the next status change, on the next foreground,
+            // on the next launch — would overrule them repeatedly and look like the
+            // dismissal never worked. A DIFFERENT ride is a different decision and
+            // starts normally, which is the client's "or if new ride begins".
+            guard !dismissedRideIDs.contains(record.id) else { return .none }
             return .start(rideID: record.id, state: state)
 
         case .live(let liveID, let lastState):
@@ -117,7 +285,8 @@ enum RideActivityStateMachine {
                 // A different ride is open than the one on the lock screen. End the
                 // old one; start the new one if it is startable, otherwise just end.
                 let endingState = lastState.with(status: .cancelled)
-                guard let next = startState(for: record, vehicleName: vehicleName, now: now) else {
+                guard let next = startState(for: record, vehicleName: vehicleName, now: now),
+                      !dismissedRideIDs.contains(record.id) else {
                     return .end(rideID: liveID, state: endingState, dismissal: .immediate)
                 }
                 return .restart(
