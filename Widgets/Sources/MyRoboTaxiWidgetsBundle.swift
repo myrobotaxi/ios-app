@@ -28,8 +28,23 @@ struct RideLiveActivityWidget: Widget {
         } dynamicIsland: { context in
             let card = card(context)
             return DynamicIsland {
-                DynamicIslandExpandedRegion(.center) {
-                    RideActivityIslandExpanded(card: card)
+                // MYR-398 §0 A — **TWO SMALL THINGS IN THE TOP ROW, EVERYTHING WIDE
+                // AT THE BOTTOM.**
+                //
+                // v3 put the whole composition in `.center`, which the sensor
+                // housing splits: the system pushed the wide content around the
+                // housing and padded the difference, which is the tall black box
+                // with an empty right half the client photographed. `.center` is
+                // now DELIBERATELY UNUSED — the housing owns it — and the two
+                // narrow regions beside it carry the only two things that fit.
+                DynamicIslandExpandedRegion(.leading) {
+                    RideActivityIslandExpandedLeading()
+                }
+                DynamicIslandExpandedRegion(.trailing) {
+                    RideActivityIslandExpandedTrailing(card: card)
+                }
+                DynamicIslandExpandedRegion(.bottom) {
+                    RideActivityIslandExpandedBottom(card: card)
                 }
             } compactLeading: {
                 RideActivityIslandLeading(card: card)

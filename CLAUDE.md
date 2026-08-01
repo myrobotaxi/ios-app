@@ -2749,6 +2749,127 @@ the app. The `arriving` scene's first run photographed `58 s` — the seconds un
 rendering correctly, and the wrong row of the board. It seeds TWO minutes so the
 capture lands on the board's own `1 min`.
 
+**§0 — THE ISLAND IS REGIONS, THE EMPTY SLOT IS A RING, AND ARRIVAL GETS ONE BEAT**
+(MYR-398 §0, **CLIENT-DIRECTED**, against the v3 build `202608011331`). Three items
+plus a follow-up, all on the DYNAMIC ISLAND — the lock-screen card is untouched by
+every one of them, and its 350 × 128 / four-fixed-row promise is unchanged.
+
+- **A · THE TALL BLACK BOX WAS WIDE CONTENT IN THE ROW THE SENSOR HOUSING SPLITS.**
+  v3 put the whole composition in `DynamicIslandExpandedRegion(.center)`; the
+  housing splits that row, so the system pushed the wide content around it and
+  padded the difference. The top row is now TWO SMALL THINGS — `.leading` the 26pt
+  mark, `.trailing` the 24pt glyph-or-ring — `.center` is **deliberately unused**
+  (the housing owns it), and everything wide is in `.bottom`: headline 19/600,
+  subline 12.5 @58%, rail. **NOTHING IN THAT BUILDER MAY SET A WIDTH OR A HEIGHT**,
+  and the acceptance for that is behavioural rather than numeric: the island's
+  height must DIFFER between a two-line and a three-line state. Measured on this
+  branch, **141.0pt vs 156.0pt** (`enroute` vs the new `longPlace` scene). Equal
+  heights mean something is pinned. It is also why the headline/subline take
+  `height: nil` here while the CARD keeps its fixed rows, and why the subline is
+  `lineLimit(2)` on the island and 1 on the card.
+- **⚠️ A, THE FOLLOW-UP · THE FOUR CORNERS CLIP, AND THE PILL IS A SQUIRCLE.** The
+  client, on the region rebuild: the mark and the ring intersect the corner
+  curvature and the rail's origin puck + end cap run into the bottom two. Measured
+  off a real expanded frame: the island's horizontal inset is **18.7pt at 10pt down
+  from the top edge, 10.3pt at 18pt, ~1pt at 42pt** — the edge is still curving hard
+  well inside any corner. Reproduced on the simulator: the waiting ring's dashes and
+  the completed ring's arc were visibly cut at the top-right. The fix is **three
+  INSETS at three call sites and nothing else** — no frame, no width, no height:
+  `expandedCornerSafeHorizontal` **6** and `expandedCornerSafeTop` **4** on each of
+  the two top-row regions, `expandedRailCornerSafeInset` **6** on the RAIL alone.
+  Minimum content-to-edge clearance went **12.34–13.20pt → 14.68–20.32pt** across
+  `noTelemetry` / `completed` / `longPlace`, and the two-line/three-line heights
+  still differ (137/152 → 141/156), so nothing was pinned to buy it. **The headline
+  and subline DO NOT MOVE** — they sit where the edge is straight, so the mark and
+  the rail no longer share the text column's gutter, by design.
+- **⚠️ `.contentMargins` COMPILES ON THIS SURFACE AND IS SILENTLY DROPPED.** It is
+  the obvious alternative spelling for those insets and it type-checks on any
+  `View`. Built and captured both ways: the `.contentMargins` build is
+  **byte-identical to the build with no inset at all** (137/152pt, every corner back
+  to its pre-fix clearance) while `.padding` gives 141/156 and clears every corner.
+  Its `.automatic` placement resolves to scroll-view content margins and a
+  `DynamicIslandExpandedRegion` has none. **A modifier that compiles, reads
+  correctly and does nothing is the quietest way to ship a fix un-shipped** — the
+  `VehicleRideShare.display` shape again. `.padding` is the only mechanism that
+  reaches this surface.
+- **B · THE RING FILLS THE SLOT THAT USED TO BE EMPTY** (`RideActivityRing.swift`,
+  one component: d24/2.4 on the minimal island and the expanded `.trailing`,
+  d22/2.2 in the compact half-pill; track white 20%, gold arc, round cap, 12
+  o'clock start, east arrow 12 / glyph 13 in the centre). v3's compact island was "a
+  figure or nothing", and "nothing" is most of the fourteen rows — a bare mark
+  beside an empty half-pill is indistinguishable from an app that has stopped
+  working. **Determinate** is `rail.p`, the RAIL'S OWN fraction (one source, so the
+  card and the island cannot disagree about one leg), floored at 2% so a round cap
+  is visible at all. **Track-only** is an ended ride. `mrtActivityRingTrack` is its
+  own 20% step and NOT the rail's 13%: a 2.4pt stroke on a 24pt circle over the
+  island's true black disappears at 13%, and an invisible track-only state is the
+  empty slot the ring exists to fill.
+- **⚠️ B · ACTIVITYKIT RUNS NEITHER APPEARANCE-ARMED NOR REPEATING ANIMATIONS, SO
+  THE WAITING ARC IS DASHED RATHER THAN TURNING.** §0 B asks for a 25% arc on a 1.4s
+  linear `repeatForever`. It is implemented and the platform does not run it —
+  measured, three frames 0.35s apart against the 1.4s period, compact AND expanded,
+  `ImageChops.difference` bbox `None` / max delta 0 across all six pairs. **A STATIC
+  QUARTER ARC IS NOT A NEUTRAL FALLBACK, IT IS A WRONG NUMBER**: it is
+  pixel-for-pixel `ringDeterminate(0.25)`, i.e. "a quarter of the way there" on the
+  one state that means the car has reported NOTHING, on a frame whose card is
+  drawing an idle rail. So the waiting state is a **DASHED FULL RING** — unreadable
+  as a fraction from any angle, still visibly not the determinate arc, and still
+  saying "waiting on the car" rather than "the app is dead". The rotation is left
+  applied (it costs nothing and the day the platform runs it the dashes chase round
+  with no code change) and the dash period is derived from the diameter so the seam
+  lands at 12 o'clock at both sizes. **Reduce Motion is the same static ring** — the
+  drawing never depended on the rotation, which is what makes that fallback honest
+  rather than a second rendering.
+- **C · ONE ARRIVAL BEAT, KEYED TO THE STATE TRANSITION AND NEVER TO `onAppear`.**
+  The ring completes to 100% on the rail's own curve (0.5s), fades to 40%, and the
+  glyph scales 0.6 → 1.0 on `spring(response: 0.34, dampingFraction: 0.72)` 0.1s
+  after the fade starts; `hand.wave.fill` at the kerb, `checkmark.circle.fill` at
+  the end, both WHITE (gold stays the route's). **THE ONCE-ONLY IS STRUCTURAL, NOT A
+  FLAG.** ActivityKit re-renders on every content update and the ticker re-pushes
+  the same terminal frame for the whole five-minute linger, so a beat armed by the
+  view's appearance would either replay on every push or — since the view is already
+  on screen when the terminal state lands — never play at all. Every value the beat
+  animates (`arcFraction`, `isLanded`) is a pure function of the resolved slot and
+  `.animation(_:value:)` fires only on a CHANGE, so a re-push of an identical frame
+  animates nothing by construction. Proven from both ends: `MRT_ACTIVITY_REPUSH`
+  pushes the identical `ContentState` three times and the frames straddling each
+  push are unchanged, and `MRT_ACTIVITY_ADVANCE` performs the real
+  `accepted → arrived` transition so the beat can be photographed at all — a cold
+  `arrived` scene correctly renders the settled frame and shows nothing. Reduce
+  Motion → `.identity` transition and no animation: the glyph is simply there.
+- **D · STRICT TRAILING PRIORITY, IN THE PURE LAYER.** `RideActivityTrailingSlot`
+  and `RideActivityCard.resolve`'s one `trailingSlot(…, allowsFigure:)` function:
+  **ETA figure > arrival glyph > ring**, and **the ring never displaces a number** —
+  Enroute / Arriving / On-trip / Stale compact figures are byte-identical to before
+  §0. The EXPANDED `.trailing` runs the same ladder minus the figure rung
+  (`allowsFigure: false`), because the expanded headline already carries the figure
+  and a second copy of it 20pt to the right is the badge the whole redesign removed;
+  the MINIMAL island renders that same figure-less resolution. `allowsFigure` is a
+  PARAMETER rather than two functions on purpose — two implementations are two
+  ladders one edit apart from disagreeing about a state, which is exactly how v1's
+  expanded island came to spell the trip line differently from the card's. The
+  "ride is over" test is `RideActivityLeg.of(status) == nil` and never a second list
+  of statuses, so the ring and the rail cannot drift into a spinner beside "Ride
+  cancelled", and `unrecognized` claims nothing.
+- **THE MINIMAL ISLAND JOINS THE LOCK SCREEN ON THE UNPHOTOGRAPHABLE LIST.** The
+  minimal presentation is not a state of one Activity, it is what the island does
+  with two — and `MRT_ACTIVITY_MINIMAL=1` starts a genuine second Activity for a
+  DIFFERENT ride id (a duplicate would be MYR-405's defect wearing a capture hook's
+  clothes), the census confirms `count=2 [debug-ride/active,
+  debug-ride-minimal/active]`, **and the island still renders ONE compact pill.**
+  The split is for two different APPS. The hook is kept for the census line that
+  proves why, not for a frame it cannot produce; what the minimal surface renders is
+  asserted instead — the same `RideActivityProgressRing` at the same 24pt/2.4 over
+  the same `expandedTrailing` resolution the expanded capture does show.
+
+```sh
+# §0's own additions to the fourteen board rows and the two orthogonal probes:
+SIMCTL_CHILD_MRT_ACTIVITY_STATE=longPlace   # the THREE-LINE height half of §0 A
+SIMCTL_CHILD_MRT_ACTIVITY_REPUSH=6          # re-push the identical frame (§0 C)
+SIMCTL_CHILD_MRT_ACTIVITY_ADVANCE=16        # perform the real transition (§0 C)
+SIMCTL_CHILD_MRT_ACTIVITY_MINIMAL=1         # a second Activity (§0 B, census only)
+```
+
 **TWO BANNERS FOR ONE RIDE, AND THE ONE THE SERVER PUSHED TO WAS NOT THE ONE
 STARVING** (MYR-405, client defect, build `202607312110`) — probe
 `MRT_ACTIVITY_ORPHAN=seed|relaunch`. TestFlight, Jul 31: two simultaneous Live

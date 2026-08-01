@@ -77,6 +77,20 @@ final class RideActivityIslandUITests: XCTestCase {
         return app
     }
 
+    /// The same launch with one extra environment value — the §0 probes are
+    /// orthogonal to `MRT_ACTIVITY_STATE`, exactly as `MRT_EXPAND_ROUTE` and
+    /// `MRT_ROUTE_UNAVAILABLE` are to their scenes.
+    private func startActivity(state: String, extra: [String: String]) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment["MRT_SCENE"] = "riderLiveActivity"
+        app.launchEnvironment["MRT_ACTIVITY_STATE"] = state
+        for (key, value) in extra { app.launchEnvironment[key] = value }
+        app.launch()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20))
+        Thread.sleep(forTimeInterval: 5)
+        return app
+    }
+
     private func attach(_ screenshot: XCUIScreenshot, named: String) {
         let attachment = XCTAttachment(screenshot: screenshot)
         attachment.lifetime = .keepAlways
@@ -248,6 +262,216 @@ final class RideActivityIslandUITests: XCTestCase {
         springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
         Thread.sleep(forTimeInterval: 1)
         app.terminate()
+    }
+
+    // MARK: - §0 — the three items, photographed
+
+    /// **§0 A — THE EXPANDED ISLAND'S HEIGHT FOLLOWS ITS CONTENT.**
+    ///
+    /// The client's acceptance, verbatim: *"the island's height DIFFERS between a
+    /// two-line and three-line state (proves nothing is pinned)"*. So the pair is
+    /// `enroute` — headline + a one-line subline — against `longPlace`, which is
+    /// `enroute` with the client's own Galleria Dallas destination and therefore
+    /// wraps the 12.5pt subline to two.
+    ///
+    /// **THE TWO EXPANDED FRAMES ARE THE MEASUREMENT**, and they are read by
+    /// measuring the island's own black rounded rect in each: equal heights mean
+    /// something in the builder is pinned, which is the whole defect. The compact
+    /// frames come with them so the pair also shows the trailing slot resolving to a
+    /// FIGURE on one surface and a ring on the other in the same instant.
+    func testTheExpandedIslandHeightFollowsItsContent() throws {
+        for state in ["enroute", "longPlace"] {
+            captureBothIslandStates(state)
+        }
+    }
+
+    /// **§0 A, THE FOLLOW-UP — CLEAR BLACK AT ALL FOUR CORNERS.**
+    ///
+    /// The client's report on the region rebuild: the mark (top-left) and the ring
+    /// (top-right) intersect the pill's corner curvature, and the rail's origin puck
+    /// and end cap run into the bottom two. So the acceptance is a picture — black
+    /// between every piece of content and the pill's edge, at each corner — and the
+    /// three states are chosen because between them they put the WIDEST thing this
+    /// surface can draw into each corner in turn:
+    ///
+    ///   • `noTelemetry` — the rail is IDLE, so the 26pt ground disc of the puck
+    ///     sits at the rail's ORIGIN, which is the bottom-LEFT case; the ring is in
+    ///     its waiting mode, which draws ink all the way round the top-right.
+    ///   • `completed` — `p = 1`, so the same disc sits at the rail's END, which is
+    ///     the bottom-RIGHT case, with the destination pin removed from under it.
+    ///   • `longPlace` — the three-line frame, i.e. the TALLEST island, where the
+    ///     top and bottom corners are furthest apart and any inset that had been
+    ///     absorbed into a fixed height would show up as a different clearance.
+    ///
+    /// The frames are read by measuring, per corner, the shortest distance from any
+    /// non-black pixel to the pill's own boundary — see the PR body. A capture is
+    /// not evidence on its own here: "looks clear" at 3× is exactly how a 2pt
+    /// intersection survives review.
+    func testTheExpandedIslandsFourCornersAreClear() throws {
+        for state in ["noTelemetry", "completed", "longPlace"] {
+            captureBothIslandStates(state)
+        }
+    }
+
+    /// **§0 B — THE WAITING RING, AND THE PLATFORM'S VERDICT ON ITS ROTATION.**
+    ///
+    /// `noTelemetry` is the client's own screenshot: an accepted ride whose car has
+    /// reported no fraction, which until §0 rendered a bare mark beside an empty
+    /// half-pill. It now renders the WAITING ring — and this suite is where the
+    /// honest half of §0 B is recorded rather than described.
+    ///
+    /// ⚠️ **THE THREE FRAMES ARE BYTE-IDENTICAL, AND THAT IS THE FINDING.** §0 B asks
+    /// for a 25% arc turning on a 1.4s linear `repeatForever`. It is implemented
+    /// (`RideActivityRingArc`) and **ActivityKit does not run it**: a Live Activity's
+    /// view is rendered out of process, and neither appearance-armed nor repeating
+    /// animations are executed there. Measured on this branch, three frames 0.35s
+    /// apart against a 1.4s period, compact AND expanded — `ImageChops.difference`
+    /// bbox `None`, max delta 0, across all six pairs.
+    ///
+    /// So the frames prove the ring is DRAWN and prove the rotation is not run, and
+    /// **that is exactly why the waiting state is a DASHED FULL RING rather than a
+    /// static quarter arc**: a still 25% arc is pixel-for-pixel
+    /// `ringDeterminate(0.25)`, i.e. the wrong NUMBER on the one state that means
+    /// "the car has reported nothing", on a frame whose card is drawing an idle
+    /// rail. A dashed full ring cannot be read as a fraction from any angle and
+    /// still says "waiting on the car" rather than "the app is dead". The rotation
+    /// is left applied: it costs nothing and the day the platform runs it the dashes
+    /// chase round with no code change.
+    ///
+    /// The repo's rule (prove motion by frame sequence, never by a still) is
+    /// therefore kept and ANSWERED here rather than merely invoked — the sequence is
+    /// what establishes there is no motion to claim.
+    func testTheWaitingRingIsDrawnWhileALiveRideHasNoTelemetry() throws {
+        let app = startActivity(state: "noTelemetry")
+
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 3)
+
+        // 0.35s apart against the 1.4s period — a quarter turn each, which is what
+        // a running rotation would show and what these frames do not.
+        for index in 0..<3 {
+            attach(XCUIScreen.main.screenshot(), named: "island-compact-noTelemetry-spin-\(index)")
+            Thread.sleep(forTimeInterval: 0.35)
+        }
+
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        springboard
+            .coordinate(withNormalizedOffset: Self.islandCentre)
+            .withOffset(CGVector(dx: 0, dy: Self.islandCentreYOffset))
+            .press(forDuration: 1.1)
+        Thread.sleep(forTimeInterval: 1.5)
+        for index in 0..<3 {
+            attach(XCUIScreen.main.screenshot(), named: "island-expanded-noTelemetry-spin-\(index)")
+            Thread.sleep(forTimeInterval: 0.35)
+        }
+
+        springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
+        Thread.sleep(forTimeInterval: 1)
+        app.terminate()
+    }
+
+    /// **§0 B — THE MINIMAL ISLAND, AND THE HONEST ANSWER THAT IT CANNOT BE
+    /// PHOTOGRAPHED.**
+    ///
+    /// The minimal presentation is not a state of one Activity — it is what the
+    /// island does with more than one. `MRT_ACTIVITY_MINIMAL` starts a second
+    /// Activity (a DIFFERENT ride id: a duplicate would be MYR-405's defect wearing a
+    /// capture hook's clothes) and the census proves both are live, `count=2
+    /// [debug-ride/active, debug-ride-minimal/active]` — **and the island still
+    /// renders ONE compact pill.** The split is for two different APPS; with two
+    /// Activities of one app the system picks a presentation, and it picks compact.
+    ///
+    /// So this suite CANNOT claim a minimal frame, and the attachment is kept as the
+    /// evidence of that rather than mislabelled as one. What the minimal surface
+    /// renders is asserted instead of photographed, and the assertion is a strong
+    /// one: it is the same `RideActivityProgressRing` at the same 24pt/2.4 over the
+    /// same `expandedTrailing` resolution that the EXPANDED capture does show — one
+    /// component, one call, no second layout to drift.
+    func testTheMinimalIslandRendersTheRing() throws {
+        let app = startActivity(state: "accepted", extra: ["MRT_ACTIVITY_MINIMAL": "1"])
+
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 3)
+        attach(XCUIScreen.main.screenshot(), named: "island-two-activities-still-compact")
+
+        app.terminate()
+    }
+
+    /// **§0 C — THE ARRIVAL BEAT PLAYS ONCE, AND A RE-PUSH DOES NOT REPLAY IT.**
+    ///
+    /// The state lingers FIVE MINUTES (MYR-405) and the ETA ticker keeps pushing at
+    /// it, so "plays once" is a claim about what happens on the SECOND, third and
+    /// fourth arrival of the same frame — a claim no still can make and no unit test
+    /// can reach, because the replay would live in the widget process's view tree.
+    ///
+    /// `MRT_ACTIVITY_REPUSH=6` re-pushes the IDENTICAL content state three times, six
+    /// seconds apart. The frames straddle the second push: if the beat were armed by
+    /// the view's appearance or by any flag the process holds, the glyph would drop
+    /// back to 0.6 and spring in again and two consecutive frames would differ. They
+    /// must not.
+    ///
+    /// The FIRST frame is deliberately taken before the first re-push, so the
+    /// sequence also carries the settled beat to compare the rest against.
+    func testTheArrivalBeatDoesNotReplayOnARepush() throws {
+        let app = startActivity(state: "completed", extra: ["MRT_ACTIVITY_REPUSH": "6"])
+
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 2)
+        attach(XCUIScreen.main.screenshot(), named: "island-beat-completed-settled")
+
+        // Straddle the second re-push (t ≈ 12s from launch) at 0.25s intervals — a
+        // spring that re-ran would be visibly mid-flight in at least one of these.
+        Thread.sleep(forTimeInterval: 8)
+        for index in 0..<8 {
+            attach(XCUIScreen.main.screenshot(), named: "island-beat-completed-repush-\(index)")
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+
+        app.terminate()
+    }
+
+    /// **§0 C — THE BEAT ITSELF, ON A REAL TRANSITION.**
+    ///
+    /// No `MRT_ACTIVITY_STATE` value can show this: a scene starts the Activity
+    /// already IN its state, and the beat is keyed to the CHANGE (which is the whole
+    /// point — see `RideActivityRing.swift`), so a cold `arrived` scene correctly
+    /// renders the settled frame and photographs nothing.
+    /// `MRT_ACTIVITY_ADVANCE=16` pushes `accepted → arrived` through the shipping
+    /// update path sixteen seconds in, with the island already EXPANDED, so the
+    /// frames carry the full sequence: a determinate ring at 0.38 completing to 1,
+    /// fading to 40%, and the wave scaling in over it.
+    ///
+    /// Shot back to back at ~0.2s so the beat (≈0.9s end to end) cannot fall between
+    /// two frames.
+    func testTheArrivalBeatPlaysOnTheTransition() throws {
+        let app = startActivity(state: "accepted", extra: ["MRT_ACTIVITY_ADVANCE": "16"])
+
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 2)
+
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        springboard
+            .coordinate(withNormalizedOffset: Self.islandCentre)
+            .withOffset(CGVector(dx: 0, dy: Self.islandCentreYOffset))
+            .press(forDuration: 1.1)
+        Thread.sleep(forTimeInterval: 1.5)
+
+        for index in 0..<30 {
+            attach(XCUIScreen.main.screenshot(), named: "island-beat-arrived-\(index)")
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+
+        springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
+        Thread.sleep(forTimeInterval: 1)
+        app.terminate()
+    }
+
+    /// The settled frame on both stops, cold — what a rider sees for the minutes
+    /// AFTER the beat, which is most of the time this state is on screen.
+    func testTheArrivalStatesSettleStatically() throws {
+        for state in ["arrived", "completed"] {
+            captureBothIslandStates(state)
+        }
     }
 
     /// **THE FIGURE HOLDS** — the client's 2026-07-31 ruling, photographed.

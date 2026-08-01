@@ -44,6 +44,22 @@ import WidgetKit
 // out what it returns and never switch on `status`. That split is why any of this is
 // assertable at all — a presentation that cannot be instantiated in a test cannot be
 // the thing that decides.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// **§0 — THE CLIENT'S CHANGE REQUEST AGAINST THE v3 BUILD IN TESTFLIGHT
+// (`202608011331`).** Three items, all on the ISLAND; the lock-screen card is
+// untouched by every one of them.
+//
+//   A. **The expanded island is rebuilt out of REGIONS** — see the §0 A block above
+//      `RideActivityIslandExpandedLeading`. The tall black box was wide content in
+//      the row the sensor housing splits.
+//   B. **The progress ring** (`RideActivityRing.swift`) fills the slot that used to
+//      be empty, and TURNS while a live ride has no telemetry yet.
+//   C. **The arrival glyphs get a completion beat** — once, on the transition, then
+//      static.
+//   D. The priority between the three is `RideActivityTrailingSlot`, resolved in the
+//      pure layer.
+// ─────────────────────────────────────────────────────────────────────────────
 
 // MARK: - The ground
 //
@@ -117,6 +133,13 @@ struct RideActivityHeadlineView: View {
     let headline: RideActivityHeadline
     var size: CGFloat = RideActivityMetrics.headlineSize
 
+    /// The CARD's fixed 24pt row — and **`nil` on the expanded island**, where §0 A
+    /// forbids a height anywhere in the builder. A fixed row is right on a surface
+    /// whose whole promise is a fixed 350 × 128 footprint and wrong on one whose
+    /// height the system derives from its content: pinning a row there is one of the
+    /// two ways to get back the tall black box §0 A is about.
+    var height: CGFloat? = RideActivityMetrics.headlineRowHeight
+
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: RideActivityMetrics.headlineGap) {
             switch headline {
@@ -141,7 +164,7 @@ struct RideActivityHeadlineView: View {
         // longest sentence in the set and is what this is measured against.
         .lineLimit(1)
         .truncationMode(.tail)
-        .frame(height: RideActivityMetrics.headlineRowHeight)
+        .frame(height: height)
     }
 
     private func lead(_ text: String) -> some View {
@@ -178,7 +201,16 @@ struct RideActivityHeadlineView: View {
 struct RideActivitySublineView: View {
     let subline: String?
     var size: CGFloat = RideActivityMetrics.sublineSize
-    var height: CGFloat = RideActivityMetrics.sublineRowHeight
+    /// Fixed on the card, `nil` on the expanded island — see the headline's own
+    /// `height` for why the two surfaces answer this differently.
+    var height: CGFloat? = RideActivityMetrics.sublineRowHeight
+
+    /// ONE line on the card, where the row is 17pt and cannot grow. **TWO on the
+    /// expanded island** (§0 A), where the height is content-driven and there is
+    /// therefore room to say the whole place name instead of ellipsizing it — and
+    /// where the second line is also what makes "the island's height differs between
+    /// a two-line and a three-line state" observable at all.
+    var lineLimit: Int = 1
 
     var body: some View {
         HStack(spacing: 0) {
@@ -186,7 +218,8 @@ struct RideActivitySublineView: View {
                 .font(.system(size: size))
                 .tracking(RideActivityMetrics.sublineTracking)
                 .foregroundStyle(Color.mrtActivityTextSubline)
-                .lineLimit(1)
+                .lineLimit(lineLimit)
+                .multilineTextAlignment(.leading)
                 .truncationMode(.tail)
             Spacer(minLength: 0)
         }
@@ -399,13 +432,12 @@ struct RideActivityIslandLeading: View {
     }
 }
 
-/// COMPACT TRAILING — **a figure, a glyph, or nothing.**
+/// COMPACT TRAILING — **a figure, a glyph, or the RING** (§0 B + §0 D).
 ///
-/// Uber's own rule and the board's. `8 min` / `1 min` / `3:42 PM` at 15/600 tabular;
-/// a wave at the kerb and a check at the end; the mark alone everywhere else. Every
-/// status word v2 put here is deleted — and with them the whole width ladder that
-/// table needed, because a slot that only ever holds a short figure or a symbol
-/// cannot truncate.
+/// `8 min` / `1 min` / `3:42 PM` at 15/600 tabular, exactly as before §0: the ring
+/// never displaces a number. Where there IS no number the slot used to be empty, and
+/// that is what the ring fills — a live ride whose car has not reported yet now
+/// turns a 25% arc instead of showing a bare mark beside nothing.
 struct RideActivityIslandTrailing: View {
     let card: RideActivityCard
 
@@ -421,98 +453,166 @@ struct RideActivityIslandTrailing: View {
                 .foregroundStyle(Color.mrtText)
                 .lineLimit(1)
 
-        case .glyph(let glyph):
-            Image(systemName: Self.symbol(for: glyph))
-                .font(.system(size: Self.symbolSize(for: glyph), weight: .medium))
-                .foregroundStyle(Color.mrtText)
-                .accessibilityLabel(Self.glyphLabel(for: glyph))
-
-        case .markOnly:
-            // Nothing at all. The leading mark is the whole compact presentation,
-            // which is exactly what Uber shows at Dispatch.
-            EmptyView()
-        }
-    }
-
-    /// **REAL SF SYMBOLS, NOT ARTWORK.** The board drew Material Symbols Rounded
-    /// (`waving_hand` / `check_circle`, FILL 1) and names these two as the shipping
-    /// equivalents — same shapes, Apple's optical weights, nothing bespoke for an
-    /// engineer to redraw.
-    static func symbol(for glyph: RideActivityCompact.Glyph) -> String {
-        switch glyph {
-        case .wave: return "hand.wave.fill"
-        case .check: return "checkmark.circle.fill"
-        }
-    }
-
-    /// The wave renders at 17 and the check at 15 — the board's own two sizes, which
-    /// differ because the check's circle already carries its own optical weight.
-    static func symbolSize(for glyph: RideActivityCompact.Glyph) -> CGFloat {
-        switch glyph {
-        case .wave: return RideActivityMetrics.compactWaveGlyph
-        case .check: return RideActivityMetrics.compactCheckGlyph
-        }
-    }
-
-    static func glyphLabel(for glyph: RideActivityCompact.Glyph) -> String {
-        switch glyph {
-        case .wave: return RideActivityCopy.arrivedHeadline
-        case .check: return RideActivityCopy.completedHeadline
+        default:
+            // 22 rather than 24: the compact pill is shorter than the island is
+            // tall, and a ring sized for the expanded slot crowds its own cap
+            // against the pill's edge.
+            RideActivityProgressRing(
+                slot: card.compact,
+                diameter: RideActivityMetrics.ringDiameterCompact,
+                stroke: RideActivityMetrics.ringStrokeCompact
+            )
         }
     }
 }
 
-/// MINIMAL — the east arrow alone, 17.
+/// MINIMAL — the ring, with the mark inside it (§5: "Minimal 37×37 · ring d24
+/// stroke 2.4 · center arrow 12 / glyph 13").
 ///
-/// This is what the rider sees when another app owns the island, so it has exactly
-/// one job: say WHOSE ride is running.
+/// This is what the rider sees when another app owns the island, and until §0 it
+/// said one thing: WHOSE ride is running. It now says that AND how far along it is,
+/// out of the same 24pt it already had — the mark did not leave, it moved into the
+/// middle of the ring.
+///
+/// It renders the FIGURE-LESS resolution, for the obvious reason: `3:42 PM` does not
+/// fit in a 37pt circle, and the ladder's answer to "no figure here" is already
+/// written down.
 struct RideActivityIslandMinimal: View {
     let card: RideActivityCard
 
     var body: some View {
-        ArrowMarkEast(size: RideActivityMetrics.minimalArrow)
+        RideActivityProgressRing(slot: card.expandedTrailing)
             .accessibilityLabel(RideActivityIslandLeading.label(for: card))
     }
 }
 
-// MARK: - Surface 3: the expanded Dynamic Island
+// MARK: - Surface 3: the expanded Dynamic Island · §0 A
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// **THE TALL BLACK BOX WAS WIDE CONTENT IN THE TOP ROW, AND THE FIX IS WHICH REGION
+// EACH THING GOES IN.**
+//
+// v3 put the WHOLE composition — logo, headline, subline and rail — into
+// `DynamicIslandExpandedRegion(.center)`. The sensor housing splits that row: only
+// narrow leading and trailing content survives beside it, so the system pushes wide
+// content around the housing and pads the difference. What the client photographed
+// is exactly that — content crowded into the top, an empty field below and to the
+// right, and a card far taller than its content. A `.frame(height:)` or a `Spacer()`
+// makes it worse, because both give the system more to pad.
+//
+// So the top row is now TWO SMALL THINGS and nothing else:
+//
+//   `.leading`   the brand mark, 26
+//   `.trailing`  the glyph-or-ring slot, 24
+//   `.center`    **DELIBERATELY UNUSED — the housing owns it.**
+//
+// and EVERYTHING WIDE moves to `.bottom`, which is the one region that spans the
+// island's full width: headline, subline, rail.
+//
+// ⚠️ **NOTHING IN THIS SECTION MAY SET A WIDTH OR A HEIGHT.** The island's height is
+// content-driven, and the acceptance test for that is behavioural rather than
+// numeric: a two-line state and a three-line state must render at DIFFERENT heights.
+// If they match, something is pinned. That is also why the headline and subline are
+// built with `height: nil` here while the CARD keeps its fixed rows — the card's
+// promise is a fixed footprint, and the island's is the opposite one.
+//
+// ⚠️ **AND THE CORNERS ARE THE SECOND HALF OF §0 A** — the client's follow-up on
+// this very rebuild: *the mark (top-left) and the ring (top-right) intersect the
+// pill's corner curvature, and the rail's origin puck and end cap run into the
+// bottom two.* The pill is a SQUIRCLE, so its edge is still curving hard 15pt in
+// from any corner, and the four things that reach a corner are exactly the four
+// things §0 A moved there. The fix is three INSETS at three call sites
+// (`expandedCornerSafeHorizontal` / `expandedCornerSafeTop` /
+// `expandedRailCornerSafeInset`) and nothing else: no frame, no width, no height,
+// and **the headline and subline do not move** — they sit where the pill's edge is
+// straight, and re-laying out the column to fix two corners is the change this is
+// deliberately not.
+//
+// The gap and the type are the kit's. **THE BOX PADDING (10/20/15) IS THE SYSTEM'S
+// AND IS NOT RE-APPLIED HERE**: `DynamicIslandExpandedRegion` already insets its
+// content from the island's edges, and a second inset on top of it is how a
+// full-width region stops being one — which is the same class of mistake as the
+// crowding this issue is fixing. The numbers stay named in `RideActivityMetrics` as
+// the design's own box, where `RideActivityGeometryTests` can check the arithmetic
+// they imply.
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// **THE CARD'S TWO CONTENT ROWS, AND NOTHING ELSE** — la-kit's `LAIslandExpanded`.
+/// `.leading` — the brand mark alone.
 ///
-/// The field report's sixth item was that the v1/v2 expanded island was "a lot of
-/// black space": it reserved a bottom row for a chip that v3 does not have. So this
-/// is the header (logo 28 + headline 19/600 + subline) over the rail, at 372 × 96 —
-/// no chip, no hint line, no reserved band.
+/// The one thing the housing leaves room for on this side, and the one thing that
+/// has to be here: the island's ground is the hardware's true black, so without the
+/// mark nothing on the expanded surface says whose ride this is.
+struct RideActivityIslandExpandedLeading: View {
+    var body: some View {
+        HexLogo(size: RideActivityMetrics.expandedLogo)
+            .accessibilityHidden(true)
+            // CORNER-SAFE, and nothing more than that. `.padding` and NOT a frame:
+            // the mark keeps its 26pt, the region keeps its own size, and the only
+            // thing that changed is where inside the region the mark sits.
+            .padding(.leading, RideActivityMetrics.expandedCornerSafeHorizontal)
+            .padding(.top, RideActivityMetrics.expandedCornerSafeTop)
+    }
+}
+
+/// `.trailing` — the glyph or the ring. **Never empty, and never the ETA.**
 ///
-/// TRUE BLACK, deliberately: the island's ground is the hardware, so unlike the lock
-/// card this surface draws no background at all. The BOX (372 × 96, radius 38) is
-/// likewise the system's — nothing may set an island's size or corner radius — so
-/// what this file owns is the padding, the gap, the tile and the type, and those are
-/// the kit's numbers exactly.
-struct RideActivityIslandExpanded: View {
+/// The expanded headline already carries the figure, so a second copy of it here
+/// would be the badge the whole redesign removed; the slot instead answers the
+/// question the headline cannot — how far along, or which stop we reached.
+struct RideActivityIslandExpandedTrailing: View {
     let card: RideActivityCard
 
     var body: some View {
-        VStack(alignment: .leading, spacing: RideActivityMetrics.expandedGap) {
-            HStack(alignment: .center, spacing: RideActivityMetrics.expandedHeaderGap) {
-                HexLogo(size: RideActivityMetrics.expandedTile)
+        RideActivityProgressRing(slot: card.expandedTrailing)
+            // The MIRROR of the leading mark's inset — same two numbers, opposite
+            // side, so the top row stays symmetric about the housing.
+            .padding(.trailing, RideActivityMetrics.expandedCornerSafeHorizontal)
+            .padding(.top, RideActivityMetrics.expandedCornerSafeTop)
+    }
+}
 
-                VStack(alignment: .leading, spacing: 0) {
-                    RideActivityHeadlineView(
-                        headline: card.headline,
-                        size: RideActivityMetrics.expandedHeadlineSize
-                    )
-                    RideActivitySublineView(
-                        subline: card.subline,
-                        size: RideActivityMetrics.expandedSublineSize
-                    )
-                }
+/// `.bottom` — everything wide.
+///
+/// Headline (19/600), subline (12.5 @58%), rail. Two lines and a rail, laid out once
+/// at their own size, with the rail separated by 8 rather than by a `Spacer` — a
+/// spacer here would expand to whatever the system offered and re-create the empty
+/// band it was supposed to remove.
+struct RideActivityIslandExpandedBottom: View {
+    let card: RideActivityCard
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: RideActivityMetrics.expandedBlockSpacing) {
+            RideActivityHeadlineView(
+                headline: card.headline,
+                size: RideActivityMetrics.expandedHeadlineSize,
+                height: nil
+            )
+            // **ONLY WHEN THERE IS ONE.** The card renders an empty 17pt row here
+            // because its footprint is fixed; on a content-driven surface that same
+            // row is a pinned blank line, which is one of the two ways §0 A's black
+            // box comes back.
+            if let subline = card.subline {
+                RideActivitySublineView(
+                    subline: subline,
+                    size: RideActivityMetrics.expandedSublineSize,
+                    height: nil,
+                    lineLimit: RideActivityMetrics.expandedSublineLineLimit
+                )
             }
 
             RideActivityRail(rail: card.rail, leg: card.leg)
+                .padding(.top, RideActivityMetrics.expandedRailTopGap)
+                // CORNER-SAFE, ON THE RAIL ALONE. The two lines above keep the
+                // column they had — insetting the whole block would move the
+                // headline to fix a corner the headline never reaches, and the
+                // client's instruction is explicit that the text column stays put.
+                // The rail's own `GeometryReader` simply reads a narrower width and
+                // clamps the puck into it, so the ends move and nothing is pinned.
+                .padding(.horizontal, RideActivityMetrics.expandedRailCornerSafeInset)
         }
-        .padding(.top, RideActivityMetrics.expandedPaddingTop)
-        .padding(.horizontal, RideActivityMetrics.expandedPaddingHorizontal)
-        .padding(.bottom, RideActivityMetrics.expandedPaddingBottom)
+        // `maxWidth: .infinity` is a FILL, not a size: it is what makes the region's
+        // own full width available to a leading-aligned stack. It is the one frame
+        // in this section, it constrains nothing, and it names no number.
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

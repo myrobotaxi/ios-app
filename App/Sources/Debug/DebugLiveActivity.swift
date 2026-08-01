@@ -139,6 +139,138 @@ enum RideActivityDebugLauncher {
             state: state,
             staleDate: staleDate
         )
+
+        await startSecondActivityIfRequested(vehicle: vehicle)
+        await repushIfRequested(state: state, staleDate: staleDate, presenter: presenter)
+        await advanceIfRequested(from: state)
+    }
+
+    // MARK: - MYR-398 §0 B: photographing the MINIMAL island
+
+    /// `MRT_ACTIVITY_MINIMAL=1` — orthogonal to the scene, and the only route to the
+    /// minimal presentation there is.
+    ///
+    /// **THE MINIMAL VIEW IS NOT A STATE OF ONE ACTIVITY, IT IS WHAT THE ISLAND DOES
+    /// WITH TWO.** iOS shows the compact leading/trailing pair while a single
+    /// Activity owns the island and falls back to two `minimal` presentations the
+    /// moment a second one exists — so no `MRT_ACTIVITY_STATE` value can reach it and
+    /// no amount of waiting will produce it. This starts a SECOND Activity, for a
+    /// DIFFERENT ride id, purely so the first one is rendered minimally.
+    ///
+    /// It is deliberately a second ride rather than a duplicate of the first: a
+    /// duplicate is MYR-405's defect, and a capture hook that reproduced it would be
+    /// indistinguishable from a regression of that fix in the census.
+    ///
+    /// ⚠️ **AND IT IS NOT ENOUGH — ESTABLISHED BY CAPTURE, iOS 26.5 SIMULATOR.** With
+    /// two Activities genuinely live (`count=2 [debug-ride/active,
+    /// debug-ride-minimal/active]`, logged below) the island still rendered ONE
+    /// compact pill. The minimal split is what the island does with two Activities
+    /// **from two different APPS**; a second Activity of the same app leaves the
+    /// system to pick one, and it picks the compact presentation. So the minimal
+    /// surface joins the LOCK SCREEN on the list of things this repo cannot
+    /// photograph, and the hook is kept for the census line that proves why rather
+    /// than for a frame it cannot produce.
+    private static func startSecondActivityIfRequested(vehicle: RideActivityVehicle?) async {
+        guard ProcessInfo.processInfo.environment["MRT_ACTIVITY_MINIMAL"] == "1" else { return }
+
+        let second = SystemRideActivityPresenter()
+        heldSecond = second
+        let started = await second.start(
+            attributes: RideActivityAttributes(rideID: "debug-ride-minimal", vehicle: vehicle),
+            state: sampleState(status: .accepted, etaMinutesFromNow: 9, progress: 0.2),
+            staleDate: nil
+        )
+        probeLog.info("MYR398-MINIMAL second activity started=\(started, privacy: .public)")
+        census("MYR398-MINIMAL after the second start")
+    }
+
+    private static var heldSecond: SystemRideActivityPresenter?
+
+    // MARK: - MYR-398 §0 C: does the arrival beat REPLAY?
+
+    /// `MRT_ACTIVITY_REPUSH=<seconds>` — orthogonal to the scene, read by nothing
+    /// else, and the only way the once-only claim can be photographed.
+    ///
+    /// **THE QUESTION IT ANSWERS.** ActivityKit re-renders on every content update,
+    /// and a completed ride is pushed to for its whole five-minute linger by a ticker
+    /// that has nothing new to say. If the beat were armed by the view's appearance
+    /// — or by any flag the widget process holds — the check would pop back to 0.6
+    /// and spring in again on every one of those pushes, on a card the rider has
+    /// stopped looking at. The fix is that every value the beat animates is derived
+    /// from the resolved slot, so an IDENTICAL frame animates nothing; the probe
+    /// pushes exactly that identical frame and the capture is the proof.
+    ///
+    /// It re-pushes the SAME `ContentState` VERBATIM — not a re-composed one — for
+    /// the same reason `DebugShareEndpoint` stores its rows in a reference box: a
+    /// probe that rebuilt the frame could differ from the original by an instant and
+    /// would then be testing a different question.
+    private static func repushIfRequested(
+        state: RideActivityAttributes.ContentState,
+        staleDate: Date?,
+        presenter: SystemRideActivityPresenter
+    ) async {
+        guard let raw = ProcessInfo.processInfo.environment["MRT_ACTIVITY_REPUSH"],
+              let seconds = Double(raw), seconds > 0
+        else { return }
+
+        // Detached so the scene's own `.task` is not held open for the whole probe —
+        // the capture script backgrounds the app in the meantime, and a Live Activity
+        // outliving its app is the entire point of the feature.
+        Task.detached { @MainActor in
+            for _ in 0..<repushCount {
+                try? await Task.sleep(for: .seconds(seconds))
+                await presenter.update(state: state, staleDate: staleDate)
+                probeLog.info("MYR398-REPUSH pushed the identical frame again")
+            }
+        }
+    }
+
+    /// Enough to span a capture window comfortably, and to make a replay obvious if
+    /// there is one: three beats a rider would have seen.
+    private static let repushCount = 3
+
+    // MARK: - MYR-398 §0 C: photographing the beat ITSELF
+
+    /// `MRT_ACTIVITY_ADVANCE=<seconds>` — push the LEG'S OWN NEXT STATUS onto the
+    /// running Activity after a delay.
+    ///
+    /// **THE BEAT IS A TRANSITION, SO A SCENE CANNOT SHOW IT.** Every
+    /// `MRT_ACTIVITY_STATE` value starts the Activity already IN its state, and §0 C's
+    /// whole design is that the beat is keyed to the change rather than to the view's
+    /// appearance — so a cold `arrived` scene correctly renders the settled frame and
+    /// photographs nothing. This makes the change happen: `accepted → arrived` and
+    /// `enroute → completed`, i.e. the two transitions a real ride performs, through
+    /// the shipping `update` path an APNs push would take.
+    ///
+    /// Everything about the frame is the scene's; only the moment is ours.
+    static func advanceIfRequested(from state: RideActivityAttributes.ContentState) async {
+        guard let raw = ProcessInfo.processInfo.environment["MRT_ACTIVITY_ADVANCE"],
+              let seconds = Double(raw), seconds > 0,
+              let presenter = held
+        else { return }
+
+        let next: LiveActivityRideStatus
+        switch state.status {
+        case .requested, .accepted: next = .arrived
+        case .enroute: next = .completed
+        default: return
+        }
+
+        Task.detached { @MainActor in
+            try? await Task.sleep(for: .seconds(seconds))
+            await presenter.update(
+                state: RideActivityAttributes.ContentState(
+                    status: next,
+                    eta: nil,
+                    vehicleName: state.vehicleName,
+                    destination: state.destination,
+                    progress: 1,
+                    asOf: state.asOf
+                ),
+                staleDate: nil
+            )
+            probeLog.info("MYR398-ADVANCE pushed \(String(describing: next), privacy: .public)")
+        }
     }
 
     // MARK: - MYR-405: the two-process repro of the restore race

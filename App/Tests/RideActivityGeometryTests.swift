@@ -235,6 +235,234 @@ final class RideActivityGeometryTests: XCTestCase {
         )
     }
 
+    // MARK: - 3. §0 A — the expanded island's top row
+
+    /// **THE TOP ROW HOLDS TWO SMALL THINGS AND THEY BOTH FIT IT.**
+    ///
+    /// The row is 34 in the design and the SYSTEM's in the build — a
+    /// `DynamicIslandExpandedRegion` is sized by iOS, and §0 A forbids setting a
+    /// height anywhere in that builder. So what a test can do is check the two pieces
+    /// of content against the number the design drew them into: a 26pt mark and a
+    /// 24pt ring, either of which growing past 34 would push the row out and start
+    /// the crowding over again.
+    func testTheExpandedTopRowContentFitsTheRowTheDesignDrewIt() {
+        XCTAssertLessThanOrEqual(RideActivityMetrics.expandedLogo, RideActivityMetrics.expandedTopRowHeight)
+        XCTAssertLessThanOrEqual(RideActivityMetrics.expandedTrailingSlot, RideActivityMetrics.expandedTopRowHeight)
+        XCTAssertEqual(RideActivityMetrics.expandedTrailingSlot, RideActivityMetrics.ringDiameter)
+    }
+
+    /// **THE EXPANDED HEADLINE STILL FITS ONE LINE AT 19/600**, and it has to fit a
+    /// NARROWER row than the card's: the two small top-row regions do not steal from
+    /// it, but the island is 372 wide against the card's 350 only after the system's
+    /// own insets, so measuring against the card's content width is the conservative
+    /// check.
+    func testTheLongestHeadlineFitsTheExpandedIslandsOneLine() {
+        let width = Self.width(
+            RideActivityCopy.expiredHeadline,
+            size: RideActivityMetrics.expandedHeadlineSize,
+            weight: .semibold,
+            tracking: RideActivityMetrics.headlineTracking
+        )
+        XCTAssertLessThan(width, Self.contentWidth, "\(RideActivityCopy.expiredHeadline) measures \(width)pt")
+    }
+
+    /// **THE TWO-LINE VS THREE-LINE PAIR, AS THE NUMBERS BEHIND THE CAPTURE.**
+    ///
+    /// §0 A's acceptance is that the island's height DIFFERS between a state whose
+    /// bottom block is two lines and one whose block is three — that is what proves
+    /// nothing is pinned. The screenshots are the evidence; this is the reason the
+    /// pair exists at all: at 12.5pt in the island's content width, Dispatch's
+    /// subline is comfortably one line and the client's own Galleria Dallas
+    /// destination is not.
+    func testTheCapturedPairIsGenuinelyOneLineAgainstTwo() {
+        let short = RideActivityCopy.dispatchSubline
+        let long = RideActivityCopy.headingTo("Galleria Dallas · 13350 Dallas Pkwy, Dallas TX 75240")
+
+        let shortWidth = Self.width(
+            short,
+            size: RideActivityMetrics.expandedSublineSize,
+            weight: .regular,
+            tracking: RideActivityMetrics.sublineTracking
+        )
+        let longWidth = Self.width(
+            long,
+            size: RideActivityMetrics.expandedSublineSize,
+            weight: .regular,
+            tracking: RideActivityMetrics.sublineTracking
+        )
+
+        XCTAssertLessThan(shortWidth, Self.contentWidth, "\(short) measures \(shortWidth)pt")
+        XCTAssertGreaterThan(
+            longWidth,
+            Self.contentWidth,
+            "the three-line fixture must not fit one line, or the capture proves nothing"
+        )
+        XCTAssertEqual(
+            RideActivityMetrics.expandedSublineLineLimit, 2,
+            "and the island has to be allowed to USE the second line"
+        )
+    }
+
+    // MARK: - 4. §0 B/C — the ring and the beat
+
+    /// The two sizes, and the rule that they are ONE ring at two scales: the stroke
+    /// tracks the diameter, so the compact ring is not a thicker ring drawn smaller.
+    func testTheRingIsOneComponentAtTwoScales() {
+        XCTAssertEqual(RideActivityMetrics.ringDiameter, 24)
+        XCTAssertEqual(RideActivityMetrics.ringDiameterCompact, 22)
+        XCTAssertEqual(RideActivityMetrics.ringStroke, 2.4)
+        XCTAssertEqual(RideActivityMetrics.ringStrokeCompact, 2.2)
+        XCTAssertLessThan(
+            RideActivityMetrics.ringStrokeCompact,
+            RideActivityMetrics.ringStroke,
+            "the smaller ring takes the thinner stroke, or the two read as two rings"
+        )
+    }
+
+    /// **THE CENTRE HAS TO FIT INSIDE THE STROKE, WITH AIR.**
+    ///
+    /// The arrow (12) and the glyph (13) sit inside a 24pt circle drawn with a 2.4pt
+    /// stroke, i.e. a 19.2pt hole. A centre that touched the ring would read as one
+    /// blob at island scale, so the check is the clearance rather than the diameter.
+    func testTheRingsCentreClearsItsOwnStroke() {
+        for (name, centre, diameter, stroke) in [
+            ("arrow · minimal/expanded", RideActivityMetrics.ringArrow, RideActivityMetrics.ringDiameter, RideActivityMetrics.ringStroke),
+            ("glyph · minimal/expanded", RideActivityMetrics.ringGlyph, RideActivityMetrics.ringDiameter, RideActivityMetrics.ringStroke),
+            ("arrow · compact", RideActivityMetrics.ringArrow, RideActivityMetrics.ringDiameterCompact, RideActivityMetrics.ringStrokeCompact),
+            ("glyph · compact", RideActivityMetrics.ringGlyph, RideActivityMetrics.ringDiameterCompact, RideActivityMetrics.ringStrokeCompact),
+        ] {
+            let hole = diameter - stroke * 2
+            XCTAssertLessThan(centre, hole, "\(name): \(centre)pt centre in a \(hole)pt hole")
+            XCTAssertGreaterThan(
+                hole - centre, 1.5,
+                "\(name): the centre all but touches the ring"
+            )
+        }
+    }
+
+    /// **THE BEAT'S LADDER, IN ORDER.** The ring completes, THEN fades, and the glyph
+    /// springs in a beat after the fade starts. Written as inequalities rather than
+    /// as three literals, because what matters is the sequence: a delay edited to sit
+    /// before the completion would play the glyph over an arc still sweeping under
+    /// it.
+    func testTheArrivalBeatPlaysInOrderAndEndsInOneSecondish() {
+        XCTAssertEqual(
+            RideActivityMetrics.arrivalRingCompletion,
+            RideActivityMetrics.railTravel,
+            "the ring completes on the rail's own curve and duration"
+        )
+        XCTAssertEqual(RideActivityMetrics.arrivalRingFadeDelay, RideActivityMetrics.arrivalRingCompletion)
+        XCTAssertGreaterThan(
+            RideActivityMetrics.arrivalGlyphDelay,
+            RideActivityMetrics.arrivalRingFadeDelay,
+            "the glyph follows the fade, it does not race it"
+        )
+        XCTAssertEqual(
+            RideActivityMetrics.arrivalGlyphDelay - RideActivityMetrics.arrivalRingFadeDelay,
+            0.1,
+            accuracy: 0.0001,
+            "the handoff's 0.1s"
+        )
+
+        // A COMPLETION BEAT, NOT AN AMBIENCE. The whole thing has to be over long
+        // before the five-minute linger it plays at the start of.
+        XCTAssertLessThan(
+            RideActivityMetrics.arrivalGlyphDelay + RideActivityMetrics.arrivalSpringResponse * 2,
+            2.0
+        )
+    }
+
+    /// The ring settles UNDER the glyph rather than disappearing: the leg really is
+    /// finished, and 40% is what says so without competing with the mark that
+    /// replaced the arrow.
+    func testTheSettledRingIsStillVisible() {
+        XCTAssertEqual(RideActivityMetrics.arrivalRingSettledOpacity, 0.4)
+        XCTAssertGreaterThan(RideActivityMetrics.arrivalRingSettledOpacity, 0.2)
+        XCTAssertLessThan(RideActivityMetrics.arrivalRingSettledOpacity, 1)
+    }
+
+    /// The rotation's own two numbers. A quarter arc is enough to read as a direction
+    /// at 24pt, and 1.4s is slow enough not to strobe on a lock screen.
+    func testTheIndeterminateArcIsAQuarterTurningOnceEvery1Point4Seconds() {
+        XCTAssertEqual(RideActivityMetrics.ringIndeterminateArc, 0.25)
+        XCTAssertEqual(RideActivityMetrics.ringSpin, 1.4)
+        XCTAssertGreaterThan(RideActivityMetrics.ringMinimumArc, 0)
+        XCTAssertLessThan(
+            RideActivityMetrics.ringMinimumArc,
+            RideActivityMetrics.ringIndeterminateArc,
+            "the determinate floor must never be mistakable for the waiting arc"
+        )
+    }
+
+    // MARK: - 5. §0 A · the corner-safe insets
+
+    /// **THE THREE INSETS EXIST, THEY ARE POSITIVE, AND THEY ARE SMALL.**
+    ///
+    /// The client's follow-up was that the mark, the ring and the rail's two ends
+    /// meet the pill's corner curvature. The fix is three insets, and each of them
+    /// is wrong in two directions: zero is the defect, and anything large enough to
+    /// re-proportion the surface is the "shrink the layout" the same instruction
+    /// forbids. The ceiling is the design's own box padding (20 horizontal / 10
+    /// top) — an inset bigger than the padding it sits inside would be the second
+    /// inset that stops a full-width region being one.
+    func testTheCornerSafeInsetsAreRealAndSmall() {
+        for (name, value, ceiling) in [
+            ("horizontal", RideActivityMetrics.expandedCornerSafeHorizontal, RideActivityMetrics.expandedPaddingHorizontal),
+            ("top", RideActivityMetrics.expandedCornerSafeTop, RideActivityMetrics.expandedPaddingTop),
+            ("rail end", RideActivityMetrics.expandedRailCornerSafeInset, RideActivityMetrics.expandedPaddingHorizontal),
+        ] {
+            XCTAssertGreaterThan(value, 0, "\(name): zero is the reported defect")
+            XCTAssertLessThan(value, ceiling, "\(name): \(value)pt is re-proportioning, not insetting")
+        }
+    }
+
+    /// **THE RAIL'S ENDS ARE THE PUCK'S ENDS**, which is why insetting the rail is
+    /// insetting exactly what the client saw hit the bottom corners.
+    ///
+    /// The puck rides `0 … W − puck`, so at `p = 0` its LEADING edge is the rail's
+    /// leading edge and at `p = 1` its TRAILING edge is the rail's trailing edge —
+    /// there is no third thing in that row reaching further out. The check is that
+    /// the inset genuinely buys the puck room rather than merely the track: the
+    /// ground disc is 2pt wider than the puck on each side, so the inset has to
+    /// clear the RING as well.
+    func testTheRailInsetClearsThePucksGroundDiscAndNotJustTheTrack() {
+        let discOverhang = RideActivityMetrics.railPuckRing
+        XCTAssertGreaterThan(
+            RideActivityMetrics.expandedRailCornerSafeInset,
+            discOverhang,
+            "the puck's ground disc overhangs the track by \(discOverhang)pt and the inset has to cover it"
+        )
+    }
+
+    /// **THE HEADLINE AND SUBLINE ARE NOT INSET, AND THAT IS THE POINT.**
+    ///
+    /// There is no `expandedHeadlineCornerSafe…`, deliberately — the client's
+    /// instruction is that the text column keeps its alignment while the two bands
+    /// that touch the curve pay for the corners. The structural form of that is the
+    /// bottom block's own spacing being untouched by §0 A's follow-up: the rail
+    /// carries the horizontal inset at ITS call site, so the block's leading edge is
+    /// still the headline's.
+    func testTheTextColumnKeepsItsGutter() {
+        XCTAssertEqual(RideActivityMetrics.expandedBlockSpacing, 2)
+        XCTAssertEqual(RideActivityMetrics.expandedRailTopGap, 8)
+        // The rail's inset is horizontal ONLY. A vertical one here would move the
+        // rail off the gap above it and start re-tuning the block.
+        XCTAssertGreaterThan(RideActivityMetrics.expandedRailCornerSafeInset, 0)
+    }
+
+    /// **THE INSET STILL LEAVES A RAIL WORTH DRAWING.** It comes off BOTH ends, so
+    /// the travel loses twice the inset; on the narrowest island this surface ships
+    /// to that still has to leave the puck a majority of the row to move through, or
+    /// the fraction stops being readable as one.
+    func testTheInsetRailStillHasTravel() {
+        // The island's content width, conservatively taken as the card's — the
+        // island is wider, so this is the tighter of the two.
+        let width = Self.contentWidth
+            - RideActivityMetrics.expandedRailCornerSafeInset * 2
+        let travel = width - RideActivityMetrics.railPuck
+        XCTAssertGreaterThan(travel / Self.contentWidth, 0.8, "travel collapsed to \(travel)pt")
+    }
+
     // MARK: - Measurement
 
     private static func width(

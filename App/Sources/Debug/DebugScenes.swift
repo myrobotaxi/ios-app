@@ -213,6 +213,11 @@ enum DebugScene: String, CaseIterable {
     /// `staleNoInstant` · `completed` · `declined` · `cancelled` · `expired` ·
     /// `unknown`
     ///
+    /// **MYR-398 §0 adds a fifteenth, `longPlace`** — `enroute` with a destination
+    /// long enough to wrap the expanded island's subline, i.e. the THREE-LINE half of
+    /// §0 A's height acceptance. It is not a board row; it is the second frame of a
+    /// measurement.
+    ///
     /// The names are the SCENE's, and they map onto `design/la/la-data.jsx`'s rows in
     /// order — that file is the answer key the captures are read against. `requested`
     /// and `noProgress` survive as ALIASES of `dispatch` and `noTelemetry` so v2's
@@ -2463,6 +2468,28 @@ enum DebugScene: String, CaseIterable {
                     asOfMinutesAgo: 4
                 ),
                 Date().addingTimeInterval(8)
+            )
+        case "longPlace":
+            // MYR-398 §0 A — **THE THREE-LINE HALF OF THE HEIGHT PAIR.**
+            //
+            // §0 A's acceptance is that the EXPANDED island's height DIFFERS between
+            // a two-line state and a three-line one, which is what proves nothing in
+            // that builder is pinned. Every board row is two lines (headline +
+            // one-line subline), so a third line needs a destination long enough to
+            // wrap the 12.5pt subline at island width — and the honest one to use is
+            // the client's own r16 trip, which is already this repo's overflow
+            // fixture (`RideActivityGeometryTests`, MYR-395's `reviewLongDistance`).
+            //
+            // Everything else is `enroute` verbatim, so the pair is a clean
+            // one-string diff and the height is the only thing that may move.
+            return (
+                RideActivityDebugLauncher.sampleState(
+                    status: .enroute,
+                    etaMinutesFromNow: 4,
+                    destination: "Galleria Dallas · 13350 Dallas Pkwy, Dallas TX 75240",
+                    progress: 0.62
+                ),
+                nil
             )
         case "staleNoInstant":
             // The SAME stale frame from a server that predates contracts 0.28.0 and
