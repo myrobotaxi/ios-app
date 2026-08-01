@@ -250,7 +250,7 @@ struct DrivingSummary: View {
         HStack(alignment: .firstTextBaseline) {
             (Text("Arriving in ")
                 .foregroundStyle(Color.mrtTextSec)
-                + Text("\(snapshot.etaMinutes) min")
+                + Text(RideDuration.text(minutes: snapshot.etaMinutes))
                 .foregroundStyle(Color.mrtText)
                 .fontWeight(.semibold))
                 .font(.system(size: 15))

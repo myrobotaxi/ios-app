@@ -160,12 +160,12 @@ struct RideRequestTrackingContent: View {
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(heroMinutesText)
+                    Text(heroDuration.value)
                         .font(.system(size: 34, weight: .bold))
                         .monospacedDigit()
                         .tracking(-1)
                         .foregroundStyle(Color.mrtText)
-                    Text("min")
+                    Text(heroDuration.unit)
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(Color.mrtGold.opacity(0.8))
                 }
@@ -178,9 +178,16 @@ struct RideRequestTrackingContent: View {
         .padding(.bottom, 16)
     }
 
-    private var heroMinutesText: String {
+    /// MYR-395 — the hero's number and its unit, from the ONE duration grammar.
+    ///
+    /// The unit is no longer a hardcoded `Text("min")` beside the number, because
+    /// on a long leg the number is not a count of minutes: an ETA of 2,623 sets
+    /// "43 hr 43" against a small "min", the same shape a 12-minute leg gets. The
+    /// sub-minute floor is untouched and still wins outright — "<1 min" is a
+    /// statement about arriving, not a duration to reformat.
+    private var heroDuration: (value: String, unit: String) {
         let minutes = atPickup ? remainMinutes : toPickupMinutes
-        return minutes < 1 ? "<1" : "\(minutes)"
+        return minutes < 1 ? ("<1", "min") : RideDuration.heroParts(minutes: minutes)
     }
 
     private var heroMilesText: String {
@@ -194,12 +201,12 @@ struct RideRequestTrackingContent: View {
         VStack(alignment: .leading, spacing: 0) {
             stopRow(
                 isDropoff: false, place: pickupLabel, clock: pickupClock, filled: atPickup,
-                note: atPickup ? "Picked up" : "\(String(format: "%.1f", pickupRemainMiles)) mi \u{00B7} \(toPickupMinutes) min",
+                note: atPickup ? "Picked up" : "\(String(format: "%.1f", pickupRemainMiles)) mi \u{00B7} \(RideDuration.text(minutes: toPickupMinutes))",
                 last: false
             )
             stopRow(
                 isDropoff: true, place: destination.label, clock: arriveClock, filled: false,
-                note: atPickup ? "\(String(format: "%.1f", dropRemainMiles)) mi \u{00B7} \(remainMinutes) min" : "\(String(format: "%.1f", destination.miles)) mi trip",
+                note: atPickup ? "\(String(format: "%.1f", dropRemainMiles)) mi \u{00B7} \(RideDuration.text(minutes: remainMinutes))" : "\(String(format: "%.1f", destination.miles)) mi trip",
                 last: true
             )
         }
@@ -346,7 +353,7 @@ struct RideRequestTrackingContent: View {
                     .mrtTextShimmer(duration: 2.6)
                 Spacer(minLength: 8)
                 HStack(spacing: 8) {
-                    Text(remainMinutes < 1 ? "< 1 min" : "\(remainMinutes) min")
+                    Text(remainMinutes < 1 ? "< 1 min" : RideDuration.text(minutes: remainMinutes))
                         .font(.system(size: 17, weight: .semibold))
                         .monospacedDigit()
                         .foregroundStyle(Color.mrtText)

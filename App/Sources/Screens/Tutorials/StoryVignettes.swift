@@ -94,11 +94,16 @@ struct VigLiveMap: View {
 
 /// tutorials.jsx:47-75 — recent drives list.
 struct VigDrives: View {
-    private struct Row { let to: String, sub: String, mi: String, mn: String }
+    /// MYR-395 — `mn` is an Int now, and the row renders it through the app's ONE
+    /// duration grammar. This illustration mirrors the real Drives list (whose own
+    /// `DriveFixtures` carry these exact 92 and 215 minute drives), so leaving it
+    /// on raw minutes would have the tutorial teaching a grammar the screen it
+    /// depicts no longer uses.
+    private struct Row { let to: String, sub: String, mi: String, mn: Int }
     private let rows: [Row] = [
-        Row(to: "Embarcadero Center", sub: "Today · 7:42 AM", mi: "14.6", mn: "29"),
-        Row(to: "Half Moon Bay", sub: "Yest. · 9:02 AM", mi: "28.4", mn: "92"),
-        Row(to: "Tahoe Donner", sub: "Mon · 6:48 AM", mi: "184", mn: "215"),
+        Row(to: "Embarcadero Center", sub: "Today · 7:42 AM", mi: "14.6", mn: 29),
+        Row(to: "Half Moon Bay", sub: "Yest. · 9:02 AM", mi: "28.4", mn: 92),
+        Row(to: "Tahoe Donner", sub: "Mon · 6:48 AM", mi: "184", mn: 215),
     ]
 
     var body: some View {
@@ -117,7 +122,7 @@ struct VigDrives: View {
                             VStack(alignment: .trailing, spacing: 1) {
                                 (Text(row.mi).font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.mrtText)
                                     + Text(" mi").font(.system(size: 9)).foregroundStyle(Color.mrtTextMuted))
-                                Text("\(row.mn) min").font(.system(size: 10)).foregroundStyle(Color.mrtTextMuted)
+                                Text(RideDuration.text(minutes: row.mn)).font(.system(size: 10)).foregroundStyle(Color.mrtTextMuted)
                             }
                         }
                         .rowChrome()

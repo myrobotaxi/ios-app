@@ -103,6 +103,79 @@ enum RideRoutePolyline {
     }
 }
 
+// MARK: - MYR-395 — a lineless route map has to SAY which kind of lineless it is
+
+/// What a route surface KNOWS about its road geometry, and therefore what it is
+/// allowed to say.
+///
+/// r16, the client: *"Looks like your route etch update broke the line from being
+/// drawn: this is a major regression."* His screenshot is the Review sheet for a
+/// 1,049 mi Grayslake IL → Galleria Dallas trip: the camera fitted across half the
+/// country, the pickup's glow head breathing, and **no line and no words**.
+///
+/// Nothing had broken. `MYR-237`'s honesty rule was working exactly as designed —
+/// MKDirections had answered with the straight `[from, to]` fallback,
+/// ``RideRoutePolyline/isReal(_:)`` refused it, and the map correctly drew nothing
+/// rather than passing a straight line off as a route. **The defect is that the
+/// refusal was silent.** A map that declines to draw looks identical to a map that
+/// failed to draw, and the rider has no way to tell which they are looking at.
+///
+/// So the two lineless states are told apart HERE, once, and each carries its own
+/// sentence:
+///
+/// - ``resolving`` — the fetch has not answered for this pair yet. The existing
+///   MYR-327 "Finding route…" grammar, which `ExpandedRouteMap` has shown since
+///   that issue; the two literals are asserted equal so the app cannot grow a
+///   second dialect for one state.
+/// - ``unavailable`` — the fetch ANSWERED and what came back is not road geometry.
+///   Says so, in the repo's own honest-degradation grammar ("Can't reach your
+///   vehicles right now", "Can't reach {car} right now"). The store keeps retrying
+///   on its cooldown underneath, so the line can still arrive; the copy is a
+///   statement about now, never a dead end.
+/// - ``road`` — real geometry. No caption at all, so every surface that HAS a
+///   route is byte-identical to before this issue.
+///
+/// **`resolving` and `unavailable` are not one boolean.** They were, in effect,
+/// before this issue: `reviewRouteLoading` was `reviewRealRoute == nil`, which goes
+/// FALSE the moment the fallback lands — so the one signal the surface had said
+/// "not loading" about a map with nothing on it. That is MYR-343/MYR-386's lesson
+/// for the fourth time: situations told apart by fewer arms than they have, so one
+/// always borrows another's surface.
+enum RideRouteAvailability: Equatable {
+    /// No answer yet for this pickup/destination pair.
+    case resolving
+    /// Real road geometry — draw it, say nothing.
+    case road
+    /// Answered, and the answer was not a route.
+    case unavailable
+
+    /// The ONE rule, over the ONE fact a caller has: the store's answer for this
+    /// pair (`nil` while the fetch is still in flight).
+    static func resolve(fetched: [CLLocationCoordinate2D]?) -> RideRouteAvailability {
+        guard let fetched else { return .resolving }
+        return RideRoutePolyline.isReal(fetched) ? .road : .unavailable
+    }
+
+    /// MYR-327's existing wording, verbatim. Named here so `ExpandedRouteMap` and
+    /// the request preview cannot drift apart (`RideRouteAvailabilityTests` pins it).
+    static let resolvingCaption = "Finding route\u{2026}"
+    /// The honest settled-failure line. Deliberately "right now": the store retries
+    /// on `fallbackRetryCooldown`, so this is not a permanent verdict and must not
+    /// read like one — and deliberately not an error, a spinner or a retry button,
+    /// because a rider cannot act on it and something is already re-asking.
+    static let unavailableCaption = "Can't find a route right now"
+
+    /// What the map says while it is not drawing a line. `nil` for ``road`` — the
+    /// whole reason every existing capture is unchanged.
+    var caption: String? {
+        switch self {
+        case .road: return nil
+        case .resolving: return Self.resolvingCaption
+        case .unavailable: return Self.unavailableCaption
+        }
+    }
+}
+
 // MARK: - MYR-390 — the etch's memory belongs to the ROUTE, not to a mounted view
 //
 // r15 clip: on the destination-selected search sheet the route is fully etched
@@ -206,6 +279,30 @@ enum RouteEtchPresentation {
         case pulsing
         /// Static map-space route, no motion (Booking, Summary, Reduce Motion).
         case settled
+        /// MYR-395 — no line AND no motion.
+        ///
+        /// Two situations land here and both were previously wrong:
+        /// • A surface that does not etch (Booking, Summary, Reduce Motion) with
+        ///   no road geometry. It used to fall through to ``settled``, whose whole
+        ///   job is to draw the line WHOLE — so the straight `[pickup,
+        ///   destination]` fallback rendered on the Booking sheet as a 949-mile
+        ///   gold line across five states. ``loading`` would be the other wrong
+        ///   answer: Booking is deliberately static and Reduce Motion is a promise.
+        /// • ANY surface whose fetch has ANSWERED and not with a route. ``loading``
+        ///   breathes the etch head as a working cue, and nothing is working — that
+        ///   is the client's own frame, a map that looked busy forever.
+        case lineless
+
+        /// Whether this opening puts the WHOLE line on screen. The MYR-395
+        /// invariant is stated against this rather than against a case list, so a
+        /// future opening has to answer the question rather than be forgotten by
+        /// a test that enumerates two names.
+        var drawsWholeLine: Bool {
+            switch self {
+            case .pulsing, .settled: return true
+            case .loading, .etching, .lineless: return false
+            }
+        }
     }
 
     struct Resolution: Equatable {
@@ -214,22 +311,52 @@ enum RouteEtchPresentation {
         let progress: Double
     }
 
-    /// - Parameter etchedProgress: this route identity's entry in the
-    ///   `RouteEtchLedger` — 0 for a route nobody has drawn yet.
+    /// - Parameters:
+    ///   - availability: MYR-395 — what the surface knows about its geometry.
+    ///     This REPLACES the `isRealRoute: Bool` MYR-390 took. The bool could not
+    ///     tell the two lineless states apart, so the one that had already failed
+    ///     kept breathing MYR-237's "working" head at the pickup — which is
+    ///     precisely the frame the client read as a broken map.
+    ///   - etchedProgress: this route identity's entry in the `RouteEtchLedger` —
+    ///     0 for a route nobody has drawn yet.
     static func resolve(
         etch: Bool,
         reduceMotion: Bool,
-        isRealRoute: Bool,
+        availability: RideRouteAvailability,
         etchedProgress: Double
     ) -> Resolution {
         let settled = min(1, max(0, etchedProgress.isFinite ? etchedProgress : 0))
+        // MYR-395 — GEOMETRY IS ASKED ABOUT FIRST, AND THE ORDER IS HALF THE FIX.
+        //
+        // MYR-390 asked second, below the `etch` guard, which reads as harmless:
+        // "a straight fallback is never etched". But the arm above it does not
+        // etch either — it draws the line WHOLE — so `etch: false` skipped the
+        // question altogether and Booking rendered the provider's straight
+        // `[pickup, destination]` fallback as a gold route across five states
+        // (reproduced: `MRT_SCENE=booking MRT_ROUTE_UNAVAILABLE=1`). Reduce Motion
+        // took that same arm, so the no-straight-lines rule was also off for every
+        // rider who turns motion down. **A guard placed below one of the two
+        // branches it is about only guards one of them.**
+        switch availability {
+        case .resolving:
+            // A fetch is genuinely running. An etching surface breathes MYR-237's
+            // head where the laser will start; a static one holds still. Neither
+            // draws a line.
+            return Resolution(opening: etch && !reduceMotion ? .loading : .lineless, progress: 0)
+        case .unavailable:
+            // The fetch ANSWERED, and not with a route. Nothing is in flight, so
+            // nothing may look busy — on ANY surface, whatever its motion setting.
+            // The caller states this in words (`RideRouteAvailability.caption`);
+            // the map's job is to stop pretending.
+            return Resolution(opening: .lineless, progress: 0)
+        case .road:
+            break
+        }
         // Booking / Summary / Reduce Motion: the map-space route is drawn whole
         // and nothing animates. It is FULLY DRAWN either way, so a static
         // presentation arriving over a finished etch is seamless.
         guard etch, !reduceMotion else { return Resolution(opening: .settled, progress: settled) }
-        // A straight fallback is not a route and is never etched (MYR-237).
-        guard isRealRoute else { return Resolution(opening: .loading, progress: 0) }
-        // THE WHOLE FIX: this route has already been etched, so it opens drawn.
+        // MYR-390: this route has already been etched, so it opens drawn.
         guard settled < 1 else { return Resolution(opening: .pulsing, progress: 1) }
         return Resolution(opening: .etching, progress: 0)
     }

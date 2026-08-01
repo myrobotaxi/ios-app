@@ -1058,7 +1058,7 @@ struct RideRequestSearchContent: View {
                             .foregroundStyle(Color.mrtText)
                     }
                     if place.minutes > 0 {
-                        Text("\(place.minutes) min")
+                        Text(RideDuration.text(minutes: place.minutes))
                             .font(.system(size: 11.5))
                             .monospacedDigit()
                             .foregroundStyle(Color.mrtTextMuted)
@@ -1088,7 +1088,7 @@ struct RideRequestSearchContent: View {
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(Color.mrtText)
                     .lineLimit(1)
-                Text("\(String(format: "%.1f", place.miles)) mi \u{00B7} \(place.minutes) min")
+                Text("\(String(format: "%.1f", place.miles)) mi \u{00B7} \(RideDuration.text(minutes: place.minutes))")
                     .font(.system(size: 11))
                     .monospacedDigit()
                     .foregroundStyle(Color.mrtTextSec)

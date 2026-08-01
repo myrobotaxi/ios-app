@@ -382,7 +382,7 @@ struct IncomingRequestSheet: View {
         return HStack(spacing: 16) {
             statCell(label: "DISTANCE", value: "\(String(format: "%.1f", dest.miles)) mi")
             statDivider
-            statCell(label: "DRIVE TIME", value: "~\(dest.minutes) min")
+            statCell(label: "DRIVE TIME", value: "~\(RideDuration.text(minutes: dest.minutes))")
             if let batteryAfter {
                 statDivider
                 statCell(label: "BATTERY AFTER", value: "\(batteryAfter)%")
@@ -432,14 +432,14 @@ struct IncomingRequestSheet: View {
                 dotColor: .mrtDriving,
                 name: "PICKUP",
                 place: request.input.pickup.label,
-                metric: "\(String(format: "%.1f", pickupLeg.miles)) mi \u{00B7} ~\(pickupLeg.minutes) min away"
+                metric: "\(String(format: "%.1f", pickupLeg.miles)) mi \u{00B7} ~\(RideDuration.awayText(minutes: pickupLeg.minutes))"
             )
             Rectangle().fill(Color.mrtBorder).frame(height: MRTMetrics.hairline)
             legLine(
                 dotColor: .mrtGold,
                 name: "DROP-OFF",
                 place: dest.label,
-                metric: "\(String(format: "%.1f", dest.miles)) mi \u{00B7} ~\(dest.minutes) min"
+                metric: "\(String(format: "%.1f", dest.miles)) mi \u{00B7} ~\(RideDuration.text(minutes: dest.minutes))"
             )
         }
         .padding(.horizontal, 14)

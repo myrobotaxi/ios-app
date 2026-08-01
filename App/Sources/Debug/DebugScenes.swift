@@ -80,6 +80,15 @@ enum DebugScene: String, CaseIterable {
     /// the map across that flip.
     case riderScheduledReviewRealPath
     case review
+    /// MYR-395 — `review` VERBATIM except for the two ENDPOINTS: the client's own
+    /// r16 trip, Grayslake IL → Galleria Dallas TX (949 road miles). It exists
+    /// because a cross-country pair is not a bigger version of `review`'s 18.4 mi
+    /// SFO run — it is the input that puts ~7,300 MKDirections vertices through a
+    /// per-frame screen-space overlay, and the ONLY route by which the client's
+    /// "no line at all" frame can be photographed. Everything else about the scene
+    /// (the fleet member, the sheet, the CTA) is `review`'s, so `review` itself
+    /// stays byte-identical and the pair is a clean two-coordinate diff.
+    case reviewLongDistance
     case reviewPicker
     case booking
     case pending           // minimized "Request sent" pill on the idle map
@@ -1254,6 +1263,26 @@ enum DebugScene: String, CaseIterable {
         return false
     }
 
+    /// MYR-395 capture modifier, orthogonal to the scene: `MRT_ROUTE_UNAVAILABLE=1`
+    /// (env or `-MRT_ROUTE_UNAVAILABLE 1` arg) swaps the rider's route provider for
+    /// `StraightLineRideRouteProvider` — which returns EXACTLY the `[from, to]`
+    /// pair `AppleRideRouteProvider` returns when MKDirections is throttled,
+    /// offline, or loses the 8s deadline race. Nothing else changes: the shipping
+    /// store caches it, the shipping `RideRoutePolyline.isReal` refuses it, and the
+    /// shipping `RouteEtchPresentation.resolve` decides what the surface says.
+    ///
+    /// It exists because that state has NO other headless capture route. On a
+    /// networked simulator MKDirections answers every pair — including the
+    /// client's 949-mile one — in about a second (measured), so the frame he
+    /// photographed cannot be reached by picking a longer trip. Unset, every
+    /// existing scene runs the real Apple provider and is byte-identical.
+    static var routeUnavailable: Bool {
+        if ProcessInfo.processInfo.environment["MRT_ROUTE_UNAVAILABLE"] == "1" { return true }
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-MRT_ROUTE_UNAVAILABLE"), i + 1 < args.count { return args[i + 1] == "1" }
+        return false
+    }
+
     /// MYR-346 — simulate an INCOMING universal link, orthogonal to the scene.
     ///
     /// `MRT_JOIN_LINK` (or `-MRT_JOIN_LINK <value>`) takes either a full URL
@@ -2234,6 +2263,34 @@ enum DebugScene: String, CaseIterable {
     /// with real distances/times (SFO · Terminal 2, 18.4 mi / 32 min).
     private static var sampleDestination: RidePlace { RideRequestFixtures.recentPlaces[1] }
 
+    /// MYR-395 — the client's own r16 endpoints, verbatim: a pickup in Grayslake
+    /// IL and Galleria Dallas TX. 949 road miles / ~7,300 MKDirections vertices —
+    /// the input the etch overlay was never measured against.
+    static let longDistancePickupCoordinate = CLLocationCoordinate2D(latitude: 42.3444, longitude: -88.0417)
+    static let longDistanceDestinationCoordinate = CLLocationCoordinate2D(latitude: 32.9308, longitude: -96.8206)
+
+    private static var longDistancePickup: RidePlace {
+        RidePlace(
+            id: "pin-grayslake",
+            label: "Grayslake",
+            subtitle: nil,
+            miles: 0, minutes: 0,
+            icon: "mappin.circle.fill",
+            coordinate: longDistancePickupCoordinate
+        )
+    }
+
+    private static var longDistanceDestination: RidePlace {
+        RidePlace(
+            id: "galleria-dallas",
+            label: "Galleria Dallas",
+            subtitle: "13350 Dallas Pkwy, Dallas, TX",
+            miles: 0, minutes: 0,
+            icon: "bag.fill",
+            coordinate: longDistanceDestinationCoordinate
+        )
+    }
+
     /// Sample pickup — a dropped-pin place, matching the shape `PinDrop`
     /// writes back into the draft.
     private static var samplePickup: RidePlace {
@@ -2657,6 +2714,14 @@ enum DebugScene: String, CaseIterable {
         case .review, .reviewPicker:
             viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
+            viewer.sheetPhase = .review
+        case .reviewLongDistance:
+            // MYR-395 — `review`'s seeding with the client's own two endpoints
+            // swapped in. Nothing else is set, so whatever the capture shows about
+            // the route came from the shipping fetch, the shipping predicate and
+            // the shipping presentation.
+            viewer.draftPickup = DebugScene.longDistancePickup
+            viewer.draftDestination = DebugScene.longDistanceDestination
             viewer.sheetPhase = .review
         case .riderScheduledReview:
             // MYR-389 — `review` VERBATIM plus a committed schedule, so the pair

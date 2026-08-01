@@ -25,6 +25,11 @@ struct DriveShareCard: View {
 
     private var fsdPct: Int { drive.fsdPercent }
 
+    /// MYR-395 — the shared duration grammar, split for the stat's two type sizes.
+    private var durationParts: (value: String, unit: String) {
+        RideDuration.heroParts(minutes: drive.mins)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             heroMap
@@ -106,7 +111,7 @@ struct DriveShareCard: View {
             }
             HStack(alignment: .firstTextBaseline, spacing: 16) {
                 statValue(String(format: "%.1f", drive.miles), unit: "mi")
-                statValue("\(drive.mins)", unit: "min")
+                statValue(durationParts.value, unit: durationParts.unit)
                 Spacer(minLength: 0)
                 fsdBadge
             }

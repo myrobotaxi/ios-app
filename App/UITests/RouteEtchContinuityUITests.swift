@@ -155,14 +155,20 @@ final class RouteEtchContinuityUITests: XCTestCase {
         var preFlip: [RouteInk] = []
         var postFlip: [RouteInk] = []
         var flipSeen = false
+        var flipAt: Date?
         let t0 = Date()
-        while Date().timeIntervalSince(t0) < 8 {
+        while Date().timeIntervalSince(t0) < 10 {
             let ink = Self.routeInk(XCUIScreen.main.screenshot(), top: top, bottom: bottom)
             let onReview = cta.exists
-            if onReview { flipSeen = true }
+            if onReview, !flipSeen { flipSeen = true; flipAt = Date() }
             samples.append((Date().timeIntervalSince(t0), ink, onReview))
             if flipSeen { postFlip.append(ink) } else { preFlip.append(ink) }
-            if flipSeen, postFlip.count > 45 { break }
+            // MYR-395 — stop on TIME, not on a frame count. `postFlip.count > 45`
+            // stopped a fast machine after ~2.2s, which is inside the 0.5s + 1.6s
+            // window the sampling exists to cover, and let a slow one run the full
+            // budget. Three seconds past the flip covers the whole replay on any
+            // machine, and the span is asserted below rather than assumed.
+            if let flipAt, Date().timeIntervalSince(flipAt) > 3 { break }
         }
 
         for s in samples {
@@ -172,10 +178,49 @@ final class RouteEtchContinuityUITests: XCTestCase {
         attach(XCUIScreen.main.screenshot(), named: "myr390-2-after-the-flip")
 
         XCTAssertTrue(flipSeen, "precondition: the scene must have driven Continue to the scheduled sheet")
-        XCTAssertGreaterThan(preFlip.count, 2, "precondition: frames sampled before the flip")
-        XCTAssertGreaterThan(postFlip.count, 20, "precondition: enough frames to cover a 0.5s + 1.6s replay")
 
+        // MYR-395 — THE TWO PRECONDITIONS NOW MEASURE WHAT THEY MEAN, because as
+        // written they measured FRAME COUNT, which is a property of how loaded the
+        // machine is rather than of the app. Hit in a full-suite run on this
+        // branch: `preFlip.count > 2` failed with exactly 2 while the assertion it
+        // is a precondition FOR never ran, and the same test passed 3/3 in
+        // isolation at 0.732 → 0.719. Screenshot capture simply got slower, so
+        // fewer frames fitted in the same ~1s window between "route drawn" and the
+        // scene's own `reviewEtchSettleAllowance` flip. Neither the real assertion
+        // nor any threshold in it is touched.
+        //
+        // (1) What the pre-flip count stood in for is "we have a trustworthy
+        // SETTLED BASELINE". Assert that directly: the baseline has to agree with
+        // the `drawn` coverage measured before sampling began — which is a
+        // STRONGER claim than a frame count, and rests on this test's own finding
+        // that settled coverage is flat to ±0.004 while the glow swings 2×
+        // underneath. Two samples of a flat quantity are a fine median.
+        XCTAssertGreaterThanOrEqual(preFlip.count, 1, "precondition: at least one settled frame before the flip")
         let settled = preFlip.map(\.coverage).sorted()[preFlip.count / 2]
+        // `drawn` is the coverage at the moment the wait loop's 0.6 THRESHOLD was
+        // crossed, so it is a point on the etch's ramp (measured: 0.681) and not
+        // the settled value (0.732). The relationship that always holds is
+        // MONOTONIC — the etch only ever adds line — so the baseline must be at
+        // least what was already on screen. That rules out the failure this
+        // precondition exists for (a baseline taken from a collapsed frame) without
+        // pretending the two numbers are the same measurement.
+        XCTAssertGreaterThanOrEqual(
+            settled, drawn - 0.02,
+            "precondition: the pre-flip baseline must be a settled route, not less line than the wait loop already saw"
+        )
+
+        // (2) What the post-flip count stood in for is "we sampled ACROSS the whole
+        // 0.5s vanish + 1.6s replay the defect would occupy". That is a span of
+        // wall-clock time, not a number of frames, and stating it as time is
+        // load-independent: a slower machine takes fewer, later screenshots over
+        // the same 2.1s and still cannot miss a collapse that lasts all of it.
+        let postFlipSpan = (samples.filter(\.onReview).map(\.offset).max() ?? 0)
+            - (samples.filter(\.onReview).map(\.offset).min() ?? 0)
+        XCTAssertGreaterThan(
+            postFlipSpan, 2.5,
+            "precondition: sampling must span the 0.5s vanish + 1.6s replay (spanned \(postFlipSpan)s over \(postFlip.count) frames)"
+        )
+        XCTAssertGreaterThan(postFlip.count, 6, "precondition: enough frames in that span to see a ramp")
         let floor = postFlip.map(\.coverage).min() ?? 0
         let inkSwing = (postFlip.map(\.fraction).max() ?? 0) / max(postFlip.map(\.fraction).min() ?? 1, 0.00001)
         NSLog(String(format: "MRT_MYR390 settled-coverage=%.3f post-flip min=%.3f ratio=%.3f (ink swung %.1fx)",

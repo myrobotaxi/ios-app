@@ -347,7 +347,7 @@ struct DriveSummaryScreen: View {
         """
         \(drive.from) → \(drive.to)
         \(dateLabel) · \(drive.start) – \(drive.end)
-        \(String(format: "%.1f", drive.miles)) mi · \(drive.mins) min · \(drive.fsdPercent)% FSD
+        \(String(format: "%.1f", drive.miles)) mi · \(RideDuration.text(minutes: drive.mins)) · \(drive.fsdPercent)% FSD
         """
     }
 
@@ -407,11 +407,19 @@ struct DriveSummaryScreen: View {
 
     // MARK: Recap grid (screens.jsx:909-957)
 
+    /// MYR-395 — the shared duration grammar, split for the tile's two type sizes.
+    private var durationParts: (value: String, unit: String) {
+        RideDuration.heroParts(minutes: drive.mins)
+    }
+
     private var recapGrid: some View {
         VStack(spacing: 14) {
             HStack(spacing: 14) {
                 DriveStatTile(label: "Distance", value: String(format: "%.1f", drive.miles), unit: "mi")
-                DriveStatTile(label: "Duration", value: "\(drive.mins)", unit: "min")
+                // MYR-395 — one grammar, split at its final unit, so a
+                // 97-minute drive reads "1 hr 37 min" with the same small unit
+                // type a 43-minute one gets.
+                DriveStatTile(label: "Duration", value: durationParts.value, unit: durationParts.unit)
             }
 
             FSDTile(percent: drive.fsdPercent, fsdMiles: drive.fsdMiles)

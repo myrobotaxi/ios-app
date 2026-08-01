@@ -46,13 +46,6 @@ struct RideRequestRouteMap: View {
     /// settled/static, unchanged. The straight `[pickup, destination]` fallback
     /// (2 points) is never etched.
     var etch: Bool = false
-    /// MYR-237 — the real route is still being fetched from MKDirections (the
-    /// caller's leg-2 cache is empty for this pickup/destination). While true the
-    /// map draws NO line (client: "straight line should not be the loading
-    /// placeholder") — just the etch head's glow breathing at the pickup as the
-    /// working cue; when the real route lands the etch draws it. Ignored unless
-    /// `etch` is set.
-    var loading: Bool = false
     /// MYR-390 — the etch's once-per-route memory, keyed by ROUTE IDENTITY and
     /// owned by `SharedViewerState` (see `RouteEtchLedger`). `nil` for callers
     /// with nothing to remember (Summary's static hero), which behaves exactly as
@@ -66,6 +59,15 @@ struct RideRequestRouteMap: View {
     /// Review resolve to the same `rideRequestRouteMapBottomInset`, which is why
     /// the client saw the route vanish and come back under an unmoved camera.)
     var etchLedger: RouteEtchLedger?
+    /// MYR-395 — what this surface KNOWS about its road geometry, and therefore
+    /// what it may say while it is not drawing a line. `.road` (the default) draws
+    /// no caption at all, so every caller that has a route is byte-identical.
+    ///
+    /// The client's r16 frame was this view rendering `.loading` — correctly, over
+    /// MKDirections' straight fallback — and saying NOTHING about it, on a map
+    /// fitted across half the United States. A refusal to draw that does not
+    /// explain itself is indistinguishable from a failure to draw.
+    var availability: RideRouteAvailability = .road
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -117,11 +119,26 @@ struct RideRequestRouteMap: View {
     /// How the route is presented right now. `.etching`/`.pulsing` draw the
     /// motion in screen space; everything else is plain map-space content.
     private enum RoutePhase: Equatable {
-        case loading      // straight placeholder + sweeping pulse overlay
+        case loading      // no line; the etch head breathes at the pickup
         case etching      // screen-space animated etch pass
         case settling     // etch done: overlay trail crossfading into the map route
         case pulsing      // settled map route + whole-line breathing glow
         case settled      // map-space settled gold route, no motion
+        /// MYR-395 — no line and no motion: the static twin of `.loading`, for the
+        /// non-etching surfaces (Booking, Summary, Reduce Motion) whose straight
+        /// fallback used to be drawn whole as `.settled`.
+        case lineless
+
+        /// Whether the screen-space overlay has anything to draw in this phase.
+        /// Stated as a property rather than as `phase != .settled` at the call
+        /// site, because that spelling is exactly what a new no-line phase gets
+        /// wrong — `.lineless` would have inherited `.loading`'s breathing head.
+        var drawsOverlay: Bool {
+            switch self {
+            case .loading, .etching, .settling, .pulsing: return true
+            case .settled, .lineless: return false
+            }
+        }
     }
 
     @State private var phase: RoutePhase = .settled
@@ -166,6 +183,29 @@ struct RideRequestRouteMap: View {
     /// screen invented it, and the two OWNER surfaces that should have applied it
     /// never did. Same test, one home.
     private var isRealRoute: Bool { RideRoutePolyline.isReal(route) }
+
+    /// MYR-395 — the availability this view actually presents from.
+    ///
+    /// Two narrowings, both structural:
+    ///
+    /// 1. **`progress != nil` opts out entirely.** A caller passing a progress
+    ///    fraction is the TRACKING/SUMMARY travelled-vs-full renderer, which owns
+    ///    its own polyline — and on the rider's post-ride card deliberately draws
+    ///    the straight `[pickup, destination]` placeholder (MYR-327: that card is
+    ///    the one map in the app whose line is knowingly not road geometry, which
+    ///    is why it is also the one that cannot be expanded). The etch presentation
+    ///    and the availability caption are both about the PREVIEW line this view
+    ///    draws itself, and neither speaks for that renderer.
+    /// 2. **A caller's `.road` cannot outrank the geometry in hand.** `.road` is
+    ///    the default, so an un-migrated call site claims road geometry simply by
+    ///    saying nothing — the fixture-DEFAULT shape CLAUDE.md warns about, wearing
+    ///    a different hat. A 2-point polyline is never a route no matter who says
+    ///    it is, so the claim is checked rather than trusted.
+    private var effectiveAvailability: RideRouteAvailability {
+        guard progress == nil else { return .road }
+        if availability == .road, !isRealRoute { return .unavailable }
+        return availability
+    }
 
     /// Identity of the current GEOMETRY — re-fits the camera and re-decides the
     /// presentation when it changes (the real route arriving over the straight
@@ -215,6 +255,7 @@ struct RideRequestRouteMap: View {
                 .preferredColorScheme(.dark)
                 .allowsHitTesting(false)
                 .overlay { routeOverlay(proxy: proxy) }
+                .overlay(alignment: .bottom) { availabilityCaption }
             }
             .onAppear {
                 camera = .region(fittedRegion(height: geo.size.height))
@@ -275,6 +316,20 @@ struct RideRequestRouteMap: View {
                     camera = .region(fittedRegion(height: geo.size.height))
                 }
             }
+            .onChange(of: effectiveAvailability) { _, _ in
+                // MYR-395 — a fetch ANSWERING is not always a change to `routeKey`,
+                // and this is exactly how the client's map got stuck looking busy.
+                // While the real route is in flight the preview already holds the
+                // straight `[pickup, destination]` pair, so when MKDirections comes
+                // back with that same pair as its fallback the geometry does not
+                // move by a point — `routeKey` is byte-identical and nothing
+                // re-decided. The presentation would keep breathing MYR-237's
+                // "working" head over a fetch that had finished failing.
+                //
+                // Only the ANSWER changed, so only the presentation is restarted;
+                // no camera write, because a re-fit is a statement about the frame.
+                restartPresentation()
+            }
             .onChange(of: etch) { _, _ in
                 // MYR-390 — the PRESENTATION half. Review → Booking turns the
                 // etch off, and the pass has to be re-decided or Booking would
@@ -314,10 +369,10 @@ struct RideRequestRouteMap: View {
     /// `log stream --predicate 'subsystem == "app.myrobotaxi.ios" AND category == "etch"'`.
     private static let etchLog = Logger(subsystem: "app.myrobotaxi.ios", category: "etch")
     private func trace(_ message: String) {
-        Self.etchLog.info("\(message, privacy: .public) route=\(self.route.count) phase=\(String(describing: self.phase), privacy: .public) etch=\(self.etch) loading=\(self.loading)")
+        Self.etchLog.info("\(message, privacy: .public) route=\(self.route.count) phase=\(String(describing: self.phase), privacy: .public) etch=\(self.etch) availability=\(String(describing: self.effectiveAvailability), privacy: .public)")
         // devicectl --console captures STDOUT only (Logger goes to the unified
         // log, invisible there) — mirror to print for tethered sessions.
-        print("ETCH \(Date().timeIntervalSince1970) \(message) route=\(route.count) phase=\(phase) etch=\(etch) loading=\(loading)")
+        print("ETCH \(Date().timeIntervalSince1970) \(message) route=\(route.count) phase=\(phase) etch=\(etch) availability=\(effectiveAvailability)")
     }
     #else
     private func trace(_ message: String) {}
@@ -339,7 +394,7 @@ struct RideRequestRouteMap: View {
         let resolved = RouteEtchPresentation.resolve(
             etch: etch,
             reduceMotion: reduceMotion,
-            isRealRoute: isRealRoute,
+            availability: effectiveAvailability,
             etchedProgress: etchLedger?.progress(for: etchIdentity) ?? 0
         )
         var tx = Transaction()
@@ -362,6 +417,9 @@ struct RideRequestRouteMap: View {
             // whole on this very frame and only the breathing glow starts.
             case .pulsing: phase = .pulsing
             case .settled: phase = .settled
+            // MYR-395 — the same "no road geometry" fact as `.loading`, on a
+            // surface that does not animate. Nothing to draw, nothing to arm.
+            case .lineless: phase = .lineless
             }
         }
         passTask = Task { await runPass() }
@@ -371,7 +429,7 @@ struct RideRequestRouteMap: View {
     /// change restarts it and disappearing cancels it.
     private func runPass() async {
         switch phase {
-        case .settled:
+        case .settled, .lineless:
             return
         case .loading:
             // Two frames so the projection is on screen before the breathing
@@ -458,6 +516,12 @@ struct RideRequestRouteMap: View {
                     // NO line while the route is in flight (client rule); the
                     // overlay breathes the etch head at the pickup instead.
                     EmptyMapContent()
+                case .lineless:
+                    // MYR-395 — MKDirections answered and it was not a route. The
+                    // ENDPOINTS still draw below (a pickup we know is a fact); the
+                    // line does not, on any surface, in any motion setting. The
+                    // caption says which kind of lineless this is.
+                    EmptyMapContent()
                 case .settling, .pulsing, .settled:
                     // Settled solid route: the etch's final state (with the
                     // shine loop above it in `.pulsing`), Booking's static real
@@ -477,8 +541,15 @@ struct RideRequestRouteMap: View {
         // ARRIVED there — never before (`.loading`/`.etching` hide it; the
         // laser reaching the endpoint is the reveal). Tracking/Summary
         // (`progress != nil`) and every static presentation keep it always-on.
+        //
+        // MYR-395 — `.lineless` keeps it too, and that is the opposite call to
+        // `.loading`'s. Withholding the drop-off is a promise that a laser is
+        // coming to reveal it; once MKDirections has answered, no laser is coming,
+        // and leaving the rider one dot on a map fitted across five states is the
+        // frame they reported. MYR-293's rule for the owner surfaces is the same
+        // one: PINS unconditionally, the LINE only from `isReal`.
         if let destination = route.last, route.count > 1,
-           progress != nil || phase == .pulsing || phase == .settled {
+           progress != nil || phase == .pulsing || phase == .settled || phase == .lineless {
             Annotation("Destination", coordinate: destination) { EtchRevealDot() }
         }
         if showVehicle, let progress {
@@ -490,6 +561,34 @@ struct RideRequestRouteMap: View {
                     .overlay(Circle().strokeBorder(Color.mrtText, lineWidth: 1.5))
                     .shadow(color: .mrtGoldGlow, radius: 6)
             }
+        }
+    }
+
+    // MARK: MYR-395 — the sentence a lineless map owes the rider
+
+    /// One muted line, sitting just above the phase's bottom chrome, saying which
+    /// kind of lineless this map is. `nil` for a real route, so nothing about a
+    /// surface that HAS its geometry changes by a pixel.
+    ///
+    /// It rides `bottomInset` — the same number that already keeps MapKit's
+    /// attribution clear of the sheet — so it lands in the map's own free band on
+    /// every phase rather than needing a per-phase offset that could be forgotten.
+    /// Deliberately NOT in the sheet: the sheet is about the trip, and what is
+    /// missing is the MAP's.
+    @ViewBuilder
+    private var availabilityCaption: some View {
+        if let caption = effectiveAvailability.caption {
+            Text(caption)
+                .font(.system(size: 12))
+                .foregroundStyle(Color.mrtTextMuted)
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.mrtBg.opacity(0.72), in: Capsule())
+                .overlay(Capsule().strokeBorder(Color.mrtBorder, lineWidth: MRTMetrics.hairline))
+                .padding(.bottom, bottomInset + MRTMetrics.routeAvailabilityCaptionGap)
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("route-availability-caption")
         }
     }
 
@@ -508,7 +607,7 @@ struct RideRequestRouteMap: View {
         // `route.count == 1` is the resolving-destination state (pickup only):
         // the breathing head must still render there, so the guard is on
         // EMPTINESS, not on having a drawable line.
-        if phase != .settled, !route.isEmpty {
+        if phase.drawsOverlay, !route.isEmpty {
             GeometryReader { overlayGeo in
                 let origin = overlayGeo.frame(in: .global).origin
                 let projected = route.compactMap { coordinate -> CGPoint? in
@@ -549,7 +648,7 @@ struct RideRequestRouteMap: View {
                     // MKDirections works — no line yet.
                     HeadIdlePulse(points: points, intensity: glowPulse)
                         .animation(glowAnimating ? .easeInOut(duration: Self.pulsePeriod / 2).repeatForever(autoreverses: true) : nil, value: glowPulse)
-                case .settled:
+                case .settled, .lineless:
                     EmptyView()
                 }
             }

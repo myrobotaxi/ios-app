@@ -622,15 +622,13 @@ struct SharedViewerScreen: View {
             && (previewRouteRequest?.input.destination.coordinate ?? viewerState.draftDestination?.coordinate) != nil
     }
 
-    /// The route preview map's `loading` input: true while the real road route
-    /// (or the destination's real coordinate) is still being resolved.
-    private var reviewPreviewLoading: Bool {
-        if let draft = viewerState.draftDestination, RidePlaceMapper.isUnresolved(draft),
-           rideRequestService.activeRequest == nil {
-            return true
-        }
-        return reviewRouteLoading
-    }
+    // MYR-395 — `reviewPreviewLoading` is DELETED with the map's `loading:`
+    // parameter. It had been dead for two issues: MYR-390's
+    // `RouteEtchPresentation.resolve` decides the opening from the GEOMETRY
+    // (`isRealRoute`, now the availability), and nothing ever read the flag again
+    // — so the map took a "we are still loading" input, ignored it, and the
+    // screen looked wired. It is superseded by `reviewRouteAvailability`, which
+    // the presentation AND the caption both read.
 
     /// The preview's pickup coordinate: explicit request/draft pickup, else
     /// the live "Current location" fix.
@@ -658,7 +656,6 @@ struct SharedViewerScreen: View {
                     ? Self.mapBottomInset(phase: .review, isPendingPill: false)
                     : mapBottomInset,
                 etch: viewerState.sheetPhase != .booking,
-                loading: viewerState.sheetPhase != .booking && reviewPreviewLoading,
                 // MYR-390 — the etch's once-per-route memory, held by the STATE
                 // rather than by the map. `replayKey: String(describing:
                 // sheetPhase)` used to sit here and made the promise 60 lines
@@ -667,7 +664,12 @@ struct SharedViewerScreen: View {
                 // replaying per phase") false in exactly the way the client
                 // filmed: same route, same camera, and the drawn line collapsing
                 // and re-drawing on the flip.
-                etchLedger: viewerState.routeEtchLedger
+                etchLedger: viewerState.routeEtchLedger,
+                // MYR-395 — the sentence that was missing. A map with no line has
+                // to say whether it is still looking or has stopped finding; the
+                // client's frame said neither, on BOTH the etching Review sheet
+                // and the static Booking one.
+                availability: reviewRouteAvailability
             )
         } else {
             backgroundMapByPhase(glyphGlobalPoint: glyphGlobalPoint, viewportSize: viewportSize)
@@ -1009,9 +1011,22 @@ struct SharedViewerScreen: View {
         return viewerState.rideRouteStore.leg2Route(pickup: pickup, destination: destination)
     }
 
-    /// True while the real route for the current pair has not resolved yet — drives
-    /// the review map's skeleton loader so the wait feels intentional.
-    private var reviewRouteLoading: Bool { reviewRealRoute == nil }
+    /// MYR-395 — what the preview map may SAY about its geometry.
+    ///
+    /// This is the signal `reviewRouteLoading` (deleted here) could not carry. That
+    /// boolean was `reviewRealRoute == nil`, and it goes
+    /// FALSE the instant MKDirections answers, including when the answer is the
+    /// straight `[pickup, destination]` fallback — so on the client's 1,049 mi trip
+    /// the map correctly refused to draw a line and simultaneously reported "not
+    /// loading", leaving nothing on screen and nothing to read. Two situations, one
+    /// flag; `RideRouteAvailability` is the third arm.
+    ///
+    /// The destination-still-resolving case folds into `.resolving` by itself,
+    /// because `reviewRealRoute` is `nil` there for that exact reason — the rider
+    /// is waiting on the same thing either way.
+    private var reviewRouteAvailability: RideRouteAvailability {
+        RideRouteAvailability.resolve(fetched: reviewRealRoute)
+    }
 
     /// Prime the pickup → destination route while on Review/Booking (no-op once the
     /// pair is cached — cheap to call on every entry). MKDirections runs in the
