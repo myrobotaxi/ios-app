@@ -135,9 +135,21 @@ final class RideActivityCoordinator {
 
     /// Signing out ends the Activity at once. A lock-screen card naming a
     /// destination (P1) must not outlive the session that was allowed to see it.
+    ///
+    /// MYR-405 — and it ends EVERY card, not just the one this process happens to
+    /// hold. The held Activity was never the whole lock screen, and an orphan left
+    /// by a previous process names the same rider's destination. Reading
+    /// `presentedActivities` directly rather than paying the restore budget is
+    /// deliberate: a sign-out is a tap, so the app has been running and the list is
+    /// long since restored.
     func handleSignOut() async {
-        guard case .live(let rideID, let state) = phase else { return }
-        await performEnd(rideID: rideID, state: state, dismissal: .immediate)
+        if case .live(let rideID, let state) = phase {
+            await performEnd(rideID: rideID, state: state, dismissal: .immediate)
+        }
+        guard isLive else { return }
+        for snapshot in presenter.presentedActivities where snapshot.lifecycle.isOnScreenAndOurs {
+            await reap(rideID: snapshot.rideID, isDuplicateOfAdopted: false)
+        }
     }
 
     // MARK: - Launch and foreground (MYR-405)
@@ -252,6 +264,12 @@ final class RideActivityCoordinator {
     ///  • every OTHER Activity → ended first (semantic 4, "a new ride ends all
     ///    prior"), including a duplicate of this same ride;
     ///  • a ride the rider DISMISSED → nothing at all.
+    ///
+    /// Note what the measurement actually said: the duplicate is **deterministic**,
+    /// not a race the app sometimes loses. The restore race is real and is what bit
+    /// the CAPTURE tooling the same day (`RideActivityDebugLauncher`'s sweep), and
+    /// the budget below exists for it — but production had no enumeration for the
+    /// race to spoil.
     private func performStart(
         rideID: String,
         state: RideActivityAttributes.ContentState,

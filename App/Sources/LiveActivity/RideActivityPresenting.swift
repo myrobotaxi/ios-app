@@ -213,6 +213,14 @@ final class SystemRideActivityPresenter: RideActivityPresenting {
         guard areActivitiesEnabled else { return false }
         // Never run two. `Activity.request` would happily give us a second one and
         // the rider would get two cards for one ride.
+        //
+        // ⚠️ MYR-405 — THIS GUARD IS ABOUT A PROCESS, NOT ABOUT A LOCK SCREEN, and
+        // reading it as the latter is what shipped the duplicate. `activity` is this
+        // INSTANCE's handle and is nil in every new process, while the card started
+        // by the last process is still up. The lock-screen-wide question is asked in
+        // `RideActivityCoordinator.performStart`, over `presentedActivities`, with
+        // the restore budget spent before an empty answer is believed. Keep both:
+        // this one is cheap and correct about the one case it covers.
         guard activity == nil else { return false }
 
         do {

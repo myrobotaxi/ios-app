@@ -499,6 +499,22 @@ final class RideActivityCoordinatorTests: XCTestCase {
         XCTAssertTrue(presenter.endedActivities.isEmpty, "and nothing is on screen to reap")
     }
 
+    func testSigningOutTakesDownORPHANSToo() async throws {
+        // The card names the rider's DESTINATION, which is P1. An orphan left by a
+        // previous process names it just as loudly as the one this process holds,
+        // and until MYR-405 sign-out could not see it at all.
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+        presenter.restored = [snapshot("ride-from-a-previous-process")]
+
+        // Nothing is held: this process never started that card, which is exactly
+        // the situation `phase`-based cleanup could not see.
+        await coordinator.handleSignOut()
+        await settle()
+
+        XCTAssertEqual(presenter.endedActivities.map(\.rideID), ["ride-from-a-previous-process"])
+        XCTAssertEqual(endpoint.ends, ["ride-from-a-previous-process"])
+    }
+
     // MARK: - MYR-405: five minutes
 
     func testACompletedRideEndsWithTheFIVEMinuteLinger() async throws {
