@@ -15,12 +15,17 @@ import MyRoboTaxiKit
 /// test.
 enum RideActivityComposition {
 
+    /// `serverRideID` is the rider pipeline's `activeServerRideID` — MYR-415. It is
+    /// a CLOSURE for the same reason `vehicle` is: the id lands asynchronously (the
+    /// create POST's acknowledgement), and the Activity is started before it, so a
+    /// value captured here would be `nil` for the session.
     @MainActor
     static func makeCoordinator(
         mode: AppMode,
         sessionTokenProvider: SessionTokenProvider? = nil,
         vehicleName: @escaping @MainActor () -> String = { "" },
-        vehicle: @escaping @MainActor () -> RideActivityVehicle? = { nil }
+        vehicle: @escaping @MainActor () -> RideActivityVehicle? = { nil },
+        serverRideID: @escaping @MainActor () -> String? = { nil }
     ) -> RideActivityCoordinator {
         guard let config = TelemetryComposition.liveFleetConfig(
             mode: mode,
@@ -31,7 +36,8 @@ enum RideActivityComposition {
                 endpoint: nil,
                 isLive: false,
                 vehicleName: vehicleName,
-                vehicle: vehicle
+                vehicle: vehicle,
+                serverRideID: serverRideID
             )
         }
         let client = RestClient(environment: config.environment, tokenProvider: config.tokenProvider)
@@ -40,7 +46,8 @@ enum RideActivityComposition {
             endpoint: client,
             isLive: true,
             vehicleName: vehicleName,
-            vehicle: vehicle
+            vehicle: vehicle,
+            serverRideID: serverRideID
         )
     }
 }

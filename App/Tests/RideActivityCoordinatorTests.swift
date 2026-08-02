@@ -527,11 +527,191 @@ final class RideActivityCoordinatorTests: XCTestCase {
         XCTAssertEqual(presenter.endedWith?.dismissal, .linger(5 * 60))
     }
 
+    // MARK: - MYR-415: the registration must name the SERVER's ride id
+
+    /// **THE DEFECT, AS ONE ASSERTION.** `go_live_activities` was EMPTY across nine
+    /// production rides in three days while `go_push_devices` stayed healthy, and
+    /// this is the entire reason: the §7.21 POST named `RideRequestRecord.id`, which
+    /// for a ride this device SUBMITTED is the client `UUID` that
+    /// `LiveRideRequestService.submit` minted optimistically (MYR-218). `fold` copies
+    /// that record forward verbatim, so the local id never becomes the server's —
+    /// the server's lives only in `riderServerRideID` / `activeServerRideID`, which
+    /// is what accept, decline and cancel have always posted on.
+    ///
+    /// So the app posted to `/api/ride-requests/{client-uuid}/activity-token` for
+    /// every ride, got a 404 for a ride the server has never heard of, and swallowed
+    /// it. `go_push_devices` was unaffected because MYR-186's registration is
+    /// ACCOUNT-scoped and carries no ride id at all.
+    func testTheTokenIsRegisteredUnderTheServerRideIDNotTheLocalDraftUUID() async throws {
+        let (coordinator, presenter, endpoint) = makeCoordinator(
+            serverRideID: { "clride0000000000000001" }
+        )
+
+        // The record carries the optimistic client UUID, exactly as a submitted
+        // ride's does for its whole life.
+        await coordinator.handleRideChange(makeRecord(id: "1E572C40-LOCAL-DRAFT", status: .accepted))
+        await settle()
+        presenter.emit(token: Data([0x8a, 0x1f]))
+        await settle()
+
+        XCTAssertEqual(
+            endpoint.registrations.map(\.rideID),
+            ["clride0000000000000001"],
+            "the POST must name the SERVER's ride id — the local draft UUID is a 404"
+        )
+        XCTAssertFalse(
+            endpoint.attempts.contains { $0.rideID == "1E572C40-LOCAL-DRAFT" },
+            "the local draft UUID must never reach the wire at all"
+        )
+    }
+
+    /// **AND THE TOKEN OUTLIVES THE WAIT.** MYR-398 v3 starts the Activity at
+    /// REQUEST, which is before the create POST has even fired, so ActivityKit's
+    /// token routinely arrives while there is no server id yet. Dropping it there
+    /// would be the same zero-row outcome by a kinder-looking route:
+    /// `pushTokenUpdates` yields once per Activity in the ordinary case, so a token
+    /// let go is a token that never comes back.
+    func testATokenArrivingBeforeTheServerIDIsHeldAndRegisteredWhenItLands() async throws {
+        var serverID: String?
+        let (coordinator, presenter, endpoint) = makeCoordinator(serverRideID: { serverID })
+
+        await coordinator.handleRideChange(makeRecord(id: "LOCAL", status: .pending))
+        await settle()
+        presenter.emit(token: Data([0xab, 0xcd]))
+        await settle()
+
+        XCTAssertTrue(endpoint.attempts.isEmpty, "nothing may be posted under an id the server has never issued")
+
+        // The create is acknowledged: `riderServerRideID` lands, and RootView's
+        // observer pokes the coordinator.
+        serverID = "clride-server-9"
+        await coordinator.handleServerRideIDChange()
+        await settle()
+
+        XCTAssertEqual(endpoint.registrations.map(\.rideID), ["clride-server-9"])
+        XCTAssertEqual(endpoint.registrations.first?.token, "abcd")
+    }
+
+    /// **A FAILED POST IS RETRIED, NOT DROPPED** — MYR-186's policy, which is the
+    /// other half of why `go_push_devices` recovers from a bad minute and this table
+    /// did not. The old `catch { return }` reasoned that "the next rotation tries
+    /// again", but ActivityKit does not rotate on a schedule, so for most rides
+    /// there is no next rotation and one failure cost the whole ride.
+    func testAFailedRegistrationIsRetriedOnTheNextTickRatherThanDropped() async throws {
+        let (coordinator, presenter, endpoint) = makeCoordinator(serverRideID: { "srv-1" })
+        endpoint.registrationResult = .failure(RestError.http(status: 500, code: nil, message: nil, subCode: nil))
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        await settle()
+        presenter.emit(token: Data([0x01]))
+        await settle()
+
+        XCTAssertEqual(endpoint.attempts.count, 1)
+        XCTAssertTrue(endpoint.registrations.isEmpty, "the 500 did not register anything")
+
+        // The next tick — a status change, a launch, or a foreground — retries the
+        // SAME held token without needing ActivityKit to reissue it.
+        endpoint.registrationResult = .success(LiveActivityRegistrationResponse(registered: true, sandbox: true))
+        await coordinator.handleRideChange(makeRecord(status: .enroute))
+        await settle()
+
+        XCTAssertEqual(endpoint.registrations.map(\.rideID), ["srv-1"], "the held token is placed on the retry")
+    }
+
+    /// A confirmed registration is not re-posted on every tick — the retry must not
+    /// become a poll.
+    func testASuccessfulRegistrationIsNotRepostedOnEveryTick() async throws {
+        let (coordinator, presenter, endpoint) = makeCoordinator(serverRideID: { "srv-1" })
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        await settle()
+        presenter.emit(token: Data([0x01]))
+        await settle()
+        await coordinator.handleRideChange(makeRecord(status: .enroute))
+        await coordinator.handleServerRideIDChange()
+        await settle()
+
+        XCTAssertEqual(endpoint.attempts.count, 1, "one placed registration, one POST")
+    }
+
+    /// **ADOPTION RE-REGISTERS, AND IT DOES SO UNDER THE SERVER ID.** MYR-405 clears
+    /// `registered` on adopt precisely so the adopted card's own token reaches the
+    /// server — the issue asked for this path to be verified rather than assumed,
+    /// because a re-register that never fires leaves the server pushing to whichever
+    /// card this account registered last.
+    func testAdoptingARestoredActivityReRegistersItsOwnTokenUnderTheServerID() async throws {
+        let (coordinator, presenter, endpoint) = makeCoordinator(serverRideID: { "srv-adopted" })
+        presenter.restored = [snapshot("ride-1")]
+
+        await coordinator.handleLaunchOrForeground {
+            RideActivityAccountRide(record: self.makeRecord(status: .enroute), isResolved: true)
+        }
+        await settle()
+        XCTAssertEqual(presenter.adopted, ["ride-1"], "precondition: the restored card was adopted")
+
+        presenter.emit(token: Data([0xfe, 0xed]))
+        await settle()
+
+        XCTAssertEqual(
+            endpoint.registrations.map(\.rideID),
+            ["srv-adopted"],
+            "the ADOPTED Activity's token must reach the server, under the server's id"
+        )
+        XCTAssertEqual(endpoint.registrations.first?.token, "feed")
+    }
+
+    /// The §7.21 DELETE has to name the id the POST named, or it releases nothing.
+    func testEndingReleasesTheRegistrationUnderTheServerRideID() async throws {
+        let (coordinator, presenter, endpoint) = makeCoordinator(serverRideID: { "srv-7" })
+
+        await coordinator.handleRideChange(makeRecord(id: "LOCAL", status: .accepted))
+        await settle()
+        presenter.emit(token: Data([0x01]))
+        await settle()
+        await coordinator.handleRideChange(makeRecord(id: "LOCAL", status: .completed))
+        await settle()
+
+        XCTAssertEqual(endpoint.ends, ["srv-7"], "the release names what the registration named")
+    }
+
+    /// Reaping somebody else's leftover card must not delete the row belonging to
+    /// the ride this process is driving — the `isDuplicateOfAdopted` starvation
+    /// reached through a different door.
+    func testReapingAnOrphanDoesNotReleaseTheHeldRidesRegistration() async throws {
+        let (coordinator, presenter, endpoint) = makeCoordinator(serverRideID: { "srv-live" })
+        presenter.restored = [snapshot("ride-1"), snapshot("some-other-ride")]
+
+        await coordinator.handleLaunchOrForeground {
+            RideActivityAccountRide(record: self.makeRecord(status: .enroute), isResolved: true)
+        }
+        await settle()
+        presenter.emit(token: Data([0x01]))
+        await settle()
+
+        XCTAssertEqual(
+            presenter.endedActivities.map(\.rideID),
+            ["some-other-ride"],
+            "precondition: the orphan was reaped"
+        )
+        XCTAssertFalse(
+            endpoint.ends.contains("srv-live"),
+            "reaping an orphan must never release the live ride's own registration"
+        )
+        XCTAssertEqual(endpoint.registrations.map(\.rideID), ["srv-live"])
+    }
+
     // MARK: - Harness
 
+    /// MYR-415 — the default answers `"ride-1"`, i.e. the same id `makeRecord`
+    /// mints, so every pre-existing test keeps asserting exactly what it did. That
+    /// is not a fudge: a ride ADOPTED from the wire on cold launch genuinely has one
+    /// id, because its record was built by `RideRequestContractMapping.record(from:)`
+    /// off the server's own row. The case where the two DIVERGE is a ride this
+    /// device SUBMITTED, and it gets its own tests below.
     private func makeCoordinator(
         sandbox: Bool = true,
-        vehicle: @escaping @MainActor () -> RideActivityVehicle? = { nil }
+        vehicle: @escaping @MainActor () -> RideActivityVehicle? = { nil },
+        serverRideID: @escaping @MainActor () -> String? = { "ride-1" }
     ) -> (RideActivityCoordinator, StubRideActivityPresenter, SpyRideActivityEndpoint) {
         let presenter = StubRideActivityPresenter()
         let endpoint = SpyRideActivityEndpoint()
@@ -542,6 +722,7 @@ final class RideActivityCoordinatorTests: XCTestCase {
             sandbox: sandbox,
             vehicleName: { "Blue Whale" },
             vehicle: vehicle,
+            serverRideID: serverRideID,
             // MYR-405 — the restore budget is real seconds in production and zero
             // here. The POLL still runs, read for read; only the waiting is skipped,
             // so `restoreReads` remains a true count of how hard the coordinator
