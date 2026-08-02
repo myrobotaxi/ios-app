@@ -1,3 +1,4 @@
+import CoreLocation
 import SwiftUI
 import DesignSystem
 
@@ -16,6 +17,19 @@ struct RideRequestSummaryContent: View {
     /// the fixture "Sam"). The "Have a wonderful {part of day}, {first}" sign-off
     /// personalizes to the rider who took the ride.
     var liveProfile: UserProfile? = nil
+    /// MYR-414 — the leg-2 ROAD polyline for THIS ride, or `nil`.
+    ///
+    /// Resolved by `SharedViewerScreen` (which owns the store and the ride's exact
+    /// pickup/destination pair) and already filtered through
+    /// `RideRoutePolyline.isReal`, so a value here is road geometry by
+    /// construction and its length is a real trip distance. `nil` in SIM and
+    /// whenever MKDirections never answered for this pair.
+    var roadRoute: [CLLocationCoordinate2D]? = nil
+    /// MYR-414 — the ONE resolved `AppMode` for this screen
+    /// (`SharedViewerState.resolvesLiveRideSummary`), threaded by the call site
+    /// like every other live gate in this flow. SIM keeps the prototype's stat
+    /// strip, its tip section and its placeholder hero line verbatim.
+    var isLive: Bool = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var tip: String?
@@ -62,13 +76,40 @@ struct RideRequestSummaryContent: View {
         return "Have a wonderful \(partOfDay)."
     }
 
-    private var tripMinutes: Int { destination.minutes }
-    private var tripMiles: Double { destination.miles }
+    // MARK: MYR-414 — one resolution for every claim this screen makes
 
-    private var endedClock: String {
+    /// The whole honesty decision, resolved once. See `RideSummaryPresentation`
+    /// for why each live arm is gated on its own datum.
+    private var presentation: RideSummaryPresentation {
+        RideSummaryPresentation.resolve(
+            isLive: isLive,
+            // The SIM arm's inputs: the destination's QUOTED estimate, which is
+            // what this screen used to render on both paths.
+            estimateMinutes: destination.minutes,
+            estimateMiles: destination.miles,
+            tripMinutes: RideTripSpan.minutes(
+                enrouteObservedAt: request?.enrouteObservedAt,
+                completedAt: request?.completedAt
+            ),
+            roadRouteMiles: roadRoute.map(RideRouteGeometry.lengthMiles),
+            completedAt: request?.completedAt
+        )
+    }
+
+    /// "Arrived · 3:42 PM" from the ride's own completion instant — or a bare
+    /// "Arrived" when there is none.
+    ///
+    /// MYR-414: this line used to stamp `Date()`, i.e. the moment the VIEW was
+    /// composed, on every path. That reads correctly the instant the summary
+    /// appears and becomes a small lie the moment the rider leaves it up, and it
+    /// is a fabrication outright on a summary re-entered later. SIM keeps `Date()`
+    /// (`presentation.arrivedAt` is `now` there), so the drift-gate scene is
+    /// unchanged.
+    private var arrivedEyebrow: String {
+        guard let arrivedAt = presentation.arrivedAt else { return "Arrived" }
         let f = DateFormatter()
         f.dateFormat = "h:mm a"
-        return f.string(from: Date())
+        return "Arrived \u{00B7} \(f.string(from: arrivedAt))"
     }
 
     private static let tipQuips: [String: String] = [
@@ -96,7 +137,7 @@ struct RideRequestSummaryContent: View {
     var body: some View {
         GeometryReader { geo in
             VStack(alignment: .leading, spacing: 0) {
-                RideEyebrowText(text: "Arrived \u{00B7} \(endedClock)", color: Color.mrtGold.opacity(0.6), size: 10)
+                RideEyebrowText(text: arrivedEyebrow, color: Color.mrtGold.opacity(0.6), size: 10)
                     .padding(.bottom, 12)
 
                 Text(summaryGreeting)
@@ -109,8 +150,14 @@ struct RideRequestSummaryContent: View {
                 mapCard
                     .padding(.bottom, 20)
 
-                statsStrip
-                    .padding(.bottom, 18)
+                // MYR-414 — a strip with no true stat in it renders NOTHING, and
+                // spends none of its 18pt either. An empty band under the hero
+                // would be the stacked-chrome-for-no-content shape MYR-347 was
+                // about; the map (`flex:1`) simply takes the room back.
+                if !presentation.tiles.isEmpty {
+                    statsStrip
+                        .padding(.bottom, 18)
+                }
 
                 HStack {
                     VStack(alignment: .leading, spacing: 5) {
@@ -140,8 +187,15 @@ struct RideRequestSummaryContent: View {
                 }
                 .padding(.bottom, 22)
 
-                tipSection
-                    .padding(.bottom, 22)
+                // MYR-414 — "Tip your driver" is SIM-only now. It goes nowhere (no
+                // tipping backend exists), and it says "driver" on a product whose
+                // whole premise is that there isn't one. MYR-288/MYR-344's
+                // no-dead-affordances precedent; the prototype's joke card stays in
+                // SIM, where it is a joke rather than an offer.
+                if presentation.offersTip {
+                    tipSection
+                        .padding(.bottom, 22)
+                }
 
                 MRTButton("See you soon", variant: .outlineDraw, action: finish)
             }
@@ -161,11 +215,23 @@ struct RideRequestSummaryContent: View {
 
     // MARK: Map card (ride-request.jsx:950-963)
 
+    /// The hero's polyline: the ride's REAL leg-2 road route when one is held,
+    /// else the two endpoints — which are drawn as PINS ONLY (`drawsLine: false`),
+    /// never as the straight line between them.
+    ///
+    /// MYR-414/MYR-293. The endpoint pair is still handed over when there is no
+    /// road route because the pickup and the drop-off are facts: they are what the
+    /// camera frames and what the two dots sit on. Only the LINE is withheld.
+    private var heroRoute: [CLLocationCoordinate2D] {
+        roadRoute ?? [pickup?.coordinate ?? DriveFixtures.financialDistrict, destination.coordinate]
+    }
+
     private var mapCard: some View {
         ZStack(alignment: .bottomLeading) {
             RideRequestRouteMap(
-                route: [pickup?.coordinate ?? DriveFixtures.financialDistrict, destination.coordinate],
-                progress: 1
+                route: heroRoute,
+                progress: 1,
+                drawsLine: presentation.drawsRouteLine
             )
             LinearGradient(
                 stops: [.init(color: .clear, location: 0.32), .init(color: Color.mrtBg.opacity(0.94), location: 1)],
@@ -202,18 +268,40 @@ struct RideRequestSummaryContent: View {
 
     // MARK: Stats strip (ride-request.jsx:966-978)
 
-    /// MYR-395 — the trip duration as the hero stat's number + unit, from the
-    /// one shared grammar (`"32" / "min"`, `"1 hr 37" / "min"`, `"2" / "hr"`).
-    private var tripDuration: (value: String, unit: String) {
-        RideDuration.heroParts(minutes: tripMinutes)
-    }
-
+    /// MYR-414 — the strip is now the resolved tiles, in order, with the
+    /// prototype's divider BETWEEN them (never leading, never trailing), so one or
+    /// two tiles compose exactly as three did.
+    ///
+    /// The row is left-packed by construction: no tile takes `maxWidth: .infinity`
+    /// and the `HStack` holds no `Spacer`, so it sizes to its content and the
+    /// enclosing `VStack(alignment: .leading)` seats it at the gutter. Dropping a
+    /// tile therefore SHORTENS the row rather than stretching the gaps — which is
+    /// why the 18pt divider padding needs no per-count tuning.
     private var statsStrip: some View {
         HStack(spacing: 0) {
-            statTile(value: tripDuration.value, unit: tripDuration.unit, label: "Trip", gold: false)
-            divider
-            statTile(value: String(format: "%.1f", tripMiles), unit: "mi", label: "FSD miles", gold: true)
-            divider
+            ForEach(Array(presentation.tiles.enumerated()), id: \.offset) { index, tile in
+                if index > 0 { divider }
+                statTile(for: tile)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func statTile(for tile: RideSummaryPresentation.Tile) -> some View {
+        switch tile {
+        case let .trip(minutes):
+            // MYR-395's one duration grammar (`"32" / "min"`, `"1 hr 37" / "min"`).
+            let parts = RideDuration.heroParts(minutes: minutes)
+            statTile(value: parts.value, unit: parts.unit, label: "Trip", gold: false)
+        case let .distance(miles):
+            // Neutral, not gold: the prototype's gold sat on FSD MILES because a
+            // fully-autonomous drive is the thing being celebrated. A road route's
+            // length is a measurement, and gold is "the sacred accent, never
+            // decorative" (CLAUDE.md).
+            statTile(value: String(format: "%.1f", miles), unit: "mi", label: "Distance", gold: false)
+        case let .fsdMiles(miles):
+            statTile(value: String(format: "%.1f", miles), unit: "mi", label: "FSD miles", gold: true)
+        case .autonomous:
             statTile(value: "100", unit: "%", label: "Autonomous", gold: false)
         }
     }

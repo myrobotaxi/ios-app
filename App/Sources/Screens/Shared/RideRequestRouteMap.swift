@@ -23,6 +23,19 @@ struct RideRequestRouteMap: View {
     var progress: Double?
     /// Draws a moving marker at `progress` along the route — Tracking only.
     var showVehicle: Bool = false
+    /// MYR-414 — whether the `progress` renderer may draw its LINE. `true`
+    /// (default) is every pre-MYR-414 caller, so nothing else moves.
+    ///
+    /// The `progress != nil` branch is the travelled-vs-full renderer, which
+    /// deliberately sits OUTSIDE `effectiveAvailability`'s realness check because
+    /// it "owns its own polyline" — and what the rider's post-ride card owned was
+    /// the straight `[pickup, destination]` placeholder, drawn in the route's own
+    /// gold as though it were the trip. `false` withholds the line and keeps the
+    /// ENDPOINT DOTS, which is MYR-293's rule stated for this renderer too: **pins
+    /// unconditionally, the line only from `RideRoutePolyline.isReal`.** The
+    /// coordinates are still passed in that case — the two endpoints are a fact,
+    /// and they are what the camera fits and the dots sit on.
+    var drawsLine: Bool = true
     /// MYR-216 deliverable 4: points the phase's bottom sheet covers (+ margin).
     /// The route camera fits the route into the UNOBSTRUCTED area above the sheet
     /// so both endpoints + the full polyline clear it. `0` (default) keeps the
@@ -499,13 +512,21 @@ struct RideRequestRouteMap: View {
         if route.count > 1 {
             if let progress {
                 // Tracking/Summary travelled-vs-full split (MYR-171) — unchanged.
-                MapPolyline(coordinates: route)
-                    .stroke(Color.mrtGold.opacity(0.3), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
-                let travelled = VehicleRoute.travelledCoordinates(along: route, progress: progress)
-                MapPolyline(coordinates: travelled)
-                    .stroke(Color.mrtGoldGlowSoft, style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))
-                MapPolyline(coordinates: travelled)
-                    .stroke(Color.mrtGold.opacity(0.95), style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+                //
+                // MYR-414 — `drawsLine: false` withholds all three strokes and
+                // NOTHING ELSE. Deliberately nested inside the `progress` arm
+                // rather than folded into its condition: falling through to the
+                // `else` would hand a lineless caller to the etch-phase switch,
+                // whose `.settled` default draws the very polyline being refused.
+                if drawsLine {
+                    MapPolyline(coordinates: route)
+                        .stroke(Color.mrtGold.opacity(0.3), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                    let travelled = VehicleRoute.travelledCoordinates(along: route, progress: progress)
+                    MapPolyline(coordinates: travelled)
+                        .stroke(Color.mrtGoldGlowSoft, style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))
+                    MapPolyline(coordinates: travelled)
+                        .stroke(Color.mrtGold.opacity(0.95), style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+                }
             } else {
                 switch phase {
                 case .etching:

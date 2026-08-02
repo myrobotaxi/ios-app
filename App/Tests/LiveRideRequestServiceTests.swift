@@ -532,6 +532,99 @@ final class LiveRideRequestServiceTests: XCTestCase {
         await eventually { service.activeRequest?.status == .enroute }
     }
 
+    // MARK: MYR-414 — the two instants the rider's summary measures its trip from
+
+    /// THE HAPPY PATH, END TO END: the rider's own "Start ride" stamps the trip's
+    /// start, the server's drop-off record supplies its end, and the two survive
+    /// every fold in between — so the summary has a real span to render.
+    ///
+    /// Both halves are asserted through the SERVICE rather than through
+    /// `RideTripSpan` directly, because the rule was never in doubt: what this
+    /// pins is that the shipping code path RUNS it, at the two moments it has to
+    /// (an optimistic flip `fold` cannot see, and a wire record `record(from:)`
+    /// had been dropping on the floor).
+    func testTheStartTapStampsTheTripAndTheDropOffCarriesTheServersCompletedInstant() async {
+        let (service, api) = await acceptedService(id: "srv-414")
+        await advanceToArrived(service, api, id: "srv-414")
+        XCTAssertNil(service.activeRequest?.enrouteObservedAt,
+                     "a ride sitting at the kerb has not started")
+
+        await api.setAdvance(Self.wireRide(id: "srv-414", status: .enroute, accepted: true))
+        service.startRide()
+        let started = service.activeRequest?.enrouteObservedAt
+        XCTAssertNotNil(started, "the rider's own tap IS the observation of the trip start")
+        // The advance's own 200 folds an authoritative `enroute` record back onto a
+        // record already flipped to `enroute` — the fold that would restamp if
+        // `observing` did not hold what it is given.
+        await eventually { await api.startCount == 1 }
+        await eventually { service.activeRequest?.status == .enroute }
+        XCTAssertEqual(service.activeRequest?.enrouteObservedAt, started,
+                       "a re-fold of the same status must not walk the trip start forward")
+
+        let completed = "2026-08-02T17:42:09.000Z"
+        await api.setAdvance(Self.wireRide(id: "srv-414", status: .completed, accepted: true, completedAt: completed))
+        await api.setDetail(Self.wireRide(id: "srv-414", status: .completed, accepted: true, completedAt: completed))
+        service.droppedOff()
+        await eventually { service.activeRequest?.status == .completed }
+        XCTAssertEqual(service.activeRequest?.completedAt,
+                       RideRequestContractMapping.parseISO(completed),
+                       "the trip's END is the server's instant, never the moment we found out")
+        XCTAssertEqual(service.activeRequest?.enrouteObservedAt, started,
+                       "the ride ending does not un-know when it began")
+        XCTAssertNotNil(RideTripSpan.minutes(
+            enrouteObservedAt: service.activeRequest?.enrouteObservedAt,
+            completedAt: service.activeRequest?.completedAt
+        ), "both ends are in hand, so the span is derivable")
+    }
+
+    /// THE HONEST GAP: a ride ADOPTED mid-flight carries no trip start, however
+    /// many times it is subsequently folded.
+    ///
+    /// This is the force-quit case (MYR-396/MYR-402's world) and the reason the
+    /// summary's trip tile is gated rather than defaulted: this device did not see
+    /// the car leave the kerb, so it cannot say how long the ride took. A
+    /// `record(from:)` that stamped "now" on a first sighting would make the tile
+    /// always present and always wrong by however long the app was dead.
+    func testARideAdoptedAlreadyEnrouteNeverAcquiresATripStart() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "unused", status: .requested))
+        await api.setRideList([Self.wireRide(id: "srv-adopt", status: .enroute, accepted: true)])
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+        // The ride reaches the slot by the SHIPPING cold-launch adoption
+        // (`start()` → `adoptOpenRiderRide`), the same route a relaunch takes.
+        service.start()
+        await eventually { service.activeRequest?.status == .enroute }
+        XCTAssertEqual(service.activeRequest?.status, .enroute, "the open ride is adopted")
+        XCTAssertNil(service.activeRequest?.enrouteObservedAt,
+                     "a first sighting observed no transition")
+
+        let completed = "2026-08-02T18:03:00.000Z"
+        await api.setDetail(Self.wireRide(id: "srv-adopt", status: .completed, accepted: true, completedAt: completed))
+        await service.refreshActiveRide()
+        await eventually { service.activeRequest?.status == .completed }
+        XCTAssertNil(service.activeRequest?.enrouteObservedAt,
+                     "folding the completion cannot invent a start that was never seen")
+        XCTAssertNil(RideTripSpan.minutes(
+            enrouteObservedAt: service.activeRequest?.enrouteObservedAt,
+            completedAt: service.activeRequest?.completedAt
+        ), "so the span is not derivable, and the summary omits the tile")
+    }
+
+    /// An advance the server never confirmed takes its optimistic trip start back
+    /// with it. Without this the NEXT (successful) start would be measured from the
+    /// failed attempt — the trip timed from a moment the car was still parked.
+    func testARevertedStartAlsoRevertsTheTripStart() async {
+        let (service, api) = await acceptedService(id: "srv-414r")
+        await advanceToArrived(service, api, id: "srv-414r")
+
+        await api.setAdvanceError(URLError(.timedOut))
+        await api.setDetailError(URLError(.notConnectedToInternet))
+        service.startRide()
+        XCTAssertNotNil(service.activeRequest?.enrouteObservedAt, "stamped optimistically")
+        await eventually { service.activeRequest?.status == .arrived }
+        XCTAssertNil(service.activeRequest?.enrouteObservedAt,
+                     "the server never advanced, so the trip never started")
+    }
+
     /// A `409` on `/start` (the ride already advanced past `arrived`) reconciles to
     /// the TRUE server status via a refetch, never an auto-retry.
     func testStart409ReconcilesToServerStatusViaRefetch() async {
@@ -1573,6 +1666,9 @@ final class LiveRideRequestServiceTests: XCTestCase {
         accepted: Bool = false,
         scheduledFor: String? = nil,
         requesterName: String? = nil,
+        // MYR-414 — the server's own drop-off instant. Defaulted `nil`, so every
+        // pre-MYR-414 call builds the identical wire record.
+        completedAt: String? = nil,
         pickup: MyRobotaxiContracts.RidePlace = MyRobotaxiContracts.RidePlace(lat: 37.7793, lng: -122.3937, label: "Current location"),
         dropoff: MyRobotaxiContracts.RidePlace = MyRobotaxiContracts.RidePlace(lat: 37.6156, lng: -122.3900, label: "SFO · Terminal 2")
     ) -> RideRequest {
@@ -1588,6 +1684,7 @@ final class LiveRideRequestServiceTests: XCTestCase {
             createdAt: Self.isoNow(),
             updatedAt: Self.isoNow(),
             acceptedAt: accepted ? "2026-07-09T18:05:22.114Z" : nil,
+            completedAt: completedAt,
             requesterName: requesterName
         )
     }

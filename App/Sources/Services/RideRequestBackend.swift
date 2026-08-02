@@ -305,6 +305,15 @@ enum RideRequestContractMapping {
             requestedAt: parseISO(ride.createdAt) ?? Date()
         )
         record.acceptedAt = ride.acceptedAt.flatMap(parseISO)
+        // MYR-414 — the server's own drop-off instant. It has been on the wire
+        // since §7.8 shipped and nothing in this app read it, which is why the
+        // rider's summary had no honest end for its trip span and fell back to
+        // re-labelling the search sheet's ESTIMATE as what the ride took. Mapped
+        // here, in the ONE wire→record rule, so both pipelines get it from the same
+        // place. **`enrouteObservedAt` is deliberately NOT set here**: this method
+        // is a FIRST SIGHTING (a frame for a ride we do not hold, a cold adoption),
+        // and a first sighting has observed no transition — see `RideTripSpan`.
+        record.completedAt = ride.completedAt.flatMap(parseISO)
         // MYR-376/377 — THE THREE RESERVATION FACTS.
         //
         // `record(from:)` folded `scheduledFor` into a pair of DISPLAY strings and

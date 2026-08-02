@@ -136,6 +136,34 @@ enum DebugScene: String, CaseIterable {
     /// error. Capture at t≈2s (the cancel fires on appear).
     case trackingCancelRefused
     case summary
+    /// MYR-414 — the post-ride summary on the **LIVE** path: the honest stat strip
+    /// (only the tiles whose datum exists), the ride's REAL leg-2 road route as the
+    /// hero line, and NO tip section.
+    ///
+    /// `summary` is the prototype's illustration and stays byte-identical, so the
+    /// pair is a clean before/after of exactly what this issue changed: "35 min /
+    /// 14.2 mi FSD MILES / 100% AUTONOMOUS" + a straight two-point line + "TIP YOUR
+    /// DRIVER", against a measured trip time, a measured road distance, and the
+    /// road route itself.
+    ///
+    /// **Nothing in the frame is hand-set.** The record is built by the SHIPPING
+    /// `RideRequestContractMapping.record(from:)` over a live-shaped §7.8
+    /// `RideRequest` carrying a real `completedAt`, and its trip start is stamped by
+    /// the SHIPPING `RideTripSpan.observing` driving the same `arrived → enroute`
+    /// transition the rider's "Start ride" tap performs — so the "14 min" in the
+    /// capture came from the production span rule reading two production instants.
+    /// The route is fetched by the SHIPPING `RideRouteStore` / `AppleRideRouteProvider`
+    /// for the record's OWN pickup/destination pair, so the distance tile is the
+    /// length of the polyline drawn beside it, and both are refused together if
+    /// MKDirections declines.
+    ///
+    /// **Capture at t≈2s** — MKDirections answers this SF pair in ~1s, and before it
+    /// does the scene is legitimately in its own no-road-route state.
+    /// **Pair it with `MRT_ROUTE_UNAVAILABLE=1`** for that state as the resting one:
+    /// the pins-only hero and a strip carrying the trip tile alone. That modifier
+    /// swaps in the provider's own documented degradation (MYR-395), so the
+    /// no-line/no-distance arm is the shipping refusal rather than a flag.
+    case riderSummaryLive
     case declined
     /// MYR-233 — the rider Review sheet with a BUSY vehicle: the muted "Busy"
     /// chip on the fleet-member row and the non-gold "Schedule with … instead"
@@ -2935,6 +2963,75 @@ enum DebugScene: String, CaseIterable {
         return LiveRideBookedWindows(endpoint: DebugBookedWindowsEndpoint(bookings: bookings))
     }
 
+    // MARK: MYR-414 — the completed LIVE ride the summary is drawn from
+
+    /// How long the `riderSummaryLive` trip took. A round 14 minutes so the
+    /// capture's "14 min" is unmistakably the SPAN and not a fixture estimate
+    /// (`sampleDestination` quotes 32, which is the number the pre-MYR-414 screen
+    /// rendered on this very page).
+    static let summaryTripDuration: TimeInterval = 14 * 60
+
+    /// The ride the `riderSummaryLive` capture is about, built the way the live
+    /// path builds one.
+    ///
+    /// Two SHIPPING functions run here and nothing else does:
+    ///
+    ///  1. `RideRequestContractMapping.record(from:)` maps a live-shaped §7.8
+    ///     `RideRequest` — the same mapping every real frame and refetch goes
+    ///     through — which is what puts the server's `completedAt` on the record.
+    ///     Seeding the record's fields directly would have produced an identical
+    ///     frame while proving nothing about the mapping that had never read that
+    ///     key.
+    ///  2. `RideTripSpan.observing` stamps the trip's start, driven with the exact
+    ///     `arrived → enroute` transition `LiveRideRequestService.startRide()`
+    ///     performs. The scene supplies the INSTANT (the stand-in for the tap —
+    ///     `ownerFreshnessWaking`'s precedent); the shipping rule decides whether
+    ///     that instant is carried at all.
+    ///
+    /// The pickup/dropoff coordinates are `samplePickup` / `sampleDestination`'s
+    /// own, so the leg-2 route this scene primes is keyed to the record's own pair
+    /// — `SharedViewerScreen.summaryRoadRoute` matches on that key with no
+    /// tolerance, and a scene that fetched a different pair would photograph the
+    /// pins-only arm while looking exactly right.
+    private static func completedLiveRideRecord() -> RideRequestRecord? {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        iso.timeZone = TimeZone(secondsFromGMT: 0)
+        let completed = Date()
+        let started = completed.addingTimeInterval(-summaryTripDuration)
+        let accepted = started.addingTimeInterval(-9 * 60)
+        let wire = MyRobotaxiContracts.RideRequest(
+            id: "debug-completed-ride",
+            riderId: "cluser0000000000rider0",
+            ownerId: "cluser0000000000owner0",
+            vehicleId: RideRequestFixtures.fleet[0].id,
+            pickup: MyRobotaxiContracts.RidePlace(
+                lat: samplePickup.coordinate.latitude,
+                lng: samplePickup.coordinate.longitude,
+                label: samplePickup.label
+            ),
+            dropoff: MyRobotaxiContracts.RidePlace(
+                lat: sampleDestination.coordinate.latitude,
+                lng: sampleDestination.coordinate.longitude,
+                label: sampleDestination.label,
+                address: sampleDestination.subtitle
+            ),
+            status: .completed,
+            createdAt: iso.string(from: accepted.addingTimeInterval(-40)),
+            updatedAt: iso.string(from: completed),
+            acceptedAt: iso.string(from: accepted),
+            completedAt: iso.string(from: completed)
+        )
+        guard var record = RideRequestContractMapping.record(from: wire) else { return nil }
+        record.enrouteObservedAt = RideTripSpan.observing(
+            previous: .arrived,
+            next: .enroute,
+            held: nil,
+            now: started
+        )
+        return record
+    }
+
     /// The `activeRequest` record to seed the service with (nil = no request).
     private var seededRecord: RideRequestRecord? {
         switch self {
@@ -2968,6 +3065,8 @@ enum DebugScene: String, CaseIterable {
             return record(status: .arrived, progress: RideRequestTiming.autoAcceptInitialProgress)
         case .summary:
             return record(status: .accepted, progress: 1.0)
+        case .riderSummaryLive:
+            return Self.completedLiveRideRecord()
         case .declined:
             return record(status: .declined)
         case .ownerDispatched:
@@ -3235,6 +3334,27 @@ enum DebugScene: String, CaseIterable {
         case .summary:
             viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
+            viewer.sheetPhase = .summary
+        case .riderSummaryLive:
+            // MYR-414 — the same page, resolved on the LIVE branch. Only the ONE
+            // branch is forced (`debugResolvesLiveRideSummary`), the same
+            // stand-in-for-a-live-session precedent `debugResolvesLivePickupETA`
+            // takes, so `summary` itself is byte-identical.
+            viewer.debugResolvesLiveRideSummary = true
+            viewer.draftPickup = DebugScene.samplePickup
+            viewer.draftDestination = DebugScene.sampleDestination
+            // Warm the leg-2 cache the way the RIDE would have: the tracking sheet
+            // primes it during the trip and `.completed` keeps it
+            // (`RiderRouteLifetime`), so by the time the summary mounts the route is
+            // already in hand. A cold scene has no ride behind it, so it asks the
+            // SHIPPING store for the record's own pair and lets the production
+            // provider answer — the capture then shows real MKDirections geometry
+            // and its real length, or (throttled, offline, `MRT_ROUTE_UNAVAILABLE=1`)
+            // the shipping refusal of both.
+            viewer.rideRouteStore.ensureLeg2(
+                pickup: DebugScene.samplePickup.coordinate,
+                destination: DebugScene.sampleDestination.coordinate
+            )
             viewer.sheetPhase = .summary
         case .modeChooser, .ownerSettings, .ownerSettingsTop, .riderSettings,
              // MYR-392 — Settings scenes; nothing about the rider sheet is seeded.

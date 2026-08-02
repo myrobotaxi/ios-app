@@ -826,6 +826,18 @@ final class LiveRideRequestService: RideRequestService {
     /// the instant this returns (v1 has no per-second ticker).
     func startRide() {
         guard var request = activeRequest, request.status == .arrived else { return }
+        // MYR-414 — THE OPTIMISTIC FLIP IS THE OBSERVATION, and it has to be
+        // stamped HERE or it is never stamped at all. `fold` sees the server's
+        // answer arrive onto a record this method has already advanced, so by then
+        // `previous` is already `.enroute` and the transition is invisible to it.
+        // Same rule, same function, so an instant already held is not restamped;
+        // an advance the server never confirmed takes the stamp back with it
+        // (`revertOptimisticAdvance`).
+        request.enrouteObservedAt = RideTripSpan.observing(
+            previous: request.status,
+            next: .enroute,
+            held: request.enrouteObservedAt
+        )
         request.status = .enroute
         if request.input.schedule == nil {
             request.trackProgress = max(request.trackProgress ?? 0, request.enrouteSeedProgress)
@@ -883,6 +895,12 @@ final class LiveRideRequestService: RideRequestService {
     private func revertOptimisticAdvance(_ pipeline: Pipeline, to previous: RideRequestStatus) {
         guard var request = record(pipeline) else { return }
         request.status = previous
+        // MYR-414 — an advance the server never confirmed did not happen, so the
+        // trip start it optimistically stamped has to go back too. Without this the
+        // next (successful) start would keep the FIRST attempt's instant — the trip
+        // measured from a moment the car was still at the kerb, which is the class
+        // of error this whole issue is about, arriving through the undo path.
+        if previous != .enroute { request.enrouteObservedAt = nil }
         if request.input.schedule == nil {
             switch previous {
             case .accepted, .arrived: request.trackProgress = RideRequestTiming.autoAcceptInitialProgress
@@ -1334,8 +1352,23 @@ final class LiveRideRequestService: RideRequestService {
         seedsTracking: Bool
     ) -> RideRequestRecord {
         var current = held
+        // MYR-414 — stamp the trip's START before the status is overwritten: the
+        // observation is about the TRANSITION, so it needs both sides of it. This
+        // is the one place both pipelines fold an authoritative record onto a held
+        // one, which is why the stamp lives here rather than at the four sites that
+        // assign the rider's slot (MYR-396's lesson about derive-at-one-door).
+        current.enrouteObservedAt = RideTripSpan.observing(
+            previous: held.status,
+            next: mapped,
+            held: held.enrouteObservedAt
+        )
         current.status = mapped
         current.acceptedAt = ride.acceptedAt.flatMap(RideRequestContractMapping.parseISO)
+        // MYR-414 — the trip's END, from the server. Taken from `refetched` (i.e.
+        // through `RideRequestContractMapping.record(from:)`) for the same reason
+        // the three reservation facts below are: one wire→record rule, not a second
+        // reading of the same key.
+        current.completedAt = refetched.completedAt
         // MYR-376/377 — adopt the DISPATCH LATCH from the authoritative record.
         //
         // This is the line that ends dormancy. The sweeper's stamp arrives on a

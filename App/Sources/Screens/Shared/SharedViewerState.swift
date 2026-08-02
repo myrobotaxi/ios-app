@@ -541,6 +541,15 @@ public final class SharedViewerState {
     /// `rendersLiveVehicleFreshness`. `false` everywhere else, so every simulated
     /// scene keeps the fixture placeholder and stays byte-identical.
     public var debugResolvesLivePickupETA = false
+    /// MYR-414 capture hook: resolve the post-ride SUMMARY on the LIVE-shaped
+    /// branch from a simulated boot.
+    ///
+    /// The honest summary is live-path-only by construction — it needs a ride
+    /// record carrying a server `completedAt` and an observed enroute transition,
+    /// plus a real MKDirections leg-2 route for the same pair — so the one branch
+    /// is forced exactly as `debugResolvesLivePickupETA` does. `false` everywhere
+    /// else, which is what keeps the `summary` drift-gate scene byte-identical.
+    public var debugResolvesLiveRideSummary = false
     /// MYR-393 capture hook: resolve the tracking sheet's MOTION LADDER and its car
     /// marker on the LIVE-shaped branch from a simulated boot.
     ///
@@ -613,6 +622,17 @@ public final class SharedViewerState {
     var resolvesPickupETA: Bool {
         #if DEBUG
         if debugResolvesLivePickupETA { return true }
+        #endif
+        return isLiveLocation
+    }
+
+    /// MYR-414 — whether the post-ride summary renders its HONEST stat strip (each
+    /// tile gated on its own datum, no tip section, no straight hero line) or the
+    /// prototype's illustration. The ONE resolved `AppMode`, plus the one DEBUG
+    /// capture scene — never a new env var (MYR-228).
+    var resolvesLiveRideSummary: Bool {
+        #if DEBUG
+        if debugResolvesLiveRideSummary { return true }
         #endif
         return isLiveLocation
     }

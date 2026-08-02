@@ -391,6 +391,31 @@ enum RideRouteGeometry {
         return best
     }
 
+    /// The polyline's own length in METERS — the sum of its segments, which for a
+    /// real MKDirections route is the distance along the roads (MYR-414).
+    ///
+    /// **This is only a trip distance when the polyline is real road geometry.**
+    /// Run over the provider's straight `[from, to]` fallback it returns the
+    /// great-circle guess the client's summary was already passing off as
+    /// "14.2 mi FSD miles", so every caller gates on `RideRoutePolyline.isReal`
+    /// first. Nothing here can enforce that — a length is a length — which is why
+    /// the gate lives in `RideSummaryPresentation`'s inputs, where a test can see
+    /// it.
+    static func lengthMeters(_ polyline: [CLLocationCoordinate2D]) -> Double {
+        guard polyline.count > 1 else { return 0 }
+        var total: Double = 0
+        for i in 0..<(polyline.count - 1) {
+            total += MKMapPoint(polyline[i]).distance(to: MKMapPoint(polyline[i + 1]))
+        }
+        return total
+    }
+
+    /// `lengthMeters` in statute miles — the unit every rider-facing distance in
+    /// this app is stated in.
+    static func lengthMiles(_ polyline: [CLLocationCoordinate2D]) -> Double {
+        lengthMeters(polyline) / 1609.344
+    }
+
     /// Whether the leg-1 route (car → pickup) must be refetched: the car has
     /// strayed farther than `thresholdMeters` from the cached polyline (took a
     /// different road). Distance-from-polyline, never a timer (MYR-177).
