@@ -262,7 +262,9 @@ final class RideActivityStateMachineTests: XCTestCase {
             destination: "Home"
         )
         let phase = RideActivityPhase.live(rideID: "ride-1", state: pushed)
-        let record = makeRecord(id: "ride-1", status: .enroute)
+        // `accepted → arrived` — the SAME leg (pickup). Nothing about the car's
+        // reported arrival instant is invalidated by reaching the kerb.
+        let record = makeRecord(id: "ride-1", status: .arrived)
 
         guard case .update(_, let state) = RideActivityStateMachine.action(
             phase: phase, record: record, vehicleName: "Client Name"
@@ -274,7 +276,50 @@ final class RideActivityStateMachineTests: XCTestCase {
             1_785_535_200,
             "carrying the previous instant forward is not a guess — an instant does not decay"
         )
-        XCTAssertEqual(state.status, .enroute, "but the local status change IS applied")
+        XCTAssertEqual(state.status, .arrived, "but the local status change IS applied")
+    }
+
+    /// **⚠️ THIS ASSERTION REVERSES ONE THIS TEST FILE USED TO MAKE, DELIBERATELY —
+    /// MYR-423.** The case above was originally written against `.enroute`, i.e. it
+    /// pinned a PICKUP ETA surviving the flip to the DROPOFF leg. That was harmless
+    /// for as long as it was unreachable: the coordinator fed `previous` from its own
+    /// last locally-composed frame, whose `eta` is nil by construction, so no real
+    /// frame ever carried an instant across a flip and the assertion was about a
+    /// hypothetical. MYR-423 makes `previous` the frame ActivityKit is actually
+    /// rendering — push included — so it is reachable now, and it is a lie:
+    /// `RideActivityCopy.showsFigure` is true for `accepted` AND `enroute`, and
+    /// `RideActivityCard.figure` reads a pickup ETA as a countdown and a dropoff ETA
+    /// as a CLOCK TIME. The car's arrival at the kerb would be restated as the moment
+    /// the rider is dropped off.
+    func testTheLegFlipDropsThePickupETARatherThanRestatingItAsADropoffTime() {
+        let pushed = RideActivityAttributes.ContentState(
+            status: .accepted,
+            eta: 1_785_535_200,
+            vehicleName: "Server Name",
+            destination: "Home",
+            progress: 1.0,
+            asOf: 1_785_534_900
+        )
+        let phase = RideActivityPhase.live(rideID: "ride-1", state: pushed)
+        let record = makeRecord(id: "ride-1", status: .enroute)
+
+        guard case .update(_, let state) = RideActivityStateMachine.action(
+            phase: phase, record: record, vehicleName: "Client Name"
+        ) else { return XCTFail("expected .update") }
+
+        XCTAssertEqual(state.status, .enroute)
+        XCTAssertNil(state.eta, "leg one's arrival instant is not leg two's dropoff clock")
+        XCTAssertNil(state.progress, "MYR-398's rule, unchanged: leg one ends at 1, leg two opens near 0")
+        XCTAssertEqual(
+            state.asOf,
+            1_785_534_900,
+            """
+            `asOf` is the one server field that is NOT leg-scoped: it says when the \
+            server last learned something about this RIDE, which a leg flip does not \
+            change.
+            """
+        )
+        XCTAssertEqual(state.vehicleName, "Server Name", "and the car is the same car")
     }
 
     // MARK: - Ride swap

@@ -913,6 +913,29 @@ final class StubRideActivityPresenter: RideActivityPresenting {
         return restored
     }
 
+    // MARK: - MYR-423: the content state ActivityKit actually holds
+
+    /// What the CARD says, per ride — the stub's stand-in for
+    /// `Activity.content.state`.
+    ///
+    /// It is written by `start` and `update` exactly as the system writes it, and by
+    /// `deliver(push:)` for the half of the truth this process never sees. **That
+    /// second writer is what makes these tests proof rather than tautology**: a stub
+    /// that only echoed our own updates back could never distinguish "the coordinator
+    /// held the server's value" from "the coordinator re-wrote its own", because on
+    /// such a stub those two are the same bytes.
+    private(set) var deliveredStates: [String: RideActivityAttributes.ContentState] = [:]
+
+    func deliveredContentState(rideID: String) -> RideActivityAttributes.ContentState? {
+        deliveredStates[rideID]
+    }
+
+    /// Stand in for APNs replacing the Activity's content state — the one event that
+    /// happens entirely outside this process.
+    func deliver(push state: RideActivityAttributes.ContentState, rideID: String) {
+        deliveredStates[rideID] = state
+    }
+
     func adopt(rideID: String) -> Bool {
         guard restored.contains(where: { $0.rideID == rideID && $0.lifecycle.isOnScreenAndOurs })
         else { return false }
@@ -928,6 +951,7 @@ final class StubRideActivityPresenter: RideActivityPresenting {
         // id, which is the only reason "keep one of two identically-named cards" can
         // be expressed at all.
         var keepOne = heldRideID == rideID
+        if !keepOne { deliveredStates[rideID] = nil }
         restored = restored.filter {
             guard $0.rideID == rideID else { return true }
             defer { keepOne = false }
@@ -961,12 +985,14 @@ final class StubRideActivityPresenter: RideActivityPresenting {
         isPresenting = true
         endedWith = nil
         heldRideID = attributes.rideID
+        deliveredStates[attributes.rideID] = state
         restored.append(RideActivitySnapshot(rideID: attributes.rideID, lifecycle: .active))
         return true
     }
 
     func update(state: RideActivityAttributes.ContentState, staleDate: Date?) async {
         updates.append(state)
+        if let heldRideID { deliveredStates[heldRideID] = state }
     }
 
     func end(state: RideActivityAttributes.ContentState, dismissal: RideActivityDismissal) async {
@@ -982,7 +1008,9 @@ final class StubRideActivityPresenter: RideActivityPresenting {
         switch dismissal {
         case .immediate:
             restored.removeAll { $0.rideID == heldRideID }
+            if let heldRideID { deliveredStates[heldRideID] = nil }
         case .linger:
+            if let heldRideID { deliveredStates[heldRideID] = state }
             restored = restored.map {
                 $0.rideID == heldRideID
                     ? RideActivitySnapshot(rideID: $0.rideID, lifecycle: .ended)
