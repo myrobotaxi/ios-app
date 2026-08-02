@@ -160,6 +160,13 @@ struct OwnerDispatchCard: View {
     /// latch on status change so a re-shown button is tappable again).
     var actionDisabled: Bool = false
 
+    /// The identifiers `OwnerDispatchSheetOverlapUITests` reads the two elements'
+    /// frames by. A UI test cannot ask "does this overlap the sheet" of a view it
+    /// cannot address, and matching on the CTA's TITLE would tie the guard to
+    /// MYR-411's copy.
+    static let pillAccessibilityIdentifier = "ownerDispatchPill"
+    static let ctaAccessibilityIdentifier = "ownerDispatchCTA"
+
     var body: some View {
         VStack(spacing: 10) {
             statusPill
@@ -167,9 +174,18 @@ struct OwnerDispatchCard: View {
                 MRTButton(action.title, variant: .gold, size: .sm, fullWidth: true, action: action.handler)
                     .disabled(actionDisabled)
                     .frame(maxWidth: 260)
+                    .accessibilityIdentifier(Self.ctaAccessibilityIdentifier)
             }
         }
         .padding(.horizontal, 24)
+        // MYR-419 — the card's own height, which is what the sheet reserves room
+        // for. A `background` probe rather than a fixed constant because the CTA
+        // is present in two of the four dispatch states and absent in the others.
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: OwnerDispatchCardHeightKey.self, value: proxy.size.height)
+            }
+        )
     }
 
     private var statusPill: some View {
@@ -193,5 +209,6 @@ struct OwnerDispatchCard: View {
         .shadow(color: .black.opacity(0.4), radius: 10, y: 6)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(line)
+        .accessibilityIdentifier(Self.pillAccessibilityIdentifier)
     }
 }
