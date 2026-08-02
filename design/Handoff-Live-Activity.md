@@ -116,6 +116,54 @@ The state machine is unchanged. What each state renders, and every rider-facing 
 >    - **DETERMINATE PROGRESS AND TRACK-ONLY ARE UNTOUCHED.** Only the indeterminate
 >      mode moves, on all three surfaces that draw it.
 
+> **Mirror note (2026-08-02, MYR-420) — THE CLIENT REJECTED THE FILL, THE LAST
+> UNTESTED CANDIDATE IS DEAD, AND NOTHING SHIPPED. This note is the measurement, so
+> the next round does not spend itself re-testing a spinner that does not exist.**
+>
+> The client on MYR-417's timer ring: *"The loading icon should just be a ring
+> spinning not slowly filling. It essentially means we're waiting for live data."*
+> The objection is exact — a ring that creeps 0 → 100% over 90s IS the determinate
+> ring's own grammar, so the one state that means "the car has told us nothing" is
+> drawn in the vocabulary of "here is how far along you are".
+>
+> - **⚠️ THE PLAIN INDETERMINATE `ProgressView()` + `.progressViewStyle(.circular)`
+>   IS DEAD, AND IT IS NOT EVEN DRAWN AS A SPINNER.** It was the one candidate the
+>   MYR-417 matrix had not tried, and it was a fair hypothesis: the timer ring proves
+>   this surface runs SOME stock `ProgressView` behaviour, so the indeterminate one
+>   was worth a frame rather than an assumption. Rendered in this very slot on a live
+>   Activity (iPhone 17 Pro, iOS 26.5, `MRT_ACTIVITY_STATE=noTelemetry`): **there are
+>   no spokes.** WidgetKit resolves the indeterminate circular style to an EMPTY GAUGE
+>   RING — the tint at ~35%, i.e. pixel-for-pixel the track the ended states already
+>   draw — and it never moves. Lossless `simctl io` frames: **5 frames 12s apart
+>   (48s span) `ImageChops.difference` bbox `None`, max delta 0, gold ink 185 px in
+>   every one**; and 6 frames 3s apart, same verdict. `.fixedSize()` (in case the
+>   22pt parent frame was clamping a spinner) renders **byte-identically** — same
+>   185 px — so the frame was never the reason.
+> - **THE CONTROL IS THE SAME SLOT IN THE SAME BUILD.** Swapping only the
+>   initializer back to `ProgressView(timerInterval:)` moves it: gold ink
+>   **297 → 457 → 618 → 775 → 935 px** across the identical five frames. So the rig
+>   sees motion, the island does re-render, and the difference is the candidate.
+> - **THE EXPANDED `.trailing` REGION AGREES** — long-pressed via SpringBoard, two
+>   frames 6s apart, the whole island band diffs bbox `None`, max delta 0. MINIMAL is
+>   unphotographable as always (two Activities of one app still render one compact
+>   pill), and it is the same component in the same process.
+> - **THE REUSABLE RULE, WHICH IS THE POINT OF THIS NOTE: A SELF-UPDATING ELEMENT ON
+>   THIS SURFACE IS A RAMP OVER A DATE RANGE, AND A RAMP CANNOT REPEAT.** The
+>   platform's whole set of elements the renderer re-derives out of process is the
+>   dynamic-date family — `Text(.timer)` / `Text(timerInterval:)` /
+>   `Text(_, style:)` — plus `ProgressView(timerInterval:)`. Every one of them is a
+>   monotone function of the clock over a range that is fixed when the frame is
+>   composed. **A spinner is a REPEATING clock**, and the only thing that can arm one
+>   is the app, whose animations are not run here (§0 B `repeatForever`, MYR-412
+>   symbol effects, both still inert). So the honest ceiling is: this surface can
+>   fill, drain, or travel **once** per push interval (60–90s) — it cannot spin at
+>   any rate a person would read as spinning.
+> - **NOTHING SHIPPED.** The timer-fill ring stands, unchanged, because the two
+>   things that could replace it are MYR-412's static arc (which is the complaint
+>   this ring was raised to answer) and a fake — and a fake is worse than either. The
+>   choice between "moves but reads as progress" and "correct but dead" is the
+>   client's, and it is put to him with these frames rather than settled here.
+
 ---
 
 ## 0 · Change request for this build — three items

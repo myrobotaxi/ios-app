@@ -350,6 +350,32 @@ struct RideActivityProgressRing: View {
 /// o'clock, i.e. the board's own arc. And unlike `Circle().stroke` it draws INSIDE
 /// its frame (measured 22.0 × 22.0pt of ink for a 22pt frame), so MYR-412's
 /// clipping trap does not apply to it.
+///
+/// ⚠️ **MYR-420 — THE CLIENT REJECTED THIS RING AND THE REPLACEMENT DOES NOT EXIST.**
+/// *"The loading icon should just be a ring spinning not slowly filling. It
+/// essentially means we're waiting for live data."* The objection is exact: a ring
+/// creeping 0 → 100% over 90s is the DETERMINATE ring's own grammar, spent on the one
+/// state that means the car has said nothing.
+///
+/// The last untested candidate was the plain indeterminate
+/// `ProgressView().progressViewStyle(.circular)` — a fair hypothesis, since the timer
+/// ring below proves the surface runs SOME stock `ProgressView` behaviour. **Measured
+/// in this exact slot on a live Activity and it is dead twice over**: WidgetKit draws
+/// the indeterminate circular style as an EMPTY GAUGE RING (no spokes at all — the
+/// tint at ~35%, i.e. the track the ended states already draw), and it never moves —
+/// 5 lossless frames 12s apart, bbox `None`, max delta 0, 185 gold px in every one,
+/// with `.fixedSize()` byte-identical so the 22pt parent frame was not the reason.
+/// The control is this file's own `ProgressView(timerInterval:)` in the same build
+/// and slot: 297 → 457 → 618 → 775 → 935 px across the identical frames.
+///
+/// **THE CEILING, STATED SO IT IS NOT RE-DISCOVERED: a self-updating element here is
+/// a RAMP OVER A DATE RANGE, and a ramp cannot repeat.** Everything the renderer
+/// re-derives out of process is the dynamic-date family plus this `ProgressView`, all
+/// monotone in the clock over a range fixed when the frame composes. A spinner needs
+/// a REPEATING clock and only the app can arm one, which is what §0 B and MYR-412
+/// each measured inert. This surface can fill, drain or travel ONCE per push interval
+/// (60–90s); it cannot spin. So this ring stands unchanged until the client chooses
+/// between it and MYR-412's static arc — the two real options, neither invented.
 /// ─────────────────────────────────────────────────────────────────────────────
 private struct RideActivityWaitingRing: View {
     var body: some View {
