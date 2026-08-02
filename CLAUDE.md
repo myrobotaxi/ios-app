@@ -3090,6 +3090,75 @@ xcrun simctl spawn <udid> log stream --level=info \
 # silently makes the next run a picture of the last.
 ```
 
+**A RIDE HAS TWO IDS, AND THE LIVE ACTIVITY REGISTERED UNDER THE WRONG ONE**
+(MYR-415, server-verified) — probe `MRT_ACTIVITY_REGISTER=1`. Production
+`go_live_activities` was **EMPTY across nine rides in three days** while
+`go_push_devices` stayed healthy, so **no server LA push has ever been
+delivered**: every behaviour observed on that card since MYR-172 was the app
+updating its own Activity locally. It explains the whole cluster — no island
+expansion, no `asOf` "Last updated", "Waiting for an update" everywhere, and
+MYR-413's duplicate-banner starvation.
+
+- **THE CAUSE IS `RideRequestRecord.id`, WHICH IS NOT A SERVER ID.**
+  `LiveRideRequestService.submit` mints an OPTIMISTIC record with a client `UUID`
+  (MYR-218) and `fold` carries it forward verbatim — `var current = held`, and
+  `id` is a `let` — so for a ride THIS DEVICE SUBMITTED the draft UUID is the
+  record's id for the entire life of the ride, and the server's id lives only in
+  `riderServerRideID` / `activeServerRideID`. So §7.21 posted to
+  `/api/ride-requests/{client-uuid}/activity-token`, which is a **404 for a ride
+  the server has never heard of**, on every ride, silently.
+- **EVERY OTHER §7.8 WRITE ALREADY KNEW THIS.** Accept, decline and cancel all
+  post on the server id, `riderHolds` exists precisely because the two ids
+  differ, and MYR-186 added `activeServerRideID` for exactly this question. The
+  Live Activity registration was the ONE call site that used `record.id`
+  directly. **`go_push_devices` was unaffected because it is ACCOUNT-scoped and
+  carries no ride id at all** — that asymmetry is the whole diagnostic.
+- **THE SANDBOX FLAG WAS NEVER THE PROBLEM**, and it was the leading suspect.
+  Both coordinators default to the SAME `PushEnvironment.isSandbox`, so a wrong
+  value would have broken the healthy table too. Ruled out by reading one
+  default, not by a round of device testing.
+- **THE TOKEN ARRIVES ~2s AFTER `Activity.request`, AND THE OBSERVATION SURVIVES
+  IT** — the other leading suspect (a task cancelled before the async token
+  lands) is measured false: the probe logs `t=1s registrationCalls=0` and the
+  POST at t≈2s, on a real simulator with a real ActivityKit token.
+- **THE REGISTRATION NOW WAITS FOR THE SERVER ID, AND THE TOKEN OUTLIVES THE
+  WAIT.** MYR-398 v3 starts the card at REQUEST — before the create POST has even
+  fired (MYR-218's send grace window) — so the token routinely arrives while
+  there is no server id yet. `pendingToken` holds it, which matters because
+  `pushTokenUpdates` yields ONCE per Activity in the ordinary case: **a token
+  dropped is a token that never comes back.** The create's acknowledgement does
+  NOT change `activeRequest` (`fireSend` sets `riderServerRideID` and only calls
+  `applyRemote` when the server already advanced the status), so the record
+  observer cannot see it — `RootView` watches `activeServerRideID` itself.
+- **A FAILED POST IS RETRIED, NOT DROPPED.** The old `catch { return }` reasoned
+  "the next rotation tries again", but ActivityKit does not rotate on a schedule,
+  so for most rides there is no next rotation and one bad minute cost the whole
+  ride. This is MYR-186's policy verbatim — the token stays pending and the next
+  tick (status change, launch, foreground) re-attempts, with no timer and no
+  backoff loop.
+- **THE DELETE NAMES WHAT THE POST NAMED.** Releasing under the local id would be
+  the same 404. An ORPHAN keeps its best-effort release under the Activity's own
+  id (MYR-405's "the server is told"), and must **never** fall back to the held
+  registration — that would starve the live ride from inside the reaper, the same
+  hazard `isDuplicateOfAdopted` exists for.
+- **THE SILENCE WAS THE REAL COST** (MYR-381's lesson). A failed registration
+  produced no throw, no banner, no log line and no row for three days.
+  Registration attempt / success / failure now carry `os_log` on the
+  `liveactivity` category the MYR-405 census already streams — one predicate
+  shows the lifecycle and the registration together — plus a DEBUG `print`. The
+  token never travels beyond `LiveActivityTokenRedaction`'s 8 characters (P1).
+
+```sh
+SIMCTL_CHILD_MRT_ACTIVITY_REGISTER=1 xcrun simctl launch <udid> app.myrobotaxi.ios
+xcrun simctl spawn <udid> log stream --level=info \
+  --predicate 'subsystem == "app.myrobotaxi.ios" AND category == "liveactivity"'
+# healthy: `activity-token POST ride=<SERVER id> token=<8 chars> sandbox=<bool>`
+# then `registered`, exactly ONE call held across t=1/3/6/10s.
+# The probe seeds DIFFERENT local and server ids on purpose: a probe where they
+# coincide would pass with the defect fully restored.
+# "NO TOKEN" is a statement about the SIMULATOR (no APNs), never about the fix.
+```
+
 **Invite links have an address** (MYR-346) — an invite is shared as
 `https://myrobotaxi.app/join/{CODE}`, a branded web page whose OG card renders in
 the thread and which, on a phone that has the app, opens it straight to the

@@ -396,20 +396,6 @@ struct RootView: View {
             seams: seams,
             recentDestinationsStore: Self.recentDestinationsStore()
         )
-        // MYR-172 — the rider's Live Activity, bound to the same session. Inert in
-        // simulated mode, exactly like the push coordinator above.
-        //
-        // Composed AFTER `viewer` (MYR-398 v3) because the Activity's static vehicle
-        // attribute is read off the rider's own already-loaded fleet — the same list
-        // `liveFleetMember` reads, through the one seam that gates it on
-        // `isLiveLocation`. A closure and not a snapshot: the list lands
-        // asynchronously, so a value captured here would be `nil` for the session,
-        // and it is read once per `Activity.request` rather than per frame.
-        _rideActivityCoordinator = State(initialValue: RideActivityComposition.makeCoordinator(
-            mode: mode,
-            sessionTokenProvider: auth.sessionTokenProvider,
-            vehicle: { [weak viewer] in viewer?.liveActivityVehicle }
-        ))
         // MYR-214 — the Drive Summary place labeler drops the fixture saved
         // places in live mode (see the `placeLabeler` property comment): a live
         // endpoint near the SF fixture coords must not be labeled "Home".
@@ -477,6 +463,29 @@ struct RootView: View {
         if let scripted = DebugScene.current?.scheduledRideSource { scheduledRides = scripted }
         #endif
         _riderScheduledRidesStore = State(initialValue: scheduledRides.map { RiderScheduledRidesStore(source: $0) })
+        // MYR-172 — the rider's Live Activity, bound to the same session. Inert in
+        // simulated mode, exactly like the push coordinator above.
+        //
+        // Composed AFTER `viewer` (MYR-398 v3) because the Activity's static vehicle
+        // attribute is read off the rider's own already-loaded fleet — the same list
+        // `liveFleetMember` reads, through the one seam that gates it on
+        // `isLiveLocation`. A closure and not a snapshot: the list lands
+        // asynchronously, so a value captured here would be `nil` for the session,
+        // and it is read once per `Activity.request` rather than per frame.
+        //
+        // ⚠️ MYR-415 — and composed AFTER `service` too, which is the whole reason
+        // it moved down here. The §7.21 registration must name the SERVER's ride id
+        // (`activeServerRideID`), NOT `RideRequestRecord.id` — which for a ride this
+        // device submitted is a client `UUID` that the server has never seen. Taking
+        // it off the FINAL `service` matters as much as taking it at all: the DEBUG
+        // block above may replace `service` wholesale, and a closure captured over
+        // the pre-override value would answer for a service nothing else is using.
+        _rideActivityCoordinator = State(initialValue: RideActivityComposition.makeCoordinator(
+            mode: mode,
+            sessionTokenProvider: auth.sessionTokenProvider,
+            vehicle: { [weak viewer] in viewer?.liveActivityVehicle },
+            serverRideID: { [weak service] in service?.activeServerRideID }
+        ))
         _rideRequestService = State(initialValue: service)
         _screen = State(initialValue: startScreen)
         _role = State(initialValue: startRole)
@@ -1358,6 +1367,11 @@ struct RootView: View {
         // MYR-405 — `MRT_ACTIVITY_ORPHAN=seed|relaunch`, the two-process repro of
         // the restore race. Orthogonal to the scene and unset for every capture.
         .task { await RideActivityDebugLauncher.runOrphanProbe() }
+        // MYR-415 — `MRT_ACTIVITY_REGISTER=1`, the on-simulator observation of the
+        // §7.21 registration: whether ActivityKit issues a token at all, and which
+        // ride id the POST names. Orthogonal to the scene and unset for every
+        // capture.
+        .task { await RideActivityDebugLauncher.runRegistrationProbe() }
         #endif
         // MYR-346 — same hand-off for universal links, and the drain of anything
         // the mailbox held through a cold launch.
@@ -1443,6 +1457,24 @@ struct RootView: View {
         // longer exists.
         .onChange(of: rideRequestService.activeRequest) { _, record in
             Task { await rideActivityCoordinator.handleRideChange(record) }
+        }
+        // MYR-415 — THE SERVER'S RIDE ID LANDS ON ITS OWN SCHEDULE, AND NOTHING
+        // ELSE OBSERVES IT.
+        //
+        // MYR-398 v3 starts the Activity at REQUEST, which is before the create POST
+        // has fired at all (MYR-218's send grace window), so ActivityKit's token
+        // routinely arrives while `activeServerRideID` is still nil and the
+        // registration has to wait for it. The create's acknowledgement does NOT
+        // change `activeRequest` on the common path — `fireSend` sets
+        // `riderServerRideID` and only calls `applyRemote` when the server has
+        // already advanced the status — so the observer above never fires for it and
+        // the held token would sit until the next status change.
+        //
+        // Watching the id itself is what closes that window. `handleRideChange`'s
+        // own flush covers the launch/foreground/status-change routes; this covers
+        // the one moment none of them see.
+        .onChange(of: rideRequestService.activeServerRideID) { _, _ in
+            Task { await rideActivityCoordinator.handleServerRideIDChange() }
         }
         // MYR-405 — RECONCILE THE LOCK SCREEN WITH THE ACCOUNT, AT LAUNCH.
         //

@@ -3,6 +3,7 @@ import CoreLocation
 import Foundation
 import ActivityKit
 import OSLog
+import MyRoboTaxiKit
 import MyRobotaxiContracts
 
 // MARK: - Live Activity capture hook (MYR-172)
@@ -336,6 +337,83 @@ enum RideActivityDebugLauncher {
             .joined(separator: ", ")
         probeLog.info("MYR405-PROBE \(label, privacy: .public) count=\(activities.count, privacy: .public) [\(rows, privacy: .public)]")
     }
+
+    // MARK: - MYR-415: does the §7.21 registration actually POST?
+
+    /// **`MRT_ACTIVITY_REGISTER=1` — the on-simulator half of MYR-415's proof.**
+    ///
+    /// `go_live_activities` was empty in production and NOTHING said why: the POST
+    /// named the ride's local draft UUID, 404'd, and was swallowed. A unit test can
+    /// prove the coordinator posts the right id; only a real launch can show what
+    /// ActivityKit actually hands this app, which is the half no test can reach.
+    ///
+    /// So this runs the PRODUCTION `RideActivityCoordinator` over the PRODUCTION
+    /// `SystemRideActivityPresenter` and a REAL `Activity.request(pushType: .token)`,
+    /// with a spy in the endpoint slot, and logs every step through `os_log`:
+    /// whether a token ever arrived, and if so what id / sandbox flag the
+    /// registration carried.
+    ///
+    /// ⚠️ **A SIMULATOR MAY NEVER ISSUE AN ACTIVITY PUSH TOKEN AT ALL** — there is no
+    /// APNs connection behind it — so "no token" here is a statement about the
+    /// simulator and NOT evidence about the fix. That is exactly why the probe logs
+    /// the ABSENCE explicitly instead of finishing quietly: an empty log and a
+    /// broken client looked identical for three days, and that is the thing this
+    /// issue is really about.
+    static func runRegistrationProbe() async {
+        guard ProcessInfo.processInfo.environment["MRT_ACTIVITY_REGISTER"] == "1" else { return }
+
+        let spy = RegistrationProbeEndpoint()
+        registrationSpy = spy
+        let coordinator = RideActivityCoordinator(
+            presenter: SystemRideActivityPresenter(),
+            endpoint: spy,
+            isLive: true,
+            vehicleName: { "Blue Whale" },
+            // The two ids DIFFER here on purpose, exactly as they do in production
+            // for a ride this device submitted: the record carries the optimistic
+            // client UUID and the server's id lives beside it.
+            serverRideID: { "myr415-SERVER-ride-id" }
+        )
+        heldCoordinator = coordinator
+
+        probeLog.info("MYR415-PROBE starting Activity localRideID=\(probeRideID, privacy: .public) serverRideID=myr415-SERVER-ride-id")
+        await coordinator.handleRideChange(probeRecord())
+        probeLog.info("MYR415-PROBE phase=\(coordinator.phase.rideID ?? "idle", privacy: .public)")
+
+        for seconds in [1, 3, 6, 10] {
+            try? await Task.sleep(for: .seconds(1))
+            let calls = spy.calls
+            probeLog.info(
+                "MYR415-PROBE t=\(seconds)s registrationCalls=\(calls.count, privacy: .public) [\(calls.joined(separator: " | "), privacy: .public)]"
+            )
+        }
+        if spy.calls.isEmpty {
+            probeLog.notice(
+                "MYR415-PROBE NO TOKEN — ActivityKit issued no push token in this process. Expected on a SIMULATOR (no APNs); on a DEVICE this is the defect."
+            )
+        }
+    }
+
+    /// Records what the coordinator asked the wire to do, without a wire.
+    private final class RegistrationProbeEndpoint: RideActivityTokenEndpoint, @unchecked Sendable {
+        private(set) var calls: [String] = []
+
+        func registerRideActivityToken(
+            rideID: String,
+            token: String,
+            sandbox: Bool
+        ) async throws -> LiveActivityRegistrationResponse {
+            calls.append("POST ride=\(rideID) token=\(LiveActivityTokenRedaction.redacted(token)) sandbox=\(sandbox)")
+            return LiveActivityRegistrationResponse(registered: true, sandbox: sandbox)
+        }
+
+        func endRideActivityToken(rideID: String) async throws -> EndLiveActivityResponse {
+            calls.append("DELETE ride=\(rideID)")
+            return EndLiveActivityResponse(ended: true)
+        }
+    }
+
+    private static var registrationSpy: RegistrationProbeEndpoint?
 
     private static let probeLog = Logger(subsystem: "app.myrobotaxi.ios", category: "liveactivity")
 

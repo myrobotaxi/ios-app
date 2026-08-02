@@ -54,3 +54,5 @@ build/
 .shots-myr390/
 .dd-390-ds/
 .dd-390-kit/
+.dd-415*/
+.spm-415/

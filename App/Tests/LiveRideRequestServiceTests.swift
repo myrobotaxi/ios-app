@@ -64,6 +64,49 @@ final class LiveRideRequestServiceTests: XCTestCase {
         await eventually { await api.lastCreateVehicleID == "veh-live" } // resolved from vehicles()
     }
 
+    // MARK: MYR-415 — the two ids of one ride
+
+    /// **THE LOAD-BEARING PRODUCTION FACT BEHIND MYR-415**, pinned here rather than
+    /// inferred: after the create is acknowledged, a ride this device submitted has
+    /// TWO ids, and `activeRequest.id` is not the server's.
+    ///
+    /// `submit` mints an optimistic record with a client `UUID` (MYR-218) and `fold`
+    /// carries it forward verbatim (`var current = held`, and `id` is a `let`), so
+    /// the draft id is the record's id for the whole life of the ride. Every §7.8
+    /// write in the app already knows this — accept, decline and cancel all post on
+    /// `activeServerRideID` — and the Live Activity registration was the one place
+    /// that did not, which is why `go_live_activities` had zero rows.
+    ///
+    /// If a future refactor ever makes the record adopt the server's id, this test
+    /// fails loudly and the coordinator's closure becomes a no-op rather than a bug.
+    func testASubmittedRidesRecordIDIsNOTTheServerIDAndActiveServerRideIDIs() async {
+        let api = StubRideAPI(created: Self.wireRide(id: "srv-415", status: .requested))
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.sampleInput())
+        let draftID = service.activeRequest?.id
+        XCTAssertNotNil(draftID)
+        XCTAssertNil(
+            service.activeServerRideID.flatMap { $0 == "srv-415" ? $0 : nil },
+            "before the create is acknowledged there is no server id at all"
+        )
+
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+        await eventually { service.activeServerRideID == "srv-415" }
+
+        XCTAssertEqual(service.activeRequest?.id, draftID, "the record keeps its optimistic client UUID")
+        XCTAssertNotEqual(
+            service.activeRequest?.id,
+            "srv-415",
+            """
+            THE DEFECT IN ONE LINE: posting the Live Activity token under \
+            `record.id` addressed a ride the server has never heard of.
+            """
+        )
+        XCTAssertEqual(service.activeServerRideID, "srv-415", "the server's id is here, and only here")
+    }
+
     // MARK: pending → declined
 
     /// MYR-325 — `decline()` is likewise an OWNER action on the OWNER pipeline.
