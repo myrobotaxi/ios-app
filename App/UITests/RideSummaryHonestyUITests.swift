@@ -20,10 +20,15 @@ final class RideSummaryHonestyUITests: XCTestCase {
 
     // The stat labels and the tip kicker are `RideEyebrowText`, which UPPERCASES.
     private static let tripLabel = "TRIP"
-    private static let distanceLabel = "DISTANCE"
+    /// MYR-422 — the measured distance is no longer a TILE (a fourth tile does not
+    /// fit the page: `RideSummaryStripLayoutTests`); it is a suffix on the hero's
+    /// "from {pickup}" caption, under the route it measures.
+    private static let distanceSuffix = " mi"
     private static let fsdLabel = "FSD MILES"
     private static let autonomyLabel = "AUTONOMOUS"
     private static let tipLabel = "TIP YOUR DRIVER"
+    /// MYR-422 — the placeholder value, `BatteryReadout.dash` (an em dash).
+    private static let dash = "\u{2014}"
 
     private func launch(scene: String, routeUnavailable: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
@@ -37,6 +42,15 @@ final class RideSummaryHonestyUITests: XCTestCase {
         return app
     }
 
+    /// The hero caption once it carries a measurement — "from {pickup} · 12.8 mi".
+    /// Matched on the SUFFIX rather than on a literal, because the number is the
+    /// route's own length and the pickup label is the scene's.
+    private func measuredDistance(_ app: XCUIApplication) -> XCUIElement {
+        app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH 'from ' AND label ENDSWITH %@", Self.distanceSuffix)
+        ).firstMatch
+    }
+
     private func attach(named name: String) {
         let a = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         a.name = name
@@ -44,20 +58,43 @@ final class RideSummaryHonestyUITests: XCTestCase {
         add(a)
     }
 
-    /// **THE CLIENT'S THREE NUMBERS ARE GONE FROM THE LIVE PAGE**, and the two that
-    /// replace them are the ones with a datum behind them.
-    func testTheLiveSummaryRendersOnlyDerivableStats() {
+    /// **THE CLIENT'S THREE NUMBERS ARE GONE FROM THE LIVE PAGE**, and what stands in
+    /// their place is either a datum or a dash.
+    ///
+    /// MYR-422 changes the second half of this: the FSD MILES and AUTONOMOUS tiles
+    /// are BACK (the row keeps its shape) and they carry the em dash, so the check
+    /// is no longer "the label is absent" but "the label is present and the number
+    /// is not". This scene is the MKDirections rung — its drives read is refused
+    /// 403, exactly as a viewer-tier rider's is.
+    func testTheLiveSummaryRendersDerivableStatsAndDashesForTheRest() {
         let app = launch(scene: "riderSummaryLive")
-        // The road route lands in ~1s and the distance tile appears with it.
-        XCTAssertTrue(app.staticTexts[Self.distanceLabel].waitForExistence(timeout: 25),
-                      "the leg-2 road route resolved, so its length is a real trip distance")
+        // The road route lands in ~1s (after the 403 settles the drive join) and the
+        // hero caption gains its measured distance with it.
+        XCTAssertTrue(measuredDistance(app).waitForExistence(timeout: 25),
+                      "the drives read was refused, so the MKDirections rung answered")
         XCTAssertTrue(app.staticTexts[Self.tripLabel].exists,
                       "the trip span was observed end to end, so it is derivable")
-        XCTAssertFalse(app.staticTexts[Self.fsdLabel].exists,
-                       "no drive record joins this ride, so no FSD claim may be made")
-        XCTAssertFalse(app.staticTexts[Self.autonomyLabel].exists,
-                       "a human/FSD-supervised owner drove; 100% autonomous was a literal")
-        attach(named: "myr414-live-summary-road-route")
+        XCTAssertTrue(app.staticTexts[Self.fsdLabel].exists,
+                      "MYR-422: the tile returns as a placeholder rather than being omitted")
+        XCTAssertTrue(app.staticTexts[Self.autonomyLabel].exists)
+        XCTAssertTrue(app.staticTexts[Self.dash].exists,
+                      "and what it carries is the BatteryReadout dash, not a number")
+        attach(named: "myr422-live-summary-apple-rung")
+    }
+
+    /// **RUNG 1: THE CAR'S OWN DRIVEN TRACK.** The same page for a self-riding owner
+    /// whose §7.2 list carries a drive covering the trip — the client's own case, and
+    /// the source he asked for first. The two placeholders are unchanged by which
+    /// rung drew the line: a drive record exists, but its FSD figures describe the
+    /// whole drive (approach leg included) and cannot be cut to the trip.
+    func testTheDriveBackedSummaryDrawsTheDrivenRoute() {
+        let app = launch(scene: "riderSummaryDriveRoute")
+        XCTAssertTrue(measuredDistance(app).waitForExistence(timeout: 25),
+                      "the joined drive's trimmed track is real geometry, so it is drawn and measured")
+        XCTAssertTrue(app.staticTexts[Self.tripLabel].exists)
+        XCTAssertTrue(app.staticTexts[Self.fsdLabel].exists)
+        XCTAssertTrue(app.staticTexts[Self.dash].exists)
+        attach(named: "myr422-live-summary-tesla-rung")
     }
 
     /// The dead affordance is off the live page. It goes nowhere (no tipping
@@ -79,9 +116,14 @@ final class RideSummaryHonestyUITests: XCTestCase {
         let app = launch(scene: "riderSummaryLive", routeUnavailable: true)
         XCTAssertTrue(app.staticTexts[Self.tripLabel].exists,
                       "the trip span does not depend on the route")
-        XCTAssertFalse(app.staticTexts[Self.distanceLabel].exists,
+        XCTAssertFalse(measuredDistance(app).exists,
                        "a great-circle guess is not the trip's distance — this is the 14.2 mi defect")
-        attach(named: "myr414-live-summary-pins-only")
+        // MYR-422 — and this scene is now the whole ladder failing: rung 1 refused by
+        // the server (403), rung 2 refused by the predicate. The row still stands,
+        // carrying the trip tile and two dashes.
+        XCTAssertTrue(app.staticTexts[Self.fsdLabel].exists)
+        XCTAssertTrue(app.staticTexts[Self.dash].exists)
+        attach(named: "myr422-live-summary-pins-only")
     }
 
     /// **THE SIM PAGE IS UNTOUCHED.** Everything the live arm drops is still here,
@@ -92,8 +134,8 @@ final class RideSummaryHonestyUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts[Self.fsdLabel].exists)
         XCTAssertTrue(app.staticTexts[Self.autonomyLabel].exists)
         XCTAssertTrue(app.staticTexts[Self.tipLabel].exists)
-        XCTAssertFalse(app.staticTexts[Self.distanceLabel].exists,
-                       "the live-only tile must not leak onto the fixture page")
+        XCTAssertFalse(measuredDistance(app).exists,
+                       "the live-only measurement must not leak onto the fixture page")
         attach(named: "myr414-sim-summary")
     }
 }

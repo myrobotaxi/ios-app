@@ -115,33 +115,75 @@ enum RideTripSpan {
 /// Everything the summary takeover renders that could be a fabrication, resolved
 /// once from the facts in hand.
 struct RideSummaryPresentation: Equatable {
-    /// A stat tile is a VALUE, not a slot — the live arms carry their datum, so a
-    /// tile cannot exist without one. `fsdMiles` / `autonomous` have no live arm at
-    /// all and are unreachable from a live resolution by construction.
+    /// A stat tile is a VALUE OR A DASH, never a fabrication.
+    ///
+    /// **MYR-422 — THE CLIENT'S DECISION, SUPERSEDING MYR-414's OMISSION.** That
+    /// issue dropped the FSD MILES and AUTONOMOUS tiles on live, because the app
+    /// holds no drive record for a ride and a number it cannot derive is a number it
+    /// must not print. The client's answer: *"should just have some place holder
+    /// instead of being omitted"* — the row is the page's spine, and a page that
+    /// shows one tile after a ride reads as broken rather than as honest.
+    ///
+    /// So the two tiles come back carrying **`nil`**, and `nil` renders as the em
+    /// dash `BatteryReadout` established for exactly this ("the start & used figures
+    /// are unknowable, so they degrade to '—'", MYR-204): value "—", unit and label
+    /// unchanged, no styling of its own. **A dash is the ONLY non-real thing this
+    /// enum can render** — there is still no live arm anywhere that produces a
+    /// number for either of them, which is the MYR-414 guarantee restated as an
+    /// associated value rather than as an absence.
     enum Tile: Equatable {
         /// The measured trip span (`RideTripSpan`) on live; the destination's
         /// quoted estimate in SIM.
         case trip(minutes: Int)
-        /// The leg-2 ROAD route's own length. Live only — there is no such thing as
-        /// a fixture road route, and a straight-line guess presented as the trip's
-        /// distance is exactly what this issue removed.
-        case distance(miles: Double)
-        /// **SIM ONLY.** The prototype's celebrated stat. A ride→drive join is what
-        /// would make it real (MYR-202's `Drive` carries FSD data); until a backend
-        /// story exists for that join, the live path renders no claim about who
-        /// drove.
-        case fsdMiles(Double)
-        /// **SIM ONLY.** The prototype's `100%` literal.
-        case autonomous
+        /// FSD miles. **`nil` on every live resolution today**, and there is no
+        /// input that could make it otherwise: a ride carries no autonomy record.
+        ///
+        /// THE SEAM: the day a window-scoped FSD figure exists, it arrives here and
+        /// the dash becomes a number with no other change to this file. The obvious
+        /// candidate is NOT sufficient on its own — MYR-422's drive join
+        /// (`RideSummaryDriveRouteStore`) already identifies the drive this ride was,
+        /// and `DriveSummary.fsdMiles` is right there — but that figure describes the
+        /// WHOLE DRIVE, which routinely includes the owner's approach to the pickup,
+        /// and unlike the polyline it cannot be trimmed to the trip's window (§7.4's
+        /// points carry no autonomy state). Quoting it would be MYR-414's defect with
+        /// better provenance. What closes it is a server-side ride→drive join
+        /// (MYR-178) or per-point autonomy on §7.4.
+        case fsdMiles(Double?)
+        /// The autonomous share, as a whole percent. `nil` on live for the same
+        /// reason `fsdMiles` is; the prototype's `100` literal is the SIM arm's.
+        case autonomous(percent: Int?)
     }
 
-    /// Left-packed, in order. **May be empty on live** — a ride whose start this
-    /// process never saw, ridden with no road route in hand, has nothing true to
-    /// put in the strip, and an empty strip is the honest render of that.
+    /// Left-packed, in order.
+    ///
+    /// MYR-422: on live this now always holds at least the two PLACEHOLDER tiles, so
+    /// the strip is never empty and the row never collapses — the client's "keep the
+    /// layout stable". The empty case survives as an unreachable-on-live floor
+    /// (`RideRequestSummaryContent` still spends none of the strip's 18pt for it),
+    /// because a strip is a container and a container with nothing in it should not
+    /// reserve room (MYR-347).
     var tiles: [Tile]
     /// Whether the hero map draws a LINE at all. MYR-293's law: pins are a fact,
     /// a route we do not hold is not.
     var drawsRouteLine: Bool
+    /// **MYR-422 — the measured trip distance, which is no longer a TILE.**
+    ///
+    /// MYR-414 put the road route's own length in the strip's second slot. With the
+    /// client's two placeholders back, a fourth tile does not fit the page: measured
+    /// through a `UIHostingController`, `trip · distance · — · —` is **363.3pt**
+    /// against a content band of **331pt** at 375 and **349pt** at 393 — it would run
+    /// straight out of the gutter on the client's own device, and the row's grammar
+    /// has no ellipsis to say so (`RideSummaryStripLayoutTests`). Compressing the
+    /// dividers does not save it either: the worst legal row ("1 hr 37", a
+    /// three-digit distance) is 306.3pt of TILES alone.
+    ///
+    /// So the strip is the prototype's three slots, and the number rides the hero
+    /// caption instead — "from {pickup} · 12.8 mi", one short suffix on a line that
+    /// already exists, directly under the route it measures. That keeps MYR-414's
+    /// datum on the page AND its invariant intact: this is `nil` exactly when
+    /// `drawsRouteLine` is false, so the page still cannot measure a line it will not
+    /// draw. `nil` in SIM, which is what keeps the drift-gate capture unchanged.
+    var heroDistanceMiles: Double?
     /// The "Tip your driver" section. **Off on live** — it goes nowhere (there is
     /// no tipping backend and the buttons open a joke card), and it says "driver"
     /// on a driverless product. MYR-288/MYR-344's no-dead-affordances precedent.
@@ -152,6 +194,11 @@ struct RideSummaryPresentation: Equatable {
     /// eyebrow with **no clock** rather than stamping the moment the view happened
     /// to be composed, which is what the pre-MYR-414 screen did on every path.
     var arrivedAt: Date?
+
+    /// The prototype's celebrated literal (ride-request.jsx:975). Named so the SIM
+    /// arm's `100` is visibly the illustration's own number and not a claim this
+    /// resolver derives from anything.
+    static let prototypeAutonomousPercent = 100
 
     /// - Parameters:
     ///   - isLive: the ONE resolved `AppMode` (`SharedViewerState.isLiveLocation`),
@@ -176,21 +223,34 @@ struct RideSummaryPresentation: Equatable {
             // The prototype's own illustration, byte for byte. Every drift-gate
             // scene lands here, which is what keeps them unchanged.
             return RideSummaryPresentation(
-                tiles: [.trip(minutes: estimateMinutes), .fsdMiles(estimateMiles), .autonomous],
+                tiles: [
+                    .trip(minutes: estimateMinutes),
+                    .fsdMiles(estimateMiles),
+                    .autonomous(percent: Self.prototypeAutonomousPercent)
+                ],
                 drawsRouteLine: true,
+                // The prototype's hero caption is "from {pickup}" and nothing else.
+                heroDistanceMiles: nil,
                 offersTip: true,
                 arrivedAt: now
             )
         }
         var tiles: [Tile] = []
         if let tripMinutes { tiles.append(.trip(minutes: tripMinutes)) }
-        if let roadRouteMiles { tiles.append(.distance(miles: roadRouteMiles)) }
+        // MYR-422 — the two placeholders, ALWAYS, and always carrying `nil`. They
+        // are appended unconditionally rather than gated on a datum precisely
+        // because there is no datum: their whole job is to hold the row's shape
+        // while saying nothing (see `Tile.fsdMiles`' seam note for what would fill
+        // them).
+        tiles.append(.fsdMiles(nil))
+        tiles.append(.autonomous(percent: nil))
         return RideSummaryPresentation(
             tiles: tiles,
-            // The presence of a real road route is the SAME fact that puts the
-            // distance tile up, so the line and the tile can never disagree about
+            // The presence of a real road route is the SAME fact that carries the
+            // measured distance, so the line and the number can never disagree about
             // whether this ride's geometry is known.
             drawsRouteLine: roadRouteMiles != nil,
+            heroDistanceMiles: roadRouteMiles,
             offersTip: false,
             arrivedAt: completedAt
         )

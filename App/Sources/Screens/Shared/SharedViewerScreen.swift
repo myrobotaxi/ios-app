@@ -285,6 +285,10 @@ struct SharedViewerScreen: View {
             // MYR-177: if we mounted straight into tracking (cold scene / adopted
             // ride), prime the route cache so the leg-fit map has real geometry.
             if isTrackingPhase { isFollowing = true; reconcileTrackingRoutes() }
+            // MYR-422 — mounted straight into the summary (a DEBUG scene, a tab
+            // switch back, a remount over a completed ride): resolve the hero's
+            // route ladder. Idempotent per ride, so a remount costs nothing.
+            reconcileSummaryRoute()
             #if DEBUG
             // MYR-327 drift-gate capture hook: headless tooling cannot tap the map.
             if isTrackingPhase, DebugScene.opensExpandedRouteMap { showsExpandedRoute = true }
@@ -385,8 +389,20 @@ struct SharedViewerScreen: View {
                 reconcileTrackingRoutes()
             } else if oldPhase == .tracking {
                 viewerState.trackingCamera.exit()
-                viewerState.rideRouteStore.reset()
+                // MYR-422 — …EXCEPT when the exit IS the drop-off. MYR-414 rests the
+                // summary's distance tile and its hero line on the route this ride
+                // warmed ("`.completed` KEEPS its route until the summary is
+                // dismissed", `RiderRouteLifetime.bearsRoute`) and this unconditional
+                // reset was dropping it on the tracking → summary transition, i.e. on
+                // every real ride: the tile could only ever appear on a cold scene
+                // that primed the cache itself. The summary's own exit still clears
+                // it — `finish()` empties the rider's slot and
+                // `releaseRouteIfSlotEmpty` resets the store — so nothing outlives
+                // the ride.
+                if newPhase != .summary { viewerState.rideRouteStore.reset() }
             }
+            // MYR-422 — arriving at the summary: resolve the hero's route ladder.
+            if newPhase == .summary { reconcileSummaryRoute() }
             // MYR-237: entering Review/Booking — fetch the real Apple route so it
             // draws (and, on Review, etches) instead of the straight placeholder.
             if newPhase == .review || newPhase == .booking {
@@ -644,7 +660,7 @@ struct SharedViewerScreen: View {
                     historyStore: historyStore,
                     riderName: riderName,
                     liveProfile: liveProfile,
-                    roadRoute: summaryRoadRoute,
+                    heroRoute: summaryHeroRoute,
                     isLive: viewerState.resolvesLiveRideSummary
                 )
             }
@@ -1533,32 +1549,111 @@ struct SharedViewerScreen: View {
         return "\(pickup) → \(destination)"
     }
 
-    /// MYR-414 — the ride's REAL leg-2 road polyline for the post-ride summary, or
-    /// `nil`.
+    // MARK: MYR-414 → MYR-422 — the post-ride hero's route, as a ladder
+    //
+    // MYR-414 drew the ride's leg-2 road route IF the tracking sheet had warmed one
+    // and pins otherwise. The client's decision on that build is that the summary
+    // should go and get the geometry, best source first:
+    //
+    //   1. the car's OWN driven track (§7.2 + §7.4, trimmed to the trip's window),
+    //   2. the app's MKDirections road-route preview for the ride's pair,
+    //   3. pins only.
+    //
+    // The rules live in `RideSummaryRoute`; this is where the screen's three facts
+    // (the ride, the join store, the route store) are handed to them.
+
+    /// The completed ride whose summary is on screen — the SAME accessor every other
+    /// route-endpoint site reads (MYR-381/MYR-389), so a dead or draft ride can no
+    /// more reach this rung than it can reach the preview.
+    private var summaryRequest: RideRequestRecord? { previewRouteRequest }
+
+    /// The pair the summary's road route is ABOUT: the ride's own two endpoints.
     ///
-    /// Three things have to be true at once, and each is a way this could quietly
-    /// have been wrong:
+    /// Deliberately NOT `trackingPickup`/`trackingDestination`, which fall back to a
+    /// FIXTURE pair when no record is in hand (`requestRoute`). That fallback is
+    /// harmless while a route is only ever READ by key — the key simply misses — but
+    /// this issue makes the summary FETCH, and fetching for the fixture pair would
+    /// cache real road geometry under a trip nobody took and then match it. With a
+    /// record present the two are identical, so the warm leg-2 cache the ride left
+    /// behind is still hit exactly.
+    private var summaryRoutePair: (pickup: CLLocationCoordinate2D, destination: CLLocationCoordinate2D)? {
+        guard let request = summaryRequest else { return nil }
+        return (request.input.pickup.coordinate, request.input.destination.coordinate)
+    }
+
+    /// Whatever the route store currently holds for that pair — the store's RAW
+    /// answer, straight fallback and all. The realness gate is applied once, inside
+    /// `RideSummaryRoute.resolve`, so the summary has a single place that decides
+    /// what may be drawn.
     ///
-    ///  1. **It is cached for EXACTLY this ride's pair.** `leg2Route(pickup:
-    ///     destination:)` matches on the requested-coordinate key with no snapping
-    ///     tolerance, so a previous trip's geometry — which the store legitimately
-    ///     holds, since it only resets on release — can never be measured and drawn
-    ///     as this one's.
-    ///  2. **It is real road geometry** (`RideRoutePolyline.isReal`), not the
-    ///     provider's straight `[from, to]` degradation. That predicate is the whole
-    ///     difference between "the trip was 12.8 mi" and the great-circle guess this
-    ///     issue removed.
-    ///  3. **It is still here at all**, which it is because `.completed` KEEPS its
-    ///     route (`RiderRouteLifetime.bearsRoute`) until the slot is released — a
-    ///     rule r14 wrote for the hero map and which this now also depends on for
-    ///     the distance tile. Tracking warmed the cache during the ride; the summary
-    ///     spends no new MKDirections call.
-    private var summaryRoadRoute: [CLLocationCoordinate2D]? {
-        guard let route = viewerState.rideRouteStore.leg2Route(
-            pickup: trackingPickup,
-            destination: trackingDestination
-        ), RideRoutePolyline.isReal(route) else { return nil }
-        return route
+    /// The key match has no snapping tolerance, so a previous trip's geometry — which
+    /// the store legitimately holds until the slot is released — can never be
+    /// measured and drawn as this one's.
+    private var summaryCachedRoadRoute: [CLLocationCoordinate2D]? {
+        guard let pair = summaryRoutePair else { return nil }
+        return viewerState.rideRouteStore.leg2Route(pickup: pair.pickup, destination: pair.destination)
+    }
+
+    /// The whole ladder, resolved.
+    private var summaryRouteResolution: RideSummaryRoute.Resolution {
+        RideSummaryRoute.resolve(
+            join: summaryRequest.map { viewerState.summaryDriveRoutes.join(for: $0.id) } ?? .none,
+            roadRoute: summaryCachedRoadRoute
+        )
+    }
+
+    /// What the summary card draws and measures — `nil` is pins-only.
+    private var summaryHeroRoute: RideSummaryHeroRoute? { summaryRouteResolution.hero }
+
+    /// MYR-422 — go and GET the summary's geometry, rung by rung.
+    ///
+    /// Called on appear and on entering `.summary`, and again from the join's own
+    /// settle callback, which is what advances the ladder from rung 1 to rung 2
+    /// without a poll.
+    ///
+    /// **The advance is a CALLBACK rather than an `.onChange(of: settledCount)`,
+    /// and that is a compiler constraint rather than a preference**: this view's
+    /// body is already at the type-checker's budget ("unable to type-check this
+    /// expression in reasonable time" on the very next modifier added to the
+    /// chain). The RENDER does not need the observer either way — `join(for:)` is
+    /// read inside `body`, so Observation re-runs it when a verdict lands; only the
+    /// side effect of STARTING rung 2 needs a hook, and the callback is that hook.
+    ///
+    ///  • **LIVE ONLY.** The simulated summary is the prototype's illustration and
+    ///    its drift-gate scene is byte-stable; a fetch here would draw real road
+    ///    geometry into it about a minute after launch. This is the same one resolved
+    ///    `AppMode` the presentation reads — never a new env var (MYR-228).
+    ///  • **ONE REQUEST PER RIDE, NOT PER MOUNT.** Both rungs are absorbed by
+    ///    store-level caches — `RideSummaryDriveRouteStore` records one verdict per
+    ///    ride id for ever, and `RideRouteStore.ensureLeg2` is a no-op once a real
+    ///    route is cached for the pair — so a summary re-entered (a tab switch, a
+    ///    remount) spends nothing. The pair is fixed for the ride's life, so it is
+    ///    one MKDirections call at most, exactly as Review/Tracking's is.
+    ///  • **RUNG 2 WAITS FOR RUNG 1 TO SETTLE** (`fetchesRoadRoute`), so a ride with
+    ///    a driven track never spends a throttle-budgeted Apple call at all.
+    private func reconcileSummaryRoute() {
+        guard viewerState.sheetPhase == .summary, viewerState.resolvesLiveRideSummary else { return }
+        guard let request = summaryRequest, let pair = summaryRoutePair else { return }
+        let routeStore = viewerState.rideRouteStore
+        viewerState.summaryDriveRoutes.resolve(
+            rideID: request.id,
+            vehicleID: request.input.fleetMemberID,
+            tripStart: request.enrouteObservedAt,
+            completedAt: request.completedAt
+        ) { verdict in
+            // Rung 1 answered. A driven track needs nothing more; anything else
+            // starts the MKDirections rung for this ride's own pair. Captures the
+            // store and the pair — never the view — so a summary that has since been
+            // dismissed cannot be spoken for by a fetch it started.
+            guard case .none = verdict else { return }
+            routeStore.ensureLeg2(pickup: pair.pickup, destination: pair.destination)
+        }
+        // The join may ALSO have settled synchronously (no seam, no window, or a
+        // verdict already in hand from an earlier mount), in which case the callback
+        // above was never armed and this is what runs the rung. Both paths land on
+        // the same idempotent `ensureLeg2`.
+        guard summaryRouteResolution.fetchesRoadRoute else { return }
+        routeStore.ensureLeg2(pickup: pair.pickup, destination: pair.destination)
     }
 
     /// Whether either leg is still the straight `[from, to]` fallback — i.e. the
@@ -1629,6 +1724,11 @@ struct SharedViewerScreen: View {
     private func releaseRouteIfSlotEmpty(_ previousID: String?, _ id: String?) {
         guard id == nil else { return }
         viewerState.rideRouteStore.reset()
+        // MYR-422 — and the drive-join verdicts with it. They are keyed by ride id,
+        // so a stale one could not be MIS-read by the next ride; this is the same
+        // hygiene the route cache gets, and it is where "the summary's lifetime"
+        // (the window a 403 verdict is cached for) actually ends.
+        viewerState.summaryDriveRoutes.reset()
     }
 
     private func handleStatusChange(_ status: RideRequestStatus?) {
