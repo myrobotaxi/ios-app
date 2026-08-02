@@ -224,6 +224,13 @@ public protocol RideRequestService: AnyObject, Observable {
     /// the same adoption a cold launch already performs. Sim is a no-op.
     func refreshActiveRide() async
 
+    /// MYR-424 — the app came to the foreground: nudge the RIDE socket, which is
+    /// the one socket in the app that never got a scene-phase wire. The refetches
+    /// beside this call in `RootView` recover the DATA; this recovers the CHANNEL,
+    /// so the session stops depending on a foreground edge it may not see again.
+    /// Sim is a no-op (no socket).
+    func handleForeground() async
+
     /// MYR-405 — has this device ESTABLISHED what the rider's own ride is?
     ///
     /// `activeRequest == nil` is two different situations and the Live Activity
@@ -368,6 +375,9 @@ public extension RideRequestService {
     /// (MYR-186), so a simulated run's behaviour is unchanged.
     func refreshIncoming() async {}
     func refreshActiveRide() async {}
+
+    /// Default: no-op. The simulated service has no socket to recover (MYR-424).
+    func handleForeground() async {}
 
     /// Default: `true`. The simulated service holds ONE in-process record and has
     /// no list to wait for, so it knows what the rider is doing from the first

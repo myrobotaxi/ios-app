@@ -813,11 +813,45 @@ struct RootView: View {
     /// the normal post-sign-in refetch reaches the same state anyway.
     @MainActor
     private func applyPushTapRoute(_ route: PushTapRoute, notification: PushRideNotification?) {
-        let service = rideRequestService
         switch route {
         case .ownerHome:
             guard screen == .ownerHome else { return }
             ownerTab = "home"
+        case .riderActiveFlow:
+            guard screen == .sharedHome else { return }
+            sharedTab = "shared"
+        }
+        refreshForPushRoute(route)
+    }
+
+    /// MYR-424 — a ride-lifecycle push ARRIVED while the app was foreground. Poke
+    /// the same refreshes a tap would, and DO NOT NAVIGATE.
+    ///
+    /// The distinction is the whole design. A tap is the user asking to be taken
+    /// somewhere, so `applyPushTapRoute` selects a tab. A push merely arriving is
+    /// not: yanking a rider's tab out from under them because a banner slid down
+    /// would be a worse bug than the one being fixed. What arrival justifies is
+    /// making whatever they ARE looking at correct — which for r20's rider means
+    /// the pending pill learning that its ride was declined.
+    ///
+    /// Nor is it gated on `screen`, unlike the tap arms above: those guards exist
+    /// because they navigate, and there is no surface for which a stale ride
+    /// record is preferable. `refreshActiveRide` / `refreshOwnerDispatch` are both
+    /// no-ops unless this device actually holds a server-confirmed ride, so the
+    /// ungated call costs nothing on a signed-out or onboarding shell.
+    @MainActor
+    private func applyPushRideRefresh(_ notification: PushRideNotification) {
+        refreshForPushRoute(PushNotificationRouting.tapRoute(notification: notification, role: role))
+    }
+
+    /// The refresh half of a push, shared by the tap door and the arrival door so
+    /// there is ONE definition of "what a push about a ride makes us re-read"
+    /// (MYR-396's derive-at-one-door lesson, applied to the funnel itself).
+    @MainActor
+    private func refreshForPushRoute(_ route: PushTapRoute) {
+        let service = rideRequestService
+        switch route {
+        case .ownerHome:
             // MYR-396 — the dispatch first, for the same reason `start()` orders
             // them that way: a ride already accepted owns the owner's slot, and the
             // still-`requested` ones queue behind it.
@@ -826,11 +860,12 @@ struct RootView: View {
                 await service.refreshIncoming()
             }
         case .riderActiveFlow:
-            guard screen == .sharedHome else { return }
-            sharedTab = "shared"
+            // MYR-402 — `refreshActiveRide` RE-READS the held ride through
+            // `integrate` before it adopts, so this is the door through which an
+            // owner's decline reaches a rider whose socket missed the frame.
             Task { await service.refreshActiveRide() }
             // MYR-402 — the third of the invariant's three events. A `ride.cancelled`
-            // push is the clearest case: the tap lands on a rider whose ride is over,
+            // push is the clearest case: the push lands on a rider whose ride is over,
             // and the surface it lands on is the idle sheet, whose availability gate
             // is still reading the list row from before the ride.
             sharedViewerState.refreshRideEndGateInputs()
@@ -846,6 +881,10 @@ struct RootView: View {
         PushDelegateBridge.shared.surfaceContext = { pushSurfaceContext }
         PushDelegateBridge.shared.applyTapRoute = { route, notification in
             applyPushTapRoute(route, notification: notification)
+        }
+        // MYR-424 — the arrival door (see `applyPushRideRefresh`).
+        PushDelegateBridge.shared.applyRideRefresh = { notification in
+            applyPushRideRefresh(notification)
         }
     }
 
@@ -1557,6 +1596,14 @@ struct RootView: View {
                 // needed the same one. Costs no request unless this device holds a
                 // server-confirmed rider ride.
                 Task { await rideRequestService.refreshActiveRide() }
+                // MYR-424 — and the CHANNEL those refetches are standing in for.
+                // The two Tasks above recover the data once; this recovers the
+                // socket that is supposed to keep it recovered. It is the wire
+                // every other socket in the app already has (`LiveVehicleFleet`,
+                // `RiderLiveVehicleLocator`) and the ride socket never did, which
+                // is how a terminally-`auth_failed` ride stream survived a
+                // foreground and kept the rider deaf for the rest of the process.
+                Task { await rideRequestService.handleForeground() }
                 // MYR-343 — a rider whose vehicle list never answered is sitting on
                 // the honest "can't reach" line with nothing in flight behind it.
                 // Recovery is the low-friction one MYR-326 settled on (a resume

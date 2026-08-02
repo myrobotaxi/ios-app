@@ -60,6 +60,20 @@ enum PushForegroundPresentation: Equatable {
     case suppress
 }
 
+/// MYR-424 — whether a notification RECEIVED while the app is in the foreground
+/// should also poke the ride-refresh funnel.
+///
+/// Separate from ``PushForegroundPresentation`` on purpose: "should the user SEE
+/// a banner" and "should the app RE-READ the ride" are different questions with
+/// different right answers, and the r20 defect is exactly what happens when the
+/// second one is never asked.
+enum PushForegroundRefresh: Equatable {
+    /// Re-read the ride this notification names, through the existing funnel.
+    case refresh
+    /// Nothing to converge on — the notification names no ride.
+    case skip
+}
+
 /// Where a notification TAP should land the user. Both cases name an EXISTING
 /// shell and the EXISTING refresh that repopulates it; neither pushes a screen.
 enum PushTapRoute: Equatable {
@@ -99,6 +113,31 @@ enum PushNotificationRouting {
             // notification announces is already on screen and updating.
             return context.riderTrackingRideID == notification.rideID ? .suppress : .present
         }
+    }
+
+    /// MYR-424 — decide whether a notification the app RECEIVED while foreground
+    /// should re-read the ride it names.
+    ///
+    /// **This deliberately takes no `PushSurfaceContext`, and that is the fix.**
+    /// The r20 report is a rider foregrounded on the Live Map with the decline
+    /// banner "Lunar can't take this ride" ON SCREEN and the pill below still
+    /// reading "Request sent · Waiting for Lunar": the push proved the server had
+    /// recorded the decline (`go_ride_requests.updated_at` 16:18:19Z, status
+    /// `declined`) and the app did nothing with that proof, because
+    /// `willPresent` only ever decided whether to draw a banner. A push is a
+    /// SIGNAL, not just a banner — and the one thing it is always evidence of is
+    /// that the server knows something about this ride that this client may not.
+    ///
+    /// Taking no context also makes the independence STRUCTURAL rather than
+    /// merely tested: a suppressed banner (the rider is already on this ride's
+    /// tracking sheet) is the case that needs the re-read MOST, because the
+    /// surface being suppressed in favour of is the stale one. There is no way
+    /// to write a suppression rule here that could accidentally gate the refresh.
+    ///
+    /// The refresh at the far end resolves the ride by refetch, so this only has
+    /// to answer "is there a ride to ask about at all".
+    static func foregroundRefresh(notification: PushRideNotification?) -> PushForegroundRefresh {
+        notification == nil ? .skip : .refresh
     }
 
     /// Decide where a notification TAP lands. Purely a function of role: each

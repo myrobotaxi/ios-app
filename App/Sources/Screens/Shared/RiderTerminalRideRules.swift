@@ -74,6 +74,52 @@ enum RiderOwnRideException {
     }
 }
 
+/// MYR-424 — what a FRAME may apply on its own, when its refetch does not answer.
+///
+/// `LiveRideRequestService.applyRemote` deliberately ignores the status a
+/// `ride_status_changed` frame carries and refetches the full record instead: the
+/// frame is summary-only (see `RideRequestEvent`), and folding a summary would
+/// drop the places, the identity and the dispatch latch. That is the right rule
+/// for the happy path and it has one hole — `guard let ride = try? await
+/// api.rideRequest(id:) else { return }`. A frame that ARRIVED is then thrown away
+/// whole because one GET failed, and the transition it announced is lost for the
+/// rest of the session; nothing re-asks while the app stays foreground.
+///
+/// This rule is the narrowest possible patch on that hole: a frame may apply its
+/// own status ONLY when that status ENDS the ride. The reasoning is asymmetric on
+/// purpose.
+///  • An intermediate status (`accepted`, `arrived`, `enroute`) drives surfaces
+///    that need the refetched record to be honest — the tracking sheet's leg, the
+///    pickup place, the dispatch latch. Half of one is worse than none, and the
+///    next frame or the due-refetch will carry it anyway.
+///  • A TERMINAL status needs nothing but itself. "This ride is over" is the whole
+///    payload, every surface that reads it reads only the status, and it is the
+///    one transition with no next frame behind it to try again. A ride that
+///    cannot end is precisely r20's stuck pill.
+///
+/// `cancelled` is excluded even though it is terminal: it is mapped to an ERASURE
+/// of the slot (`integrate`'s `guard let mapped … else`), and erasing a rider's
+/// record on the strength of a failed read is a far worse mistake than a stale
+/// one. Unknown wire values are excluded for the same reason — this build cannot
+/// know whether they end anything.
+///
+/// Keyed on the raw wire string rather than a contracts enum because the two
+/// payload types carry their own nested `Status`; the strings are the stable
+/// cross-surface contract (`RideStatusChangedPayload.status`: "Member order
+/// identical to ride-request.schema.json $defs.RideRequestStatus … so raw wire
+/// values are interchangeable across surfaces").
+enum RideFrameTerminalStatus {
+    /// The app status a frame carrying `wire` may apply WITHOUT a refetch, or
+    /// `nil` when the frame must wait for the record.
+    static func applicable(wire: String?) -> RideRequestStatus? {
+        switch wire {
+        case "declined": return .declined
+        case "completed": return .completed
+        default: return nil
+        }
+    }
+}
+
 /// Should the Ride-declined card be on screen?
 ///
 /// MYR-306 filed the `.declined` acknowledgment variant on 2026-07-27 and it never

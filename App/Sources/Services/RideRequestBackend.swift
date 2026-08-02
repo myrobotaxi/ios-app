@@ -55,9 +55,33 @@ protocol RideEventStreaming: Sendable {
     func rideEvents() async -> AsyncStream<RideRequestEvent>
     func connect() async
     func disconnect() async
+    /// MYR-424 — the app came to the foreground; recover the connection if it has
+    /// settled. See the extension below for why this had to exist.
+    func handleForeground() async
 }
 
-extension TelemetrySocket: RideEventStreaming {}
+extension RideEventStreaming {
+    /// Default: nothing to recover. Test doubles and any future non-socket stream
+    /// inherit this; only the real socket has a supervisor that can settle.
+    func handleForeground() async {}
+}
+
+// MYR-424 — THE RIDE SOCKET WAS THE ONE SOCKET NOBODY WOKE UP.
+//
+// `TelemetrySocket.handleForegroundTransition()` has always existed (NFR-3.36a),
+// and the app wires it for the owner fleet (`LiveVehicleFleet`) and for the
+// rider's vehicle locator (`RiderLiveVehicleLocator`). The socket that carries
+// RIDE frames — composed separately in `RideRequestComposition`, per that file's
+// own note — was never given it. That matters because `TelemetrySocket.supervise()`
+// BREAKS OUT PERMANENTLY on a terminal failure (`auth_failed`): it clears its
+// supervisor, settles `.disconnected`, and never retries. `handleForegroundTransition`
+// is the only thing in the API that restarts a nil supervisor. So a ride socket
+// that went terminal once stayed dead for the whole process, and the rider
+// pipeline went deaf to every `ride_status_changed` frame — MYR-387's finding,
+// still uncovered on this socket, and the second of the two roads into r20.
+extension TelemetrySocket: RideEventStreaming {
+    func handleForeground() async { handleForegroundTransition() }
+}
 
 // MARK: - Contract → app mapping (MYR-209)
 //
