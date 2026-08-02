@@ -404,7 +404,26 @@ enum RideActivityStateMachine {
     /// The client is the BACKSTOP, not the author: server pushes are the truth
     /// (MYR-194 decision 2), and everything here is either locally certain (the
     /// status, from the rider's own service) or inherited from the last thing the
-    /// server said (`vehicleName`, `eta`).
+    /// server said (`vehicleName`, `eta`, `progress`, `asOf`).
+    ///
+    /// ─────────────────────────────────────────────────────────────────────────
+    /// **⚠️ `previous` MUST BE THE FRAME THAT IS ON THE ACTIVITY, NOT THE LAST ONE
+    /// THIS APP WROTE — MYR-423, and the whole of it.**
+    /// ─────────────────────────────────────────────────────────────────────────
+    ///
+    /// This function was always written to hold the server's fields ("carrying the
+    /// PREVIOUS eta forward is not a guess"), and it always did exactly that — over
+    /// an input that could never contain one. The coordinator passed
+    /// `RideActivityPhase.live`'s state, i.e. this process's memory of its OWN last
+    /// composition, and a locally-composed frame has no `eta`, no `progress` and no
+    /// `asOf` by construction. So the carry-forward inherited `nil` from `nil`, and
+    /// the resulting frame **overwrote the server's pushed values on the card**: the
+    /// client's "Pick up in 12 min" reverting to "Pickup soon / Last updated 11:19
+    /// AM" the moment an unlock foregrounded the app.
+    ///
+    /// A promise about holding a field is only as good as the thing being held. The
+    /// caller now reads `RideActivityPresenting.deliveredContentState(rideID:)`, so
+    /// `previous` is the state ActivityKit is actually rendering — push included.
     static func contentState(
         for record: RideRequestRecord,
         vehicleName: String,
@@ -423,7 +442,15 @@ enum RideActivityStateMachine {
             //
             // Carrying the PREVIOUS eta forward is not a guess: it is still the
             // last instant the car itself reported, and an instant does not decay.
-            eta: previous?.eta,
+            //
+            // BUT IT IS LEG-SCOPED, and MYR-423 is what makes that load-bearing:
+            // before it, `previous?.eta` was always nil and the leg question could
+            // never arise. See `RideActivityHeldETA.held`.
+            eta: RideActivityHeldETA.held(
+                currentLeg: RideActivityLeg.of(wireStatus(for: record.status)),
+                previous: previous?.eta,
+                previousLeg: previous.map { RideActivityLeg.of($0.status) } ?? nil
+            ),
             // Likewise the name: the wire's `vehicleName` is authoritative, so once
             // a push has supplied one it outranks whatever the client resolved from
             // its own fleet list.
@@ -447,7 +474,21 @@ enum RideActivityStateMachine {
                 currentLeg: RideActivityLeg.of(wireStatus(for: record.status)),
                 previous: previous?.progress,
                 previousLeg: previous.map { RideActivityLeg.of($0.status) } ?? nil
-            )
+            ),
+            // `asOf` IS HELD ACROSS EVERYTHING, INCLUDING A LEG FLIP — it is the only
+            // one of the three server fields that is not leg-scoped. It states when
+            // the SERVER last learned something about this ride, and the app
+            // recomposing a frame is not the server learning anything, so nothing
+            // about a local update makes the last-learned instant less true.
+            //
+            // The alternative — leaving it nil, which is what every local frame did
+            // before MYR-423 — is the one reading the contract forbids: absence means
+            // "this server does not say", so a backstop frame that dropped it made an
+            // up-to-date card render the wordless "Waiting for an update", and made a
+            // GENUINELY stale one stop admitting it. Carrying it forward is also what
+            // lets `RideActivityFreshness.hasGoneQuiet` keep working across a local
+            // recomposition: a four-minute-old instant still ages out on schedule.
+            asOf: previous?.asOf
         )
     }
 
@@ -468,6 +509,43 @@ enum RideActivityStateMachine {
     }
 }
 
+// MARK: - Holding the server's ETA (MYR-423)
+
+/// The ETA a newly-composed LOCAL frame may carry, given the ETA already on the
+/// Activity.
+///
+/// It is `RideActivityProgress.held`'s sibling and deliberately reads like it — the
+/// LEG IS THE RESET KEY in both, because both fields describe the leg in progress
+/// and neither survives it. The reason is sharper for the ETA, though, and it is
+/// not merely staleness: **the two legs render this one field in two different
+/// GRAMMARS.** `RideActivityCard.figure` reads a pickup ETA as a countdown
+/// ("8 min") and a dropoff ETA as a clock time ("3:42 PM"), and
+/// `RideActivityCopy.showsFigure` is true for `accepted` AND `enroute`. So a pickup
+/// arrival instant that survived the flip would not just linger — it would be
+/// re-read as the moment the rider is DROPPED OFF, and the card would state it with
+/// full confidence.
+///
+/// There is no `current` parameter, and its absence is the standing rule made
+/// structural: **the client never computes an ETA, ever.** The contract's ETA is the
+/// car's own carried navigation ETA and only the server has it, so the only two
+/// answers this function can give are "the one the server last delivered for THIS
+/// leg" and "none".
+enum RideActivityHeldETA {
+    static func held(
+        currentLeg: RideActivityLeg?,
+        previous: Int?,
+        previousLeg: RideActivityLeg?
+    ) -> Int? {
+        // A ride with no leg at all — declined, cancelled, lapsed, or a status this
+        // build has never heard of — is not arriving anywhere, so it holds no
+        // arrival instant. That covers the `nil == nil` case the equality below
+        // would otherwise wave through.
+        guard let currentLeg else { return nil }
+        guard currentLeg == previousLeg else { return nil }
+        return previous
+    }
+}
+
 extension RideActivityAttributes.ContentState {
     /// A copy with the status replaced, used to correct the last known frame into
     /// a final one when the ride was erased rather than transitioned.
@@ -480,12 +558,24 @@ extension RideActivityAttributes.ContentState {
     /// through would leave a confident gold arrow mid-rail under the word
     /// "Cancelled", which is MYR-172's own "reads as a ride still in progress"
     /// objection wearing a picture instead of a sentence.
+    /// **THE ETA GOES WITH THE LEG TOO — MYR-423.** Same rule, same reason, and it
+    /// only became reachable when the last-delivered frame started carrying a real
+    /// ETA: before that this copy was made from a frame whose `eta` was always nil,
+    /// so an ending card could not have carried one. `cancelled`/`declined`/
+    /// `reservation_expired` have no leg, so they hold no arrival instant, and the
+    /// three-word promise of §7.21.3's degradation table — no track, no figure, no
+    /// claim — is kept by one predicate instead of two.
     func with(status newStatus: LiveActivityRideStatus) -> Self {
         var copy = self
         copy.progress = RideActivityProgress.held(
             current: nil,
             currentLeg: RideActivityLeg.of(newStatus),
             previous: progress,
+            previousLeg: RideActivityLeg.of(status)
+        )
+        copy.eta = RideActivityHeldETA.held(
+            currentLeg: RideActivityLeg.of(newStatus),
+            previous: eta,
             previousLeg: RideActivityLeg.of(status)
         )
         copy.status = newStatus

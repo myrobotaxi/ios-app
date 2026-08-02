@@ -106,6 +106,29 @@ protocol RideActivityPresenting: AnyObject {
     /// where no test can reach it.
     var presentedActivities: [RideActivitySnapshot] { get }
 
+    /// **THE FRAME THAT IS ACTUALLY ON THE ACTIVITY RIGHT NOW** (MYR-423) — a
+    /// plain, synchronous read of `Activity.content.state` for one ride.
+    ///
+    /// This is the seam that was missing, and its absence is the whole of MYR-423.
+    /// The coordinator's `RideActivityPhase.live` carries the last frame THIS APP
+    /// WROTE, which is not the same thing as the frame the rider is looking at: a
+    /// server push replaces the Activity's content state without the app being
+    /// involved at all, so `eta`, `progress` and `asOf` on screen are routinely
+    /// values this process has never held. Composing a local frame that inherits
+    /// from the app's own memory therefore writes the server's fields back out as
+    /// `nil` — "Pick up in 12 min" reverting to "Pickup soon" on an unlock.
+    ///
+    /// Reading ActivityKit rather than persisting our own copy is deliberate and is
+    /// the more robust of the two: the system already stores this, already restores
+    /// it across process death, and already applies remote updates to it, so there
+    /// is exactly ONE record of what the card says. A `UserDefaults` mirror would be
+    /// a second one, written only where we remembered to write it, and silently
+    /// wrong for precisely the pushes that never touched this process.
+    ///
+    /// `nil` when no Activity for that ride is visible — which, given the restore
+    /// race, is a statement about this instant and not about the lock screen.
+    func deliveredContentState(rideID: String) -> RideActivityAttributes.ContentState?
+
     /// Take over a restored Activity as the one this presenter drives, so that
     /// `update`, `end` and `pushTokens` all address it.
     ///
@@ -169,6 +192,20 @@ final class SystemRideActivityPresenter: RideActivityPresenting {
                 lifecycle: RideActivitySnapshot.Lifecycle($0.activityState)
             )
         }
+    }
+
+    func deliveredContentState(rideID: String) -> RideActivityAttributes.ContentState? {
+        // THE HELD ACTIVITY WINS WHEN IT MATCHES. Two Activities can carry the same
+        // ride id (MYR-405's duplicate), and the one this presenter drives is the one
+        // whose content our own updates and the server's pushes both land on — so
+        // taking `.first` unconditionally could merge against the starving orphan's
+        // frozen frame instead of the live card's.
+        if let activity, activity.attributes.rideID == rideID {
+            return activity.content.state
+        }
+        return Activity<RideActivityAttributes>.activities.first {
+            $0.attributes.rideID == rideID && $0.activityState.isAdoptable
+        }?.content.state
     }
 
     func adopt(rideID: String) -> Bool {

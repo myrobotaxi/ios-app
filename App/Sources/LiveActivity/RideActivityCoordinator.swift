@@ -139,6 +139,10 @@ final class RideActivityCoordinator {
         // foreground and a status change all re-attempt without three call sites.
         await flushPendingRegistration()
 
+        // MYR-423 — RE-SEAT THE REMEMBERED FRAME ON THE REAL ONE BEFORE DECIDING
+        // ANYTHING. See `reseatPhaseOnDeliveredState`.
+        reseatPhaseOnDeliveredState()
+
         let action = RideActivityStateMachine.action(
             phase: phase,
             record: record,
@@ -288,6 +292,41 @@ final class RideActivityCoordinator {
         return (snapshots, account)
     }
 
+    // MARK: - Holding what the server delivered (MYR-423)
+
+    /// Replace this process's memory of the current frame with the frame that is
+    /// actually ON the Activity.
+    ///
+    /// **`phase` IS BOOKKEEPING, NOT A RECORD OF THE CARD**, and reading it as the
+    /// latter is the whole of MYR-423 — the same shape as MYR-405's "a guard on a
+    /// process-local handle is not a guard on a lock screen that outlives the
+    /// process", one field deeper. `RideActivityPhase.live` carries the last frame
+    /// this coordinator WROTE. The server writes to the same Activity over APNs
+    /// without this process being involved at all, so between two local ticks the
+    /// card can gain an `eta`, a `progress` and an `asOf` that `phase` has never
+    /// seen. Composing the next local frame from `phase` therefore asserted `nil`
+    /// over all three: the client's "Pick up in 12 min" reverting to "Pickup soon"
+    /// on an unlock, with nothing wrong anywhere in the state machine's own logic.
+    ///
+    /// It replaces the state WHOLESALE rather than merging field by field, and that
+    /// is the stronger and simpler statement: ActivityKit's copy already reflects
+    /// every write, local and remote, so it is never behind what we last wrote and
+    /// is frequently ahead. `RideActivityStateMachine.contentState` then does the
+    /// per-field merging it was always written to do, over an input that finally
+    /// contains something to hold. It also makes the "only speak when something
+    /// changed" guard compare against the card the rider is looking at rather than
+    /// against our memory of it, which is what stops a redundant push in the first
+    /// place.
+    ///
+    /// Cheap and safe on every tick: a synchronous read, and a no-op when the system
+    /// has nothing for this ride (the restore race, or Live Activities switched off).
+    private func reseatPhaseOnDeliveredState() {
+        guard case .live(let rideID, _) = phase,
+              let delivered = presenter.deliveredContentState(rideID: rideID)
+        else { return }
+        phase = .live(rideID: rideID, state: delivered)
+    }
+
     // MARK: - Effects
 
     /// **ADOPT, NEVER DUPLICATE, AND NEVER START BESIDE A STRANGER** (MYR-405).
@@ -368,10 +407,17 @@ final class RideActivityCoordinator {
     /// registered last. Re-registering is what moves the rotation onto the live
     /// banner — `pushTokenUpdates` yields the current token on subscription, so
     /// `observe` is all it takes.
+    ///
+    /// MYR-423 — the frame it adopts is **the restored Activity's own**, not the one
+    /// composed for it. An adopted card is by definition one this process did not
+    /// write, so its `eta`/`progress`/`asOf` are the previous process's or the
+    /// server's, and `state` here is a locally-composed stand-in that has none of
+    /// them. Seating `phase` on the stand-in is what made the very next local update
+    /// wipe the card clean.
     @discardableResult
     private func adoptRestored(rideID: String, state: RideActivityAttributes.ContentState) -> Bool {
         guard presenter.adopt(rideID: rideID) else { return false }
-        phase = .live(rideID: rideID, state: state)
+        phase = .live(rideID: rideID, state: presenter.deliveredContentState(rideID: rideID) ?? state)
         registered = nil
         // MYR-415 — a token still pending for a DIFFERENT Activity must not be
         // placed against this one. The adopted card publishes its own token on
@@ -381,17 +427,26 @@ final class RideActivityCoordinator {
         return true
     }
 
-    /// The launch/foreground spelling: the frame is built from the record, carrying
-    /// nothing forward, because a card this process did not start has no previous
-    /// state to inherit from — the pushed `eta` and `progress` on the restored card
-    /// are the SERVER's and are not ours to re-assert.
+    /// The launch/foreground spelling.
+    ///
+    /// **MYR-423 — `previous` IS THE RESTORED CARD'S OWN FRAME, AND THE COMMENT THAT
+    /// USED TO STAND HERE HAD THE RIGHT PRINCIPLE AND THE WRONG CONCLUSION.** It read:
+    /// "carrying nothing forward, because a card this process did not start has no
+    /// previous state to inherit from — the pushed `eta` and `progress` on the
+    /// restored card are the SERVER's and are not ours to re-assert." Every clause of
+    /// that is true, and `previous: nil` is the one implementation of it that does
+    /// not work: a composed frame does not decline to speak about a field, it CARRIES
+    /// a value for every field, so composing with nothing forward asserts `nil` — an
+    /// active re-assertion, and the destructive one. Not re-asserting the server's
+    /// fields means copying them through untouched, which is what inheriting from the
+    /// delivered frame does.
     private func adoptRestored(rideID: String, record: RideRequestRecord) {
         adoptRestored(
             rideID: rideID,
             state: RideActivityStateMachine.contentState(
                 for: record,
                 vehicleName: vehicleName(),
-                previous: nil
+                previous: presenter.deliveredContentState(rideID: rideID)
             )
         )
     }
