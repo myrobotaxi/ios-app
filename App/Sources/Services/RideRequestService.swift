@@ -612,6 +612,29 @@ public struct RideRequestRecord: Identifiable, Sendable, Equatable {
     /// that a reservation has gone live.
     public var dispatchedAt: Date?
 
+    // MARK: MYR-414 — the two instants the rider's summary measures its trip from
+
+    /// When the SERVER recorded the drop-off (`RideRequest.completedAt`). The
+    /// authoritative end of the ride, and the only end instant this app will use:
+    /// a client-observed completion is really "when this device found out", which
+    /// a delayed poll or a resumed socket can push arbitrarily late.
+    ///
+    /// `nil` on every simulated record and on any ride the server has not
+    /// completed.
+    public var completedAt: Date?
+
+    /// When THIS PROCESS observed the ride go `enroute` — the trip's start.
+    ///
+    /// Not a wire field: §7.8 has no status history and no start instant, and the
+    /// four timestamps it does carry all describe something other than the trip
+    /// (see `RideTripSpan`). It is stamped exactly once, on the observed
+    /// TRANSITION into `enroute`, by `RideTripSpan.observing`.
+    ///
+    /// **Genuinely `nil` for a ride adopted mid-flight** (MYR-396/MYR-402's
+    /// cold-launch and foreground re-reads), and the summary omits its trip tile
+    /// rather than measuring from the moment this device caught up.
+    public var enrouteObservedAt: Date?
+
     public init(id: String = UUID().uuidString, input: RideRequestInput, status: RideRequestStatus = .pending, requestedAt: Date = Date()) {
         self.id = id
         self.input = input

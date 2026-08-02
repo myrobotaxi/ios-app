@@ -638,7 +638,15 @@ struct SharedViewerScreen: View {
                     fullContent: { trackingContent(totalHeight: totalHeight, layer: .full) }
                 )
             case .summary:
-                RideRequestSummaryContent(viewerState: viewerState, rideRequestService: rideRequestService, historyStore: historyStore, riderName: riderName, liveProfile: liveProfile)
+                RideRequestSummaryContent(
+                    viewerState: viewerState,
+                    rideRequestService: rideRequestService,
+                    historyStore: historyStore,
+                    riderName: riderName,
+                    liveProfile: liveProfile,
+                    roadRoute: summaryRoadRoute,
+                    isLive: viewerState.resolvesLiveRideSummary
+                )
             }
         }
     }
@@ -1523,6 +1531,34 @@ struct SharedViewerScreen: View {
             ?? viewerState.draftDestination?.label
         guard let destination else { return pickup }
         return "\(pickup) → \(destination)"
+    }
+
+    /// MYR-414 — the ride's REAL leg-2 road polyline for the post-ride summary, or
+    /// `nil`.
+    ///
+    /// Three things have to be true at once, and each is a way this could quietly
+    /// have been wrong:
+    ///
+    ///  1. **It is cached for EXACTLY this ride's pair.** `leg2Route(pickup:
+    ///     destination:)` matches on the requested-coordinate key with no snapping
+    ///     tolerance, so a previous trip's geometry — which the store legitimately
+    ///     holds, since it only resets on release — can never be measured and drawn
+    ///     as this one's.
+    ///  2. **It is real road geometry** (`RideRoutePolyline.isReal`), not the
+    ///     provider's straight `[from, to]` degradation. That predicate is the whole
+    ///     difference between "the trip was 12.8 mi" and the great-circle guess this
+    ///     issue removed.
+    ///  3. **It is still here at all**, which it is because `.completed` KEEPS its
+    ///     route (`RiderRouteLifetime.bearsRoute`) until the slot is released — a
+    ///     rule r14 wrote for the hero map and which this now also depends on for
+    ///     the distance tile. Tracking warmed the cache during the ride; the summary
+    ///     spends no new MKDirections call.
+    private var summaryRoadRoute: [CLLocationCoordinate2D]? {
+        guard let route = viewerState.rideRouteStore.leg2Route(
+            pickup: trackingPickup,
+            destination: trackingDestination
+        ), RideRoutePolyline.isReal(route) else { return nil }
+        return route
     }
 
     /// Whether either leg is still the straight `[from, to]` fallback — i.e. the
