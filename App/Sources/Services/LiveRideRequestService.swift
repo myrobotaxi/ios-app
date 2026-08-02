@@ -368,11 +368,28 @@ final class LiveRideRequestService: RideRequestService {
             for await event in stream {
                 guard let self else { break }
                 switch event {
-                case .created(let payload): self.applyRemote(rideID: payload.rideRequestId)
-                case .statusChanged(let payload): self.applyRemote(rideID: payload.rideRequestId)
+                case .created(let payload):
+                    self.applyRemote(rideID: payload.rideRequestId)
+                case .statusChanged(let payload):
+                    // MYR-424 — carry the frame's own status alongside the id, so a
+                    // frame whose refetch fails can still END a ride. See
+                    // `RideFrameTerminalStatus`.
+                    self.applyRemote(rideID: payload.rideRequestId,
+                                     frameStatus: payload.status.rawValue)
                 }
             }
         }
+    }
+
+    /// MYR-424 — recover the ride socket on a foreground.
+    ///
+    /// `start()` connects once and the supervisor is on its own from there; when
+    /// it settles terminally there is nothing in this app that asks it to try
+    /// again. This is that ask, and it is idempotent: the socket resets its
+    /// backoff, reconnects only if a supervisor is not already running, and does
+    /// nothing at all when the connection is healthy.
+    func handleForeground() async {
+        await socket.handleForeground()
     }
 
     // MARK: RideRequestService
@@ -1061,11 +1078,57 @@ final class LiveRideRequestService: RideRequestService {
     // MARK: Remote reconciliation
 
     /// A WS frame arrived: refetch the full record and fold it onto `activeRequest`.
-    private func applyRemote(rideID: String) {
+    ///
+    /// - Parameter frameStatus: MYR-424 — the raw wire status the frame itself
+    ///   carried, when it had one. Used ONLY if the refetch does not answer, and
+    ///   then only for a status that ends the ride (`RideFrameTerminalStatus`).
+    private func applyRemote(rideID: String, frameStatus: String? = nil) {
         let api = self.api
         Task { @MainActor [weak self] in
-            guard let ride = try? await api.rideRequest(id: rideID) else { return }
+            guard let ride = try? await api.rideRequest(id: rideID) else {
+                self?.applyTerminalFrameStatus(rideID: rideID, frameStatus: frameStatus)
+                return
+            }
             self?.integrate(ride)
+        }
+    }
+
+    /// MYR-424 — the frame arrived and the refetch did not.
+    ///
+    /// Before this, `applyRemote`'s `try?` discarded the frame outright: a decline
+    /// announced over the socket at the exact moment a GET failed left the rider's
+    /// pill reading "Request sent · Waiting for {car}" with nothing behind it that
+    /// would ever re-ask — the rider pipeline's only other re-read
+    /// (`refreshActiveRide`) is triggered on the scenePhase `.active` EDGE, which a
+    /// continuously-foregrounded app never crosses. That is one of the two roads
+    /// into r20's report, and it is the one the socket owns.
+    ///
+    /// Narrow by construction: the rule refuses everything but `declined` and
+    /// `completed` (see `RideFrameTerminalStatus`), and this writes nothing but the
+    /// status and the two things `fold` derives from it. Everything else on the
+    /// held record — places, identity, dispatch latch — stays exactly as it was,
+    /// because a summary frame is not evidence about any of it. The next successful
+    /// read still folds the full record by the normal path.
+    private func applyTerminalFrameStatus(rideID: String, frameStatus: String?) {
+        guard let mapped = RideFrameTerminalStatus.applicable(wire: frameStatus) else { return }
+        if riderHolds(rideID), var held = activeRequest, held.status != mapped {
+            // Same stamp `fold` takes, for the same reason: the observation is
+            // about the TRANSITION, so it needs both sides of it.
+            held.enrouteObservedAt = RideTripSpan.observing(
+                previous: held.status,
+                next: mapped,
+                held: held.enrouteObservedAt
+            )
+            held.status = mapped
+            if mapped == .completed { held.trackProgress = 1 }
+            activeRequest = held
+        }
+        if ownerHolds(rideID), var held = ownerRequest, held.status != mapped {
+            held.status = mapped
+            setOwnerRequest(held, serverID: rideID)
+            // Mirrors `integrateOwner`: both of these statuses RELEASE the owner's
+            // slot, so whatever queued behind it must come forward.
+            advanceIncoming()
         }
     }
 

@@ -31,6 +31,11 @@ final class PushDelegateBridge {
     var surfaceContext: (() -> PushSurfaceContext)?
     /// Applies a resolved tap route to the existing app state.
     var applyTapRoute: ((PushTapRoute, PushRideNotification?) -> Void)?
+    /// MYR-424 — pokes the ride-refresh funnel for a push RECEIVED in-app, with
+    /// no navigation. Distinct from `applyTapRoute` because a notification the
+    /// user has not touched must never move them off the surface they are on;
+    /// it must only make that surface tell the truth.
+    var applyRideRefresh: ((PushRideNotification) -> Void)?
 }
 
 /// The app delegate. Registers itself as the notification-centre delegate at
@@ -73,14 +78,45 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate {
 
 extension PushAppDelegate: UNUserNotificationCenterDelegate {
 
-    /// The app is in the FOREGROUND and a notification arrived. Ask the pure
-    /// resolver whether the user is already looking at this ride's surface.
+    /// The app is in the FOREGROUND and a notification arrived. Two independent
+    /// decisions, in this order:
+    ///
+    ///  1. **MYR-424 — RE-READ THE RIDE.** A ride-lifecycle push received in-app
+    ///     is the strongest evidence this client has that the server's record has
+    ///     moved on, and until r20 it was the one channel that produced no state
+    ///     change at all. The WS is still the primary channel; this is the net
+    ///     under it, and it is fired FIRST and unconditionally so that neither the
+    ///     suppression decision below nor a missing bridge can swallow it.
+    ///  2. Whether to draw a banner (unchanged).
     @MainActor
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        let payload = PushRideNotification.from(userInfo: notification.request.content.userInfo)
+        PushAppDelegate.handleForegroundNotification(
+            userInfo: notification.request.content.userInfo)
+    }
+
+    /// The WHOLE of `willPresent`'s behaviour, minus the `UNNotification`.
+    ///
+    /// **MYR-424 — this is split out so a test can prove the delegate CONSULTS
+    /// the rule, not merely that the rule is right.** `UNNotification` has no
+    /// public initializer, so the callback above is unreachable from a test; a
+    /// pure resolver with good tests and no live caller is this repo's quietest
+    /// regression (MYR-369's `VehicleRideShare.display`, MYR-386's unread
+    /// `isLoading`, MYR-387's unreachable honest end state — three times now).
+    /// Leaving the refresh call inside an untestable callback would have made
+    /// this the fourth. The callback is now one forwarding line, which is the
+    /// most that can be left unguarded.
+    @MainActor
+    static func handleForegroundNotification(
+        userInfo: [AnyHashable: Any]
+    ) -> UNNotificationPresentationOptions {
+        let payload = PushRideNotification.from(userInfo: userInfo)
+        if case .refresh = PushNotificationRouting.foregroundRefresh(notification: payload),
+           let payload {
+            PushDelegateBridge.shared.applyRideRefresh?(payload)
+        }
         guard let context = PushDelegateBridge.shared.surfaceContext?() else {
             // No app state yet — present, rather than silently swallow.
             return [.banner, .sound]
