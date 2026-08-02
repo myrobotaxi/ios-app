@@ -84,8 +84,40 @@ enum RideActivityCopy {
     /// grammar in two tenses.
     static let dropoffWord = "dropoff"
 
-    /// Dispatch — no car has been assigned, so there is nothing to count down.
-    static let dispatchHeadline = "Finding your ride"
+    /// **DISPATCH — `Ride requested from {car}` (MYR-417, CLIENT-DIRECTED).**
+    ///
+    /// ─────────────────────────────────────────────────────────────────────────
+    /// **A DELIBERATE DEVIATION FROM THE BOARD, AND THE BOARD'S LINE WAS WRONG FOR
+    /// THIS PRODUCT.** la-data row 1 is Uber's: `Finding your ride` over `Matching
+    /// you with a ride`, with a note reading "no car assigned yet, so there is no
+    /// ETA, no progress and no plate to show". That is true of a hailing product,
+    /// where dispatch is a search across a fleet of strangers' cars.
+    ///
+    /// **THERE IS NO MATCHING HERE.** A MyRoboTaxi rider picks ONE specific car —
+    /// by name, off their own fleet or a share — and the request goes to that car's
+    /// owner. Nothing is being searched for; a named car is being asked. The client,
+    /// verbatim: *"when ride requested it should say ride requested from {car name},
+    /// Plate - Model/Trim/year how we have it in the ride states."* Client outranks
+    /// the board (the standing precedent: MYR-346's celebration, MYR-347's Share
+    /// tab, MYR-412's trailing slot).
+    ///
+    /// The knock-on is that the row's note is false too: the plate and the model ARE
+    /// known at dispatch, off the same `GET /api/vehicles` row the Activity's static
+    /// vehicle attribute is read from. So the subline is no longer a sentence about
+    /// a process — it is the SAME vehicle descriptor every other pickup-leg state
+    /// carries, which is what makes the pickup leg read as one card whose numbers
+    /// fill in rather than as two different cards.
+    ///
+    /// **WHAT IS UNCHANGED**: the rail is still IDLE at zero (nothing has been
+    /// reported by a car that has not accepted yet), and the compact island is still
+    /// the ring. Only the two lines of copy move.
+    ///
+    /// **MEASURED**: `Ride requested from Your Tesla` is 271.4pt at 20/600 in the
+    /// card's 320pt row and 261.4pt at 19/600 on the island, so the client's own
+    /// words fit one line with room. See `RideActivityGeometryTests` for the corpus
+    /// and for what happens to a nickname longer than the row.
+    /// ─────────────────────────────────────────────────────────────────────────
+    static func rideRequestedFrom(_ car: String) -> String { "Ride requested from \(car)" }
 
     /// The pickup leg with no ETA. Same slot, same size, one word — no badge needed
     /// to explain a missing number.
@@ -120,10 +152,11 @@ enum RideActivityCopy {
 
     // MARK: - Row 3 · the subline
 
-    /// Dispatch's subline. The only one that describes a PROCESS rather than a
-    /// place, because at dispatch there is neither a car to name nor a leg to be
-    /// part-way along.
-    static let dispatchSubline = "Matching you with a ride"
+    // MYR-417 — **`dispatchSubline` IS DELETED.** "Matching you with a ride" was the
+    // one subline on the card that described a PROCESS rather than a place or an
+    // identification, and the process it described does not exist in this product.
+    // Dispatch now carries the same `RideActivityVehicleDescriptor` line the rest of
+    // the pickup leg does, so the exception is gone rather than re-worded.
 
     /// The trip leg — `Heading to {place}`.
     static func headingTo(_ place: String) -> String { "Heading to \(place)" }

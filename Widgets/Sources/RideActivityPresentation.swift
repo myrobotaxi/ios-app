@@ -54,7 +54,7 @@ import WidgetKit
 //      `RideActivityIslandExpandedLeading`. The tall black box was wide content in
 //      the row the sensor housing splits.
 //   B. **The progress ring** (`RideActivityRing.swift`) fills the slot that used to
-//      be empty, and TURNS while a live ride has no telemetry yet.
+//      be empty, and MOVES while a live ride has no telemetry yet.
 //   C. **The arrival glyphs get a completion beat** — once, on the transition, then
 //      static.
 //   D. The priority between the three is `RideActivityTrailingSlot`, resolved in the
@@ -68,6 +68,19 @@ import WidgetKit
 // full ring, and the compact slot is inset so the region stops shaving the ring's
 // stroke flat. The MINIMAL island keeps its centre content. See
 // `RideActivityIslandTrailingSlot`.
+//
+// **MYR-417 MAKES THAT WAITING RING MOVE, AND CHANGES THE DISPATCH COPY**
+// (CLIENT-DIRECTED, against build `202608020103`). Two things, both narrow:
+//
+//   • The `.ringIndeterminate` mode is now the SYSTEM's own
+//     `ProgressView(timerInterval:)` over a rolling 90s window — the one mechanism
+//     on this surface the platform genuinely runs, measured rather than assumed
+//     (§0 B's `repeatForever` and MYR-412's symbol effects are both still inert).
+//     Reduce Motion keeps MYR-412's static arc. See `RideActivityWaitingRing`.
+//   • **Dispatch says which car was asked**, `Ride requested from {car}` over the
+//     same vehicle descriptor the rest of the pickup leg carries. There is no
+//     matching in this product, so the board's Uber copy is deliberately not
+//     ported — see `RideActivityCopy.rideRequestedFrom`. No layout moves.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // MARK: - The ground

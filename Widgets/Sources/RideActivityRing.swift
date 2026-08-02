@@ -170,29 +170,30 @@ struct RideActivityProgressRing: View {
 
     var body: some View {
         ZStack {
-            // The track. Drawn in EVERY mode, which is what makes "never empty"
-            // structural: the ended states are this circle and nothing else.
-            Circle()
-                .stroke(
-                    Color.mrtActivityRingTrack,
-                    style: StrokeStyle(lineWidth: stroke, lineCap: .round)
-                )
+            // **THE WAITING RING IS THE SYSTEM'S, AND THAT IS WHY IT MOVES**
+            // (MYR-417). It draws its own track, so it replaces the pair below
+            // rather than layering over it. Reduce Motion keeps the static arc,
+            // which is exactly what shipped before this issue.
+            if isWaiting, !reduceMotion {
+                RideActivityWaitingRing()
+            } else {
+                // The track. Drawn in EVERY other mode, which is what makes "never
+                // empty" structural: the ended states are this circle and nothing
+                // else.
+                Circle()
+                    .stroke(
+                        Color.mrtActivityRingTrack,
+                        style: StrokeStyle(lineWidth: stroke, lineCap: .round)
+                    )
 
-            if let arc = arcFraction {
-                RideActivityRingArc(
-                    fraction: arc,
-                    stroke: stroke,
-                    spins: isSpinning,
-                    isLanded: isLanded,
-                    reduceMotion: reduceMotion
-                )
-                // THE SPIN NEEDS A NEW VIEW. The rotation is armed in `onAppear`,
-                // which fires when the arc is INSERTED — so entering the
-                // indeterminate mode has to be an insertion. Keying identity on
-                // `isSpinning` alone gives exactly that, and leaves determinate →
-                // glyph on ONE identity, which is what lets the arc animate from `p`
-                // to 1 rather than being replaced at full length.
-                .id(isSpinning)
+                if let arc = arcFraction {
+                    RideActivityRingArc(
+                        fraction: arc,
+                        stroke: stroke,
+                        isLanded: isLanded,
+                        reduceMotion: reduceMotion
+                    )
+                }
             }
 
             if centre == .mark { markCentre }
@@ -225,7 +226,8 @@ struct RideActivityProgressRing: View {
         }
     }
 
-    private var isSpinning: Bool {
+    /// The one mode MYR-417 hands to the system's own timer-driven ring.
+    private var isWaiting: Bool {
         if case .ringIndeterminate = slot { return true }
         return false
     }
@@ -307,6 +309,67 @@ struct RideActivityProgressRing: View {
     }
 }
 
+// MARK: - The waiting ring · MYR-417
+
+/// **THE ONE THING ON THIS SURFACE THAT MOVES, AND IT IS NOT AN ANIMATION.**
+///
+/// ─────────────────────────────────────────────────────────────────────────────
+/// §0 B measured that ActivityKit runs no `repeatForever` and no appearance-armed
+/// animation; MYR-412 measured that it runs no SF Symbol effect either. Both were
+/// right about their mechanism and both drew the general conclusion — that this
+/// surface cannot move — which is **false**, and the client's video of a dead ring
+/// is what forced the third measurement.
+///
+/// A Live Activity's view is rendered OUT OF PROCESS from an archived view tree, so
+/// nothing the app animates is ever run. But two of SwiftUI's elements are not
+/// animated by the app at all: they carry a DATE RANGE and the system re-derives
+/// them as the clock moves. `Text(timerInterval:)` is the one everybody knows.
+/// **`ProgressView(timerInterval:countsDown:)` is the other, and in the circular
+/// style it is a ring** — which is what this state needed all along.
+///
+/// **MEASURED, ON A LIVE ACTIVITY IN THIS VERY SLOT** (iPhone 17 Pro, iOS 26.5,
+/// `MRT_ACTIVITY_STATE=noTelemetry`, frames 8s apart): the gold arc's bright-ink
+/// pixel count goes **102 → 202 → 304**. For comparison, a CUSTOM `ProgressViewStyle`
+/// wrapping the identical `ProgressView` is **inert** — `configuration
+/// .fractionCompleted` is `nil` there, so the style draws the floor arc and never
+/// moves. That is the whole reason this is the stock style with a tint rather than
+/// the board's own `Circle().trim`: **the moment the ring's geometry becomes ours,
+/// the motion stops being the system's.**
+///
+/// **THE TWO EMPTY LABELS ARE LOAD-BEARING.** The default composition puts the
+/// system's own timer TEXT in the middle of the ring ("0:27", counting the window
+/// nobody asked about). `.labelsHidden()` does NOT remove it — measured, same slot,
+/// same build. Supplying `label:` and `currentValueLabel:` as `EmptyView()` does,
+/// and the arc keeps animating, which is the board's bare ring exactly.
+///
+/// **WHAT THE STOCK STYLE COSTS US**, stated rather than glossed: the stroke is the
+/// system's (measured 2.0pt inside a 22pt frame against the board's 2.2) and so is
+/// the TRACK, which comes out as the tint at ~35% (rgb 70,59,27) where the board's
+/// is white 20% (rgb 51,51,51). The arc itself is `.tint`ed and measures **rgb(201,
+/// 168, 76) — `#C9A84C`, `mrtGold` exactly** — round-capped and starting at 12
+/// o'clock, i.e. the board's own arc. And unlike `Circle().stroke` it draws INSIDE
+/// its frame (measured 22.0 × 22.0pt of ink for a 22pt frame), so MYR-412's
+/// clipping trap does not apply to it.
+/// ─────────────────────────────────────────────────────────────────────────────
+private struct RideActivityWaitingRing: View {
+    var body: some View {
+        // A ROLLING WINDOW, OPENED WHEN THIS FRAME IS COMPOSED. Every content-state
+        // update re-composes the view and therefore restarts it, which is what makes
+        // the arc read as a loop rather than as a fill that finished. `Date()` here
+        // is NOT the clock the client's ETA ruling bans: nothing about this ring is
+        // derived from ride data, and it makes no claim about when anything arrives.
+        let now = Date()
+        ProgressView(
+            timerInterval: now...now.addingTimeInterval(RideActivityMetrics.waitingWindow),
+            countsDown: false,
+            label: { EmptyView() },
+            currentValueLabel: { EmptyView() }
+        )
+        .progressViewStyle(.circular)
+        .tint(Color.mrtGold)
+    }
+}
+
 // MARK: - The arc
 
 /// The gold half of the ring — one view for all three modes, so the completion sweep
@@ -344,19 +407,25 @@ struct RideActivityProgressRing: View {
 /// pixel-for-pixel `ringDeterminate(0.25)`. The client overruled that with the mock in
 /// hand — *"it should just be a loading icon bc no data from telemetry was found"* —
 /// and MYR-412's instruction is explicit: solid track, ~25-35% gold arc, round cap,
-/// **never dashes**. The rotation stays applied: it costs nothing, and the day the
-/// platform runs a repeating animation here this state becomes §0 B exactly.
+/// **never dashes**.
+///
+/// ⚠️ **MYR-417 FOUND THE MECHANISM, AND IT IS NOT AN ANIMATION AT ALL.** Both
+/// measurements above stand; the general conclusion drawn from them ("this surface
+/// cannot move") does not. The system's own TIMER-DRIVEN elements are re-derived by
+/// the renderer from a date range rather than animated by the app, and
+/// `ProgressView(timerInterval:)` in the circular style is one of them — see
+/// `RideActivityWaitingRing`, which now owns the `.ringIndeterminate` mode whenever
+/// Reduce Motion is off. **THE DEAD `repeatForever` ROTATION IS DELETED WITH IT**: a
+/// mechanism that has been measured inert twice is not "kept applied in case", it is
+/// dead code making a promise, and the promise now has a real implementation
+/// elsewhere. This view keeps the DETERMINATE arc, the §0 C completion sweep, and
+/// the static waiting arc that Reduce Motion falls back to.
 /// ─────────────────────────────────────────────────────────────────────────────
 private struct RideActivityRingArc: View {
     let fraction: Double
     let stroke: CGFloat
-    let spins: Bool
     let isLanded: Bool
     let reduceMotion: Bool
-
-    /// The indeterminate mode's rotation — see the note above for what the platform
-    /// currently does with it.
-    @State private var turn: Double = 0
 
     var body: some View {
         Circle()
@@ -378,9 +447,10 @@ private struct RideActivityRingArc: View {
                 value: fraction
             )
             // **12 O'CLOCK IS THE START.** SwiftUI trims from 3 o'clock, so the −90°
-            // is the design's starting point rather than a decoration; the spin rides
-            // on top of it.
-            .rotationEffect(.degrees(-90 + turn))
+            // is the design's starting point rather than a decoration — and it is
+            // also where the system's own timer ring starts, which is what lets the
+            // Reduce Motion fallback and the moving ring read as one mark.
+            .rotationEffect(.degrees(-90))
             // The ring stops being the subject once the glyph is in it. Only
             // reachable on the MINIMAL island, the one surface where the glyph lands
             // inside the ring.
@@ -392,14 +462,5 @@ private struct RideActivityRingArc: View {
                         .delay(RideActivityMetrics.arrivalRingFadeDelay),
                 value: isLanded
             )
-            .onAppear {
-                guard spins, !reduceMotion else { return }
-                withAnimation(
-                    .linear(duration: RideActivityMetrics.ringSpin)
-                        .repeatForever(autoreverses: false)
-                ) {
-                    turn = 360
-                }
-            }
     }
 }

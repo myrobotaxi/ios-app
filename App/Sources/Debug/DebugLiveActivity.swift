@@ -144,6 +144,9 @@ enum RideActivityDebugLauncher {
         await startSecondActivityIfRequested(vehicle: vehicle)
         await repushIfRequested(state: state, staleDate: staleDate, presenter: presenter)
         await advanceIfRequested(from: state)
+        // MYR-418 — the server's two-delivery completion, and its cold half.
+        await completionSequenceIfRequested(from: state)
+        await endOnlyIfRequested(from: state)
     }
 
     // MARK: - MYR-398 §0 B: photographing the MINIMAL island
@@ -272,6 +275,91 @@ enum RideActivityDebugLauncher {
             )
             probeLog.info("MYR398-ADVANCE pushed \(String(describing: next), privacy: .public)")
         }
+    }
+
+    // MARK: - MYR-418: the completion sequence the server now sends
+
+    /// `MRT_ACTIVITY_COMPLETE_SEQUENCE=<seconds>` — the SERVER's own MYR-418
+    /// completion sequence, performed against a running Activity: an alerted UPDATE
+    /// carrying the completed content state, then the alert-free END carrying **the
+    /// same state** one second later.
+    ///
+    /// ─────────────────────────────────────────────────────────────────────────
+    /// **WHY THE SERVER SPLIT IT, AND WHY IT MATTERS ON THIS SIDE.** Apple silently
+    /// ignores `aps.alert` on an END event, so the single alerted end the server used
+    /// to send never expanded the island — the client's missing check mark. MYR-418
+    /// therefore sends the completed state TWICE: once as an alerted update (which
+    /// expands) and once as the end (which sets the dismissal policy).
+    ///
+    /// That makes the second delivery the exact input §0 C's once-only rule was
+    /// written for, arriving for a NEW reason: the same completed frame, ~1s after
+    /// the first. If the arrival beat were armed by anything the widget process holds
+    /// — an `onAppear`, a flag, a state — the check would spring in twice, a second
+    /// apart, which is worse than not playing at all. It is not: every value the beat
+    /// animates is a pure function of the resolved slot, and an identical frame
+    /// changes none of them.
+    ///
+    /// **THE END CARRIES THE STATE VERBATIM**, the same reference the update pushed,
+    /// for `MRT_ACTIVITY_REPUSH`'s own reason: a re-composed frame could differ by an
+    /// instant and would then be probing a different question.
+    /// ─────────────────────────────────────────────────────────────────────────
+    static func completionSequenceIfRequested(from state: RideActivityAttributes.ContentState) async {
+        guard let seconds = probeSeconds("MRT_ACTIVITY_COMPLETE_SEQUENCE"), let presenter = held
+        else { return }
+
+        let completed = completedFrame(from: state)
+        Task.detached { @MainActor in
+            try? await Task.sleep(for: .seconds(seconds))
+            await presenter.update(state: completed, staleDate: nil)
+            probeLog.info("MYR418-SEQUENCE pushed the completed UPDATE")
+            try? await Task.sleep(for: .seconds(endAfterUpdate))
+            await presenter.end(state: completed, dismissal: RideActivityDismissal.completedLinger)
+            probeLog.info("MYR418-SEQUENCE ended with the SAME completed state")
+        }
+    }
+
+    /// `MRT_ACTIVITY_END_ONLY=<seconds>` — the COLD half of the same question: an
+    /// Activity that never saw the update and meets the completed state for the first
+    /// time as the END.
+    ///
+    /// A real rider reaches this by starting late, by a dropped update, or by an app
+    /// relaunch between the two deliveries. The card must render the settled check —
+    /// static, with no beat, because a beat needs a transition and this frame is a
+    /// first sighting.
+    static func endOnlyIfRequested(from state: RideActivityAttributes.ContentState) async {
+        guard let seconds = probeSeconds("MRT_ACTIVITY_END_ONLY"), let presenter = held else { return }
+
+        let completed = completedFrame(from: state)
+        Task.detached { @MainActor in
+            try? await Task.sleep(for: .seconds(seconds))
+            await presenter.end(state: completed, dismissal: RideActivityDismissal.completedLinger)
+            probeLog.info("MYR418-ENDONLY ended with a completed state never pushed as an update")
+        }
+    }
+
+    /// The server's own gap between the two deliveries (`aps.timestamp` 1s apart).
+    private static let endAfterUpdate: TimeInterval = 1
+
+    /// The completed frame both probes deliver — the scene's own ride, at `progress`
+    /// exactly 1 and with no ETA, which is what §7.21 sends for a finished ride.
+    private static func completedFrame(
+        from state: RideActivityAttributes.ContentState
+    ) -> RideActivityAttributes.ContentState {
+        RideActivityAttributes.ContentState(
+            status: .completed,
+            eta: nil,
+            vehicleName: state.vehicleName,
+            destination: state.destination,
+            progress: 1,
+            asOf: state.asOf
+        )
+    }
+
+    private static func probeSeconds(_ key: String) -> Double? {
+        guard let raw = ProcessInfo.processInfo.environment[key],
+              let seconds = Double(raw), seconds > 0
+        else { return nil }
+        return seconds
     }
 
     // MARK: - MYR-405: the two-process repro of the restore race

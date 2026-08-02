@@ -35,9 +35,9 @@ final class RideActivityStateMachineTests: XCTestCase {
     /// reversal of MYR-172's "start at ACCEPTED".
     ///
     /// The v3 board answers "a pending request is the app's job" with a STATE:
-    /// Dispatch, "Finding your ride" over an idle rail. The wait for a car is the
-    /// part of an instant ride a rider is most likely to be staring at a locked
-    /// phone through, so it is the part that most needs a lock-screen card.
+    /// Dispatch — "Ride requested from {car}" (MYR-417) over an idle rail. The wait
+    /// for a car is the part of an instant ride a rider is most likely to be staring
+    /// at a locked phone through, so it is the part that most needs a lock-screen card.
     func testAnINSTANTRequestSTARTSTheActivityAtRequestedTime() {
         let record = makeRecord(status: .pending)
 
@@ -62,7 +62,7 @@ final class RideActivityStateMachineTests: XCTestCase {
     /// It falls out of the DORMANCY guard rather than out of the status switch: a
     /// `pending` reservation is dormant at every moment before it is dispatched, so
     /// it never reaches the `.pending` arm at all. An implementation that opened the
-    /// arm without that guard would have put "Finding your ride" on the lock screen
+    /// arm without that guard would have put a dispatch card on the lock screen
     /// the moment somebody booked a car for Saturday, and left it there.
     func testAScheduledRequestStillStartsNothing() {
         let scheduled = makeRecord(status: .pending, schedule: RideSchedule(day: "Sat", time: "5:30 PM"))

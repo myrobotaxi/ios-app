@@ -63,6 +63,30 @@ struct RideActivityVehicle: Codable, Hashable, Sendable {
     /// `VehicleSummary.year`.
     var year: Int?
 
+    /// The owner's own NICKNAME for the car — "Lunar", "Blue Whale",
+    /// "Alex's Model 3" (`VehicleSummary.name`). **MYR-417.**
+    ///
+    /// ⚠️ **IT IS NOT PART OF THE DESCRIPTOR AND MUST NEVER BE**, which is why it
+    /// sits on this type without appearing in `RideActivityVehicleDescriptor`. The
+    /// SUBLINE's job is letting a rider match a car they can SEE, and a nickname
+    /// describes nothing on a bumper — that reasoning is v3's and is unchanged.
+    ///
+    /// What it IS for is the DISPATCH headline, `Ride requested from {car}`, where
+    /// the question is the opposite one: which car did the rider ask for. They asked
+    /// for it BY THIS NAME — it is what the fleet row, the Review CTA and the
+    /// scheduling card all call it — so naming it anything else would answer a
+    /// question nobody asked. One fact, two jobs, and the two are kept apart by
+    /// living in two different functions rather than by a comment.
+    ///
+    /// **A STATIC ATTRIBUTE ON THE SAME TERMS AS THE PLATE.** An owner CAN rename a
+    /// car mid-ride and this copy will not hear about it, exactly as
+    /// `RideActivityVehicle`'s header already accepts for the plate. The difference
+    /// is that a nickname also arrives on the WIRE (`ContentState.vehicleName`), and
+    /// `RideActivityVehicleName.display` prefers that whenever the server has sent
+    /// one — so this value is the FIRST FRAME's answer, before any push has landed,
+    /// and the server's is every frame after it.
+    var name: String?
+
     /// The DISPLAY-READY trim (`VehicleState.trimLabel`, MYR-320) — "Performance",
     /// never the raw `trim` badge "p74d".
     ///
@@ -75,11 +99,19 @@ struct RideActivityVehicle: Codable, Hashable, Sendable {
     /// it, and why `year` is the enrichment that actually reaches the card today.
     var trim: String?
 
-    init(plate: String? = nil, color: String? = nil, model: String? = nil, year: Int? = nil, trim: String? = nil) {
+    init(
+        plate: String? = nil,
+        color: String? = nil,
+        model: String? = nil,
+        year: Int? = nil,
+        name: String? = nil,
+        trim: String? = nil
+    ) {
         self.plate = plate
         self.color = color
         self.model = model
         self.year = year
+        self.name = name
         self.trim = trim
     }
 
@@ -95,11 +127,57 @@ struct RideActivityVehicle: Codable, Hashable, Sendable {
             color: summary.color,
             model: summary.model,
             year: summary.year,
+            // MYR-417 — the owner's nickname, for the dispatch headline only. It is
+            // the same row every other field here comes off, which is what makes
+            // "the car the headline names is the car the subline describes" true by
+            // construction rather than by two lookups agreeing.
+            name: summary.name,
             // contracts 0.27.0's `VehicleSummary` has no trim field at all. Spelled
             // as an explicit `nil` rather than left out, so the day the list row
             // grows one this is the line that changes.
             trim: nil
         )
+    }
+}
+
+// MARK: - What to CALL the car (MYR-417)
+
+/// The name the DISPATCH headline puts after "Ride requested from" — and the one
+/// place the two sources of it are ranked.
+///
+/// ─────────────────────────────────────────────────────────────────────────────
+/// **TWO SOURCES, AND NEITHER IS SUFFICIENT ALONE.**
+///
+///   • `ContentState.vehicleName` is the WIRE's name and is authoritative — an
+///     owner who renames the car mid-ride reaches the rider through it. But the
+///     app's own locally-composed frames carry whatever the app resolved, and the
+///     Activity's FIRST frame is composed at `Activity.request`, before any push
+///     exists. The board's own contract for the field is that it is the EMPTY
+///     STRING when there is no name — never absent, never null.
+///   • `RideActivityVehicle.name` is the STATIC attribute, read once off the
+///     rider's own `GET /api/vehicles` head row at `Activity.request` — i.e. it is
+///     present on frame one, which is exactly where the dispatch state lives.
+///
+/// So the wire wins whenever it says anything, the attribute is the backstop, and
+/// **`Your Tesla` is what a genuinely nameless car is called** — the board's own
+/// nameless-vehicle rule, reused rather than re-worded.
+///
+/// This is deliberately NOT `RideActivityVehicleDescriptor`: that composes an
+/// identification a rider can match against a car at a kerb, and this answers
+/// "which car did I ask for". The dispatch card renders BOTH — the name in the
+/// headline, the descriptor in the subline — and they are two different questions
+/// about one row.
+/// ─────────────────────────────────────────────────────────────────────────────
+enum RideActivityVehicleName {
+    static func display(wire: String?, vehicle: RideActivityVehicle?) -> String {
+        nonEmpty(wire)
+            ?? nonEmpty(vehicle?.name)
+            ?? RideActivityCopy.genericVehicleName
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 

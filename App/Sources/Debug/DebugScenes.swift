@@ -2298,8 +2298,11 @@ enum DebugScene: String, CaseIterable {
         switch ProcessInfo.processInfo.environment["MRT_ACTIVITY_STATE"] ?? "enroute" {
         case "dispatch", "requested":
             // MYR-398 v3 — la-data row 1, **DISPATCH**, and the state the Activity
-            // now OPENS on for an instant ride ("Finding your ride" / "Matching you
-            // with a ride"). Nobody has accepted yet, so there is no ETA and no
+            // now OPENS on for an instant ride. MYR-417 replaced the board's Uber
+            // copy here: the card reads "Ride requested from {car}" over the same
+            // vehicle descriptor the rest of the pickup leg carries, because the rider
+            // asked ONE named car rather than a fleet. Nobody has accepted yet, so
+            // there is still no ETA and no
             // fraction — which is exactly the IDLE rail: track and pin drawn, no
             // gold fill, the puck at half strength on the origin. The compact island
             // is the mark ALONE, with nothing trailing it at all.

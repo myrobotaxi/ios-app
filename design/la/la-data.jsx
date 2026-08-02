@@ -27,6 +27,18 @@ const LA_DEST = "Duarte's Tavern";
 const LA_STATES = [
   {
     id: 'dispatch', label: 'Dispatch', group: 'pickup', leg: 1, phase: 'Dispatch',
+    // ⚠️ MYR-417 (2026-08-02, CLIENT-DIRECTED) — THE SHIPPED COPY FOR THIS ROW IS
+    // NOT THIS ROW'S. The note below is Uber's situation, not ours: a MyRoboTaxi
+    // rider picks ONE specific car by name, so nothing is being matched and the
+    // plate/model ARE known before the request is sent. The client: "when ride
+    // requested it should say ride requested from {car name}, Plate - Model/Trim/year
+    // how we have it in the ride states." The app therefore renders
+    //   headline: 'Ride requested from {car}'   (nameless car -> 'Your Tesla')
+    //   sub:      '{plate} · {color} {year} {model}'  — the SAME descriptor rows 2-6
+    //                                                   carry, same drop rules
+    // The rail (0 · idle) and the compact island (the ring) are UNCHANGED, so this is
+    // a copy deviation and nothing else. See the mirror note at the top of
+    // Handoff-Live-Activity.md for the measurements.
     note: 'No car assigned yet, so there is no ETA, no progress and no plate to show. The rail still draws, parked at the origin, and the compact island shows the mark alone — exactly what Uber does at Dispatch.',
     headline: { status: 'Finding your ride' },
     sub: 'Matching you with a ride',
