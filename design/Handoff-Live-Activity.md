@@ -61,6 +61,61 @@ The state machine is unchanged. What each state renders, and every rider-facing 
 > ships STATIC, exactly as the mock draws it. The 1.4s rotation is left applied and
 > costs nothing.
 
+> **Mirror note (2026-08-02, MYR-417) — TWO CLIENT-DIRECTED CHANGES, one to §8's
+> Dispatch row and one to the loading ring's MOTION VERDICT. Both override the prose
+> below where they conflict.**
+>
+> 1. **DISPATCH IS `Ride requested from {car}` / `{plate} · {color} {year} {model}` —
+>    a deliberate deviation from this board's Uber copy.** §8 row 1 reads `Finding
+>    your ride` / `Matching you with a ride`, and la-data's note says "no car assigned
+>    yet, so there is no ETA, no progress and no plate to show". **That is true of a
+>    hailing product and false of this one.** A MyRoboTaxi rider picks ONE specific
+>    car by name and the request goes to that car's owner; nothing is searched for and
+>    nothing is matched. The client, verbatim: *"when ride requested it should say ride
+>    requested from {car name}, Plate - Model/Trim/year how we have it in the ride
+>    states."* So the headline names the car and the subline is the SAME vehicle
+>    descriptor rows 2-6 carry — the plate and the model ARE known at dispatch, off the
+>    same `GET /api/vehicles` row the static vehicle attribute is read from. Nameless
+>    car → `Your Tesla`, this board's own rule. **The rail is unchanged (idle at 0) and
+>    both island slots are unchanged (the ring).** Measured at 20/600 in the card's
+>    320pt row: `Ride requested from Your Tesla` 271.4pt, `…Blue Whale` 280.3pt,
+>    `…Alex's Model 3` 310.0pt — and 261.4 / 269.7 / 298.4pt at the island's 19/600.
+>    A nickname past ~14 characters ellipsizes, which is safe here and nowhere else on
+>    the card: the tail of a name the rider chose is the least load-bearing thing on
+>    the surface, and the full identification is on the line directly beneath it.
+>
+> 2. **⚠️ THE LOADING RING MOVES NOW, AND §0 B's "the platform will not run it" WAS
+>    TOO GENERAL A CONCLUSION.** Both earlier measurements stand — `repeatForever`
+>    armed from `onAppear` is inert (#168), and SF Symbol effects are inert (MYR-412) —
+>    but both are about animations the APP arms, and a Live Activity's view is rendered
+>    out of process where none of those run. **The system's own timer-driven elements
+>    are not animations**: they carry a date range and the renderer re-derives them.
+>    `Text(timerInterval:)` is the known one; **`ProgressView(timerInterval:countsDown:)`
+>    in the `.circular` style is a RING**, and that is what the indeterminate state now
+>    draws — over a rolling `now … now+90s` window restarted by every content-state
+>    update, gold-tinted, bare.
+>    - **MEASURED ON A LIVE ACTIVITY IN THAT SLOT** (iPhone 17 Pro, iOS 26.5): bright
+>      gold ink **116 → 192 → 270 → 348 px** across four frames 6s apart.
+>    - **A CUSTOM `ProgressViewStyle` OVER THE SAME `ProgressView` IS INERT** —
+>      `configuration.fractionCompleted` is `nil` there, so it draws its floor arc and
+>      never moves (measured side by side in one frame). **The moment the ring's
+>      geometry becomes ours the motion stops being the system's**, which is why this
+>      ships as the stock style with a tint rather than as the board's `Circle().trim`.
+>    - **The two empty labels are load-bearing.** The default composition puts a timer
+>      TEXT in the ring's middle ("0:27"); `.labelsHidden()` does not remove it,
+>      supplying `label:`/`currentValueLabel:` as `EmptyView()` does, and the arc keeps
+>      moving. The result is this board's bare ring exactly.
+>    - **What the stock style costs**, stated rather than glossed: the stroke is the
+>      system's (2.0pt measured inside a 22pt frame, against the board's 2.2) and the
+>      TRACK is the tint at ~35% (rgb 70,59,27) where the board's is white 20%
+>      (rgb 51,51,51). The ARC is `#C9A84C` exactly, round-capped, from 12 o'clock.
+>    - **Reduce Motion falls back to MYR-412's static arc** — byte-identical frames
+>      (bbox `None`, max delta 0) — and `ringSpin`'s dead `repeatForever` is DELETED
+>      rather than "kept applied in case": a mechanism measured inert twice is not a
+>      promise, and the promise now has a real implementation.
+>    - **DETERMINATE PROGRESS AND TRACK-ONLY ARE UNTOUCHED.** Only the indeterminate
+>      mode moves, on all three surfaces that draw it.
+
 ---
 
 ## 0 · Change request for this build — three items

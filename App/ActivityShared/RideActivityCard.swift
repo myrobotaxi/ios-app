@@ -343,7 +343,9 @@ struct RideActivityCard: Equatable {
         return RideActivityCard(
             status: state.status,
             leg: leg,
-            headline: headline(state: state, leg: leg, isStale: stale, now: now, time: time),
+            headline: headline(
+                state: state, vehicle: vehicle, leg: leg, isStale: stale, now: now, time: time
+            ),
             subline: subline(state: state, vehicle: vehicle, isStale: stale, time: time),
             rail: rail,
             compact: trailingSlot(
@@ -360,6 +362,7 @@ struct RideActivityCard: Equatable {
 
     private static func headline(
         state: RideActivityAttributes.ContentState,
+        vehicle: RideActivityVehicle?,
         leg: RideActivityLeg?,
         isStale: Bool,
         now: Date,
@@ -367,7 +370,15 @@ struct RideActivityCard: Equatable {
     ) -> RideActivityHeadline {
         switch state.status {
         case .requested:
-            return .sentence(RideActivityCopy.dispatchHeadline)
+            // MYR-417 — the ONE headline on this surface that names the car, and the
+            // only one that needs the vehicle at all. See
+            // `RideActivityCopy.rideRequestedFrom` for why the board's "Finding your
+            // ride" is wrong for a product where the rider asked a specific car.
+            return .sentence(
+                RideActivityCopy.rideRequestedFrom(
+                    RideActivityVehicleName.display(wire: state.vehicleName, vehicle: vehicle)
+                )
+            )
         case .arrived:
             return .sentence(RideActivityCopy.arrivedHeadline)
         case .completed:
@@ -410,9 +421,13 @@ struct RideActivityCard: Equatable {
 
     /// **ALWAYS A PLACE OR AN IDENTIFICATION, NEVER A STATUS.**
     ///
-    /// The one exception in the board's own table is Dispatch, where there is no car
-    /// to name and no leg to be part-way along — and even there the line describes
-    /// what is happening TO the rider's request rather than restating the headline.
+    /// **MYR-417 REMOVED THE ONE EXCEPTION.** The board's Dispatch row put a PROCESS
+    /// here — "Matching you with a ride" — because on a hailing product there is no
+    /// car to name yet. There is one here: the rider asked a specific vehicle, and
+    /// its plate, colour, year and model are already on the Activity's static
+    /// attributes at `Activity.request`. So dispatch carries the SAME descriptor the
+    /// rest of the pickup leg does, and the whole leg is one card whose figure and
+    /// rail fill in rather than two cards that swap.
     private static func subline(
         state: RideActivityAttributes.ContentState,
         vehicle: RideActivityVehicle?,
@@ -434,9 +449,7 @@ struct RideActivityCard: Equatable {
         }
 
         switch state.status {
-        case .requested:
-            return RideActivityCopy.dispatchSubline
-        case .accepted, .arrived:
+        case .requested, .accepted, .arrived:
             // The car, identified. From the STATIC attributes, never off a push —
             // see `RideActivityVehicle` for why the vehicle cannot change for the
             // life of an Activity and therefore does not belong on the wire.

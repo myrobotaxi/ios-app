@@ -187,11 +187,44 @@ enum RideActivityMetrics {
     /// quarter for long. 0.25 is the handoff's own number and sits inside the board's
     /// stated 25-35%.
     static let ringIndeterminateArc: Double = 0.25
-    /// One full turn. Linear and `repeatForever` — a view-local animation that costs
-    /// NO push budget, which is the whole point of it, and which the platform
-    /// ignores. Kept applied: now that the waiting ring IS the design's own arc, the
-    /// day ActivityKit runs a repeating animation this state becomes §0 B exactly,
-    /// with no code change.
+    /// **THE WAITING RING'S ROLLING WINDOW — MYR-417, AND THE RING MOVES NOW.**
+    ///
+    /// ─────────────────────────────────────────────────────────────────────────────
+    /// §0 B measured that ActivityKit runs no repeating animation and MYR-412 measured
+    /// that it runs no SF Symbol effect either, and both concluded the platform simply
+    /// does not animate this surface. **Both measurements were right and the
+    /// conclusion was too narrow.** ActivityKit renders a Live Activity's view out of
+    /// process, so nothing the app ANIMATES is run — but the system's own
+    /// timer-driven elements are not animations, they are values the renderer
+    /// re-derives from a date range it was handed. `Text(timerInterval:)` has always
+    /// been one. `ProgressView(timerInterval:countsDown:)` is the other, and its
+    /// CIRCULAR style is a ring.
+    ///
+    /// So the waiting ring is a real `ProgressView(timerInterval:)` over
+    /// `now ... now + window`, restarted every time a content state composes a frame.
+    /// The arc creeps, which is the difference between "we are waiting on the car"
+    /// and "this app has stopped" that §0 B asked for and could not get.
+    ///
+    /// **90 SECONDS IS THE PUSH CADENCE'S OWN CEILING** (§7.21's ETA ticker pushes
+    /// every 60–90s), so on a healthy ride the window is restarted at or before it
+    /// completes and the arc reads as a loop rather than as a fill that finished. It
+    /// is not tuned tighter than that on purpose: a shorter window spends more of its
+    /// life sitting full, and a much longer one creeps too slowly to read as motion at
+    /// a glance.
+    ///
+    /// ⚠️ **THE ONE THING IT CANNOT SAY IS HOW LONG.** A ride whose pushes stop
+    /// entirely leaves the arc parked at full, which is the same picture a determinate
+    /// ring at `p = 1` draws. That ambiguity is bounded and is named rather than
+    /// hidden: the CARD beside the island draws the IDLE rail in this state, and the
+    /// waiting ring's track is the system's tint-derived one rather than the
+    /// determinate ring's white 20%, so the two are not pixel-identical even at the
+    /// same fraction.
+    /// ─────────────────────────────────────────────────────────────────────────────
+    static let waitingWindow: TimeInterval = 90
+
+    /// One full turn, for the STATIC fallback's arc. Kept as the design's own number
+    /// — the Reduce Motion rendering does not turn and never did, and neither did the
+    /// motion-on one before MYR-417 found a mechanism the platform runs.
     static let ringSpin: TimeInterval = 1.4
 
     // MARK: - §0 C · the arrival beat

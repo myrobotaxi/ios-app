@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 
 // MARK: - MYR-398 v3 — photographing a surface this app does not draw
@@ -324,55 +325,52 @@ final class RideActivityIslandUITests: XCTestCase {
         }
     }
 
-    /// **§0 B — THE WAITING RING, AND THE PLATFORM'S VERDICT ON ITS ROTATION.**
+    /// **MYR-417 — THE WAITING RING MOVES, AND THIS IS THE FRAME SEQUENCE THAT SAYS
+    /// SO.**
     ///
     /// `noTelemetry` is the client's own screenshot: an accepted ride whose car has
-    /// reported no fraction, which until §0 rendered a bare mark beside an empty
-    /// half-pill. It now renders the WAITING ring — and this suite is where the
-    /// honest half of §0 B is recorded rather than described.
+    /// reported no fraction. §0 B gave that empty slot a ring; MYR-412 gave it the
+    /// board's arc; **neither of them could make it move, and the client's video of
+    /// a dead ring is what sent this round looking again.**
     ///
-    /// ⚠️ **THE THREE FRAMES ARE BYTE-IDENTICAL, AND THAT IS THE FINDING.** §0 B asks
-    /// for a 25% arc turning on a 1.4s linear `repeatForever`. It is implemented
-    /// (`RideActivityRingArc`) and **ActivityKit does not run it**: a Live Activity's
-    /// view is rendered out of process, and neither appearance-armed nor repeating
-    /// animations are executed there. Measured on this branch, three frames 0.35s
-    /// apart against a 1.4s period, compact AND expanded — `ImageChops.difference`
-    /// bbox `None`, max delta 0, across all six pairs.
+    /// ⚠️ **THE TWO EARLIER VERDICTS STAND AND THE CONCLUSION DRAWN FROM THEM DOES
+    /// NOT.** §0 B measured `repeatForever` inert (six frames, bbox `None`); MYR-412
+    /// measured SF Symbol effects inert (22 frames across two runs, bbox `None`).
+    /// Both are about animations the APP arms, and a Live Activity's view is
+    /// rendered out of process where none of those are run. **The system's own
+    /// timer-driven elements are not animations** — they carry a DATE RANGE and the
+    /// renderer re-derives them as the clock moves — and
+    /// `ProgressView(timerInterval:)` in the circular style is one of them, which is
+    /// what `RideActivityWaitingRing` now draws.
     ///
-    /// So the frames prove the ring is DRAWN and prove the rotation is not run.
+    /// So this test inverts its own predecessor: the frames must **DIFFER**. The
+    /// assertion is on the trailing slot's own rectangle rather than on the whole
+    /// screen, because the status bar's clock changes by itself and a whole-frame
+    /// diff would pass over a motionless ring.
     ///
-    /// ⚠️ **MYR-412 CLOSED THE LAST ROUTE AND THEN THE CLIENT SETTLED THE RENDERING.**
-    /// §0 B's first implementation answered the dead rotation with a DASHED FULL
-    /// RING, reasoning that a static quarter arc is pixel-for-pixel
-    /// `ringDeterminate(0.25)`. Two things changed. (1) The other mechanism was
-    /// measured rather than assumed: SF Symbol effects are driven by the rendering
-    /// system rather than by a SwiftUI transaction, so
-    /// `.symbolEffect(.variableColor.iterative[.reversing])` on `progress.indicator`
-    /// / `ellipsis` and `.symbolEffect(.rotate)` on `arrow.trianglehead.clockwise`
-    /// were rendered in this very slot on a live Activity. All three DRAW and none
-    /// moves — 22 frames across two runs a minute apart, bbox `None`, max delta 0.
-    /// (2) The client sent the board and overruled the deduction outright: *"it
-    /// should just be a loading icon bc no data from telemetry was found"*, over a
-    /// mock that draws a solid track and a partial gold arc with nothing inside it.
-    /// So the waiting state is that arc, static, and the dashes are gone. The
-    /// rotation is left applied: it costs nothing and the day the platform runs it
-    /// the arc turns with no code change.
-    ///
-    /// The repo's rule (prove motion by frame sequence, never by a still) is
-    /// therefore kept and ANSWERED here rather than merely invoked — the sequence is
-    /// what establishes there is no motion to claim.
-    func testTheWaitingRingIsDrawnWhileALiveRideHasNoTelemetry() throws {
+    /// Measured outside the suite on the same simulator, `simctl` frames 6s apart:
+    /// bright-gold ink in the ring **116 → 192 → 270 → 348 px** across 18 seconds.
+    /// Under Reduce Motion the same three frames are byte-identical (bbox `None`,
+    /// max delta 0) — MYR-412's static arc, which is the fallback.
+    func testTheWaitingRingMovesWhileALiveRideHasNoTelemetry() throws {
         let app = startActivity(state: "noTelemetry")
 
         XCUIDevice.shared.press(.home)
         Thread.sleep(forTimeInterval: 3)
 
-        // 0.35s apart against the 1.4s period — a quarter turn each, which is what
-        // a running rotation would show and what these frames do not.
-        for index in 0..<3 {
-            attach(XCUIScreen.main.screenshot(), named: "island-compact-noTelemetry-spin-\(index)")
-            Thread.sleep(forTimeInterval: 0.35)
-        }
+        // ≥5s apart against a 90s window — about 7% of the circle, which is many
+        // times the antialiasing noise a static ring could produce.
+        let first = XCUIScreen.main.screenshot()
+        attach(first, named: "island-compact-noTelemetry-move-0")
+        Thread.sleep(forTimeInterval: 6)
+        let second = XCUIScreen.main.screenshot()
+        attach(second, named: "island-compact-noTelemetry-move-1")
+
+        XCTAssertNotEqual(
+            Self.trailingSlotPixels(first),
+            Self.trailingSlotPixels(second),
+            "the waiting ring did not move in 6 seconds — the timer ring is not being run"
+        )
 
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         springboard
@@ -380,14 +378,30 @@ final class RideActivityIslandUITests: XCTestCase {
             .withOffset(CGVector(dx: 0, dy: Self.islandCentreYOffset))
             .press(forDuration: 1.1)
         Thread.sleep(forTimeInterval: 1.5)
-        for index in 0..<3 {
-            attach(XCUIScreen.main.screenshot(), named: "island-expanded-noTelemetry-spin-\(index)")
-            Thread.sleep(forTimeInterval: 0.35)
+        for index in 0..<2 {
+            attach(XCUIScreen.main.screenshot(), named: "island-expanded-noTelemetry-move-\(index)")
+            Thread.sleep(forTimeInterval: 6)
         }
 
         springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
         Thread.sleep(forTimeInterval: 1)
         app.terminate()
+    }
+
+    /// The compact island's TRAILING slot, cropped out of a full-screen shot as raw
+    /// pixels.
+    ///
+    /// The rectangle is the SYSTEM's geometry (iPhone 17 Pro), measured off a real
+    /// frame exactly as `islandCentre` was, and deliberately generous: it holds the
+    /// ring and nothing that changes for another reason. **Cropping is the whole
+    /// point** — the status bar's own clock ticks, so a whole-screen comparison would
+    /// report "changed" over a ring that never moved.
+    private static func trailingSlotPixels(_ screenshot: XCUIScreenshot) -> Data? {
+        guard let cgImage = screenshot.image.cgImage else { return nil }
+        let scale = CGFloat(cgImage.width) / 402
+        let rect = CGRect(x: 255 * scale, y: 15 * scale, width: 45 * scale, height: 35 * scale)
+        guard let cropped = cgImage.cropping(to: rect) else { return nil }
+        return UIImage(cgImage: cropped).pngData()
     }
 
     /// **§0 B — THE MINIMAL ISLAND, AND THE HONEST ANSWER THAT IT CANNOT BE
@@ -493,6 +507,94 @@ final class RideActivityIslandUITests: XCTestCase {
 
         springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
         Thread.sleep(forTimeInterval: 1)
+        app.terminate()
+    }
+
+    /// **MYR-418 — THE SERVER SENDS THE COMPLETED STATE TWICE, AND THE CHECK MUST
+    /// LAND ON THE FIRST AND HOLD THROUGH THE SECOND.**
+    ///
+    /// Apple silently ignores `aps.alert` on an END event, which is why the client's
+    /// check mark never appeared: the single alerted end never expanded the island.
+    /// The server now sends an alerted UPDATE carrying the completed state and the
+    /// alert-free END carrying the SAME state ~1s later
+    /// (`MRT_ACTIVITY_COMPLETE_SEQUENCE` performs exactly that against a running
+    /// Activity).
+    ///
+    /// What the frames show, and it is worth being precise about which half of the
+    /// sequence each surface can answer:
+    ///
+    ///   • **The UPDATE is photographable and is photographed here** — the bare white
+    ///     check arrives in the trailing slot, which is (a).
+    ///   • **THE END IS NOT.** An `.ended` Activity leaves the Dynamic Island
+    ///     immediately — measured on this branch: 45 frames across the sequence, and
+    ///     from ~1.4s after the end the pill is empty. The end's frame lives on the
+    ///     LOCK-SCREEN card, which has no headless capture route at all (`simctl` has
+    ///     no lock command). So (b) — that the identical re-delivery cannot replay the
+    ///     beat — is proven where it CAN be: by
+    ///     `testTheArrivalBeatDoesNotReplayOnARepush`, which re-delivers the identical
+    ///     content state through the same update path, and by
+    ///     `RideActivityCardTests`' equality of the two resolutions. A beat that
+    ///     replayed on an identical frame would fail that repush test too; there is no
+    ///     mechanism by which an END could replay one that an UPDATE cannot.
+    func testTheCompletionSequenceLandsTheCheckOnTheUpdate() throws {
+        let app = startActivity(state: "enroute", extra: ["MRT_ACTIVITY_COMPLETE_SEQUENCE": "8"])
+
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 2)
+        attach(XCUIScreen.main.screenshot(), named: "island-418-before-the-update")
+
+        // The update lands ~8s after launch and the end ~1s after it; sample across
+        // both so the sequence is readable frame by frame.
+        Thread.sleep(forTimeInterval: 4)
+        for index in 0..<14 {
+            attach(XCUIScreen.main.screenshot(), named: "island-418-sequence-\(index)")
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+
+        app.terminate()
+    }
+
+    /// **MYR-418 (c) — THE COLD END-ONLY DELIVERY STILL RENDERS THE CHECK.**
+    ///
+    /// An Activity started late, a dropped update, or a relaunch between the two
+    /// deliveries all leave the widget meeting the completed state for the first time
+    /// as the END. There is no transition, so there is nothing to animate and nothing
+    /// may be invented: the frame is the settled check and it does not move.
+    ///
+    /// `MRT_ACTIVITY_END_ONLY=20` delivers the end with a completed state that was
+    /// never pushed as an update. The two asserted frames are the COLD RENDER, and
+    /// the assertion is that they are identical to each other, i.e. static.
+    ///
+    /// ⚠️ **THE DELAY IS TWENTY SECONDS FOR A MEASURED REASON.** An `.ended` Activity
+    /// leaves the Dynamic Island immediately (it lives out its five-minute linger on
+    /// the LOCK SCREEN, which has no headless capture route), so a frame taken after
+    /// the end photographs an empty pill — the first version of this test used 8s,
+    /// straddled the end, and failed for exactly that reason. The final frame is
+    /// attached rather than asserted, as the record of that behaviour.
+    func testAColdEndOnlyDeliveryRendersTheStaticCheck() throws {
+        let app = startActivity(state: "completed", extra: ["MRT_ACTIVITY_END_ONLY": "20"])
+
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 2)
+
+        let first = XCUIScreen.main.screenshot()
+        attach(first, named: "island-418-endonly-0")
+        Thread.sleep(forTimeInterval: 2)
+        let second = XCUIScreen.main.screenshot()
+        attach(second, named: "island-418-endonly-1")
+
+        XCTAssertEqual(
+            Self.trailingSlotPixels(first),
+            Self.trailingSlotPixels(second),
+            "a cold completed frame must be static — a beat here would be one keyed to appearance"
+        )
+
+        // The end lands at t ≈ 20s. Attached, not asserted: the island drops an
+        // ended Activity, so this frame is the empty pill and the card it leaves
+        // behind is on a surface nothing here can photograph.
+        Thread.sleep(forTimeInterval: 14)
+        attach(XCUIScreen.main.screenshot(), named: "island-418-endonly-after-the-end")
+
         app.terminate()
     }
 

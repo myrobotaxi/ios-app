@@ -92,7 +92,6 @@ final class RideActivityGeometryTests: XCTestCase {
     func testTheLongestHeadlineFitsOneLine() {
         let widest = [
             RideActivityCopy.expiredHeadline,
-            RideActivityCopy.dispatchHeadline,
             RideActivityCopy.arrivedHeadline,
             RideActivityCopy.declinedHeadline,
             RideActivityCopy.unknownHeadline,
@@ -144,6 +143,85 @@ final class RideActivityGeometryTests: XCTestCase {
         XCTAssertLessThan(countdown, Self.contentWidth, "Pickup in 88 min measures \(countdown)pt")
         XCTAssertLessThan(clock, Self.contentWidth, "12:42 AM dropoff measures \(clock)pt")
     }
+
+    /// **MYR-417 — `Ride requested from {car}` FITS ONE LINE ON BOTH SURFACES.**
+    ///
+    /// This is the measurement the copy change had to survive, and it is asked twice
+    /// because the two surfaces set the same sentence at two sizes: 20/600 in the
+    /// card's 320pt row, and 19/600 on the expanded island (measured against the
+    /// card's width, which is the conservative of the two — the island is wider once
+    /// the system's own insets are taken).
+    ///
+    /// **THE CORPUS IS REAL NICKNAMES, NOT `String(repeating:)`.** `VehicleSummary
+    /// .name` is what an owner typed, so the fixtures are the ones this repo can
+    /// point at: the client's own "Lunar", the schema example's "Blue Whale", the
+    /// prototype's "Cybercab", the canonical server fixture "Alex's Model 3" (owners
+    /// name cars after themselves), and the board's nameless fallback "Your Tesla".
+    /// A 34-M string would fail this and would tell us nothing, exactly as it would
+    /// have forced the descriptor's budget down to 27.
+    func testTheDispatchHeadlineFitsOneLineOnBothSurfaces() {
+        for name in Self.realisticNicknames {
+            let headline = RideActivityCopy.rideRequestedFrom(name)
+            for (surface, size) in [
+                ("card 20/600", RideActivityMetrics.headlineSize),
+                ("island 19/600", RideActivityMetrics.expandedHeadlineSize),
+            ] {
+                let width = Self.width(
+                    headline,
+                    size: size,
+                    weight: .semibold,
+                    tracking: RideActivityMetrics.headlineTracking
+                )
+                XCTAssertLessThan(
+                    width,
+                    Self.contentWidth,
+                    "\(surface): \"\(headline)\" measures \(width)pt in a \(Self.contentWidth)pt row"
+                )
+            }
+        }
+    }
+
+    /// **AND A NICKNAME LONGER THAN THE ROW ELLIPSIZES RATHER THAN WRAPPING — WHICH
+    /// IS SAFE HERE, AND IS NOT SAFE ANYWHERE ELSE ON THIS CARD.**
+    ///
+    /// The descriptor drops parts itself precisely because a truncation there would
+    /// eat the MODEL, the second most identifying fact on the card. The headline has
+    /// no such problem: the only thing at its tail is the tail of a name the rider
+    /// chose, and the car's full identification is on the line directly beneath it.
+    /// So the system's own tail ellipsis is the right answer and no ladder is needed
+    /// — but the row must still never GROW, which is what is asserted.
+    ///
+    /// The budget this implies, measured: about 14 characters of nickname on the
+    /// card. Everything in `realisticNicknames` is inside it.
+    func testAnOverlongNicknameTruncatesRatherThanWrapping() {
+        let overlong = RideActivityCopy.rideRequestedFrom("Thomas's Very Long Cybertruck Name")
+        let width = Self.width(
+            overlong,
+            size: RideActivityMetrics.headlineSize,
+            weight: .semibold,
+            tracking: RideActivityMetrics.headlineTracking
+        )
+        XCTAssertGreaterThan(
+            width,
+            Self.contentWidth,
+            "this fixture is meant to be the OVERFLOW case; if it now fits, lengthen it"
+        )
+        XCTAssertGreaterThan(
+            Self.boundingHeight(overlong, size: RideActivityMetrics.headlineSize, width: Self.contentWidth),
+            RideActivityMetrics.headlineRowHeight,
+            "an UNCONSTRAINED layout of this string wraps — which is why the row is lineLimit(1)"
+        )
+    }
+
+    /// The nicknames every measurement here is taken against — real ones, and the
+    /// board's own fallback for a car that has none.
+    private static let realisticNicknames = [
+        "Lunar",
+        "Blue Whale",
+        "Cybercab",
+        "Your Tesla",
+        "Alex's Model 3",
+    ]
 
     /// **THE VEHICLE DESCRIPTOR'S BUDGET, MEASURED — AGAINST REAL CARS.**
     ///
@@ -275,7 +353,12 @@ final class RideActivityGeometryTests: XCTestCase {
     /// subline is comfortably one line and the client's own Galleria Dallas
     /// destination is not.
     func testTheCapturedPairIsGenuinelyOneLineAgainstTwo() {
-        let short = RideActivityCopy.dispatchSubline
+        // MYR-417 — Dispatch's subline is the vehicle descriptor now, so the
+        // two-line half of the pair is measured against what that state actually
+        // renders rather than against a string it no longer carries.
+        let short = RideActivityVehicleDescriptor.compose(
+            RideActivityVehicle(plate: "7SRJ294", color: "Silver", model: "Model Y", year: 2026)
+        )
         let long = RideActivityCopy.headingTo("Galleria Dallas · 13350 Dallas Pkwy, Dallas TX 75240")
 
         let shortWidth = Self.width(
@@ -404,6 +487,16 @@ final class RideActivityGeometryTests: XCTestCase {
             "a FULL ring is #168's dashed rendering, which the client rejected"
         )
         XCTAssertEqual(RideActivityMetrics.ringSpin, 1.4)
+        // MYR-417 — the STATIC arc above is now the Reduce Motion rendering only.
+        // The moving one is the system's timer ring over this window, and the window
+        // is sized against §7.21's own 60–90s push cadence: a window shorter than the
+        // gap between pushes spends its life sitting full, which is the one thing a
+        // waiting ring must not look like.
+        XCTAssertEqual(RideActivityMetrics.waitingWindow, 90)
+        XCTAssertGreaterThanOrEqual(
+            RideActivityMetrics.waitingWindow, 90,
+            "a window under the ticker's slowest push completes before it is restarted"
+        )
         XCTAssertGreaterThan(RideActivityMetrics.ringMinimumArc, 0)
         XCTAssertLessThan(
             RideActivityMetrics.ringMinimumArc,

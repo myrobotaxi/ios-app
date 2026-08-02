@@ -166,18 +166,109 @@ final class RideActivityCardTests: XCTestCase {
 
     // MARK: - 1. la-data.jsx (v3), row for row
 
-    /// Row 1 · **Dispatch** — and the state the Activity now opens on.
+    /// Row 1 · **Dispatch** — the state the Activity opens on, and the ONE row
+    /// MYR-417 deliberately does not take from the board.
+    ///
+    /// la-data's own line is Uber's — `Finding your ride` / `Matching you with a
+    /// ride`. There is no matching in this product: the rider asked ONE named car,
+    /// and its plate, colour and model are known before the request is even sent.
+    /// So the headline names the car and the subline is the SAME descriptor rows
+    /// 2-6 carry. **The rail and both island slots are unchanged**, which is what
+    /// keeps this a copy change: idle at zero, ring on both slots.
     func testRow01Dispatch() {
         XCTAssertEqual(
             rendered(card(.requested, eta: nil, progress: nil)),
             Rendered(
-                headline: .sentence("Finding your ride"),
-                subline: "Matching you with a ride",
+                headline: .sentence("Ride requested from Cybercab"),
+                subline: Self.descriptor,
                 rail: .idle,
                 compact: .ringIndeterminate,
                 expandedTrailing: .ringIndeterminate
             )
         )
+    }
+
+    /// **THE DISPATCH HEADLINE'S NAME LADDER — wire, then attribute, then generic.**
+    ///
+    /// Three sources of one string, and each arm exists because a different moment
+    /// of a real ride reaches it. The WIRE's name is authoritative and wins whenever
+    /// the server has sent one. The STATIC attribute is what the very first frame
+    /// has — the Activity is requested before any push exists, which is the entire
+    /// duration of the dispatch state on a healthy ride, so an implementation that
+    /// read the wire alone would render "Your Tesla" for the one state this issue is
+    /// about. And a car with no name anywhere is `Your Tesla`, the board's own
+    /// nameless-vehicle rule rather than a second wording.
+    func testTheDispatchHeadlineNamesTheCarTheRiderAsked() {
+        let named = RideActivityVehicle(plate: "7SRJ294", color: "Silver", model: "Model Y", name: "Lunar")
+
+        // 1 · the wire wins outright.
+        XCTAssertEqual(
+            card(.requested, eta: nil, vehicle: named, vehicleName: "Blue Whale").headline,
+            .sentence("Ride requested from Blue Whale")
+        )
+        // 2 · an empty wire name — every locally-composed frame, including the
+        // Activity's first — falls to the static attribute.
+        XCTAssertEqual(
+            card(.requested, eta: nil, vehicle: named, vehicleName: "").headline,
+            .sentence("Ride requested from Lunar")
+        )
+        // 3 · whitespace is not a name either.
+        XCTAssertEqual(
+            card(.requested, eta: nil, vehicle: named, vehicleName: "   ").headline,
+            .sentence("Ride requested from Lunar")
+        )
+        // 4 · nothing anywhere.
+        XCTAssertEqual(
+            card(.requested, eta: nil, vehicle: Self.vehicle, vehicleName: "").headline,
+            .sentence("Ride requested from Your Tesla")
+        )
+        XCTAssertEqual(
+            card(.requested, eta: nil, vehicle: nil, vehicleName: "").headline,
+            .sentence("Ride requested from Your Tesla")
+        )
+    }
+
+    /// **THE NICKNAME NEVER REACHES THE SUBLINE**, which is the other half of the
+    /// same rule and the one a tidy refactor would break: `RideActivityVehicle` now
+    /// carries a `name`, and the descriptor must keep ignoring it. A nickname
+    /// describes nothing a rider can match against a car at a kerb — that is v3's
+    /// reasoning and MYR-417 does not touch it.
+    func testTheNicknameNamesTheHeadlineAndNeverTheDescriptor() {
+        let named = RideActivityVehicle(
+            plate: "7SRJ294", color: "Silver", model: "Model Y", name: "Lunar"
+        )
+        XCTAssertEqual(RideActivityVehicleDescriptor.compose(named), Self.descriptor)
+        XCTAssertEqual(card(.requested, eta: nil, vehicle: named).subline, Self.descriptor)
+        XCTAssertEqual(card(.accepted, vehicle: named).subline, Self.descriptor)
+    }
+
+    /// **A DISPATCH CARD WITH NO VEHICLE AT ALL STILL COMPOSES.** The subline falls
+    /// to the same `Your Tesla` the headline does — the row keeps its 17pt either
+    /// way, and neither line is ever blank.
+    func testDispatchWithNoVehicleFallsBackOnBothLines() {
+        let card = card(.requested, eta: nil, vehicle: nil, vehicleName: "")
+        XCTAssertEqual(card.headline, .sentence("Ride requested from Your Tesla"))
+        XCTAssertEqual(card.subline, "Your Tesla")
+    }
+
+    /// **THE RETIRED BOARD COPY APPEARS NOWHERE**, on any surface, in any state —
+    /// the same sweep shape as `testNoSurfaceSaysArriving`, and for the same reason:
+    /// a deleted constant can be re-typed as a literal by the next hand.
+    func testNoSurfaceSaysMatching() {
+        for status in LiveActivityRideStatus.allCases {
+            for card in [card(status, progress: 0.4), card(status, eta: nil, progress: nil)] {
+                for text in [Self.text(of: card.headline) ?? "", card.subline ?? ""] {
+                    XCTAssertFalse(
+                        text.lowercased().contains("matching"),
+                        "\(status) says \"\(text)\""
+                    )
+                    XCTAssertFalse(
+                        text.lowercased().contains("finding your ride"),
+                        "\(status) says \"\(text)\""
+                    )
+                }
+            }
+        }
     }
 
     /// Row 2 · **Enroute** — the hero state, and the pickup leg's countdown FORM.
@@ -1019,11 +1110,11 @@ final class RideActivityCardTests: XCTestCase {
     }
 
     /// **DISPATCH NEVER COUNTS DOWN**, even if a stale `eta` is sitting in the
-    /// content state: no car has been assigned, so there is nothing for a countdown
-    /// to be about.
+    /// content state: the owner has not accepted, so there is nothing for a countdown
+    /// to be about — the car being KNOWN (MYR-417) does not make its arrival known.
     func testDispatchNeverCountsDownEvenWithAnETAOnTheWire() {
         let card = card(.requested, progress: nil)
-        XCTAssertEqual(card.headline, .sentence("Finding your ride"))
+        XCTAssertEqual(card.headline, .sentence("Ride requested from Cybercab"))
         XCTAssertEqual(card.compact, .ringIndeterminate)
     }
 
@@ -1036,6 +1127,88 @@ final class RideActivityCardTests: XCTestCase {
             if case .pickupCountdown = card.headline { XCTFail("\(status) counted down") }
             if case .dropoffClock = card.headline { XCTFail("\(status) stated a clock") }
         }
+    }
+
+    // MARK: - 7a. MYR-418 — the completion sequence the server now sends
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // **THE SERVER SPLIT THE COMPLETION IN TWO, AND THE SECOND HALF IS THE INPUT
+    // §0 C's ONCE-ONLY RULE WAS WRITTEN FOR.**
+    //
+    // Apple silently ignores `aps.alert` on an END event, so the single alerted end
+    // never expanded the island — the client's missing check mark. MYR-418 sends the
+    // completed content state TWICE: an alerted UPDATE, then the alert-free END
+    // carrying the same state ~1s later.
+    //
+    // What this side has to be true of that sequence is three things, and all three
+    // are properties of `resolve` rather than of a view — which is the whole reason
+    // they can be asserted at all:
+    //
+    //   (a) the UPDATE-delivered completed state resolves to the check, on both
+    //       island slots, with the rail full;
+    //   (b) the END re-delivering the SAME state resolves to a card EQUAL to the
+    //       first — which is the structural precondition for the beat not replaying,
+    //       because every value it animates is a pure function of this resolution and
+    //       `.animation(_:value:)` fires only on a CHANGE;
+    //   (c) a COLD end-only delivery — the Activity started late and never saw the
+    //       update — resolves to that same card, so it renders the settled check with
+    //       nothing to animate from.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// (a) The completed state as the UPDATE delivers it.
+    func testTheCompletedUpdateResolvesToTheCheckOnBothIslandSlots() {
+        let completed = card(.completed, eta: nil, progress: 1)
+        XCTAssertEqual(completed.compact, .glyph(.check))
+        XCTAssertEqual(completed.expandedTrailing, .glyph(.check))
+        XCTAssertEqual(completed.rail, .live(1))
+        XCTAssertEqual(completed.headline, .sentence("You've arrived"))
+    }
+
+    /// (b) **THE END RE-DELIVERS THE SAME STATE AND THE CARD DOES NOT MOVE.**
+    ///
+    /// The two frames are one second apart on the wire and identical in content, so
+    /// the assertion is EQUALITY of the whole resolution — not of the glyph alone.
+    /// The glyph alone would pass with a resolver that had started returning a
+    /// different rail or a different headline on the second frame, and the beat is
+    /// keyed on the SLOT, which is derived from all of it.
+    ///
+    /// It is asserted across a moving `now`, because the second delivery lands a real
+    /// second later and a resolution that quietly depended on the clock would replay
+    /// the beat once a ride in production.
+    func testTheEndAfterTheUpdateResolvesToAnIdenticalCardAndCannotReplayTheBeat() {
+        let state = state(.completed, eta: nil, progress: 1)
+        let update = RideActivityCard.resolve(
+            state: state, vehicle: Self.vehicle, isStale: false,
+            now: eta, time: Self.clock
+        )
+        // The END, one second later, carrying the SAME content state verbatim.
+        let end = RideActivityCard.resolve(
+            state: state, vehicle: Self.vehicle, isStale: false,
+            now: eta.addingTimeInterval(1), time: Self.clock
+        )
+        XCTAssertEqual(update, end, "the end frame must be indistinguishable from the update's")
+        XCTAssertEqual(end.compact, .glyph(.check))
+        XCTAssertEqual(end.expandedTrailing, .glyph(.check))
+    }
+
+    /// (c) **THE COLD END-ONLY DELIVERY RENDERS THE SETTLED CHECK.**
+    ///
+    /// An Activity that started late, or an app relaunched between the two
+    /// deliveries, meets the completed state for the first time as the END. There is
+    /// no transition to animate and there must be no attempt to invent one: the card
+    /// it resolves to is byte-identical to the one the update produced, so the view
+    /// draws the same settled frame with nothing changing under it.
+    func testAColdEndOnlyDeliveryResolvesToTheSameSettledCheck() {
+        let cold = card(.completed, eta: nil, progress: 1)
+        let afterUpdate = card(.completed, eta: nil, progress: 1)
+        XCTAssertEqual(cold, afterUpdate)
+        XCTAssertEqual(cold.compact, .glyph(.check))
+
+        // And a completed frame the server sent with NO fraction is still full: the
+        // status is the authority, so an end that omitted `progress` cannot draw an
+        // untravelled route under "You've arrived".
+        XCTAssertEqual(card(.completed, eta: nil, progress: nil).rail, .live(1))
+        XCTAssertEqual(card(.completed, eta: nil, progress: nil).compact, .glyph(.check))
     }
 
     // MARK: - 7b. §0 — the trailing-slot ladder, the ring, and the beat

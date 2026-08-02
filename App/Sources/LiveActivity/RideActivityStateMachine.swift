@@ -349,11 +349,13 @@ enum RideActivityStateMachine {
             // That rule said "a pending request is the app's job": nothing to count
             // down, no car assigned, and the app's own pending pill is the right
             // surface. The v3 board answers it with a STATE rather than with an
-            // argument — **Dispatch**, "Finding your ride" / "Matching you with a
-            // ride", an idle rail and the mark alone on the island. It is Uber's
-            // first phase, and the whole point of it is that the wait for a car is
-            // the part of the ride a rider is most likely to be staring at a locked
-            // phone through.
+            // argument — **Dispatch**, an idle rail and the waiting ring on the
+            // island. It is Uber's first phase, and the whole point of it is that the
+            // wait for a car is the part of the ride a rider is most likely to be
+            // staring at a locked phone through. (MYR-417 replaced the board's own
+            // copy for this state: there is no matching in this product, so the card
+            // reads "Ride requested from {car}" over the same vehicle descriptor the
+            // rest of the pickup leg carries.)
             //
             // Nothing else about the card changes to accommodate it, which is the
             // reason it is cheap: the footprint is fixed in every state, the rail's
