@@ -61,6 +61,12 @@ struct HomeScreen: View {
     /// pickup"/"Dropped off"). Reset on every status change so a re-shown button is tappable again
     /// (MYR-265 review: never leave the CTA permanently greyed after one advance).
     @State private var dispatchInFlight = false
+    /// MYR-419 — the dispatch card's measured height, and therefore how much room
+    /// the sheet has to leave above itself. `0` until the card is on screen and
+    /// measured; `sheetTopClearance` reads that as "no card" and answers the
+    /// grammar's own 140, so a frame before the measurement lands is a frame at
+    /// the number every non-dispatch capture uses.
+    @State private var dispatchCardHeight: CGFloat = 0
 
     /// MYR-171 — `IncomingRequestSheet` shows only while there's a request
     /// actually awaiting this owner's decision; once accepted/declined the
@@ -401,11 +407,21 @@ struct HomeScreen: View {
                     action: dispatchAction,
                     actionDisabled: dispatchInFlight
                 )
-                .padding(.top, MRTMetrics.mapHeaderTop + MRTMetrics.mapChipHeight + 12)
+                // MYR-419 — the placement and the room the sheet reserves for it
+                // are ONE constant (`OwnerMapTopChrome.dispatchCardTop`), so a
+                // tune that moved the card cannot leave the reserve behind.
+                .padding(.top, OwnerMapTopChrome.dispatchCardTop)
                 .frame(maxWidth: .infinity, alignment: .top)
                 .ignoresSafeArea(edges: .top)
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
+        }
+        // MYR-419 — the card publishes its height; the sheet below reserves it.
+        // Read here rather than inside the `if` so the value is reset to the
+        // preference's default the moment the card leaves the screen: a stale
+        // height would keep the sheet short for a ride that is over.
+        .onPreferenceChange(OwnerDispatchCardHeightKey.self) { height in
+            if abs(height - dispatchCardHeight) > 0.5 { dispatchCardHeight = height }
         }
         .animation(.easeOut(duration: 0.28), value: dispatchStatusLine)
         // MYR-270: reset the CTA double-tap latch whenever the dispatched status
@@ -524,6 +540,14 @@ struct HomeScreen: View {
             // Peek and half are untouched: same heights, same crossfade endpoints,
             // same MYR-315 peek-band rule.
             allowsTallDetent: true,
+            // MYR-419 — the band the sheet leaves for the map's TOP CHROME
+            // STACK. `MRTMetrics.sheetTallTopClearance` (140) is measured for
+            // the `MapHeader` chip alone; while a dispatch is live the chip has
+            // a status pill and (in two states) a CTA under it, and a stop
+            // measured for the chip puts the sheet through them. See
+            // `OwnerMapTopChrome` for why the SHEET reserves the room rather
+            // than the chrome moving or fading.
+            topClearance: sheetTopClearance,
             peek: {
                 // LOW layer — summary hero only, at the same top position and
                 // gutter as the expanded layer's summary so the crossfade reads
@@ -543,6 +567,21 @@ struct HomeScreen: View {
                         .padding(.bottom, MRTMetrics.homeSheetContentBottomPadding)
                 }
             }
+        )
+    }
+
+    /// MYR-419 — the band the owner sheet must leave above itself, resolved from
+    /// the chrome that is ACTUALLY on screen.
+    ///
+    /// The height is fed in only when a dispatch card is being rendered
+    /// (`dispatchStatusLine != nil`), never from the measurement alone: the
+    /// preference resets to its default when the card goes, but reading the
+    /// rendering condition here is what makes "no ride, no reserve" a statement
+    /// this screen makes rather than one it inherits from SwiftUI's preference
+    /// bookkeeping.
+    private var sheetTopClearance: CGFloat {
+        OwnerMapTopChrome.sheetTopClearance(
+            dispatchCardHeight: dispatchStatusLine == nil ? nil : dispatchCardHeight
         )
     }
 

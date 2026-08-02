@@ -892,6 +892,71 @@ the pre-fix build, which is how the test was proven to be a real guard), and the
 moving-fix probe across that same drag logs ONE `WRITE recenter` (the `onAppear`
 seating) and nothing after it.
 
+**A DETENT MEASURED FOR ONE PIECE OF CHROME IS NOT A DETENT** (MYR-419, client
+defect, r18 build `202608020103`) — with a live dispatch and the owner sheet
+pulled up, the status pill and the gold "Dropped off" CTA sit ON TOP of the
+sheet's own hero row. Measured on iPhone 17 Pro (`ownerDispatchedEnroute`,
+`MRT_OWNER_DETENT=tall`): sheet top edge **140**, CTA ink ending at **204** —
+64pt of the card standing over "Driving · Cybercab / 185 mi".
+
+**THE OVERLAY WAS NEVER WRONG.** `sheetTallTopClearance` (140) is the grammar's
+own number and MYR-332's own justification for it is that it "clears the
+`MapHeader` vehicle switcher whole (top 60 + 40pt chip ⇒ bottom edge at 100)" —
+true of a screen whose top chrome IS the chip. A dispatched ride stacks a 44pt
+pill and (in `accepted`/`enroute`) a 38pt CTA under it. **The stop was right
+about the wrong chrome.**
+
+- **THE FIX IS MYR-345'S RULE AT THE SHEET'S TOP EDGE**: a live-only element
+  brings exactly its own room. `MRTDetentSheet(topClearance:)` is a ceiling over
+  the WHOLE ladder (`MRTMetrics.sheetDetentHeights`), not an adjustment to the
+  tall stop — the sheet passes through every height between its detents, so a
+  rule stated about one stop is one a future `halfHeightFraction` walks past.
+  `OwnerMapTopChrome.sheetTopClearance` derives it from the card that is
+  ACTUALLY on screen, so `arrived`/`completed` (pill, no CTA) reserve less than
+  `accepted`/`enroute` — reserving a CTA's 38pt for a state that has none is
+  MYR-345's flat-24 over-reserve pointed the other way. Measured stops with a
+  dispatch live: **peek 594 / half 403.04 (both unmoved) / tall 244** vs 140.
+- **CANDIDATE (a), THE MYR-397 EDGE FOLLOWER, IS GEOMETRICALLY VACUOUS HERE**,
+  and this is the reusable half. An edge follower moves chrome UP as the sheet
+  rises; this chrome has nowhere up to go — its designed position already begins
+  12pt under the chip, so the travel cap MYR-338's camera cap suggests ("never
+  above the chip") IS the position it is already in. The rider's recenter/expand
+  controls follow the edge because they are BOTTOM chrome over a sheet that
+  rests tall; this is a TOP banner over a sheet that rests at peek. **A follower
+  is for chrome the sheet approaches from below.**
+- **CANDIDATE (c), FADING PAST A DETENT**, is this screen's existing grammar for
+  map chrome (`sheetCoversMap` already stands the recenter button and the
+  floating nav down at half) and is wrong for this element: the pill is the
+  owner's only on-screen evidence that a ride is live and the CTA is the only
+  control that ends it. Hiding both at a detent is MYR-396's *"the owner loses
+  the UI of the current ride in progress"* re-entered by a smaller door.
+- **⚠️ THE RUBBER BAND IS A HEIGHT, AND IT IS THE ONE A SETTLED FRAME CANNOT
+  SEE.** A finger can pull the sheet ABOVE its tallest detent;
+  `SheetPhysics.rubberBand`'s resistance saturates at its `dimension` (30), so
+  the highest edge ever reachable is the stop less 30. A comfortable-looking
+  24pt page gutter under the card would leave **6pt of the gold CTA covered at
+  full stretch** — a real overlap at a real height that every detent assertion
+  and every screenshot would miss. `dispatchCardSheetGap` is therefore **derived,
+  not chosen**: `sheetTallTopClearance − mapHeaderBottom` = 40, i.e. exactly the
+  band the grammar's own stop leaves below the chip, so the overshoot behaves as
+  it always has and the reserved stop reads like an unreserved one.
+- **XCUITEST CANNOT SAMPLE MID-GESTURE** — `RiderTrackingSheetDragUITests`'
+  finding, re-confirmed here: a first cut collected fourteen "mid-drag" samples
+  and every one read the settled 228.0. The in-between is covered by
+  CONSTRUCTION (the ladder plus a bounded band, both asserted) and the drag test
+  claims only what a released finger can prove. The suites are
+  `OwnerDispatchSheetClearanceTests` (measures the REAL card through a
+  `UIHostingController` per status × three device widths — the `OwnerPeekBandTests`
+  precedent), `SheetDetentCeilingTests` (the ladder rule + the band's saturation)
+  and `OwnerDispatchSheetOverlapUITests`. **Proven to be a real guard** by
+  restoring the defect on this branch: `…AtTall` and the drag test fail
+  (140 < 207) while `…AtPeek` passes, which is also the honest shape of the bug —
+  peek was never broken.
+- **Peek and half do not move, on any supported device**, because 0.58 of the
+  container (~473pt) is far under the ~630pt ceiling. Asserted both ways —
+  inert at the shipped numbers, and binding if a fraction or a device ever put
+  half through the chrome. `ownerHome` at tall is still exactly 140.
+
 **Charge bar motion** (MYR-333 → MYR-337) — a live charge session is the ONE
 thing in this app that says "something is happening right now", and it says it
 with MOTION on the hero battery bar (`BatteryBar(charge:)`; scenes

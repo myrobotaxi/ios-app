@@ -59,6 +59,13 @@ public struct MRTDetentSheet<Content: View>: View {
     /// MYR-332 — offer the third, TALL detent above `half`. Opt-in: every other
     /// consumer keeps exactly the peek↔half pair it has always had.
     private let allowsTallDetent: Bool
+    /// MYR-419 — the band above this sheet no detent may rise into, measured from
+    /// the PHYSICAL top edge. Defaults to the grammar's own
+    /// ``MRTMetrics/sheetTallTopClearance``, so every existing sheet is unchanged;
+    /// the owner Live Map raises it while a dispatch is live, because the chrome
+    /// standing in that band is then the `MapHeader` chip PLUS the dispatch pill
+    /// and its CTA.
+    private let topClearance: CGFloat
 
     /// The two owner crossfade layers, type-erased (two different content
     /// shapes living side by side in one surface — see `PanSheetCrossfade`).
@@ -86,6 +93,7 @@ public struct MRTDetentSheet<Content: View>: View {
         self.content = content()
         self.crossfade = nil
         self.allowsTallDetent = false
+        self.topClearance = MRTMetrics.sheetTallTopClearance
     }
 
     /// Internal designated init used by the crossfade convenience init below.
@@ -96,7 +104,8 @@ public struct MRTDetentSheet<Content: View>: View {
         halfHeightFraction: CGFloat,
         content: Content,
         crossfade: OwnerCrossfade?,
-        allowsTallDetent: Bool = false
+        allowsTallDetent: Bool = false,
+        topClearance: CGFloat = MRTMetrics.sheetTallTopClearance
     ) {
         _detent = detent
         self.peekHeight = peekHeight
@@ -105,6 +114,7 @@ public struct MRTDetentSheet<Content: View>: View {
         self.content = content
         self.crossfade = crossfade
         self.allowsTallDetent = allowsTallDetent
+        self.topClearance = topClearance
     }
 
     /// peek ↔ 0, half ↔ 1, tall ↔ 2 — the engine works in detent indices. A
@@ -134,14 +144,13 @@ public struct MRTDetentSheet<Content: View>: View {
     /// is flush with it — see `.ignoresSafeArea(edges: .bottom)` below), which is
     /// what the tall detent's top clearance is measured against.
     private func detentHeights(containerHeight: CGFloat, screenHeight: CGFloat) -> [CGFloat] {
-        let half = halfHeight ?? containerHeight * halfHeightFraction
-        // `.isFinite` guard (MYR-227): never let a stray NaN/∞ detent reach the
-        // engine's layout math.
-        let safeHalf = half.isFinite && half > peekHeight ? half : peekHeight + 1
-        guard allowsTallDetent,
-              let tall = MRTMetrics.sheetTallHeight(screenHeight: screenHeight, halfHeight: safeHalf)
-        else { return [peekHeight, safeHalf] }
-        return [peekHeight, safeHalf, tall]
+        MRTMetrics.sheetDetentHeights(
+            peekHeight: peekHeight,
+            halfHeight: halfHeight ?? containerHeight * halfHeightFraction,
+            screenHeight: screenHeight,
+            allowsTallDetent: allowsTallDetent,
+            topClearance: topClearance
+        )
     }
 
     public var body: some View {
@@ -317,6 +326,9 @@ public extension MRTDetentSheet where Content == EmptyView {
         halfHeightFraction: CGFloat = 0.5,
         /// MYR-332 — offer the third, TALL detent above `half`.
         allowsTallDetent: Bool = false,
+        /// MYR-419 — the band above the sheet no detent may rise into. Default:
+        /// the grammar's own ``MRTMetrics/sheetTallTopClearance``.
+        topClearance: CGFloat = MRTMetrics.sheetTallTopClearance,
         @ViewBuilder peek: () -> Peek,
         @ViewBuilder expanded: () -> Expanded
     ) {
@@ -327,7 +339,8 @@ public extension MRTDetentSheet where Content == EmptyView {
             halfHeightFraction: halfHeightFraction,
             content: EmptyView(),
             crossfade: OwnerCrossfade(low: AnyView(peek()), high: AnyView(expanded())),
-            allowsTallDetent: allowsTallDetent
+            allowsTallDetent: allowsTallDetent,
+            topClearance: topClearance
         )
     }
 }

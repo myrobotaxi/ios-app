@@ -241,13 +241,64 @@ public enum MRTMetrics {
     /// Returns `nil` when the geometry cannot produce a detent taller than `half`
     /// (a very short screen, or a `half` already at the cap) — the sheet then
     /// keeps exactly its peek/half pair, unchanged.
-    public static func sheetTallHeight(screenHeight: CGFloat, halfHeight: CGFloat) -> CGFloat? {
-        guard screenHeight.isFinite, halfHeight.isFinite else { return nil }
-        let tall = screenHeight - sheetTallTopClearance
+    ///
+    /// MYR-419 — `topClearance` is the band the sheet must leave above itself,
+    /// defaulting to the grammar's own ``sheetTallTopClearance``. It is a
+    /// PARAMETER because the chrome standing in that band is not always the same
+    /// height: while the owner has a live dispatch, the `MapHeader` chip has a
+    /// status pill and a CTA beneath it, and a stop measured for the chip alone
+    /// puts the sheet through them.
+    public static func sheetTallHeight(
+        screenHeight: CGFloat,
+        halfHeight: CGFloat,
+        topClearance: CGFloat = sheetTallTopClearance
+    ) -> CGFloat? {
+        guard screenHeight.isFinite, halfHeight.isFinite, topClearance.isFinite else { return nil }
+        let tall = screenHeight - topClearance
         // A tall detent must be meaningfully taller than half, or the extra stop
         // is a second detent the finger cannot tell apart from the first.
         guard tall > halfHeight + 24 else { return nil }
         return tall
+    }
+
+    /// MYR-419 — the ascending detent heights a peek/half(/tall) sheet offers,
+    /// with the ceiling `topClearance` imposes applied to every stop above peek.
+    ///
+    /// **THE CEILING IS THE WHOLE POINT AND IT IS NOT ONLY THE TALL DETENT'S.**
+    /// The overlap this exists to prevent is a fact about a HEIGHT, not about a
+    /// named stop — the sheet passes through every height between its detents on
+    /// the way up — so the rule is stated once, over the whole ladder, rather
+    /// than as an adjustment to the tall stop that a future `halfHeightFraction`
+    /// could walk straight past.
+    ///
+    /// PEEK is deliberately NOT capped: it is the hero's own content band
+    /// (``homePeekHeight(base:qualifiers:)``), so clipping it would truncate the
+    /// summary rather than move a sheet, and a screen short enough for that is a
+    /// device this app does not support.
+    ///
+    /// At the shipped numbers the ceiling binds on TALL only and never on half
+    /// (0.58 of the container is ~473pt against a ~654pt ceiling on iPhone 17
+    /// Pro), which is what keeps every peek and half capture byte-identical —
+    /// asserted rather than assumed.
+    public static func sheetDetentHeights(
+        peekHeight: CGFloat,
+        halfHeight: CGFloat,
+        screenHeight: CGFloat,
+        allowsTallDetent: Bool,
+        topClearance: CGFloat = sheetTallTopClearance
+    ) -> [CGFloat] {
+        // `.isFinite` guard (MYR-227): never let a stray NaN/∞ detent reach the
+        // engine's layout math.
+        let safeHalf = halfHeight.isFinite && halfHeight > peekHeight ? halfHeight : peekHeight + 1
+        let ceiling = screenHeight.isFinite && topClearance.isFinite
+            ? screenHeight - topClearance
+            : CGFloat.greatestFiniteMagnitude
+        let cappedHalf = max(peekHeight + 1, min(safeHalf, ceiling))
+        guard allowsTallDetent,
+              let tall = sheetTallHeight(
+                  screenHeight: screenHeight, halfHeight: cappedHalf, topClearance: topClearance)
+        else { return [peekHeight, cappedHalf] }
+        return [peekHeight, cappedHalf, tall]
     }
 
     /// Distance from the PHYSICAL bottom edge to the top of the floating
