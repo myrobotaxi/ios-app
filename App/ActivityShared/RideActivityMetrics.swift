@@ -60,8 +60,91 @@ enum RideActivityMetrics {
     // Compact Dynamic Island — a figure, a glyph, or (§0 B) the ring.
     static let compactArrow: CGFloat = 16
     static let compactFigureSize: CGFloat = 15
+
+    // MARK: - MYR-412 · THE BARE ARRIVAL GLYPHS
+    //
+    // ─────────────────────────────────────────────────────────────────────────────
+    // **THE GLYPH STANDS ALONE. THERE IS NO CIRCLE AROUND IT.** §0 B put the wave and
+    // the check in the RING's centre, reading the handoff's "centre — the east arrow,
+    // swapped for the arrival glyph at 13pt" as applying to every surface. The
+    // client's board says otherwise and he sent it to prove it: on the compact
+    // trailing slot the wave and the check are BARE white marks, and the ring appears
+    // there only when there is no glyph and no figure. His words: *"why is there a
+    // circle around the hand thats not needed"*.
+    //
+    // Two sizes per glyph, because the two bare surfaces carry two different rings
+    // (22 compact, 24 expanded) and the glyph has to read at the weight of the thing
+    // it replaces. Both pairs sit inside the mirror's stated ranges — wave 17-19,
+    // check 15-19 — and the CHECK is the smaller of each pair on purpose: it is a
+    // filled disc where the wave is an open hand, so it carries more ink per point.
+    //
+    // `ringGlyph` (13) survives and is NOT one of these: it is the glyph INSIDE the
+    // ring, which only the MINIMAL island still draws.
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    /// `hand.wave.fill`, bare, in the compact trailing slot.
     static let compactWaveGlyph: CGFloat = 17
+    /// `checkmark.circle.fill`, bare, in the compact trailing slot.
     static let compactCheckGlyph: CGFloat = 15
+    /// The same two on the EXPANDED island's `.trailing`, which carries the larger
+    /// ring and therefore the larger glyph. 19 is the board's own compact number
+    /// (§5), which is the right weight one surface up.
+    static let expandedWaveGlyph: CGFloat = 19
+    static let expandedCheckGlyph: CGFloat = 17
+
+    // MARK: - MYR-412 · THE COMPACT TRAILING SLOT IS INSET, AND WHY IT HAD TO BE
+    //
+    // ─────────────────────────────────────────────────────────────────────────────
+    // **`Circle().stroke` OVERFLOWS ITS FRAME BY HALF THE LINE WIDTH, AND THE COMPACT
+    // TRAILING REGION CLIPS TO THE CONTENT'S DECLARED BOUNDS — SO THE RING WAS BEING
+    // SHAVED FLAT ON BOTH SIDES.** Measured on the shipped build (iPhone 17 Pro
+    // simulator, iOS 26.5, `arrived` / `completed` / `noTelemetry`): the ring's ink is
+    // **23.00pt wide and 24.00-24.67pt tall** where an unclipped 22pt ring drawn with
+    // a 2.2pt centred stroke measures **24.2pt in both axes**. The vertical figure is
+    // the honest one; the horizontal is 22pt plus antialiasing, i.e. exactly the
+    // declared frame. The region clips on the horizontal axis and not the vertical,
+    // which is why the client's frame reads as the element being *cut off on its
+    // leading edge* rather than as a smaller ring.
+    //
+    // **THE SLOT HAS ROOM AND ALWAYS DID** — so the inset costs nothing, which had to
+    // be established BEFORE choosing one: on a surface that clips, padding is exactly
+    // the change that can make the symptom worse. Probed by rendering rulers of known
+    // width in this very region and measuring what survived: **34pt renders whole**
+    // (pill grows to 191.0pt, both end markers visible) and **46pt renders whole**
+    // (pill 212.0pt). The shipping `3:42 PM` figure measures **65.3pt** of ink and
+    // renders whole (pill 251.7pt), so the ceiling is not a plain width limit. One
+    // probe DID get cut — 57pt of stripes carrying their own fixed
+    // `.frame(width: 57)`, which came back showing only the leading 6.7pt in a pill
+    // that grew to 180.3pt. A fixed frame on the slot's content is the difference
+    // between that probe and every other measurement here, and nothing this file
+    // renders sets one.
+    //
+    // A 22pt ring plus its stroke plus 4pt each side is 32.2pt, inside the narrowest
+    // width proved to render whole.
+    //
+    // **THE FIGURE IS DELIBERATELY NOT INSET.** §0 D's promise is that the ETA figures
+    // are byte-identical to the pre-§0 build, and padding them would move them.
+    // Nothing about a `Text` overflows its own bounds, so it never needed this.
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    /// The clear space the compact trailing GLYPH-OR-RING carries on each side.
+    ///
+    /// It must exceed the ring's own stroke overhang (`ringStrokeCompact / 2` = 1.1)
+    /// or the shave comes straight back; the rest is the clear space the client asked
+    /// for, so the element never sits flush against the boundary the system clips at.
+    static let compactTrailingInset: CGFloat = 4
+    /// The narrowest RULER measured to render whole in this slot (see the block
+    /// above). Deliberately the narrowest of the three measurements rather than the
+    /// widest: it is the conservative bound, it is not a system constant, and it is
+    /// not a promise about any device but the one it was measured on. The inset
+    /// arithmetic is checked against it.
+    static let compactTrailingMeasuredBudget: CGFloat = 34
+
+    /// How far a centred stroke of `stroke` reaches OUTSIDE the shape it is drawn on.
+    /// `Circle().stroke(lineWidth:)` centres the line on the path, so a ring in a
+    /// `frame(width: d)` draws to `d + stroke` and the last `stroke / 2` on each side
+    /// lands outside the bounds any host is entitled to clip to.
+    static func strokeOverhang(_ stroke: CGFloat) -> CGFloat { stroke / 2 }
 
     // MARK: - §0 B · the progress ring
     //
@@ -85,25 +168,31 @@ enum RideActivityMetrics {
     /// determinate ring at `p = 0` would be indistinguishable from the track-only
     /// state — which is a different claim entirely. 2% is one visible cap.
     static let ringMinimumArc: Double = 0.02
-    /// The rotating arc's length, for the "route known, no telemetry yet" state.
+    /// The waiting arc's length, for the "route known, no telemetry yet" state — the
+    /// board's LOADING RING, and **what now ships** (MYR-412).
     ///
-    /// ⚠️ **KEPT AS THE HANDOFF'S NUMBER, AND NOT WHAT SHIPS** — see
-    /// `RideActivityRingArc`. ActivityKit runs neither repeating nor
-    /// appearance-armed animations (measured: six frames 0.3s apart, byte-identical),
-    /// and a STATIC quarter arc is pixel-for-pixel `ringDeterminate(0.25)` — a wrong
-    /// number on the one state that means "nothing has been reported". The waiting
-    /// ring is drawn DASHED instead.
+    /// §0 B asked for this arc turning on a 1.4s loop. It does not turn: the platform
+    /// runs no repeating animation here and no appearance-armed one either, and
+    /// MYR-412 measured that SF Symbol effects are no exception (see
+    /// `RideActivityRingArc`). §0 B's first implementation answered that by drawing
+    /// the waiting ring DASHED, reasoning that a static quarter arc is
+    /// pixel-for-pixel `ringDeterminate(0.25)` and therefore a wrong NUMBER on the one
+    /// state that means the car has reported nothing.
+    ///
+    /// **THE CLIENT OVERRULED THAT WITH THE BOARD IN HAND** — *"it should just be a
+    /// loading icon bc no data from telemetry was found"*, over a mock that draws a
+    /// solid track and a partial gold arc. Client outranks the deduction, and the
+    /// ambiguity it was avoiding is bounded: the card beside the island draws the
+    /// IDLE rail in this state, and a determinate ring is never at rest on exactly a
+    /// quarter for long. 0.25 is the handoff's own number and sits inside the board's
+    /// stated 25-35%.
     static let ringIndeterminateArc: Double = 0.25
     /// One full turn. Linear and `repeatForever` — a view-local animation that costs
     /// NO push budget, which is the whole point of it, and which the platform
-    /// currently ignores.
+    /// ignores. Kept applied: now that the waiting ring IS the design's own arc, the
+    /// day ActivityKit runs a repeating animation this state becomes §0 B exactly,
+    /// with no code change.
     static let ringSpin: TimeInterval = 1.4
-    /// The waiting ring's dashes. A count rather than a length, so the period divides
-    /// the circumference exactly and the seam lands at 12 o'clock at BOTH diameters.
-    static let ringWaitingDashCount: CGFloat = 10
-    /// How much of each period is ink. A third reads as "unsettled" without thinning
-    /// the ring into a dotted line.
-    static let ringWaitingDashDuty: CGFloat = 0.34
 
     // MARK: - §0 C · the arrival beat
     //
@@ -124,6 +213,16 @@ enum RideActivityMetrics {
     /// rather than 0.1s after the beat began (the two readings differ by exactly the
     /// completion, and only this one leaves the ring's sweep visible underneath).
     static let arrivalGlyphDelay: TimeInterval = arrivalRingFadeDelay + 0.1
+    /// **THE SAME BEAT ON A SURFACE WITH NO RING TO COMPLETE** (MYR-412). The compact
+    /// and expanded trailing slots draw the glyph BARE, so there is no arc to sweep to
+    /// full first — the ring simply gives way. The glyph still follows it by the
+    /// beat's own 0.1s, so the interval between "the ring leaves" and "the glyph
+    /// lands" is identical on all three surfaces; only the completion sweep, which is
+    /// meaningful solely where the glyph ends up INSIDE the ring, is absent.
+    ///
+    /// Derived rather than typed, so a change to the beat cannot move one surface and
+    /// leave the other behind.
+    static let bareArrivalGlyphDelay: TimeInterval = arrivalGlyphDelay - arrivalRingFadeDelay
     static let arrivalGlyphFromScale: Double = 0.6
     static let arrivalSpringResponse: Double = 0.34
     static let arrivalSpringDamping: Double = 0.72

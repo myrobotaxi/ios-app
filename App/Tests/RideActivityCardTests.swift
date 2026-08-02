@@ -1148,6 +1148,62 @@ final class RideActivityCardTests: XCTestCase {
         }
     }
 
+    /// **MYR-412 — THE ARRIVAL GLYPH STANDS ALONE ON BOTH BARE SURFACES.**
+    ///
+    /// The client's board has the wave and the check with nothing around them, and
+    /// the ring only where there is neither a glyph nor a figure: *"why is there a
+    /// circle around the hand thats not needed"*. `drawsBareRing` is the compact
+    /// trailing slot's and the expanded `.trailing` region's question, and it is the
+    /// exact complement of "this rung is a glyph or a figure" — swept, so a rung added
+    /// later has to answer it rather than inheriting a `true`.
+    func testTheArrivalGlyphNeverDrawsARingOnTheBareSurfaces() {
+        for status in LiveActivityRideStatus.allCases {
+            for progress in [nil, 0.0, 0.38, 1.0] as [Double?] {
+                for stale in [false, true] {
+                    let resolved = card(status, progress: progress, isStale: stale)
+                    for (name, slot) in [
+                        ("compact", resolved.compact),
+                        ("expanded", resolved.expandedTrailing),
+                    ] {
+                        if let glyph = slot.bareGlyph {
+                            XCTAssertFalse(
+                                slot.drawsBareRing,
+                                "\(status) · \(name): a \(glyph) glyph inside a ring is the reported defect"
+                            )
+                        } else if case .figure = slot {
+                            XCTAssertFalse(slot.drawsBareRing, "\(status) · \(name): a ring behind a number")
+                        } else {
+                            XCTAssertTrue(
+                                slot.drawsBareRing,
+                                "\(status) · \(name): neither a glyph, nor a figure, nor a ring — an empty slot"
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// **THE MINIMAL ISLAND IS THE EXCEPTION, AND IT IS ONE ON PURPOSE.**
+    ///
+    /// `drawsRing` is what that surface asks and it still answers `true` for a glyph:
+    /// minimal is the lone 37pt circle another app's Activity leaves us, and the mark
+    /// inside the ring is the only thing on it that says whose ride this is. The two
+    /// accessors disagreeing about exactly `.glyph` — and about nothing else — IS the
+    /// rule, so it is asserted rather than left to two call sites.
+    func testTheTwoRingQuestionsDifferOnExactlyTheGlyphRung() {
+        for status in LiveActivityRideStatus.allCases {
+            for progress in [nil, 0.38, 1.0] as [Double?] {
+                let slot = card(status, progress: progress).expandedTrailing
+                XCTAssertEqual(
+                    slot.drawsRing != slot.drawsBareRing,
+                    slot.bareGlyph != nil,
+                    "\(status): drawsRing=\(slot.drawsRing) drawsBareRing=\(slot.drawsBareRing) slot=\(slot)"
+                )
+            }
+        }
+    }
+
     /// The expanded slot is the compact one WHEREVER the compact one is not a figure
     /// — i.e. the two ladders differ by exactly the rung the handoff says they do.
     func testTheTwoSlotsDifferByExactlyTheFigureRung() {

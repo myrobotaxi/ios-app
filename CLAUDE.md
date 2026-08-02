@@ -2795,7 +2795,8 @@ every one of them, and its 350 × 128 / four-fixed-row promise is unchanged.
 - **B · THE RING FILLS THE SLOT THAT USED TO BE EMPTY** (`RideActivityRing.swift`,
   one component: d24/2.4 on the minimal island and the expanded `.trailing`,
   d22/2.2 in the compact half-pill; track white 20%, gold arc, round cap, 12
-  o'clock start, east arrow 12 / glyph 13 in the centre). v3's compact island was "a
+  o'clock start, east arrow 12 / glyph 13 in the centre — **the centre is MINIMAL-ONLY
+  from MYR-412**). v3's compact island was "a
   figure or nothing", and "nothing" is most of the fourteen rows — a bare mark
   beside an empty half-pill is indistinguishable from an app that has stopped
   working. **Determinate** is `rail.p`, the RAIL'S OWN fraction (one source, so the
@@ -2805,7 +2806,9 @@ every one of them, and its 350 × 128 / four-fixed-row promise is unchanged.
   island's true black disappears at 13%, and an invisible track-only state is the
   empty slot the ring exists to fill.
 - **⚠️ B · ACTIVITYKIT RUNS NEITHER APPEARANCE-ARMED NOR REPEATING ANIMATIONS, SO
-  THE WAITING ARC IS DASHED RATHER THAN TURNING.** §0 B asks for a 25% arc on a 1.4s
+  THE WAITING ARC IS DASHED RATHER THAN TURNING.** *(The dashed rendering is RETIRED
+  by MYR-412 — see "THE TRAILING SLOT IS BARE" below. The measurement stands and was
+  extended; the conclusion drawn from it was overruled by the client's board.)* §0 B asks for a 25% arc on a 1.4s
   linear `repeatForever`. It is implemented and the platform does not run it —
   measured, three frames 0.35s apart against the 1.4s period, compact AND expanded,
   `ImageChops.difference` bbox `None` / max delta 0 across all six pairs. **A STATIC
@@ -2860,7 +2863,8 @@ every one of them, and its 350 × 128 / four-fixed-row promise is unchanged.
   The split is for two different APPS. The hook is kept for the census line that
   proves why, not for a frame it cannot produce; what the minimal surface renders is
   asserted instead — the same `RideActivityProgressRing` at the same 24pt/2.4 over
-  the same `expandedTrailing` resolution the expanded capture does show.
+  the same `expandedTrailing` resolution the expanded capture does show. **MYR-412
+  narrowed that last clause** — see below.
 
 ```sh
 # §0's own additions to the fourteen board rows and the two orthogonal probes:
@@ -2869,6 +2873,76 @@ SIMCTL_CHILD_MRT_ACTIVITY_REPUSH=6          # re-push the identical frame (§0 C
 SIMCTL_CHILD_MRT_ACTIVITY_ADVANCE=16        # perform the real transition (§0 C)
 SIMCTL_CHILD_MRT_ACTIVITY_MINIMAL=1         # a second Activity (§0 B, census only)
 ```
+
+**THE TRAILING SLOT IS BARE, AND THE BOARD SAID SO ALL ALONG** (MYR-412,
+**CLIENT-DIRECTED**, against the §0 build `202608011648` — three screenshots and the
+board image, which he sent to settle it). §0 B read the handoff's "wrap the mark in a
+ring" as applying to every surface and put the east arrow and the arrival glyphs
+inside it. The **la-board "ENROUTE · NO TELEMETRY" mock** reads the compact island the
+other way round: LEADING the east arrow, TRAILING a **bare ring** — solid track,
+partial gold arc, nothing in the middle. The §0 D ladder is UNCHANGED and nothing on
+the lock-screen card moves; this is what the two BARE surfaces draw for a given rung.
+
+- **The wave and the check stand alone** — *"why is there a circle around the hand
+  thats not needed"*. `RideActivityIslandTrailingSlot` is the rule once for the
+  compact half-pill AND the expanded `.trailing`, because the correction is about the
+  composition rather than about one surface, and the mirror's own Expanded-regions
+  table already said `.trailing` is "the arrival glyph when there is one, else the
+  ring". Sizes are per surface (wave 17 / check 15 compact, 19 / 17 expanded — inside
+  the mirror's 17-19 and 15-19), and the check is the smaller of each pair because a
+  filled disc carries more ink per point than an open hand. `ringGlyph` (13) survives
+  as the glyph INSIDE the ring, which only minimal draws.
+- **The waiting ring is the board's own arc, static** — *"it should just be a loading
+  icon bc no data from telemetry was found"*. #168's DASHED FULL RING is retired. Its
+  reasoning was sound (a static quarter arc is pixel-for-pixel
+  `ringDeterminate(0.25)`) and the client overruled it with the mock in hand; the
+  ambiguity it was avoiding is bounded, because the card beside the island draws the
+  IDLE rail in this state.
+- **⚠️ SF SYMBOL EFFECTS DO NOT RUN HERE EITHER, AND THAT WAS WORTH MEASURING.** §0 B
+  established that ActivityKit runs no repeating or appearance-armed animation, but a
+  symbol effect is a DIFFERENT mechanism — declared on the symbol, driven by the
+  rendering system rather than by a SwiftUI transaction — so "it might animate where
+  `withAnimation` does not" is a real hypothesis and not a hope.
+  `Image("progress.indicator").symbolEffect(.variableColor.iterative.reversing)`,
+  `Image("ellipsis").symbolEffect(.variableColor.iterative)` and
+  `Image("arrow.trianglehead.clockwise").symbolEffect(.rotate)` (iOS 18+) were
+  rendered in this very slot on a live Activity. **All three DRAW and none moves** —
+  22 frames across two runs a minute apart, `ImageChops.difference` bbox `None`, max
+  delta 0, including frame 1 of run A against frame 12 of run B. Every spoke of
+  `progress.indicator` renders at full opacity, i.e. `.variableColor`'s inert base
+  state, which is what distinguishes "the effect ran and we photographed one phase"
+  from "the effect never ran". **The symbol resolving and the modifier compiling are
+  not evidence the effect runs**; only a frame sequence is.
+- **⚠️ THE CLIPPING WAS `Circle().stroke` REACHING OUTSIDE ITS OWN FRAME.** The
+  client's *"cut off on the leading edge"*: a centred stroke is drawn half outside the
+  path, so a 22pt ring in a 22pt frame draws to 24.2pt — and the compact trailing
+  region clips to the content's declared bounds **on the horizontal axis and not the
+  vertical**, which is why it reads as a slice rather than as a smaller ring. Measured
+  on #168: ring ink **23.00pt wide × 24.0-24.67pt tall** (the width is the frame plus
+  antialiasing). `compactTrailingInset` = 4 fixes it — it must EXCEED
+  `ringStrokeCompact / 2` = 1.1 or the shave returns, and the rest is the clear space
+  he asked for. Post-fix the ring measures **24.0 × 24.0** and its clearance to the
+  pill edge goes **2.96 → 6.36pt**; the bare wave and check clear by 9.2-9.4pt.
+  **The FIGURE branch is deliberately not inset**, so §0 D's byte-identity promise
+  holds (measured base vs branch: `accepted` bbox `None`; `enroute` differs only in
+  the wall-clock minute its `{h:mm A}` is composed from).
+- **THE BUDGET WAS PROBED BEFORE THE INSET WAS CHOSEN**, because on a surface that
+  clips, padding is exactly the change that can make the symptom worse. Rulers of
+  known width rendered in this region come back whole at 34pt (pill 191.0) and 46pt
+  (pill 212.0), and the shipping `3:42 PM` figure is 65.3pt of ink and renders whole
+  (pill 251.7) — so the ceiling is not a plain width limit. The one probe that WAS cut
+  carried its own fixed `.frame(width: 57)`; nothing this surface renders sets one.
+- **The MINIMAL island keeps its centre** (`centre: .mark`, the parameter's default) —
+  it is the lone 37pt circle another app's Activity leaves us and the mark inside the
+  ring is the only thing that says whose ride this is, which is §5's own spec. **And
+  that costs a piece of evidence, which is recorded rather than glossed**: minimal is
+  now the ONLY surface drawing an arrow-in-ring, so it can no longer borrow the
+  expanded capture's frame the way the §0 note above claims. Nothing in this repo
+  photographs that composition; `RideActivityGeometryTests
+  .testTheRingsCentreClearsItsOwnStroke` is its only guard.
+- **The expanded island is otherwise untouched** — heights still 141.0pt (two-line)
+  vs 156.0pt (three-line), so §0 A's "nothing is pinned" acceptance still holds, and
+  the trailing element clears the pill by 20.3-22.1pt.
 
 **TWO BANNERS FOR ONE RIDE, AND THE ONE THE SERVER PUSHED TO WAS NOT THE ONE
 STARVING** (MYR-405, client defect, build `202607312110`) — probe

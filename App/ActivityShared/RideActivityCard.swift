@@ -194,8 +194,11 @@ enum RideActivityTrailingSlot: Equatable {
     /// when the ride is done. Not artwork: Apple's optical weights, the same shapes
     /// the board drew with Material Symbols.
     ///
-    /// It arrives with the §0 C beat and inside a COMPLETED ring, which is why the
-    /// glyph outranks the ring rather than sitting beside it: they are one mark.
+    /// It arrives with the §0 C beat, and it outranks the ring rather than sitting
+    /// beside it because the two are one mark. **On the compact and expanded trailing
+    /// slots it stands ALONE** (MYR-412 — the client's board, and his *"why is there a
+    /// circle around the hand"*); on the MINIMAL island it lands inside the completed
+    /// ring, which is the surface that keeps a centre at all.
     case glyph(Glyph)
 
     /// Telemetry is flowing — a gold arc of `rail.p`, floored so its cap is visible.
@@ -205,9 +208,12 @@ enum RideActivityTrailingSlot: Equatable {
     /// far along the same leg is.
     case ringDeterminate(Double)
 
-    /// The route is known and the car has reported nothing yet — a 25% arc turning
-    /// on a view-local 1.4s loop. **This rotation is the substance of §0 B**, and it
-    /// costs no push budget because nothing about it comes off the wire.
+    /// The route is known and the car has reported nothing yet — **the board's
+    /// LOADING RING**: solid track, a partial gold arc, round cap, nothing in the
+    /// middle. It was designed to turn (§0 B), and MYR-412 established that no
+    /// mechanism available on this surface will turn it — not `repeatForever`, not an
+    /// appearance-armed animation, and not an SF Symbol effect. It ships static, which
+    /// is what the client's mock draws.
     case ringIndeterminate
 
     /// The ring with no arc at all. A ride that ENDED is not making progress and is
@@ -221,11 +227,38 @@ enum RideActivityTrailingSlot: Equatable {
         case check
     }
 
-    /// Whether this resolution draws the ring at all — the structural form of
-    /// "never empty": every case but `.figure` does.
+    /// Whether this resolution puts a RING on the surface that keeps one in every
+    /// non-figure state — the MINIMAL island. The structural form of "never empty":
+    /// every case but `.figure` does, and `.figure` cannot reach that surface.
     var drawsRing: Bool {
         if case .figure = self { return false }
         return true
+    }
+
+    /// **MYR-412 — whether the two BARE surfaces draw the ring.**
+    ///
+    /// The compact trailing half-pill and the expanded `.trailing` region render the
+    /// arrival glyph INSTEAD of the ring rather than inside it, so `.glyph` answers
+    /// `false` here where it answers `true` to `drawsRing`. The client's board is
+    /// explicit about both halves — a bare wave and a bare check at the two stops, and
+    /// a bare loading ring where there is neither a glyph nor a figure — and his
+    /// question was *"why is there a circle around the hand thats not needed"*.
+    ///
+    /// It is a second accessor rather than a redefinition of the first because the
+    /// two surfaces genuinely differ: minimal keeps the mark in the middle of the
+    /// ring, and one boolean answering for both is the shape that makes a surface
+    /// borrow another's rendering.
+    var drawsBareRing: Bool {
+        switch self {
+        case .figure, .glyph: return false
+        case .ringDeterminate, .ringIndeterminate, .ringTrackOnly: return true
+        }
+    }
+
+    /// The arrival glyph this resolution renders on its own, if any.
+    var bareGlyph: Glyph? {
+        if case .glyph(let glyph) = self { return glyph }
+        return nil
     }
 }
 

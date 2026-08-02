@@ -9,7 +9,13 @@ canonical; the orchestrator re-syncs this mirror when the design changes.
 `ds/*`, canvases, Handoff). **Partial sync 2026-07-31 (MYR-398 v2)**:
 `Handoff-Live-Activity.md` + `la/` — the client's Live Activity / Dynamic Island
 redesign, authored after the full sync and mirrored here with the PR that ports
-it, so the mirror does not lag the surface it describes. Not mirrored:
+it, so the mirror does not lag the surface it describes. **MYR-412 (2026-08-02)
+annotates `Handoff-Live-Activity.md` in place** — the client sent the board image
+to correct how the compact trailing slot had been read, so the corrections are
+marked ⚠️ inline beside the prose they override rather than replacing it, and the
+whole reading is stated once in the mirror note at the top of that file.
+`la/la-board.jsx` (the review board those mocks live on) is still **not mirrored**;
+the corrected reading of it is what the note carries. Not mirrored:
 `screenshots/` and `uploads/`
 (iterative design-process images, not canonical references — the runnable
 prototype below supersedes them).
