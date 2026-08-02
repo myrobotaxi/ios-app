@@ -59,6 +59,15 @@ import WidgetKit
 //      static.
 //   D. The priority between the three is `RideActivityTrailingSlot`, resolved in the
 //      pure layer.
+//
+// **MYR-412 CORRECTS §0 B's COMPOSITION AGAINST THE CLIENT'S OWN BOARD** (build
+// `202608011648`, three screenshots and the board image). The ladder is untouched;
+// what changed is what the two trailing slots DRAW for a given rung. The wave and the
+// check stand alone — no ring around them — the no-telemetry ring holds nothing in
+// its centre and is a solid track plus a partial gold arc rather than #168's dashed
+// full ring, and the compact slot is inset so the region stops shaving the ring's
+// stroke flat. The MINIMAL island keeps its centre content. See
+// `RideActivityIslandTrailingSlot`.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // MARK: - The ground
@@ -432,12 +441,17 @@ struct RideActivityIslandLeading: View {
     }
 }
 
-/// COMPACT TRAILING — **a figure, a glyph, or the RING** (§0 B + §0 D).
+/// COMPACT TRAILING — **a figure, a BARE glyph, or a BARE ring** (§0 B + §0 D, as
+/// corrected by MYR-412).
 ///
 /// `8 min` / `1 min` / `3:42 PM` at 15/600 tabular, exactly as before §0: the ring
-/// never displaces a number. Where there IS no number the slot used to be empty, and
-/// that is what the ring fills — a live ride whose car has not reported yet now
-/// turns a 25% arc instead of showing a bare mark beside nothing.
+/// never displaces a number, and the figure is the ONE branch here that carries no
+/// inset, so those four states stay byte-identical. Where there IS no number the slot
+/// used to be empty, and that is what the ring fills.
+///
+/// **NOTHING IS DRAWN INSIDE EITHER** — the client's board has the wave and the check
+/// standing alone and the no-telemetry ring holding nothing at all. See
+/// `RideActivityIslandTrailingSlot`, which is that rule once for both island surfaces.
 struct RideActivityIslandTrailing: View {
     let card: RideActivityCard
 
@@ -457,10 +471,13 @@ struct RideActivityIslandTrailing: View {
             // 22 rather than 24: the compact pill is shorter than the island is
             // tall, and a ring sized for the expanded slot crowds its own cap
             // against the pill's edge.
-            RideActivityProgressRing(
+            RideActivityIslandTrailingSlot(
                 slot: card.compact,
                 diameter: RideActivityMetrics.ringDiameterCompact,
-                stroke: RideActivityMetrics.ringStrokeCompact
+                stroke: RideActivityMetrics.ringStrokeCompact,
+                waveSize: RideActivityMetrics.compactWaveGlyph,
+                checkSize: RideActivityMetrics.compactCheckGlyph,
+                horizontalInset: RideActivityMetrics.compactTrailingInset
             )
         }
     }
@@ -477,11 +494,19 @@ struct RideActivityIslandTrailing: View {
 /// It renders the FIGURE-LESS resolution, for the obvious reason: `3:42 PM` does not
 /// fit in a 37pt circle, and the ladder's answer to "no figure here" is already
 /// written down.
+///
+/// **THIS IS THE ONE SURFACE MYR-412 DID NOT STRIP.** The two trailing slots draw the
+/// glyph and the ring bare; minimal keeps `centre: .mark`, so the ring still holds the
+/// arrow and still swaps it for the arrival glyph. The reading stands on its own:
+/// minimal is the lone 37pt circle another app's Activity leaves us, the mark inside
+/// it is the only thing that says whose ride this is, and the handoff's §5 names the
+/// composition outright — "Minimal 37×37 · ring d24 stroke 2.4 · center arrow 12 /
+/// glyph 13". A bare ring here would be an anonymous circle.
 struct RideActivityIslandMinimal: View {
     let card: RideActivityCard
 
     var body: some View {
-        RideActivityProgressRing(slot: card.expandedTrailing)
+        RideActivityProgressRing(slot: card.expandedTrailing, centre: .mark)
             .accessibilityLabel(RideActivityIslandLeading.label(for: card))
     }
 }
@@ -554,20 +579,40 @@ struct RideActivityIslandExpandedLeading: View {
     }
 }
 
-/// `.trailing` — the glyph or the ring. **Never empty, and never the ETA.**
+/// `.trailing` — the BARE glyph or the BARE ring. **Never empty, and never the ETA.**
 ///
 /// The expanded headline already carries the figure, so a second copy of it here
 /// would be the badge the whole redesign removed; the slot instead answers the
 /// question the headline cannot — how far along, or which stop we reached.
+///
+/// **IT RUNS THE COMPACT SLOT'S OWN VIEW** (MYR-412). The client's correction is
+/// about the composition inside the slot rather than about one surface, and the
+/// board's expanded mocks put the same bare marks in the same place; forking it would
+/// be two spellings of one rule, which is what §0 D's single ladder and this issue's
+/// single view both exist to stop. The only differences are the four numbers — a 24pt
+/// ring and the larger pair of glyphs, because the surface and the ring it replaces
+/// are larger.
+///
+/// It passes **no horizontal inset of its own**: #168's corner-safe padding below is
+/// already 6pt, which more than clears the 1.2pt a centred stroke reaches outside its
+/// frame, and re-measuring that surface's four corner clearances is not this issue's
+/// change to make.
 struct RideActivityIslandExpandedTrailing: View {
     let card: RideActivityCard
 
     var body: some View {
-        RideActivityProgressRing(slot: card.expandedTrailing)
-            // The MIRROR of the leading mark's inset — same two numbers, opposite
-            // side, so the top row stays symmetric about the housing.
-            .padding(.trailing, RideActivityMetrics.expandedCornerSafeHorizontal)
-            .padding(.top, RideActivityMetrics.expandedCornerSafeTop)
+        RideActivityIslandTrailingSlot(
+            slot: card.expandedTrailing,
+            diameter: RideActivityMetrics.ringDiameter,
+            stroke: RideActivityMetrics.ringStroke,
+            waveSize: RideActivityMetrics.expandedWaveGlyph,
+            checkSize: RideActivityMetrics.expandedCheckGlyph,
+            horizontalInset: 0
+        )
+        // The MIRROR of the leading mark's inset — same two numbers, opposite
+        // side, so the top row stays symmetric about the housing.
+        .padding(.trailing, RideActivityMetrics.expandedCornerSafeHorizontal)
+        .padding(.top, RideActivityMetrics.expandedCornerSafeTop)
     }
 }
 

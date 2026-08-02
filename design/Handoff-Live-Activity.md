@@ -14,6 +14,52 @@ The state machine is unchanged. What each state renders, and every rider-facing 
 > Platform trap (measured, PR #168): `.contentMargins` on a DynamicIslandExpandedRegion
 > compiles and is silently dropped — `.padding` is the only mechanism that reaches
 > that surface.
+>
+> **Mirror note (2026-08-02, MYR-412) — THE CORRECTED READING OF THE BOARD, and it
+> overrides the "Center —" line in §Minimal & compact, §0 B's table and §9's compact
+> paragraph wherever they conflict.** The client sent the board image to settle it,
+> against build `202608011648`. On the **la-board "ENROUTE · NO TELEMETRY" mock** the
+> compact island is: **LEADING** = the east arrow (as shipped), **TRAILING** = a
+> **BARE ring** — solid track, partial gold arc, **nothing inside it**. Three
+> corrections follow, and all three are about the two BARE surfaces (the compact
+> trailing half-pill and the expanded `.trailing` region). **The MINIMAL island keeps
+> its centre content** — §5's "ring d24 · center arrow 12 / glyph 13" stands there,
+> and it is the one surface where the mark inside the ring is the only thing saying
+> whose ride this is.
+>
+> 1. **The wave and the check render BARE** — no ring drawn around them
+>    (*"why is there a circle around the hand thats not needed"*). Sizes: wave 17
+>    compact / 19 expanded, check 15 compact / 17 expanded, both white, both inside
+>    the ranges §5 and §9 give (wave 17-19, check 15-19); the check is the smaller of
+>    each pair because a filled disc carries more ink per point than an open hand.
+> 2. **The no-telemetry ring is a bare LOADING ring** — *"it should just be a loading
+>    icon bc no data from telemetry was found"*. Solid track (white 20%), partial gold
+>    arc (~25-35%; shipped at §0 B's own 25%), round cap, from 12 o'clock, no arrow and
+>    no glyph in the middle. **This retires PR #168's dashed full ring**, which was a
+>    deduction (a static quarter arc is pixel-for-pixel `ringDeterminate(0.25)`) the
+>    client overruled with the mock in hand.
+> 3. **Left clipping is fixed by an inset on the compact trailing slot.** Cause,
+>    measured on #168: `Circle().stroke` centres the line on the path, so a ring in a
+>    22pt frame draws to 24.2pt and the compact trailing region — which clips on the
+>    HORIZONTAL axis and not the vertical — shaved the outer 1.1pt off each side. The
+>    ring's ink measured **23.00 × 24.67pt** where an unclipped one measures 24.2 in
+>    both axes. `compactTrailingInset` = 4pt (must exceed the 1.1pt overhang; the rest
+>    is clear space). The ETA FIGURE is deliberately not inset, so §0 D's
+>    byte-identity promise for Enroute / Arriving / On-trip / Stale still holds.
+>
+> **MOTION VERDICT, MEASURED (MYR-412): nothing available on this surface animates
+> the waiting ring, INCLUDING SF Symbol effects.** §0 B's `repeatForever` rotation was
+> already known not to run. Symbol effects are a different mechanism, so they were
+> tested rather than assumed: `progress.indicator` with
+> `.symbolEffect(.variableColor.iterative.reversing)`, `ellipsis` with
+> `.symbolEffect(.variableColor.iterative)` and `arrow.trianglehead.clockwise` with
+> `.symbolEffect(.rotate)` (iOS 18+) were rendered in this very slot on a live
+> Activity. All three DRAW; none moves — 12 frames ~130ms apart over 1.52s plus a
+> 10-frame run a minute earlier, every pair `ImageChops.difference` bbox `None`, max
+> delta 0, including across the two runs. Every spoke of `progress.indicator` renders
+> at full opacity, which is `.variableColor`'s inert base state. So the loading ring
+> ships STATIC, exactly as the mock draws it. The 1.4s rotation is left applied and
+> costs nothing.
 
 ---
 
@@ -56,18 +102,32 @@ nothing is pinned).
 
 ### B · The loading ring — what to show when there is no data
 
-The mark alone is not information. Wrap it in a 24pt ring (22pt in the compact
-trailing slot) that carries the leg's progress. One component, three states:
+The mark alone is not information. Give the empty slot a 24pt ring (22pt in the
+compact trailing slot) that carries the leg's progress. One component, three states:
+
+> ⚠️ **MYR-412: "wrap it" was read as "put the mark inside it" and that is wrong for
+> two of the three surfaces.** The ring is BARE in the compact trailing slot and in
+> the expanded `.trailing` region — the board's mock has nothing in its middle. Only
+> the MINIMAL island wraps the mark. See the mirror note at the top.
 
 | Condition | Ring | Meaning to the rider |
 |---|---|---|
 | telemetry flowing | gold arc = `rail.p`, animates to each new value over 0.5s | how far along this leg is |
-| route known, **no telemetry yet** | a **25% arc rotating, 1.4s linear, indefinitely** | connected and working, just no position yet |
+| route known, **no telemetry yet** | a **25% arc** (designed to rotate at 1.4s linear; ships static — MYR-412) | connected and working, just no position yet |
 | ride ended (declined / cancelled / expired) | track only, no arc | nothing left to progress |
 
 The rotation is the whole point of item B: it is the difference between "the app
 is dead" and "we are waiting on the car," and it costs nothing but a repeating
 rotation on a static shape.
+
+> ⚠️ **MYR-412 (measured, twice, two mechanisms): the platform does not run it.**
+> `repeatForever` armed from `onAppear` was measured inert in PR #168, and the
+> follow-up ruled out the other candidate — SF Symbol effects
+> (`.variableColor.iterative[.reversing]` on `progress.indicator` / `ellipsis`, and
+> `.symbolEffect(.rotate)` on `arrow.trianglehead.clockwise`) all render their inert
+> base state and never move: 22 frames across two runs a minute apart, bbox `None`,
+> max delta 0. The ring is still the difference between a dead app and a waiting one
+> — the ARC is, not the rotation.
 
 ```swift
 Circle().trim(from: 0, to: 0.25)
@@ -161,9 +221,9 @@ One ring component, two sizes: 24pt centered in **minimal**, 22pt in the
 o'clock. The compact pill is never a half-empty black lozenge again.
 
 - **Determinate** — arc = `rail.p` for the current leg. Same number the card's rail draws, so the two surfaces never disagree. Floor it at 2% so the cap is always visible.
-- **Indeterminate** — a 25% arc rotating at 1.4s linear, whenever the route is known but no telemetry has landed (`rail.state == .idle` on a live ride). Reads as "working," which is true, instead of a dead logo. (Measured: ActivityKit does not run repeatForever in the island — the shipped waiting arc is the honest static dashed-ring rendering; the rotation applies where the system runs it.)
+- **Indeterminate** — a 25% arc, whenever the route is known but no telemetry has landed (`rail.state == .idle` on a live ride). Reads as "working," which is true, instead of a dead logo. (⚠️ **Corrected by MYR-412** — see the mirror note at the top. It was designed to rotate at 1.4s linear and **nothing on this surface will turn it**: not `repeatForever`, not an appearance-armed animation, and not an SF Symbol effect, all measured. It ships as the STATIC partial arc the board draws; #168's interim dashed full ring is retired.)
 - **Track only** — ended rides (declined / cancelled / expired). Nothing to progress.
-- **Center** — the east arrow, swapped for the arrival glyph at 13pt in Arrived and Completed.
+- **Center** — ⚠️ **MINIMAL ONLY, corrected by MYR-412.** On the minimal island: the east arrow, swapped for the arrival glyph at 13pt in Arrived and Completed. On the **compact trailing** slot and the expanded `.trailing` region the ring is **BARE** and the arrival glyph replaces it rather than sitting inside it — the board's own reading, and the client's *"why is there a circle around the hand thats not needed"*.
 
 ---
 
@@ -227,6 +287,8 @@ Chip         — removed. No badges on any surface.
 Minimal      37 × 37 · ring d24 stroke 2.4 · center arrow 12 / glyph 13
 Compact      h 37 · min-w 126 with a figure, 92 without · padding 0 12
              mark 16 leading · trailing: figure 15/600 · glyph 19 · or ring d22
+             MYR-412: trailing content is BARE and inset 4 per side (not the
+             figure). Shipped glyphs wave 17 / check 15 here, 19 / 17 expanded.
 Expanded     r 38 · padding 10/20/15 · gap 10 · top row 34 · logo 26
              headline 19/600 · width + height owned by the system
              corner-safe insets: top-row 6h/4t · rail ends 6 (see Expanded regions)
@@ -286,7 +348,7 @@ One accent, no status colors — there are no tone dots left to carry them. Card
 - **ETA figures hold the last pushed value** (client ruling; supersedes any timer note): derived once per content-state update, `{n} min` / `{n} s`, never mm:ss.
 - **Trip dropoff time** is a formatted `Date`, not a timer: `.formatted(date: .omitted, time: .shortened)`, recomputed only when the server sends a new ETA. It does not tick.
 - **Rail.** One `GeometryReader`; animate fill width and the puck `.offset` with `.timingCurve(0.2, 0.8, 0.2, 1, duration: 0.5)`. **Clamp puck travel to the track** — `11 + (width − 22) * p` — so it never overhangs the end, and **hide the destination pin at `p = 1`** so the mark occupies that spot alone; two markers stacked on the same point reads as a rendering bug. The arrow is a fixed asset rotated 90° from the mark — never rotate it at runtime.
-- **Compact trailing is a figure, a glyph, or the ring.** `8 min` · `1 min` · `3:42 PM`, exactly as Uber does it — never an invented status word. At the two stops it is a glyph instead: a **wave** at the pickup — same beat as Uber's, the car greeting you — and a **check** at completion, both white, 19pt, from the icon font (ship the SF Symbols). With neither a figure nor a glyph, the **progress ring** takes the slot (d22 compact, d24 expanded) rather than leaving the pill half empty.
+- **Compact trailing is a figure, a glyph, or the ring.** `8 min` · `1 min` · `3:42 PM`, exactly as Uber does it — never an invented status word. At the two stops it is a glyph instead: a **wave** at the pickup — same beat as Uber's, the car greeting you — and a **check** at completion, both white, 19pt, from the icon font (ship the SF Symbols). With neither a figure nor a glyph, the **progress ring** takes the slot (d22 compact, d24 expanded) rather than leaving the pill half empty. **All three are BARE** (MYR-412) — the glyph is not drawn inside the ring and the ring holds nothing; shipped at wave 17 / check 15 compact and wave 19 / check 17 expanded, and the slot carries a 4pt inset per side so a centred stroke is not shaved by the region's own clip.
 - **Pulsing dot** — removed. Everything on the card is static; the only motion is the rail interpolating on a real update. Live Activities are budget-limited.
 
 ---

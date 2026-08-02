@@ -40,6 +40,17 @@ import XCTest
 // width question moved to the CARD's fixed 24pt headline row and its
 // `lineLimit(1)`, which `RideActivityGeometryTests` measures directly and
 // `testTheLongestStringsAreCaptured` photographs.
+//
+// ⚠️ **MYR-412 CHANGES WHAT THESE FRAMES SHOW, ON PURPOSE.** `arrived` and
+// `completed` render a BARE wave and a BARE check in the trailing slot (compact and
+// expanded) instead of the same glyphs inside a ring, and every ring state renders a
+// solid track plus a partial gold arc with nothing in its middle instead of #168's
+// dashed full ring with the east arrow in it. Those frames are also where the
+// CLIPPING fix is read: the ring's ink used to come back 23.00pt wide against
+// 24.67pt tall — the horizontal axis shaved flat to its declared frame — and now
+// comes back square. The FIGURE states are byte-identical (measured base vs branch:
+// `accepted` bbox `None`; `enroute` differs only in the wall-clock minute its
+// `{h:mm A}` is composed from).
 final class RideActivityIslandUITests: XCTestCase {
 
     override func setUp() {
@@ -328,15 +339,24 @@ final class RideActivityIslandUITests: XCTestCase {
     /// apart against a 1.4s period, compact AND expanded — `ImageChops.difference`
     /// bbox `None`, max delta 0, across all six pairs.
     ///
-    /// So the frames prove the ring is DRAWN and prove the rotation is not run, and
-    /// **that is exactly why the waiting state is a DASHED FULL RING rather than a
-    /// static quarter arc**: a still 25% arc is pixel-for-pixel
-    /// `ringDeterminate(0.25)`, i.e. the wrong NUMBER on the one state that means
-    /// "the car has reported nothing", on a frame whose card is drawing an idle
-    /// rail. A dashed full ring cannot be read as a fraction from any angle and
-    /// still says "waiting on the car" rather than "the app is dead". The rotation
-    /// is left applied: it costs nothing and the day the platform runs it the dashes
-    /// chase round with no code change.
+    /// So the frames prove the ring is DRAWN and prove the rotation is not run.
+    ///
+    /// ⚠️ **MYR-412 CLOSED THE LAST ROUTE AND THEN THE CLIENT SETTLED THE RENDERING.**
+    /// §0 B's first implementation answered the dead rotation with a DASHED FULL
+    /// RING, reasoning that a static quarter arc is pixel-for-pixel
+    /// `ringDeterminate(0.25)`. Two things changed. (1) The other mechanism was
+    /// measured rather than assumed: SF Symbol effects are driven by the rendering
+    /// system rather than by a SwiftUI transaction, so
+    /// `.symbolEffect(.variableColor.iterative[.reversing])` on `progress.indicator`
+    /// / `ellipsis` and `.symbolEffect(.rotate)` on `arrow.trianglehead.clockwise`
+    /// were rendered in this very slot on a live Activity. All three DRAW and none
+    /// moves — 22 frames across two runs a minute apart, bbox `None`, max delta 0.
+    /// (2) The client sent the board and overruled the deduction outright: *"it
+    /// should just be a loading icon bc no data from telemetry was found"*, over a
+    /// mock that draws a solid track and a partial gold arc with nothing inside it.
+    /// So the waiting state is that arc, static, and the dashes are gone. The
+    /// rotation is left applied: it costs nothing and the day the platform runs it
+    /// the arc turns with no code change.
     ///
     /// The repo's rule (prove motion by frame sequence, never by a still) is
     /// therefore kept and ANSWERED here rather than merely invoked — the sequence is
@@ -382,11 +402,21 @@ final class RideActivityIslandUITests: XCTestCase {
     /// Activities of one app the system picks a presentation, and it picks compact.
     ///
     /// So this suite CANNOT claim a minimal frame, and the attachment is kept as the
-    /// evidence of that rather than mislabelled as one. What the minimal surface
-    /// renders is asserted instead of photographed, and the assertion is a strong
-    /// one: it is the same `RideActivityProgressRing` at the same 24pt/2.4 over the
-    /// same `expandedTrailing` resolution that the EXPANDED capture does show — one
-    /// component, one call, no second layout to drift.
+    /// evidence of that rather than mislabelled as one.
+    ///
+    /// ⚠️ **MYR-412 WEAKENED WHAT CAN BE CLAIMED IN ITS PLACE, AND SAYING SO IS THE
+    /// POINT.** This comment used to close by arguing that the minimal composition
+    /// needs no frame because it is "the same `RideActivityProgressRing` over the same
+    /// `expandedTrailing` resolution that the EXPANDED capture does show". That was
+    /// true until the expanded slot went BARE: minimal is now the ONLY surface that
+    /// draws a centre inside the ring, so **no capture in this repo shows the
+    /// arrow-in-ring composition at all** — an unphotographed surface that used to
+    /// borrow a photographed one's evidence. What survives is narrower and is stated
+    /// rather than implied: the same component, the same slot resolution, the same
+    /// 24pt/2.4, and `centre: .mark` is the parameter's DEFAULT, so the minimal call
+    /// site is the un-parameterised one. The geometry is pinned by
+    /// `RideActivityGeometryTests.testTheRingsCentreClearsItsOwnStroke`, which is now
+    /// the minimal island's only guard.
     func testTheMinimalIslandRendersTheRing() throws {
         let app = startActivity(state: "accepted", extra: ["MRT_ACTIVITY_MINIMAL": "1"])
 
