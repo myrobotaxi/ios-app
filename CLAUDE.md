@@ -76,7 +76,7 @@ xcrun simctl io booted screenshot search.png   # full-frame, never window automa
 
 A `-MRT_SCENE <name>` launch **argument** is accepted as a fallback for tooling that can't set the child env. **Scene names** (unset = normal Sign-In boot):
 
-- Rider request flow: `idle`, `search`, `searchFiltered`, `searchSelected` (destination chosen, "Continue" CTA), `pinDrop`, `pinDropRealPath` (MYR-217: boots to idle, then auto-drives the REAL idle→search→Continue→pinDrop transition with live updates flowing — use this, not cold `pinDrop`, to probe pin-drop entry camera behavior), `review`, `reviewPicker`, `booking`, `pending` (minimized "Request sent" pill), `trackingLeg1` (to pickup), `trackingLeg2` (in-ride), `trackingArriving`, `summary`, `riderSummaryLive` (MYR-414: the SAME post-ride takeover resolved on the LIVE branch — a measured trip span, the ride's real leg-2 road route as the hero line and as the distance tile, no FSD/autonomy claim and no tip section. `summary` keeps the prototype's illustration and is byte-identical, so the pair is a clean before/after; see "THE POST-RIDE SUMMARY WAS A PAGE OF ESTIMATES WEARING THE TRIP'S LABEL" below), `declined`, `riderBusyVehicle` (MYR-233: the Review sheet with an UNAVAILABLE vehicle — muted Busy chip on the fleet row, gold instant CTA replaced by "Schedule with … instead". Select the state with `MRT_BUSY_REASON=busy|inService|offline|paused`, default `busy`; each is built from real wire inputs through `LiveFleetMemberMapping`, so the capture exercises the shipping predicate. **MYR-342 adds `paused`** — the owner's ride-share switch off (`rideShareEnabled: false`) on a car that is otherwise PARKED and healthy, which is the whole point of the state. It is the one reason whose CTA area holds **no button at all**: the muted "Paused" chip and the helper line "{Owner} has paused ride requests right now", and nothing else. The other three keep MYR-233's "Schedule with … instead" route because each ENDS on its own; an owner's pause is open-ended and the server refuses scheduled rides against it too, so offering scheduling would be a `409 vehicle_unavailable` with extra steps), `riderPlateChip` (MYR-286: the Booking sheet's plate chip carrying the REAL owner-entered plate instead of the `VIN ····xxxx` degrade — same live-shaped `VehicleSummary` path, with `licensePlate` set), `riderScheduleFloored` (MYR-316: the Schedule slide-up card with the SERVICE-WINDOW FLOOR applied — a muted "Lunar is in service until Sat, Aug 1 · 2:00 PM" caption, dimmed-but-visible day/time chips for every slot before the car is back, and a selection already pulled forward to the first bookable one. Injects a live-shaped in-service `VehicleSummary` carrying `serviceEstimatedEndAt` through the REAL `LiveFleetMemberMapping`, then opens the card via the existing one-shot `opensScheduleOnSearch` hook, so the capture exercises the shipping `RideScheduleFloor` grid rule rather than a hand-set flag. **A vehicle with NO window imposes NO floor** — that is the common case and every other rider scene is byte-identical), `riderScheduleBooked` (MYR-385: the SAME Schedule card dimmed for the OTHER reason — §7.22's booked windows rather than MYR-316's service floor. The car is PARKED with no window, so every dimmed chip in the frame came from the conflict read; it injects the wire through `DebugBookedWindowsEndpoint` and runs the shipping store + `RideScheduleFloor`, and carries the rider's OWN noon reservation plus somebody else's PENDING 5:30 PM so both captions are reachable from one scene. Capture at t≈0.3s for the pre-arrival / fail-open frame and t≈1.5s for the settled one — see "A rule the picker cannot see is indistinguishable from a bug" below).
+- Rider request flow: `idle`, `search`, `searchFiltered`, `searchSelected` (destination chosen, "Continue" CTA), `pinDrop`, `pinDropRealPath` (MYR-217: boots to idle, then auto-drives the REAL idle→search→Continue→pinDrop transition with live updates flowing — use this, not cold `pinDrop`, to probe pin-drop entry camera behavior), `review`, `reviewPicker`, `booking`, `pending` (minimized "Request sent" pill), `trackingLeg1` (to pickup), `trackingLeg2` (in-ride), `trackingArriving`, `summary`, `riderSummaryLive` / `riderSummaryDriveRoute` (MYR-414 → **MYR-422**: the SAME post-ride takeover resolved on the LIVE branch — a measured trip span, a REAL road route as the hero line and as the caption's measured distance, the FSD MILES + AUTONOMOUS tiles carrying "—" placeholders, and no tip section. The pair is the route LADDER's two upper rungs: `riderSummaryDriveRoute` is the car's own driven track (§7.2 + §7.4, trimmed to the trip's window) and `riderSummaryLive` is the MKDirections preview reached after the drives read is refused **403** — which is what a viewer-tier rider really gets, since drives are owner-only (MYR-369). Pair `riderSummaryLive` with `MRT_ROUTE_UNAVAILABLE=1` for the pins-only bottom rung. `summary` keeps the prototype's illustration and is byte-identical, so the before/after is still clean; see "THE POST-RIDE SUMMARY WAS A PAGE OF ESTIMATES WEARING THE TRIP'S LABEL" and "THE TILES COME BACK AS DASHES, AND THE MAP GOES AND GETS ITS ROUTE" below), `declined`, `riderBusyVehicle` (MYR-233: the Review sheet with an UNAVAILABLE vehicle — muted Busy chip on the fleet row, gold instant CTA replaced by "Schedule with … instead". Select the state with `MRT_BUSY_REASON=busy|inService|offline|paused`, default `busy`; each is built from real wire inputs through `LiveFleetMemberMapping`, so the capture exercises the shipping predicate. **MYR-342 adds `paused`** — the owner's ride-share switch off (`rideShareEnabled: false`) on a car that is otherwise PARKED and healthy, which is the whole point of the state. It is the one reason whose CTA area holds **no button at all**: the muted "Paused" chip and the helper line "{Owner} has paused ride requests right now", and nothing else. The other three keep MYR-233's "Schedule with … instead" route because each ENDS on its own; an owner's pause is open-ended and the server refuses scheduled rides against it too, so offering scheduling would be a `409 vehicle_unavailable` with extra steps), `riderPlateChip` (MYR-286: the Booking sheet's plate chip carrying the REAL owner-entered plate instead of the `VIN ····xxxx` degrade — same live-shaped `VehicleSummary` path, with `licensePlate` set), `riderScheduleFloored` (MYR-316: the Schedule slide-up card with the SERVICE-WINDOW FLOOR applied — a muted "Lunar is in service until Sat, Aug 1 · 2:00 PM" caption, dimmed-but-visible day/time chips for every slot before the car is back, and a selection already pulled forward to the first bookable one. Injects a live-shaped in-service `VehicleSummary` carrying `serviceEstimatedEndAt` through the REAL `LiveFleetMemberMapping`, then opens the card via the existing one-shot `opensScheduleOnSearch` hook, so the capture exercises the shipping `RideScheduleFloor` grid rule rather than a hand-set flag. **A vehicle with NO window imposes NO floor** — that is the common case and every other rider scene is byte-identical), `riderScheduleBooked` (MYR-385: the SAME Schedule card dimmed for the OTHER reason — §7.22's booked windows rather than MYR-316's service floor. The car is PARKED with no window, so every dimmed chip in the frame came from the conflict read; it injects the wire through `DebugBookedWindowsEndpoint` and runs the shipping store + `RideScheduleFloor`, and carries the rider's OWN noon reservation plus somebody else's PENDING 5:30 PM so both captions are reachable from one scene. Capture at t≈0.3s for the pre-arrival / fail-open frame and t≈1.5s for the settled one — see "A rule the picker cannot see is indistinguishable from a bug" below).
 `riderIdleETA` / `riderIdleETABusy` (MYR-341) — the rider idle sheet's ROTATING
   search placeholder carrying a real "A ride is 9 min away", and the same scene
   with the availability gate tripped (static "Where to?"). Both are
@@ -1991,7 +1991,141 @@ honest fix is to make the line real rather than to keep hiding it at small size)
 ```sh
 SIMCTL_CHILD_MRT_SCENE=riderSummaryLive xcrun simctl launch <udid> app.myrobotaxi.ios
 SIMCTL_CHILD_MRT_SCENE=riderSummaryLive SIMCTL_CHILD_MRT_ROUTE_UNAVAILABLE=1 \
-  xcrun simctl launch <udid> app.myrobotaxi.ios     # pins-only, trip tile alone
+  xcrun simctl launch <udid> app.myrobotaxi.ios     # pins-only
+```
+
+**THE TILES COME BACK AS DASHES, AND THE MAP GOES AND GETS ITS ROUTE** (MYR-422,
+**CLIENT-DIRECTED**, superseding two of MYR-414's choices) — scenes
+`riderSummaryLive` (**changed on purpose**) / `riderSummaryDriveRoute` (new). Two
+decisions on the MYR-414 build, and the standing precedent applies to both: **client
+outranks the earlier honesty-by-omission call.**
+
+**1 · "SHOULD JUST HAVE SOME PLACE HOLDER INSTEAD OF BEING OMITTED."** MYR-414
+dropped the FSD MILES and AUTONOMOUS tiles on live because the app holds no drive
+record for a ride. Correct, and it left a page whose spine was one tile — which
+reads as broken rather than as honest. Both tiles are back, carrying **`nil`**,
+rendered as `BatteryReadout.dash` (MYR-204's grammar: value "—", unit and label
+unchanged, no styling of its own).
+
+- **`Tile.fsdMiles(Double?)` / `Tile.autonomous(percent: Int?)`** — the MYR-414
+  guarantee restated as an associated value rather than as an absence: **no live
+  resolution can produce a NUMBER in either**, swept across the whole input matrix.
+  The `100` literal belongs to the SIM arm alone.
+- **THE SEAM IS COMMENTED WHERE IT WOULD LAND, AND IT IS NOT THE OBVIOUS ONE.**
+  MYR-422's own drive join already identifies the drive this ride WAS, and
+  `DriveSummary.fsdMiles` is right there — but that figure describes the WHOLE
+  DRIVE, which routinely contains the owner's approach leg (the reason the polyline
+  has to be trimmed at all), and unlike the polyline it **cannot** be cut to the
+  window: §7.4's points carry no autonomy state. Quoting it would be MYR-414's
+  defect with better provenance. What closes it is MYR-178 or per-point autonomy.
+- **⚠️ THE DISTANCE HAD TO LEAVE THE STRIP, AND ONLY A MEASUREMENT SAID SO.** With
+  both placeholders back, MYR-414's distance tile made FOUR: measured through a
+  `UIHostingController`, `trip · distance · — · —` is **363.3pt** against a content
+  band of **331.0pt @375 / 349.0pt @393** — over the gutter on the client's own
+  device. **Nothing in that row would have reported it**: no tile takes `maxWidth:
+  .infinity`, the `HStack` holds no `Spacer` and the labels have no ellipsis
+  grammar, which is exactly the property that let MYR-414 REMOVE a tile with no
+  tuning. Compressing the dividers cannot save it either (the worst legal row is
+  306.3pt of tiles before a single divider). So the strip is the prototype's three
+  slots and the measured distance rides the hero caption — **"from {pickup} · 12.8
+  mi"**, one suffix on a line that already exists, inside the card whose polyline it
+  is the length of. MYR-414's invariant survives the move and is asserted:
+  `heroDistanceMiles != nil` iff `drawsRouteLine`. `RideSummaryStripLayoutTests`
+  keeps the numbers, including the four-tile overflow asserted in the POSITIVE so
+  the next tile has to answer the same question.
+
+**2 · "WE SHOULD DEFAULT THE APP MAP ROUTE PREVIEW IF WE CAN'T GET THE ROUTE
+POLYLINE FROM TESLA."** The summary no longer waits for a route somebody else
+warmed; it GOES AND GETS one, best source first (`RideSummaryRoute.resolve`, one
+pure ladder):
+
+1. **THE TESLA-DRIVEN TRACK** — §7.2 + §7.4, the machinery the owner's Drives tab
+   has used since MYR-203/204, joined to the ride by TIME and **trimmed to the
+   trip's own window**.
+2. **THE APP'S OWN MKDIRECTIONS PREVIEW** — the same `RideRouteStore` /
+   `AppleRideRouteProvider` the booking preview and the tracking legs use. Reused,
+   not forked: `ensureLeg2` for the ride's own pair.
+3. **PINS ONLY.**
+
+- **MYR-293'S LAW IS ENFORCED IN ONE PLACE, ON BOTH RUNGS.** Every rung passes
+  through `RideRoutePolyline.isReal`, so a two-point "driven track" is refused
+  exactly as MKDirections' straight `[from, to]` degradation is, and the ladder
+  continues past it. There is no path through this feature that draws a straight
+  line.
+- **THE RUNGS ARE STRICTLY ORDERED, AND RUNG 2 IS NOT *FETCHED* UNTIL RUNG 1
+  SETTLES** (`Resolution.fetchesRoadRoute`), so a ride with a driven track never
+  spends a throttle-budgeted Apple call. A route already IN HAND is still drawn
+  while the join runs — it is real geometry, and blanking it would be an artificial
+  gap.
+- **⚠️ DRIVES ARE OWNER-ONLY (MYR-369), SO THE 403 IS THE ORDINARY ANSWER**, not an
+  error. Every failure — 403, offline, a decode, no covering drive, no observable
+  trip window — folds into ONE `.none` verdict and falls through **in silence**.
+  There is no caption, no spinner and no retry: unlike MYR-395's lineless map, this
+  rung has a working alternative underneath it, and "we could not read your drive
+  history" is not something a rider can act on.
+- **ONE VERDICT PER RIDE, EVER.** A settled summary is re-mountable (tab switch,
+  remount, return to the rider shell) and every mount asks the same question about
+  the same finished ride, so `RideSummaryDriveRouteStore` records the verdict —
+  **including the 403** — for the ride's lifetime, and `RideRouteStore`'s pair cache
+  gives rung 2 the identical property. Six mounts, one §7.2 read, one §7.4 read
+  (asserted). Verdicts are released with the rider's slot.
+- **THE MATCHING RULE, STATED:** a drive is a candidate when it **COVERS** the trip
+  — `drive.start <= tripStart + tolerance` and `drive.end >= tripEnd - tolerance`,
+  `coverageTolerance` **5 min** — and the **tightest** candidate wins. Coverage
+  rather than overlap, because the approach and the drive home both overlap a trip
+  window at an edge and are not the ride. The tolerance is there because the two
+  clocks measure DIFFERENT EVENTS: `tripStart` is this device's observation of the
+  rider's tap, `drive.start` is the car shifting out of park; `tripEnd` is the
+  server's `completedAt`, `drive.end` is the car parking. It is deliberately
+  generous — a MISS costs a fall to a perfectly good road route, a WRONG match would
+  draw another journey.
+- **THE TRIM IS WHAT MAKES RUNG 1 HONEST.** A Tesla drive is bounded park→park, so
+  one drive routinely contains BOTH legs; drawing it whole would open the rider's
+  summary at the owner's driveway. `RoutePoint` carries a timestamp, so the track is
+  cut to `[tripStart − 60s, tripEnd + 60s]`. A trim that leaves fewer than three
+  points is not a route (MYR-293 again) and the ladder continues.
+- **A RIDE WITH NO OBSERVED START MAKES NO REQUEST AT ALL.** MYR-414's honest gap (a
+  ride adopted mid-flight has no `enrouteObservedAt`) means there is no window to
+  match on and nothing to trim to; guessing one from `acceptedAt` would put the
+  approach leg on the summary.
+- **DRAWN AT THE RENDER CAP, MEASURED WHOLE.** A long track is thinned to
+  `DriveContractMapping.maxRoutePoints` (800, MYR-204's own decimation) for drawing,
+  and the miles come off the FULL track — a thinned track cuts corners and the
+  caption states one decimal place. `RideSummaryHeroRoute` carries the polyline and
+  its length as ONE value, so the two cannot drift.
+- **⚠️ A FIX THAT FELL OUT OF THE WORK: MYR-414's DISTANCE COULD NOT RENDER ON A
+  REAL RIDE.** `SharedViewerScreen` reset the whole route store on `oldPhase ==
+  .tracking`, i.e. on the drop-off → summary transition, so the cache MYR-414's
+  distance tile and hero line both rest on ("`.completed` KEEPS its route until the
+  summary is dismissed") was dropped on **every real ride** — the tile could only
+  ever appear on a cold scene that primed the cache itself. The reset now skips the
+  summary exit; `finish()` still clears everything through `releaseRouteIfSlotEmpty`.
+- **THE LIVE GATE IS AN ABSENCE** (`PlaceSearchComposition.Seams.driveRoutes` is
+  `nil` in sim — the MYR-385 pattern), and the FETCH is gated on the same
+  `resolvesLiveRideSummary` the presentation reads. `summary` is byte-identical:
+  base vs branch on that scene diffs to zero everywhere except the status-bar clock,
+  the wall-clock eyebrow, the greeting's `mrtTextShimmer` and the CTA's
+  outline-draw trace — and a **branch-vs-branch control moves in the map card too**
+  (MapKit's own label/tile nondeterminism across launches), which is how those bands
+  were shown not to be change.
+- **⚠️ THE VIEW'S BODY IS AT THE TYPE-CHECKER'S BUDGET.** Adding one more
+  `.onChange` to `SharedViewerScreen.body` fails the build outright ("unable to
+  type-check this expression in reasonable time"), so the ladder advances from rung
+  1 to rung 2 through a **settle callback** on `resolve(…)` rather than an observer.
+  The RENDER needs no observer either way — `join(for:)` is read inside `body`, so
+  Observation re-runs it when a verdict lands.
+- `riderSummaryLive` is now the **403 arm** (`DebugDrivesEndpoint(failure:
+  .forbidden)`) and `riderSummaryDriveRoute` the **drive-backed** one, so the pair is
+  a one-answer diff; pairing the first with `MRT_ROUTE_UNAVAILABLE=1` is the whole
+  ladder failing (rung 1 refused by the server, rung 2 by the predicate). The scene's
+  own `ensureLeg2` priming is **deleted** — the screen fetches now, and priming would
+  hide the behaviour the scenes exist to photograph. The stub's drive is deliberately
+  WIDER than the ride and its track deliberately MEANDERS: a stub that matched the
+  ride exactly would pass with the trim deleted, and a straight stub path would
+  photograph as the very shape MYR-293 forbids.
+
+```sh
+SIMCTL_CHILD_MRT_SCENE=riderSummaryDriveRoute xcrun simctl launch <udid> app.myrobotaxi.ios
 ```
 
 **"If over an hour convert to hours and min"** (MYR-395, same report) — the same

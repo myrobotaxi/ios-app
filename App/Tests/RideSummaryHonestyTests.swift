@@ -122,7 +122,7 @@ final class RideSummaryHonestyTests: XCTestCase {
             completedAt: t0,
             now: t0
         )
-        XCTAssertEqual(p.tiles, [.trip(minutes: 32), .fsdMiles(14.2), .autonomous])
+        XCTAssertEqual(p.tiles, [.trip(minutes: 32), .fsdMiles(14.2), .autonomous(percent: 100)])
         XCTAssertTrue(p.offersTip, "the prototype's joke card is the SIM's to keep")
         XCTAssertTrue(p.drawsRouteLine)
         XCTAssertEqual(p.arrivedAt, t0, "the eyebrow keeps its \"now\" stamp in SIM")
@@ -132,23 +132,91 @@ final class RideSummaryHonestyTests: XCTestCase {
 
     func testTheLivePathRendersTheMeasuredTripAndTheRoadDistance() {
         let p = live(tripMinutes: 14, roadRouteMiles: 12.84)
-        XCTAssertEqual(p.tiles, [.trip(minutes: 14), .distance(miles: 12.84)])
+        // MYR-422 — the strip is the prototype's THREE slots (a fourth tile does not
+        // fit the page: `RideSummaryStripLayoutTests`), so the measured distance
+        // rides the hero caption instead of a tile. Both facts are asserted together
+        // because they are one fact.
+        XCTAssertEqual(p.tiles, [.trip(minutes: 14), .fsdMiles(nil), .autonomous(percent: nil)])
+        XCTAssertEqual(p.heroDistanceMiles, 12.84)
         XCTAssertTrue(p.drawsRouteLine)
     }
 
-    /// **The three fabrications are unreachable on live, whatever the inputs.**
-    /// Swept across the whole matrix rather than asserted once, because the way
-    /// this regresses is a single arm being written to "fall back" to the estimate.
-    func testNoLiveResolutionCanProduceAnFSDOrAutonomyClaim() {
+    /// **THE LIVE STRIP IS NEVER MORE THAN THREE TILES**, whatever the inputs — the
+    /// client's "keep the layout stable", and the page's own width budget.
+    func testTheLiveStripNeverExceedsThePrototypesThreeSlots() {
+        for trip in [nil, 14] as [Int?] {
+            for miles in [nil, 12.8] as [Double?] {
+                XCTAssertLessThanOrEqual(live(tripMinutes: trip, roadRouteMiles: miles).tiles.count, 3)
+            }
+        }
+    }
+
+    /// **THE MEASURED DISTANCE AND THE DRAWN LINE ARE ONE FACT** — MYR-414's
+    /// invariant, unchanged by the move off the strip: the page can never measure a
+    /// route it will not draw, or draw one it will not measure.
+    func testTheHeroDistanceAndTheHeroLineAreRefusedTogether() {
+        for miles in [nil, 12.8] as [Double?] {
+            let p = live(tripMinutes: 14, roadRouteMiles: miles)
+            XCTAssertEqual(p.drawsRouteLine, p.heroDistanceMiles != nil)
+        }
+    }
+
+    /// And SIM's caption is the prototype's "from {pickup}" alone.
+    func testTheSimulatedHeroCaptionCarriesNoDistance() {
+        let p = RideSummaryPresentation.resolve(
+            isLive: false, estimateMinutes: 32, estimateMiles: 14.2,
+            tripMinutes: 14, roadRouteMiles: 12.8, completedAt: t0, now: t0
+        )
+        XCTAssertNil(p.heroDistanceMiles, "the drift-gate capture's caption may not grow a suffix")
+    }
+
+    // MARK: MYR-422 — the two placeholders, and what they may never become
+
+    /// **THE CLIENT'S DECISION, SUPERSEDING MYR-414's OMISSION.** The FSD MILES and
+    /// AUTONOMOUS tiles are back on every live resolution — the row keeps its shape
+    /// — and they are back carrying NOTHING.
+    func testTheLivePathAlwaysRendersBothPlaceholderTiles() {
         for trip in [nil, 14] as [Int?] {
             for miles in [nil, 12.8] as [Double?] {
                 let tiles = live(tripMinutes: trip, roadRouteMiles: miles).tiles
-                XCTAssertFalse(tiles.contains(.autonomous),
-                               "100% autonomous is a claim about a drive this app has no record of")
-                XCTAssertFalse(tiles.contains { if case .fsdMiles = $0 { return true } else { return false } },
-                               "FSD miles needs a DRIVE record (MYR-202), not the trip's distance")
+                XCTAssertEqual(tiles.suffix(2), [.fsdMiles(nil), .autonomous(percent: nil)],
+                               "the placeholders trail the real tiles, whatever the real tiles are")
             }
         }
+    }
+
+    /// **The two fabrications are still unreachable on live, whatever the inputs** —
+    /// MYR-414's guarantee, restated now that the tiles carry an associated value
+    /// rather than being absent. Swept across the whole matrix rather than asserted
+    /// once, because the way this regresses is a single arm being written to "fall
+    /// back" to the estimate, or to the joined DRIVE's own `fsdMiles` (which
+    /// describes the whole drive, approach leg included — see `Tile.fsdMiles`).
+    func testNoLiveResolutionCanProduceAnFSDOrAutonomyNUMBER() {
+        for trip in [nil, 14] as [Int?] {
+            for miles in [nil, 12.8] as [Double?] {
+                for tile in live(tripMinutes: trip, roadRouteMiles: miles).tiles {
+                    switch tile {
+                    case let .fsdMiles(value):
+                        XCTAssertNil(value, "FSD miles needs a window-scoped drive record, not the trip's distance")
+                    case let .autonomous(percent):
+                        XCTAssertNil(percent, "100% autonomous is a claim about a drive this app has no record of")
+                    case .trip:
+                        break
+                    }
+                }
+            }
+        }
+    }
+
+    /// The SIM literal is the PROTOTYPE's, and it is the only number either of those
+    /// two tiles can carry anywhere in the app.
+    func testTheAutonomyLiteralBelongsToTheSimulatedArmAlone() {
+        XCTAssertEqual(RideSummaryPresentation.prototypeAutonomousPercent, 100)
+        let sim = RideSummaryPresentation.resolve(
+            isLive: false, estimateMinutes: 32, estimateMiles: 14.2,
+            tripMinutes: nil, roadRouteMiles: nil, completedAt: nil, now: t0
+        )
+        XCTAssertTrue(sim.tiles.contains(.autonomous(percent: 100)))
     }
 
     /// The estimate is not a fallback for anything on live. This is the actual
@@ -164,21 +232,28 @@ final class RideSummaryHonestyTests: XCTestCase {
             completedAt: nil,
             now: t0
         )
-        XCTAssertTrue(p.tiles.isEmpty,
-                      "nothing is derivable, so the strip is empty — not the estimate wearing the trip's label")
+        // MYR-422: the row still renders — as two dashes. Nothing derivable is now
+        // stated as "we do not know these", which is the client's decision, and the
+        // one thing it may never become is the estimate wearing the trip's label.
+        XCTAssertEqual(p.tiles, [.fsdMiles(nil), .autonomous(percent: nil)])
+        XCTAssertFalse(p.tiles.contains(.trip(minutes: 35)))
+        XCTAssertNil(p.heroDistanceMiles, "and the quoted 14.2 mi never becomes the hero's measurement")
     }
 
     func testAMissingTripSpanDropsOnlyTheTripTile() {
-        XCTAssertEqual(live(tripMinutes: nil, roadRouteMiles: 12.8).tiles, [.distance(miles: 12.8)])
+        let p = live(tripMinutes: nil, roadRouteMiles: 12.8)
+        XCTAssertEqual(p.tiles, [.fsdMiles(nil), .autonomous(percent: nil)])
+        XCTAssertEqual(p.heroDistanceMiles, 12.8, "the route was still measured")
     }
 
     /// **No road route means no distance AND no line, from the same fact.** The
     /// two cannot disagree: a summary drawing a route it will not measure (or
     /// measuring one it will not draw) would be the pre-MYR-414 screen in one
     /// direction or the other.
-    func testNoRoadRouteMeansNoDistanceTileAndNoLine() {
+    func testNoRoadRouteMeansNoDistanceAndNoLine() {
         let p = live(tripMinutes: 14, roadRouteMiles: nil)
-        XCTAssertEqual(p.tiles, [.trip(minutes: 14)])
+        XCTAssertEqual(p.tiles, [.trip(minutes: 14), .fsdMiles(nil), .autonomous(percent: nil)])
+        XCTAssertNil(p.heroDistanceMiles)
         XCTAssertFalse(p.drawsRouteLine, "MYR-293: pins are a fact, a route we do not hold is not")
     }
 
@@ -198,12 +273,15 @@ final class RideSummaryHonestyTests: XCTestCase {
         XCTAssertNil(live(tripMinutes: nil, roadRouteMiles: nil, completedAt: nil).arrivedAt)
     }
 
-    /// The ORDER is fixed, and stays fixed when the leading tile drops out — the
-    /// distance must not slide into the trip's slot and inherit its meaning at a
-    /// glance.
+    /// The ORDER is fixed, and the placeholders stay in the prototype's own slots
+    /// when the trip tile drops out — a dash must not slide into the leading slot
+    /// and inherit the trip's meaning at a glance.
     func testTileOrderIsStable() {
         XCTAssertEqual(live(tripMinutes: 9, roadRouteMiles: 3.1).tiles.first, .trip(minutes: 9))
-        XCTAssertEqual(live(tripMinutes: nil, roadRouteMiles: 3.1).tiles.first, .distance(miles: 3.1))
+        XCTAssertEqual(
+            live(tripMinutes: nil, roadRouteMiles: 3.1).tiles,
+            [.fsdMiles(nil), .autonomous(percent: nil)]
+        )
     }
 
     // MARK: The distance itself

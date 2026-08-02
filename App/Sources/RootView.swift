@@ -385,6 +385,13 @@ struct RootView: View {
         if let bookedWindows = DebugScene.current?.bookedWindowsProvider {
             seams.bookedWindows = bookedWindows
         }
+        // MYR-422 — the two summary scenes inject the §7.2/§7.4 WIRE at composition
+        // time, the same way. Every other scene leaves this `nil`, which for a
+        // simulated boot is what the seam already was, so no simulated capture can
+        // construct the post-ride drive join.
+        if let driveRoutes = DebugScene.current?.driveRoutesProvider {
+            seams.driveRoutes = driveRoutes
+        }
         #endif
         // MYR-184/228 fix (c) — the rider's watched vehicle is seeded from the
         // FIXTURES in sim and from NOTHING on live: the real one is adopted from

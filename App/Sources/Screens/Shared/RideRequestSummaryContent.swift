@@ -17,14 +17,14 @@ struct RideRequestSummaryContent: View {
     /// the fixture "Sam"). The "Have a wonderful {part of day}, {first}" sign-off
     /// personalizes to the rider who took the ride.
     var liveProfile: UserProfile? = nil
-    /// MYR-414 — the leg-2 ROAD polyline for THIS ride, or `nil`.
+    /// MYR-414/MYR-422 — the hero's road geometry AND its length, or `nil`.
     ///
-    /// Resolved by `SharedViewerScreen` (which owns the store and the ride's exact
-    /// pickup/destination pair) and already filtered through
-    /// `RideRoutePolyline.isReal`, so a value here is road geometry by
-    /// construction and its length is a real trip distance. `nil` in SIM and
-    /// whenever MKDirections never answered for this pair.
-    var roadRoute: [CLLocationCoordinate2D]? = nil
+    /// Resolved by `SharedViewerScreen` through `RideSummaryRoute`'s ladder (the
+    /// car's own driven track → the MKDirections road route → nothing), so a value
+    /// here is real road geometry by construction — `RideRoutePolyline.isReal` has
+    /// already refused every straight `[from, to]` pair — and its `miles` is a real
+    /// trip distance. `nil` in SIM and whenever both rungs came up empty.
+    var heroRoute: RideSummaryHeroRoute? = nil
     /// MYR-414 — the ONE resolved `AppMode` for this screen
     /// (`SharedViewerState.resolvesLiveRideSummary`), threaded by the call site
     /// like every other live gate in this flow. SIM keeps the prototype's stat
@@ -91,7 +91,12 @@ struct RideRequestSummaryContent: View {
                 enrouteObservedAt: request?.enrouteObservedAt,
                 completedAt: request?.completedAt
             ),
-            roadRouteMiles: roadRoute.map(RideRouteGeometry.lengthMiles),
+            // MYR-422 — the length travels WITH the polyline (`RideSummaryHeroRoute`)
+            // rather than being re-derived here: a Tesla-driven track is decimated
+            // for drawing and must be measured before that, and one optional feeding
+            // both keeps MYR-414's "the line and the tile are refused together"
+            // invariant structural.
+            roadRouteMiles: heroRoute?.miles,
             completedAt: request?.completedAt
         )
     }
@@ -155,7 +160,7 @@ struct RideRequestSummaryContent: View {
                 // would be the stacked-chrome-for-no-content shape MYR-347 was
                 // about; the map (`flex:1`) simply takes the room back.
                 if !presentation.tiles.isEmpty {
-                    statsStrip
+                    RideSummaryStatsStrip(tiles: presentation.tiles)
                         .padding(.bottom, 18)
                 }
 
@@ -215,21 +220,39 @@ struct RideRequestSummaryContent: View {
 
     // MARK: Map card (ride-request.jsx:950-963)
 
-    /// The hero's polyline: the ride's REAL leg-2 road route when one is held,
-    /// else the two endpoints — which are drawn as PINS ONLY (`drawsLine: false`),
-    /// never as the straight line between them.
+    /// The hero's polyline: the ride's REAL road geometry when the ladder found any
+    /// (the car's driven track, else MKDirections), else the two endpoints — which
+    /// are drawn as PINS ONLY (`drawsLine: false`), never as the straight line
+    /// between them.
     ///
     /// MYR-414/MYR-293. The endpoint pair is still handed over when there is no
-    /// road route because the pickup and the drop-off are facts: they are what the
+    /// route because the pickup and the drop-off are facts: they are what the
     /// camera frames and what the two dots sit on. Only the LINE is withheld.
-    private var heroRoute: [CLLocationCoordinate2D] {
-        roadRoute ?? [pickup?.coordinate ?? DriveFixtures.financialDistrict, destination.coordinate]
+    private var mapPolyline: [CLLocationCoordinate2D] {
+        heroRoute?.polyline ?? [pickup?.coordinate ?? DriveFixtures.financialDistrict, destination.coordinate]
+    }
+
+    /// "from Sansome & Clay" — plus the trip's MEASURED distance when the ladder
+    /// found real geometry.
+    ///
+    /// MYR-422: the distance was MYR-414's second stat tile and cannot stay one now
+    /// that the client's two placeholders are back — a four-tile row measures 363.3pt
+    /// against a 331/349pt band (`RideSummaryStripLayoutTests`). This is where it
+    /// goes instead: a suffix on a line that already exists, inside the card whose
+    /// polyline it is the length of, so the number and the line it measures are read
+    /// together. It appears on exactly the same fact the line does
+    /// (`heroDistanceMiles`), and `nil` in SIM leaves the prototype's caption
+    /// byte-identical.
+    private var heroFromLine: String {
+        let from = "from \(pickup?.label ?? "Current location")"
+        guard let miles = presentation.heroDistanceMiles else { return from }
+        return "\(from) \u{00B7} \(String(format: "%.1f", miles)) mi"
     }
 
     private var mapCard: some View {
         ZStack(alignment: .bottomLeading) {
             RideRequestRouteMap(
-                route: heroRoute,
+                route: mapPolyline,
                 progress: 1,
                 drawsLine: presentation.drawsRouteLine
             )
@@ -245,7 +268,7 @@ struct RideRequestSummaryContent: View {
                     .tracking(-0.5)
                     .foregroundStyle(Color.mrtGold)
                     .lineLimit(1)
-                Text("from \(pickup?.label ?? "Current location")")
+                Text(heroFromLine)
                     .font(.system(size: 13))
                     .foregroundStyle(Color.mrtText.opacity(0.6))
             }
@@ -264,66 +287,6 @@ struct RideRequestSummaryContent: View {
             RoundedRectangle(cornerRadius: MRTMetrics.cardRadiusFlat, style: .continuous)
                 .strokeBorder(Color.mrtGold.opacity(Double(0x24) / 255.0), lineWidth: MRTMetrics.hairline)
         )
-    }
-
-    // MARK: Stats strip (ride-request.jsx:966-978)
-
-    /// MYR-414 — the strip is now the resolved tiles, in order, with the
-    /// prototype's divider BETWEEN them (never leading, never trailing), so one or
-    /// two tiles compose exactly as three did.
-    ///
-    /// The row is left-packed by construction: no tile takes `maxWidth: .infinity`
-    /// and the `HStack` holds no `Spacer`, so it sizes to its content and the
-    /// enclosing `VStack(alignment: .leading)` seats it at the gutter. Dropping a
-    /// tile therefore SHORTENS the row rather than stretching the gaps — which is
-    /// why the 18pt divider padding needs no per-count tuning.
-    private var statsStrip: some View {
-        HStack(spacing: 0) {
-            ForEach(Array(presentation.tiles.enumerated()), id: \.offset) { index, tile in
-                if index > 0 { divider }
-                statTile(for: tile)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func statTile(for tile: RideSummaryPresentation.Tile) -> some View {
-        switch tile {
-        case let .trip(minutes):
-            // MYR-395's one duration grammar (`"32" / "min"`, `"1 hr 37" / "min"`).
-            let parts = RideDuration.heroParts(minutes: minutes)
-            statTile(value: parts.value, unit: parts.unit, label: "Trip", gold: false)
-        case let .distance(miles):
-            // Neutral, not gold: the prototype's gold sat on FSD MILES because a
-            // fully-autonomous drive is the thing being celebrated. A road route's
-            // length is a measurement, and gold is "the sacred accent, never
-            // decorative" (CLAUDE.md).
-            statTile(value: String(format: "%.1f", miles), unit: "mi", label: "Distance", gold: false)
-        case let .fsdMiles(miles):
-            statTile(value: String(format: "%.1f", miles), unit: "mi", label: "FSD miles", gold: true)
-        case .autonomous:
-            statTile(value: "100", unit: "%", label: "Autonomous", gold: false)
-        }
-    }
-
-    private var divider: some View {
-        Rectangle().fill(Color.mrtGold.opacity(Double(0x24) / 255.0)).frame(width: 1, height: 30).padding(.horizontal, 18)
-    }
-
-    private func statTile(value: String, unit: String, label: String, gold: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                Text(value)
-                    .font(.system(size: 21, weight: .bold))
-                    .monospacedDigit()
-                    .tracking(-0.5)
-                    .foregroundStyle(gold ? Color.mrtGold : Color.mrtText)
-                Text(unit)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(gold ? Color.mrtGold.opacity(0.67) : Color.mrtTextMuted)
-            }
-            RideEyebrowText(text: label, size: 9.5)
-        }
     }
 
     // MARK: Tip (ride-request.jsx:981-1004)
@@ -388,5 +351,96 @@ struct RideRequestSummaryContent: View {
             historyStore.record(ride)
         }
         viewerState.resetDraftToIdle()
+    }
+}
+
+// MARK: - RideSummaryStatsStrip (ride-request.jsx:966-978)
+
+/// The summary's stat row: the resolved tiles, in order, with the prototype's
+/// divider BETWEEN them (never leading, never trailing).
+///
+/// **The row is left-packed by construction**: no tile takes `maxWidth: .infinity`
+/// and the `HStack` holds no `Spacer`, so it sizes to its content and the enclosing
+/// `VStack(alignment: .leading)` seats it at the gutter. Dropping a tile therefore
+/// SHORTENS the row rather than stretching the gaps, which is why the 18pt divider
+/// padding needed no per-count tuning in MYR-414 — and, from MYR-422, why ADDING
+/// the fourth tile a drive-backed live summary carries (trip · distance · — · —)
+/// needs none either. That is a claim about a LAYOUT, so it is MEASURED rather than
+/// reasoned about: `RideSummaryStripLayoutTests` puts this exact view through a
+/// `UIHostingController` at every supported width (the `OwnerPeekBandTests`
+/// precedent), because this row has no ellipsis grammar and nothing in it would
+/// report an overflow.
+///
+/// Extracted from `RideRequestSummaryContent` for that measurement — it was a
+/// private computed property, and a promise about geometry that no test can read is
+/// a promise about a comment.
+struct RideSummaryStatsStrip: View {
+    let tiles: [RideSummaryPresentation.Tile]
+
+    /// MYR-422 — the placeholder glyph, and it is deliberately `BatteryReadout`'s
+    /// own (MYR-204): this app already had a grammar for "the unit and the label are
+    /// true, the number is unknowable", and a summary tile inventing a second one
+    /// ("--", "N/A", a greyed zero) would be two dialects for one idea.
+    static let placeholderValue = BatteryReadout.dash
+
+    /// The page gutter this row lives inside, so a measurement can ask the question
+    /// the page asks ("does it fit?") without re-deriving the number.
+    static let pageHorizontalPadding: CGFloat = 22
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(tiles.enumerated()), id: \.offset) { index, tile in
+                if index > 0 { divider }
+                statTile(for: tile)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func statTile(for tile: RideSummaryPresentation.Tile) -> some View {
+        switch tile {
+        case let .trip(minutes):
+            // MYR-395's one duration grammar (`"32" / "min"`, `"1 hr 37" / "min"`).
+            let parts = RideDuration.heroParts(minutes: minutes)
+            statTile(value: parts.value, unit: parts.unit, label: "Trip", gold: false)
+        case let .fsdMiles(miles):
+            // MYR-422 — `nil` is the dash. The tile keeps its GOLD value colour with
+            // a real number (the prototype's celebrated stat, SIM) and goes neutral
+            // for the placeholder: gold is the sacred accent, and a dash is the
+            // absence of the very thing it is there to celebrate.
+            statTile(
+                value: miles.map { String(format: "%.1f", $0) } ?? Self.placeholderValue,
+                unit: "mi",
+                label: "FSD miles",
+                gold: miles != nil
+            )
+        case let .autonomous(percent):
+            statTile(
+                value: percent.map(String.init) ?? Self.placeholderValue,
+                unit: "%",
+                label: "Autonomous",
+                gold: false
+            )
+        }
+    }
+
+    private var divider: some View {
+        Rectangle().fill(Color.mrtGold.opacity(Double(0x24) / 255.0)).frame(width: 1, height: 30).padding(.horizontal, 18)
+    }
+
+    private func statTile(value: String, unit: String, label: String, gold: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(value)
+                    .font(.system(size: 21, weight: .bold))
+                    .monospacedDigit()
+                    .tracking(-0.5)
+                    .foregroundStyle(gold ? Color.mrtGold : Color.mrtText)
+                Text(unit)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(gold ? Color.mrtGold.opacity(0.67) : Color.mrtTextMuted)
+            }
+            RideEyebrowText(text: label, size: 9.5)
+        }
     }
 }

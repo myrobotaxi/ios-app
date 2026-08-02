@@ -33,6 +33,16 @@ enum PlaceSearchComposition {
         /// `isLive` branch inside the picker. Inventing fixture windows here
         /// would be a MYR-228 leak about a calendar nobody has.
         var bookedWindows: (any RideBookedWindowsProviding)?
+        /// MYR-422: the post-ride summary's drive join (§7.2 + §7.4) — rung 1 of the
+        /// hero route's ladder.
+        ///
+        /// **`nil` IN SIM, THE SAME WHOLE-GATE `bookedWindows` IS.** A simulated
+        /// summary has no drive history and no endpoint, so it does not skip the
+        /// join, it cannot make one — `RideSummaryDriveRouteStore` refuses to
+        /// construct a read without a provider. Fabricating a fixture drive for the
+        /// prototype's illustration would be a MYR-228 leak about a journey nobody
+        /// took, and it would move a byte-stable capture.
+        var driveRoutes: (any RideDriveRouteProviding)?
 
         /// Fresh simulated seams each access (computed, not shared) so previews
         /// / tests / multiple `SharedViewerState`s never cross-talk through a
@@ -55,7 +65,8 @@ enum PlaceSearchComposition {
                 liveVehicleLocator: nil,
                 pinLabeler: SimulatedPinLabeler(),
                 isLive: false,
-                bookedWindows: nil // MYR-385 — SIM has no bookings and no endpoint
+                bookedWindows: nil, // MYR-385 — SIM has no bookings and no endpoint
+                driveRoutes: nil // MYR-422 — and no drive history to join a ride to
             )
         }
     }
@@ -83,6 +94,19 @@ enum PlaceSearchComposition {
                 // other live seam in this app makes. The store owns the caching and
                 // the fail-open policy; this is only "where the bytes come from".
                 bookedWindows: LiveRideBookedWindows(
+                    endpoint: RestClient(
+                        environment: config.environment,
+                        tokenProvider: config.tokenProvider,
+                        http: config.http ?? URLSession(configuration: RestClient.defaultConfiguration())
+                    )
+                ),
+                // MYR-422 — §7.2 + §7.4 through the same `RestClient` construction.
+                // Composed for EVERY live rider, including the viewer-tier riders
+                // whose drives read the server will 403 (MYR-369): that refusal is
+                // the join's ordinary answer and is folded into "no Tesla route" by
+                // the store, so there is nothing here to gate on a share tier the
+                // client cannot see anyway.
+                driveRoutes: LiveRideDriveRoutes(
                     endpoint: RestClient(
                         environment: config.environment,
                         tokenProvider: config.tokenProvider,

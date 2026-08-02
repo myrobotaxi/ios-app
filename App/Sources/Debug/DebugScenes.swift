@@ -136,9 +136,19 @@ enum DebugScene: String, CaseIterable {
     /// error. Capture at t≈2s (the cancel fires on appear).
     case trackingCancelRefused
     case summary
-    /// MYR-414 — the post-ride summary on the **LIVE** path: the honest stat strip
-    /// (only the tiles whose datum exists), the ride's REAL leg-2 road route as the
-    /// hero line, and NO tip section.
+    /// MYR-414/MYR-422 — the post-ride summary on the **LIVE** path, on the
+    /// **MKDirections rung**: a measured trip time, the app's own road-route
+    /// preview as the hero line and as the distance tile, the two "—" placeholder
+    /// tiles, and NO tip section.
+    ///
+    /// **MYR-422 makes this scene the 403 arm on purpose.** It injects a
+    /// `DebugDrivesEndpoint` that REFUSES both drive reads with the real 403 a
+    /// viewer-tier rider gets (drives are owner-only — MYR-369), which is the
+    /// ordinary case for a rider and the one where the ladder has to fall through
+    /// in silence. Its pair is `riderSummaryDriveRoute`, the same page one rung up.
+    /// A scene with no drive seam at all would reach the same frame WITHOUT
+    /// exercising the fall-through, which is the "passing for the wrong reason"
+    /// shape this repo keeps finding.
     ///
     /// `summary` is the prototype's illustration and stays byte-identical, so the
     /// pair is a clean before/after of exactly what this issue changed: "35 min /
@@ -162,8 +172,35 @@ enum DebugScene: String, CaseIterable {
     /// **Pair it with `MRT_ROUTE_UNAVAILABLE=1`** for that state as the resting one:
     /// the pins-only hero and a strip carrying the trip tile alone. That modifier
     /// swaps in the provider's own documented degradation (MYR-395), so the
-    /// no-line/no-distance arm is the shipping refusal rather than a flag.
+    /// no-line/no-distance arm is the shipping refusal rather than a flag. With
+    /// this scene's 403 that pairing is now the ladder's THIRD rung end to end:
+    /// rung 1 refused by the server, rung 2 refused by the predicate, pins only.
     case riderSummaryLive
+    /// MYR-422 — the SAME page one rung up: the hero line is the **car's own driven
+    /// track**, not MKDirections.
+    ///
+    /// The client's decision, r19: *"we should default the app map route preview if
+    /// we can't get the route polyline from tesla"* — i.e. the Tesla route is the
+    /// preferred source and the Apple preview is the fallback. This is that
+    /// preference exercised: a self-riding OWNER (drives are owner-only, MYR-369,
+    /// so this is his own case) whose §7.2 list carries a drive covering the trip.
+    ///
+    /// **Everything about the join is the shipping chain.** The scene injects only
+    /// the WIRE (`DebugDrivesEndpoint`), and the drive it injects is deliberately
+    /// WIDER than the ride at both ends — the car left for the pickup before the
+    /// rider tapped Start and parked after the drop-off — so what the capture shows
+    /// is `RideDriveJoin`'s coverage match AND its trim: the drawn line begins at
+    /// the pickup rather than at the owner's driveway. A stub whose drive matched
+    /// the ride exactly would render an identical-looking frame with the trim
+    /// deleted.
+    ///
+    /// **MKDirections is never asked in this scene**, which is the rung order
+    /// itself: `RideSummaryRoute.resolve` returns `fetchesRoadRoute: false` for a
+    /// drive-backed hero. Its pair `riderSummaryLive` is the same page with the
+    /// drives read refused.
+    ///
+    /// **Capture at t≈2s** (two scripted REST reads plus the join).
+    case riderSummaryDriveRoute
     case declined
     /// MYR-233 — the rider Review sheet with a BUSY vehicle: the muted "Busy"
     /// chip on the fleet-member row and the non-gold "Schedule with … instead"
@@ -2966,6 +3003,102 @@ enum DebugScene: String, CaseIterable {
         return LiveRideBookedWindows(endpoint: DebugBookedWindowsEndpoint(bookings: bookings))
     }
 
+    // MARK: MYR-422 — the summary's drive-join wire, per scene
+
+    /// The §7.2 + §7.4 stub for the two summary scenes. `nil` for every other scene,
+    /// so `RootView` leaves the composed seam (live) or `nil` (sim) exactly as it
+    /// is — no simulated capture can construct the join at all.
+    ///
+    /// The pair is a ONE-ANSWER diff: `riderSummaryDriveRoute` gets a covering drive
+    /// and `riderSummaryLive` gets the 403 a viewer-tier rider really gets. Nothing
+    /// else about the two scenes differs.
+    @MainActor
+    var driveRoutesProvider: (any RideDriveRouteProviding)? {
+        switch self {
+        case .riderSummaryDriveRoute:
+            return LiveRideDriveRoutes(endpoint: DebugDrivesEndpoint(drives: [Self.summaryScriptedDrive()]))
+        case .riderSummaryLive:
+            return LiveRideDriveRoutes(endpoint: DebugDrivesEndpoint(failure: DebugDrivesEndpoint.forbidden))
+        default:
+            return nil
+        }
+    }
+
+    /// The drive `riderSummaryDriveRoute` joins to: the car's own record of the same
+    /// journey `completedLiveRideRecord()` describes, WIDER than the ride at both
+    /// ends because that is what a real drive is — the car shifted out of park to
+    /// fetch the rider and parked again after dropping them off.
+    ///
+    /// Its track is a coarse polyline through SF that the shipping trim then cuts to
+    /// the trip's window: the leading `approachPad` of it belongs to the approach and
+    /// must not be on the rider's summary.
+    private static func summaryScriptedDrive() -> DebugDrivesEndpoint.ScriptedDrive {
+        let completed = Date()
+        let started = completed.addingTimeInterval(-summaryTripDuration)
+        let path = summaryDrivenPath(
+            from: samplePickup.coordinate,
+            to: sampleDestination.coordinate,
+            approachFrom: CLLocationCoordinate2D(
+                latitude: samplePickup.coordinate.latitude + 0.012,
+                longitude: samplePickup.coordinate.longitude - 0.014
+            )
+        )
+        return DebugDrivesEndpoint.ScriptedDrive(
+            id: "debug-drive-covering-ride",
+            // The approach began before the rider tapped Start …
+            start: started.addingTimeInterval(-summaryDriveApproach),
+            // … and the car parked after the drop-off.
+            end: completed.addingTimeInterval(summaryDriveParkDelay),
+            path: path
+        )
+    }
+
+    /// How long before the trip's start the car set off for the pickup.
+    static let summaryDriveApproach: TimeInterval = 6 * 60
+    /// How long after the drop-off the car took to park.
+    static let summaryDriveParkDelay: TimeInterval = 90
+
+    /// A stand-in GPS track: the approach leg, then the trip, sampled densely enough
+    /// that the trimmed remainder is unambiguously real road geometry (and not the
+    /// two-point shape `RideRoutePolyline.isReal` refuses).
+    ///
+    /// **It MEANDERS on purpose.** A stub path drawn as a near-straight segment would
+    /// photograph as exactly the shape MYR-293 forbids, and a reviewer could not tell
+    /// the capture's driven track from the straight fallback it is supposed to
+    /// outrank. The wander is PERPENDICULAR to the leg and runs through three
+    /// half-periods, so the drawn line is visibly a route with turns in it. It
+    /// follows no particular street — this is a model of a GPS track, not of San
+    /// Francisco.
+    private static func summaryDrivenPath(
+        from pickup: CLLocationCoordinate2D,
+        to destination: CLLocationCoordinate2D,
+        approachFrom origin: CLLocationCoordinate2D
+    ) -> [CLLocationCoordinate2D] {
+        func leg(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D, steps: Int, bow: Double) -> [CLLocationCoordinate2D] {
+            let dLat = b.latitude - a.latitude
+            let dLng = b.longitude - a.longitude
+            let length = max((dLat * dLat + dLng * dLng).squareRoot(), 1e-9)
+            // The unit normal to the leg, so the wander is across the direction of
+            // travel rather than along it.
+            let normal = (lat: -dLng / length, lng: dLat / length)
+            return (0...steps).map { i in
+                let t = Double(i) / Double(steps)
+                let offset = bow * sin(t * 3 * .pi)
+                return CLLocationCoordinate2D(
+                    latitude: a.latitude + dLat * t + normal.lat * offset,
+                    longitude: a.longitude + dLng * t + normal.lng * offset
+                )
+            }
+        }
+        // The two legs are sampled in proportion to their durations, because the
+        // stub spreads its timestamps evenly across the whole drive — so the trim's
+        // cut lands where the approach ends.
+        let approachSteps = Int(summaryDriveApproach / 10)
+        let tripSteps = Int((summaryTripDuration + summaryDriveParkDelay) / 10)
+        return leg(origin, pickup, steps: approachSteps, bow: 0.004)
+            + leg(pickup, destination, steps: tripSteps, bow: 0.012)
+    }
+
     // MARK: MYR-414 — the completed LIVE ride the summary is drawn from
 
     /// How long the `riderSummaryLive` trip took. A round 14 minutes so the
@@ -3068,7 +3201,10 @@ enum DebugScene: String, CaseIterable {
             return record(status: .arrived, progress: RideRequestTiming.autoAcceptInitialProgress)
         case .summary:
             return record(status: .accepted, progress: 1.0)
-        case .riderSummaryLive:
+        case .riderSummaryLive, .riderSummaryDriveRoute:
+            // MYR-422 — ONE completed ride for both rungs, so the pair differs by
+            // exactly what the drives endpoint answered and by nothing about the
+            // ride.
             return Self.completedLiveRideRecord()
         case .declined:
             return record(status: .declined)
@@ -3338,7 +3474,7 @@ enum DebugScene: String, CaseIterable {
             viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
             viewer.sheetPhase = .summary
-        case .riderSummaryLive:
+        case .riderSummaryLive, .riderSummaryDriveRoute:
             // MYR-414 — the same page, resolved on the LIVE branch. Only the ONE
             // branch is forced (`debugResolvesLiveRideSummary`), the same
             // stand-in-for-a-live-session precedent `debugResolvesLivePickupETA`
@@ -3346,18 +3482,13 @@ enum DebugScene: String, CaseIterable {
             viewer.debugResolvesLiveRideSummary = true
             viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
-            // Warm the leg-2 cache the way the RIDE would have: the tracking sheet
-            // primes it during the trip and `.completed` keeps it
-            // (`RiderRouteLifetime`), so by the time the summary mounts the route is
-            // already in hand. A cold scene has no ride behind it, so it asks the
-            // SHIPPING store for the record's own pair and lets the production
-            // provider answer — the capture then shows real MKDirections geometry
-            // and its real length, or (throttled, offline, `MRT_ROUTE_UNAVAILABLE=1`)
-            // the shipping refusal of both.
-            viewer.rideRouteStore.ensureLeg2(
-                pickup: DebugScene.samplePickup.coordinate,
-                destination: DebugScene.sampleDestination.coordinate
-            )
+            // MYR-422 — and NOTHING primes the route here any more. MYR-414's scene
+            // called `ensureLeg2` itself, which was a stand-in for the warm cache a
+            // real ride leaves behind; the summary now GOES AND GETS its geometry
+            // (`SharedViewerScreen.reconcileSummaryRoute`), so priming here would
+            // hide the very behaviour these two scenes exist to photograph — and
+            // would fire the MKDirections rung before the drive join had answered,
+            // which is the one thing the ladder promises not to do.
             viewer.sheetPhase = .summary
         case .modeChooser, .ownerSettings, .ownerSettingsTop, .riderSettings,
              // MYR-392 — Settings scenes; nothing about the rider sheet is seeded.

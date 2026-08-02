@@ -278,6 +278,9 @@ public final class SharedViewerState {
         isLiveLocation = seams.isLive
         // MYR-385 — `nil` in sim, so this store exists and can never fetch.
         bookedWindows = RideBookedWindowsStore(provider: seams.bookedWindows)
+        // MYR-422 — same construction, same reason: `nil` in sim, so the post-ride
+        // summary's drive join cannot be made even in principle there.
+        summaryDriveRoutes = RideSummaryDriveRouteStore(provider: seams.driveRoutes)
         // MYR-177 (client-approved): the tracking map draws REAL Apple Maps
         // driving routes in BOTH sim and live — "the route should be calculated
         // by Apple Maps until the Tesla integration", not the straight-line
@@ -424,6 +427,16 @@ public final class SharedViewerState {
     /// land — swap the provider, nothing else) and the offline straight-line in
     /// sim/tests so no network touches the sim path.
     @ObservationIgnored let rideRouteStore: RideRouteStore
+
+    /// MYR-422 — rung 1 of the post-ride summary's route ladder: which DRIVE this
+    /// ride was, and the track the car actually drove during it (§7.2 + §7.4).
+    ///
+    /// Lives here, beside the route cache, for the same reason that cache does: the
+    /// verdict is about the RIDE and must outlive any one mounting of the summary,
+    /// so a re-entered page answers from memory instead of re-spending two REST
+    /// calls. `@ObservationIgnored` on the reference; the store's own
+    /// `settledCount` is what a view observes.
+    @ObservationIgnored let summaryDriveRoutes: RideSummaryDriveRouteStore
 
     /// MYR-390 — has the route in front of the rider already been etched? Owned
     /// HERE, beside the route cache, for exactly the reason that cache is: the
