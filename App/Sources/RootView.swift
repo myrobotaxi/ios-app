@@ -1530,6 +1530,20 @@ struct RootView: View {
         .onChange(of: riderVehicleSet) { _, resolution in
             adoptRiderVehicle(resolution)
         }
+        // MYR-432 — a §6.2 close (4002, "permission revoked") funnels into the
+        // release machinery that ALREADY EXISTS, rather than into a second one.
+        // The socket has pruned its own subscription by now; what has to move is
+        // the CATALOG, because `riderVehicleSet` above is computed from it and is
+        // the only thing that resolves `.empty` and releases the map. Re-reading
+        // it here is exactly the MYR-369 viewer half, triggered seconds after the
+        // revoke instead of on the next foreground.
+        .onChange(of: sharedViewerState.riderAccessRevocationTick) { _, _ in
+            sharedViewerState.refreshRideEndGateInputs()
+            Task {
+                await sharedVehicleCatalog.load()
+                adoptRiderVehicle(riderVehicleSet)
+            }
+        }
         // MYR-184 — load the rider's shared vehicles when the rider shell is on
         // screen. No-op in sim; idempotent, so the tab churn costs nothing.
         .task(id: screen == .sharedHome) {

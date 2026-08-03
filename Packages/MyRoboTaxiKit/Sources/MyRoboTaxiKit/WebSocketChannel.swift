@@ -16,6 +16,23 @@ public protocol WebSocketChannel: Sendable {
     func ping() async throws
     /// Close the socket. Idempotent; makes any pending ``receive()`` throw.
     func close() async
+
+    /// MYR-432 — the RFC 6455 close code the PEER closed with, readable once
+    /// ``receive()`` has failed. `nil` when the socket did not close with a code
+    /// at all (a transport error, a local cancel, or a channel that cannot
+    /// report one).
+    ///
+    /// Separate from the `receive()` error rather than folded into it because a
+    /// close code is a fact about the CONNECTION, not about the read that
+    /// happened to notice — and because `URLSession` reports it on the task after
+    /// the fact rather than as part of the thrown error.
+    func closeCode() async -> Int?
+}
+
+public extension WebSocketChannel {
+    /// Default for channels that cannot report one. A channel that says nothing
+    /// is treated exactly as this client always treated every close: TRANSIENT.
+    func closeCode() async -> Int? { nil }
 }
 
 /// Creates a fresh channel per connection attempt. Injectable so tests hand the
@@ -98,6 +115,19 @@ actor URLSessionWebSocketChannel: WebSocketChannel {
 
     func close() {
         task.cancel(with: .goingAway, reason: nil)
+    }
+
+    /// MYR-432 — the peer's close code, read off the task after the fact.
+    ///
+    /// `URLSessionWebSocketTask.CloseCode` is an imported `NS_ENUM`, so a
+    /// server-defined 4xxx code has no Swift case; only its `rawValue` is read
+    /// here, never a case match, which is what makes the private-use range
+    /// (4000–4999 — where §6.2's `4002` lives) legible at all. `.invalid` (0) is
+    /// "no close frame was received" and maps to `nil` rather than to `0`, so an
+    /// ordinary transport failure is never mistaken for a coded close.
+    func closeCode() -> Int? {
+        let raw = task.closeCode.rawValue
+        return raw == URLSessionWebSocketTask.CloseCode.invalid.rawValue ? nil : raw
     }
 
     private func resumeIfNeeded() {

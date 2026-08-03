@@ -42,4 +42,20 @@ public enum VehicleTelemetryEvent: Sendable {
     /// The socket is the single authority for these transitions; a view model
     /// mirrors them rather than re-deriving.
     case dataState(group: AtomicGroup, state: DataState)
+    /// MYR-432 — this account no longer has access to this vehicle, and the
+    /// subscription has been PRUNED. The **last** event on the stream: the
+    /// continuation finishes immediately after it.
+    ///
+    /// Distinct from a stream that simply ends (which is what an ordinary
+    /// ``TelemetrySocket/unsubscribe(from:)`` produces, i.e. *we* stopped
+    /// watching). This one says the SERVER stopped letting us, which is the
+    /// difference between "nothing more is coming" and "nothing more is coming
+    /// and the surface must stand down". A consumer that could not tell them
+    /// apart would keep a revoked car on screen with a dead stream behind it.
+    ///
+    /// It carries no payload on purpose: the vehicle is the stream's own
+    /// identity, and the ACCOUNT-level question (what is left) is answered by
+    /// ``TelemetrySocket/accessRevocations()``, whose consumer is the surface
+    /// rather than the per-vehicle bridge.
+    case accessRevoked
 }

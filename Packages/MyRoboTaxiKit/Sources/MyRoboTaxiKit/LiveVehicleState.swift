@@ -34,6 +34,25 @@ public final class LiveVehicleState {
     /// Vehicle↔server connectivity, once a `connectivity` frame has arrived.
     public private(set) var vehicleOnline: Bool?
 
+    /// MYR-432 — this account's access to this vehicle was revoked and the
+    /// subscription has been pruned. Latched: access coming back is a NEW
+    /// subscription (a new bridge), never this one waking up.
+    ///
+    /// The last-known ``state`` is deliberately RETAINED, exactly as it is across
+    /// a disconnect (NFR-3.12/3.13). Blanking it here would make a surface that
+    /// has not yet released flash empty in the instant before it does, and the
+    /// release is the caller's decision — the bridge's job is to say the stream is
+    /// over and WHY, not to decide what the screen does about it.
+    public private(set) var accessRevoked = false
+
+    /// MYR-432 — fired once when ``accessRevoked`` latches.
+    ///
+    /// The per-vehicle half of the signal, for a consumer holding exactly this
+    /// bridge; the ACCOUNT-level question ("what is left, and should the surface
+    /// release?") is answered by ``TelemetrySocket/accessRevocations()``, which is
+    /// where the app's §7.0 re-read hangs.
+    public var onAccessRevoked: (@MainActor () -> Void)?
+
     /// MYR-351 — when the `/snapshot` GET behind the current ``state``'s
     /// SNAPSHOT-ONLY fields was issued. `nil` until the first snapshot arrives.
     ///
@@ -143,6 +162,17 @@ public final class LiveVehicleState {
             vehicleOnline = payload.online
         case .dataState(let group, let value):
             dataState[group] = value
+        case .accessRevoked:
+            // MYR-432 — the socket has already pruned the subscription and is
+            // about to finish this stream. Tear the bridge's own tasks down so
+            // nothing here outlives it: `stop()` is idempotent and its
+            // `unsubscribe` is a no-op against a subscription that is already
+            // gone. Latch first so a consumer reading `accessRevoked` from inside
+            // the hook sees `true`.
+            guard !accessRevoked else { return }
+            accessRevoked = true
+            stop()
+            onAccessRevoked?()
         }
     }
 }

@@ -17,7 +17,7 @@ public protocol SnapshotFetching: Sendable {
 ///
 /// Value type (`Sendable`): all dependencies are immutable, so it is free to
 /// share across tasks without a serialization bottleneck.
-public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleServiceWindowEndpoint, VehicleRideShareEndpoint, VehicleBookedWindowsEndpoint, VehicleDrivesEndpoint, VehicleRefreshing, VehicleCommandSending, VehicleSharingEndpoint, PushDeviceEndpoint, RideActivityTokenEndpoint, PushPrefsEndpoint, AccountDeletionEndpoint {
+public struct RestClient: Sendable, SnapshotFetching, VehicleAccessListing, AuthenticationEndpoint, TeslaLinkEndpoint, VehicleTeardownEndpoint, VehiclePlateEndpoint, VehicleServiceWindowEndpoint, VehicleRideShareEndpoint, VehicleBookedWindowsEndpoint, VehicleDrivesEndpoint, VehicleRefreshing, VehicleCommandSending, VehicleSharingEndpoint, PushDeviceEndpoint, RideActivityTokenEndpoint, PushPrefsEndpoint, AccountDeletionEndpoint {
     private let environment: BackendEnvironment
     private let tokenProvider: any TokenProvider
     private let http: any HTTPPerforming
@@ -52,6 +52,17 @@ public struct RestClient: Sendable, SnapshotFetching, AuthenticationEndpoint, Te
     public func vehicles() async throws -> [VehicleSummary] {
         let response: VehicleListResponse = try await get(["vehicles"])
         return response.items
+    }
+
+    /// MYR-432 — ``VehicleAccessListing``: the SAME §7.0 read, reduced to ids.
+    ///
+    /// Not a new endpoint and not a new question: MYR-369 enforces a suspension
+    /// by removing the grant from this very list, so "which vehicles may I see"
+    /// and "what does `GET /api/vehicles` return" are one fact. Expressing it as
+    /// a set here means the socket's prune and every surface's release are
+    /// reading the same answer rather than two that can disagree.
+    public func accessibleVehicleIDs() async throws -> Set<String> {
+        Set(try await vehicles().map(\.vehicleId))
     }
 
     /// `GET /api/vehicles/{vehicleId}/snapshot` — cold-load full `VehicleState`

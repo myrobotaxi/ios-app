@@ -37,6 +37,9 @@ public actor TelemetrySocket {
     private let webSocketURL: URL
     private let tokenProvider: any TokenProvider
     private let snapshotSource: any SnapshotFetching
+    /// MYR-432 — where the post-4002 access set is read from. Optional: see
+    /// ``VehicleAccessListing``.
+    private let accessListing: (any VehicleAccessListing)?
     private let channelFactory: any WebSocketChannelFactory
     private let backoff: ExponentialBackoff
     private let randomUnit: @Sendable () -> Double
@@ -85,6 +88,31 @@ public actor TelemetrySocket {
     /// MYR-387 — vehicles a snapshot has genuinely been emitted for. Guards the
     /// fallback against spending a request on data we already hold.
     private var snapshotDelivered: Set<String> = []
+    /// MYR-432 — account-wide access-revocation observers. Fan-out mirrors
+    /// ``rideEvents()``: a prune is a fact about the ACCOUNT's set, not about one
+    /// vehicle's stream, and the surface that has to release reads it there.
+    private var accessObservers: [UUID: AsyncStream<VehicleAccessRevocation>.Continuation] = [:]
+    /// MYR-432 — the close code the peer used on the connection that just ended,
+    /// read off the channel before it is discarded.
+    private var lastCloseCode: Int?
+    /// MYR-432 — set by an access close, consumed by the next `auth_ok`, which is
+    /// where the reduced set is resolved and the prune happens.
+    private var awaitingAccessRevalidation = false
+    /// MYR-432 — CONSECUTIVE access closes, deliberately NOT `attempt`.
+    ///
+    /// `attempt` is reset to 0 by every `auth_ok`, which is correct for transport
+    /// churn and is exactly what made the reported loop permanent: a 4002 close
+    /// always follows a SUCCESSFUL handshake, so the counter that governs backoff
+    /// was zeroed a few hundred microseconds before every close. This one is
+    /// cleared only by a prune that actually removed a vehicle, so a server that
+    /// keeps closing over an access set we already agree with escalates instead of
+    /// hammering.
+    private var accessCloseStreak = 0
+    /// MYR-432 — vehicles whose `/snapshot` read was refused `403`. Defense in
+    /// depth behind the prune (§3): the retry ladder and the MYR-387 standalone
+    /// fallback both stand down for that vehicle, so a revoked car cannot keep
+    /// spending REST requests even on a build/route where the prune never fires.
+    private var snapshotAccessDenied: Set<String> = []
 
     // MARK: Init
 
@@ -92,6 +120,7 @@ public actor TelemetrySocket {
         webSocketURL: URL,
         tokenProvider: any TokenProvider,
         snapshotSource: any SnapshotFetching,
+        accessListing: (any VehicleAccessListing)? = nil,
         channelFactory: any WebSocketChannelFactory = URLSessionWebSocketChannelFactory(),
         backoff: ExponentialBackoff = .standard,
         randomUnit: @escaping @Sendable () -> Double = { Double.random(in: 0..<1) },
@@ -101,6 +130,7 @@ public actor TelemetrySocket {
         self.webSocketURL = webSocketURL
         self.tokenProvider = tokenProvider
         self.snapshotSource = snapshotSource
+        self.accessListing = accessListing
         self.channelFactory = channelFactory
         self.backoff = backoff
         self.randomUnit = randomUnit
@@ -129,6 +159,22 @@ public actor TelemetrySocket {
 
     /// Current transport health.
     public func currentConnectionState() -> ConnectionState { connectionState }
+
+    /// MYR-432 — TEST SEAM. The two counters that decide whether a reconnect is
+    /// backed off, exposed `internal` so a suite can assert the ESCALATION rather
+    /// than infer it from wall-clock timings.
+    ///
+    /// It is the distinction between them that matters and that a timing-based
+    /// test cannot see: `attempt` is reset by every `auth_ok`, and an access close
+    /// always follows a successful handshake, so `attempt` alone can never
+    /// escalate on this path. `accessCloseStreak` is the one that survives.
+    func retryCounters() -> (attempt: Int, accessCloseStreak: Int) {
+        (attempt, accessCloseStreak)
+    }
+
+    /// MYR-432 — TEST SEAM. The vehicles currently subscribed, so a prune can be
+    /// asserted directly rather than only through the streams it finished.
+    func subscribedVehicleIDs() -> Set<String> { Set(subscribers.keys) }
 
     /// Current freshness for a vehicle's atomic group (`.loading` if unknown).
     public func dataState(vehicleId: String, group: AtomicGroup) -> DataState {
@@ -243,7 +289,11 @@ public actor TelemetrySocket {
         standaloneSnapshotTasks.removeValue(forKey: vehicleId)
         guard !isStopped,
               subscribers[vehicleId] != nil,
-              !snapshotDelivered.contains(vehicleId)
+              !snapshotDelivered.contains(vehicleId),
+              // MYR-432 — a vehicle the server has already refused `403` is not a
+              // slow one. The fallback exists for a socket that failed to deliver,
+              // not for a read that was answered.
+              !snapshotAccessDenied.contains(vehicleId)
         else { return }
         await fetchAndEmitSnapshot(vehicleId: vehicleId, scope: .standalone)
     }
@@ -260,9 +310,100 @@ public actor TelemetrySocket {
         // MYR-387 — including the pending socket-independent fallback.
         standaloneSnapshotTasks.removeValue(forKey: vehicleId)?.cancel()
         snapshotDelivered.remove(vehicleId)
+        // MYR-432 — a vehicle nobody is watching carries no verdict either.
+        snapshotAccessDenied.remove(vehicleId)
         if connectionState == .connected, let channel {
             Task { try? await channel.send(WireCodec.encodeFrame(type: .unsubscribe, payload: UnsubscribePayload(vehicleId: vehicleId))) }
         }
+    }
+
+    // MARK: - MYR-432 — access revocation (§6.2 close code 4002)
+
+    /// A stream of ``VehicleAccessRevocation``s — one per prune. Account-wide,
+    /// like ``rideEvents()``, because a prune is a statement about the account's
+    /// vehicle SET and the surface that has to release reads it as such.
+    ///
+    /// The app funnels this into the machinery that already exists for a shrinking
+    /// vehicle list — the §7.0 list re-read and the release it drives — rather
+    /// than into a second release path. There is exactly one definition of "this
+    /// account no longer has that car", and it is the list.
+    public func accessRevocations() -> AsyncStream<VehicleAccessRevocation> {
+        let (stream, continuation) = AsyncStream<VehicleAccessRevocation>.makeStream()
+        let id = UUID()
+        accessObservers[id] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { await self?.removeAccessObserver(id) }
+        }
+        return stream
+    }
+
+    /// Reconcile the live subscriptions against an authoritative access set,
+    /// pruning every subscribed vehicle that is absent from it.
+    ///
+    /// Public because the same reconciliation is worth performing from the app's
+    /// own §7.0 reads — a suspension the server enforces by dropping the row is
+    /// visible there first if the socket happens to be down (MYR-369's viewer
+    /// half). Idempotent and cheap: a set that contains everything subscribed
+    /// does nothing at all.
+    ///
+    /// **THE SET IS THE AUTHORITY, NOT THE CLOSE CODE.** The close says only that
+    /// SOMETHING changed; it names no vehicle, and a viewer revoked from one of
+    /// two cars must keep the other streaming. Deriving the prune from the set
+    /// makes the partial case fall out for free instead of being a second branch.
+    @discardableResult
+    public func applyAccessSet(_ accessible: Set<String>) -> VehicleAccessRevocation? {
+        // A restored grant clears its 403 latch — access can come back, and a
+        // permanent client-side refusal would outlive the server's decision.
+        snapshotAccessDenied.subtract(accessible)
+        let lost = Set(subscribers.keys).subtracting(accessible)
+        guard !lost.isEmpty else { return nil }
+        for vehicleId in lost { pruneRevokedVehicle(vehicleId) }
+        // The prune settled it, so the access streak starts over: a LATER
+        // revocation (a second car, minutes on) gets its own free re-handshake
+        // rather than inheriting this one's escalation.
+        accessCloseStreak = 0
+        let revocation = VehicleAccessRevocation(revoked: lost, remaining: Set(subscribers.keys))
+        for continuation in accessObservers.values { continuation.yield(revocation) }
+        return revocation
+    }
+
+    /// Resolve the access set for the connection that has just authenticated and
+    /// prune against it.
+    ///
+    /// A read that FAILS prunes nothing — MYR-326's rule, pointed at access: a
+    /// list that did not answer is not evidence a car is gone, and guessing here
+    /// would tear a working stream down every time the network blinked at the
+    /// wrong moment. The vehicle then stays subscribed and, if the server closes
+    /// again, `accessCloseStreak` escalates the backoff instead of looping.
+    private func revalidateAccess() async {
+        awaitingAccessRevalidation = false
+        guard let accessListing else { return }
+        guard let accessible = try? await accessListing.accessibleVehicleIDs() else { return }
+        applyAccessSet(accessible)
+    }
+
+    /// Tear one revoked vehicle's subscription down: emit the terminal
+    /// ``VehicleTelemetryEvent/accessRevoked``, finish the streams, and drop every
+    /// piece of per-vehicle bookkeeping — including the MYR-387 standalone
+    /// fallback and the MYR-319 retry ladder, which are the two things that would
+    /// otherwise keep firing `GET /api/vehicles/{id}/snapshot` at a car we may not
+    /// read.
+    ///
+    /// Deliberately sends NO `unsubscribe` frame. The connection that held the
+    /// grant is already gone, and the fresh one never subscribed this vehicle —
+    /// there is nothing on the server to cancel, and asking it to cancel a
+    /// subscription it refused is one more request about a car we have no access
+    /// to.
+    private func pruneRevokedVehicle(_ vehicleId: String) {
+        emit(.accessRevoked, to: vehicleId)
+        if let continuations = subscribers.removeValue(forKey: vehicleId) {
+            for continuation in continuations.values { continuation.finish() }
+        }
+        dataStates.removeValue(forKey: vehicleId)
+        snapshotRetryTasks.removeValue(forKey: vehicleId)?.cancel()
+        standaloneSnapshotTasks.removeValue(forKey: vehicleId)?.cancel()
+        snapshotDelivered.remove(vehicleId)
+        snapshotAccessDenied.insert(vehicleId)
     }
 
     /// Open the connection and start the supervised reconnect loop. Idempotent.
@@ -288,6 +429,12 @@ public actor TelemetrySocket {
         let channel = self.channel
         self.channel = nil
         authOK = false
+        // MYR-432 — an explicit stop ends the access episode with it: a later
+        // `connect()` is a fresh session, and inheriting a streak would deny it
+        // the free re-handshake a first revocation is entitled to.
+        awaitingAccessRevalidation = false
+        accessCloseStreak = 0
+        lastCloseCode = nil
         Task { await channel?.close() }
         setConnectionState(.disconnected)
     }
@@ -331,6 +478,47 @@ public actor TelemetrySocket {
                 // Transient: mark stale, back off, retry (C-4 / C-6 / C-7).
                 markAllGroupsStale()
                 if isStopped { break }
+
+                // MYR-432 — 4002 IS AN ACCESS SIGNAL, NOT TRANSPORT CHURN.
+                //
+                // The server closes with §6.2's `4002` within ~100µs of an owner
+                // revoking or suspending a viewer. The JWT is still valid and the
+                // very next handshake succeeds, so every ordinary reconnect
+                // heuristic reads it as a healthy blip — which is precisely the
+                // reported defect: re-handshake, `auth_ok` resets `attempt` to 0,
+                // `onConnected` re-subscribes the vehicle that caused the close,
+                // the server closes again. A ~1s loop plus one `403` snapshot read
+                // per cycle, for as long as the app is open.
+                //
+                // ONE free re-handshake is granted, and it is the whole point: the
+                // reduced access set is only knowable from a connection that has
+                // authenticated, so standing down without reconnecting would blind
+                // a viewer who was revoked from ONE of two cars. `awaitingAccessRevalidation`
+                // is what makes that reconnect a QUESTION rather than a repetition
+                // — see `revalidateAccess`, which prunes BEFORE `onConnected` can
+                // re-subscribe anything.
+                if TelemetryCloseCode.isAccessSignal(lastCloseCode) {
+                    awaitingAccessRevalidation = true
+                    accessCloseStreak += 1
+                    if accessCloseStreak == 1 {
+                        // The one free re-handshake: no backoff, `attempt`
+                        // untouched, so a genuinely transient failure that follows
+                        // still starts from where it would have.
+                        lastCloseCode = nil
+                        setConnectionState(.reconnecting)
+                        continue
+                    }
+                    // A REPEATED access close means the prune did not settle it —
+                    // an old server closing over a set we already agree with, or a
+                    // listing we could not read. Escalate on the ACCESS streak,
+                    // which the intervening `auth_ok` cannot reset. Without this
+                    // the loop is permanent BY CONSTRUCTION however good the
+                    // pruning is, because `attempt` is zeroed microseconds before
+                    // every close.
+                    attempt = max(attempt, accessCloseStreak - 1)
+                }
+                lastCloseCode = nil
+
                 attempt += 1
                 setConnectionState(.reconnecting)
                 let seconds = backoff.delay(attempt: attempt, random: randomUnit())
@@ -354,24 +542,41 @@ public actor TelemetrySocket {
         self.channel = channel
         defer { let c = channel; Task { await c.close() } }
 
-        // §2.2: the auth frame MUST be the first frame after the upgrade.
-        let token: String
-        do { token = try await tokenProvider.token() }
-        catch { throw error } // transient — provider will be asked again on retry
-        try await channel.send(WireCodec.encodeFrame(type: .auth, payload: AuthPayload(token: token)))
-        armPreAuthTimer(channel: channel, generation: gen)
+        // MYR-432 — READ THE CLOSE CODE ON EVERY WAY OUT, not just on a failed
+        // `receive()`.
+        //
+        // The first cut captured it inside the receive catch, which reads as
+        // sufficient — a close is what makes a read fail. It is not: a close that
+        // lands while the handshake is still in flight makes the `send` throw
+        // instead, and the code is silently lost. That arm is not exotic (the
+        // server closes ~100µs after the owner's tap, so a revoke during a
+        // reconnect's own handshake hits it), and it is genuinely intermittent
+        // rather than reproducible, which is exactly the kind of gap that ships.
+        // It was found by a test that passed alone and failed inside the full
+        // suite. The thrown error never carries the close frame — that is a
+        // `URLSession` fact reported on the task — so this is the only place it
+        // can be read, and it must be read before `defer` tears the channel down.
+        do {
+            // §2.2: the auth frame MUST be the first frame after the upgrade.
+            let token = try await tokenProvider.token()
+            try await channel.send(WireCodec.encodeFrame(type: .auth, payload: AuthPayload(token: token)))
+            armPreAuthTimer(channel: channel, generation: gen)
 
-        while true {
-            let text: String
-            do { text = try await channel.receive() }
-            catch {
+            while true {
+                let text: String
+                do { text = try await channel.receive() }
+                catch {
+                    if isStopped { return }
+                    throw error // close / transport failure → supervisor reconnects
+                }
                 if isStopped { return }
-                throw error // close / transport failure → supervisor reconnects
+                resetLivenessIfAuthed(channel: channel, generation: gen)
+                guard let envelope = try? WireCodec.decodeEnvelope(text) else { continue }
+                try await handle(envelope, channel: channel, generation: gen)
             }
-            if isStopped { return }
-            resetLivenessIfAuthed(channel: channel, generation: gen)
-            guard let envelope = try? WireCodec.decodeEnvelope(text) else { continue }
-            try await handle(envelope, channel: channel, generation: gen)
+        } catch {
+            if !isStopped { lastCloseCode = await channel.closeCode() }
+            throw error
         }
     }
 
@@ -390,6 +595,17 @@ public actor TelemetrySocket {
             setConnectionState(.connected)
             resetLiveness(channel: channel, generation: gen)
             startKeepalive(channel: channel, generation: gen)
+            // MYR-432 — THE PRUNE HAPPENS BEFORE THE RESUBSCRIBE, and the order is
+            // the fix rather than an optimisation. `onConnected` re-subscribes
+            // every key in `subscribers`; revalidating afterwards would send the
+            // revoked vehicle's `subscribe` frame first and invite the identical
+            // close a second time. Doing it here means that on BOTH server
+            // generations — one that closes again, one that silently refuses the
+            // subscribe (telemetry PR #369) — the frame is simply never sent.
+            if awaitingAccessRevalidation {
+                await revalidateAccess()
+                guard gen == generation else { return }
+            }
             await onConnected(channel: channel, generation: gen)
 
         case .vehicleUpdate:
@@ -505,6 +721,9 @@ public actor TelemetrySocket {
         // connection coming up mid-schedule replaces the standalone one with its
         // own, which is right: that read is the one with the ordering guarantee.
         snapshotRetryTasks[vehicleId]?.cancel()
+        // MYR-432 — a `403` on the inline attempt stops here: `attemptSnapshot`
+        // returned `true` above, so no ladder is armed for a vehicle the server
+        // has refused.
         snapshotRetryTasks[vehicleId] = Task { [weak self] in
             await self?.runSnapshotRetries(vehicleId: vehicleId, scope: scope)
         }
@@ -531,6 +750,24 @@ public actor TelemetrySocket {
             // through the backoff. The last-known snapshot, if any, is retained
             // either way (NFR-3.12/3.13).
             setDataState(vehicleId: vehicleId, groups: AtomicGroup.allCases, to: .error)
+            // MYR-432, §3 — DEFENSE IN DEPTH: a `403` is an ANSWER, not a blip.
+            //
+            // The MYR-319 ladder and the MYR-387 standalone fallback both exist
+            // for a car that is slow to answer — an asleep vehicle, a `503`, a
+            // transient blip — and retrying is right for every one of those. A
+            // `403` is the server stating that this account may not read this
+            // vehicle, and no amount of asking again changes that: it is what
+            // produced the reported "~1–2 REST 403s per second, forever". The
+            // server may also cut REST before the socket notices, so this must
+            // stand on its own rather than lean on the prune.
+            //
+            // Latched per VEHICLE, and lifted by `applyAccessSet` the moment a
+            // list read shows the grant back — a client-side refusal must never
+            // outlive the server's decision.
+            if (error as? RestError)?.httpStatus == 403 {
+                snapshotAccessDenied.insert(vehicleId)
+                return true // stop the ladder for THIS vehicle; others are untouched
+            }
             return false
         }
     }
@@ -636,6 +873,10 @@ public actor TelemetrySocket {
 
     private func removeRideObserver(_ id: UUID) {
         rideObservers.removeValue(forKey: id)
+    }
+
+    private func removeAccessObserver(_ id: UUID) {
+        accessObservers.removeValue(forKey: id)
     }
 
     // MARK: - Timers (all reconnect the socket by closing the channel)

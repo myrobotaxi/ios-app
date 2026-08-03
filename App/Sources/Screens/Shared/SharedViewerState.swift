@@ -709,6 +709,16 @@ public final class SharedViewerState {
         refreshPickupETAAnchors()
     }
 
+    /// MYR-432 — the rider socket's access-revocation edge, forwarded so the shell
+    /// can observe it without reaching into the locator.
+    ///
+    /// `0` on the simulated path, where there is no locator and no socket, so the
+    /// shell's `onChange` never fires and every simulated + DEBUG capture is
+    /// byte-identical.
+    public var riderAccessRevocationTick: Int {
+        liveVehicleLocator?.accessRevocationTick ?? 0
+    }
+
     /// Re-seat both ETA anchors from the current raw fixes. Idempotent and cheap;
     /// writes an observable property ONLY when an anchor actually moved, so a
     /// streaming fix does not invalidate any view.
