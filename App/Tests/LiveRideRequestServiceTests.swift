@@ -604,7 +604,13 @@ final class LiveRideRequestServiceTests: XCTestCase {
         XCTAssertEqual(service.activeRequest?.enrouteObservedAt, started,
                        "a re-fold of the same status must not walk the trip start forward")
 
-        let completed = "2026-08-02T17:42:09.000Z"
+        // Derived from now, never a literal: RideTripSpan refuses a completion
+        // earlier than the observed start, so a fixed instant here is a time bomb
+        // that detonates the first run after the wall clock passes it (isoNow's
+        // own reasoning, one field over).
+        let wireFormatter = ISO8601DateFormatter()
+        wireFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let completed = wireFormatter.string(from: Date().addingTimeInterval(120))
         await api.setAdvance(Self.wireRide(id: "srv-414", status: .completed, accepted: true, completedAt: completed))
         await api.setDetail(Self.wireRide(id: "srv-414", status: .completed, accepted: true, completedAt: completed))
         service.droppedOff()
