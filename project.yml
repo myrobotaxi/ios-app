@@ -52,7 +52,15 @@ packages:
     # redesigned lock-screen card's track draws. `v` deliberately STAYS `1` (a new
     # optional field is not a meaning change), so this pin is what the mirror's
     # cross-pin test measures against and nothing else in the app moves with it.
-    from: 0.27.0
+    #
+    # MYR-440 — 0.29.0 makes `VehicleState.interiorTemp`/`.exteriorTemp` optional
+    # (`Int?`), so a viewer-masked snapshot decodes instead of throwing
+    # `keyNotFound` and losing the entire document. Full reasoning in the Kit's
+    # `Package.swift`. This pin moves with the Kit's because the app target and
+    # its test target both name `VehicleState` directly (`VehicleContractMapping`,
+    # `ContractsTestSupport`, the Debug fleets), so the optionality has to reach
+    # THEIR compiled surface too — not just the Kit's.
+    from: 0.29.0
 
 settings:
   base:

@@ -24,9 +24,7 @@ struct ClimateSection: View {
     /// MYR-280 — a snapshot has arrived (any frame). Mirrors the quick-tile logic.
     private var hasSnapshot: Bool { isStreaming != nil }
 
-    /// The em-dash the design uses for an unavailable value.
-    private static let dash = "\u{2014}"
-    private func degrees(_ value: Int?) -> String { value.map { "\($0)°" } ?? Self.dash }
+    private func degrees(_ value: Int?) -> String { ClimateTemperatureText.degrees(value) }
 
     /// Whether the executor confirms climate on/off. Unknown on the live path
     /// until the owner commands it — then it shows on/off honestly (MYR-251).
@@ -104,7 +102,7 @@ struct ClimateSection: View {
                     }
                     Spacer()
                     let fanKnown = executor.isKnown(.fanSpeed)
-                    (Text(fanKnown ? "\(controls.fanSpeed) " : "\(Self.dash) ").foregroundStyle(Color.mrtText)
+                    (Text(fanKnown ? "\(controls.fanSpeed) " : "\(ClimateTemperatureText.dash) ").foregroundStyle(Color.mrtText)
                         + Text("/ 10").foregroundStyle(Color.mrtTextMuted))
                         .font(.system(size: 12.5, weight: .semibold))
                         .monospacedDigit()

@@ -191,6 +191,34 @@ final class VehicleStateMergerTests: XCTestCase {
         )
     }
 
+    /// Row builder for a property that is OPTIONAL but never NULLED — the wire
+    /// either carries it or OMITS the key entirely.
+    ///
+    /// MYR-440. `interiorTemp`/`exteriorTemp` left the schema's `required` list so
+    /// a viewer-masked document can decode, but their `type` is still plain
+    /// `integer` (not `["integer","null"]`), so an explicit JSON null is not a
+    /// legal value for either — absence is the only omission the contract allows,
+    /// and the viewer mask drops the KEY (rest-api.md §5.1: emitting null would
+    /// still tell the viewer the field exists).
+    ///
+    /// Neither existing builder says that. `req` would still COMPILE for these two
+    /// — `T` simply infers as `Int?` — which is exactly the quiet mis-labelling
+    /// worth avoiding: it would assert `isPresent` unconditionally on a property
+    /// that is now legitimately absent. `opt` would demand a null-CLEAR arm in the
+    /// merger, i.e. behaviour for a wire shape the schema forbids. So this is the
+    /// third category, named rather than approximated.
+    private static func absentable<T: Equatable>(
+        _ field: String, _ delta: JSONValue, _ keyPath: KeyPath<VehicleState, T?>, _ expected: T
+    ) -> FoldCase {
+        FoldCase(
+            field: field,
+            delta: delta,
+            isPresent: { $0[keyPath: keyPath] != nil },
+            isFolded: { $0[keyPath: keyPath] == expected },
+            isCleared: nil
+        )
+    }
+
     /// THE canonical table — every `VehicleState` field the live `vehicle_update`
     /// fold must deliver. Every probe value is deliberately different from the
     /// `rest/snapshot.json` fixture so "it folded" can't be confused with "the
@@ -232,8 +260,8 @@ final class VehicleStateMergerTests: XCTestCase {
         // Ungrouped telemetry
         req("speed", .number(34), \.speed, 34),
         req("odometerMiles", .number(12500), \.odometerMiles, 12500),
-        req("interiorTemp", .number(71), \.interiorTemp, 71),
-        req("exteriorTemp", .number(61), \.exteriorTemp, 61),
+        absentable("interiorTemp", .number(71), \.interiorTemp, 71),
+        absentable("exteriorTemp", .number(61), \.exteriorTemp, 61),
         req("fsdMilesSinceReset", .number(500.5), \.fsdMilesSinceReset, 500.5),
         req("locationName", .string("Embarcadero"), \.locationName, "Embarcadero"),
         req("locationAddress", .string("1 Ferry Bldg, San Francisco, CA"), \.locationAddress, "1 Ferry Bldg, San Francisco, CA"),

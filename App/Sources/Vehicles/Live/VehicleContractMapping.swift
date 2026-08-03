@@ -93,6 +93,18 @@ enum VehicleContractMapping {
             // `VehicleState` contract carries: `odometerMiles` and
             // `fsdMilesSinceReset` (MYR-255 — both non-nullable in the contract,
             // so once a snapshot arrives they are always real, never a fixture).
+            //
+            // MYR-440 — the TEMPS are no longer in that "always real" set. The
+            // viewer mask (MYR-435) withholds both, so contracts 0.29.0 makes them
+            // `Int?` and a viewer's snapshot decodes with both nil. This mapping
+            // needs no `??`: the seam field has been `Int?` since MYR-251 and
+            // `ClimateSection.degrees` already renders nil as the em-dash, so the
+            // nil simply travels. What CHANGED is that the nil arm is now reachable
+            // on the LIVE path rather than only pre-snapshot or under a DEBUG
+            // override — which is why it is now covered by a test rather than
+            // trusted to the render.
+            //
+            // The OWNER path is byte-identical: the owner always receives both.
             // "Driven autonomously %" is derived from these two in the view.
             // Tire pressures, full VIN, and software version are NOT contracted —
             // they render honest-unknown on the live path (backend-field gap).
