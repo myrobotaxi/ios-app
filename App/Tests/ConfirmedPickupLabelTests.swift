@@ -10,9 +10,20 @@ import XCTest
 // "Finding address…" forever — the MYR-223 pin-drop labeler's in-flight
 // transient had been baked into `draftPickup.label` at confirm time, with
 // nothing left to finish it. These tests pin the deterministic confirm behavior:
-// the transient is NEVER persisted; a pin confirmed mid-resolution takes the
-// calm "Current location" fallback and ONE bounded re-resolution upgrades it to
-// the real street (or leaves the fallback), and sim stays pixel-identical.
+// the transient is NEVER persisted; a pin confirmed mid-resolution takes a calm
+// placeholder and ONE bounded re-resolution upgrades it to the real street (or
+// leaves the placeholder), and sim stays pixel-identical.
+//
+// ⚠️ MYR-445 DEFECT 2 CHANGED WHICH PLACEHOLDER, AND ONLY THAT. MYR-239 chose
+// `pickupFallbackLabel` ("Current location") because it matched what the Search
+// pickup row showed with NO pickup — a virtue when that row was a static `Text`.
+// MYR-379 then made that string the FIELD's default rendering, so a genuinely
+// committed kerb came back reading exactly like the untouched default: the
+// client's *"current location shows as the placeholder again even though its not
+// actually set"*. It is `pinNeutralLabel` ("Pinned location") now. MYR-239's
+// invariant — never persist the "Finding address…" transient, always kick the
+// bounded re-resolution — is asserted unchanged below, and the STRONGER rule that
+// no confirmed pickup may ever wear the default's name is asserted with it.
 
 // A labeler returning a scripted sequence of outcomes (last repeats).
 @MainActor
@@ -52,9 +63,22 @@ final class ConfirmedPickupLabelTests: XCTestCase {
         // The whole defect: `.resolving` (the "Finding address…" transient) must
         // resolve to the calm fallback for persistence — never the transient.
         XCTAssertEqual(SharedViewerState.confirmedPickupLabel(for: .resolving),
-                       SharedViewerState.pickupFallbackLabel)
+                       SharedViewerState.pinNeutralLabel)
         XCTAssertNotEqual(SharedViewerState.confirmedPickupLabel(for: .resolving),
                           SharedViewerState.pinResolvingLabel)
+        // MYR-445 — and never the DEFAULT's own name, in any state. Stated over
+        // every label state rather than over the one case that regressed, so a
+        // state added later has to answer the same question.
+        let everyLabelState: [SharedViewerState.PinLabelDisplayState] = [
+            .resolving, .neutral, .resolved("Legacy Dr")
+        ]
+        for labelState in everyLabelState {
+            XCTAssertNotEqual(
+                SharedViewerState.confirmedPickupLabel(for: labelState),
+                SharedViewerState.pickupFallbackLabel,
+                "a CONFIRMED pickup may never wear the untouched default's name (\(labelState))"
+            )
+        }
         // A resolved street persists as-is; a genuine neutral keeps "Pinned location".
         XCTAssertEqual(SharedViewerState.confirmedPickupLabel(for: .resolved("Legacy Dr")), "Legacy Dr")
         XCTAssertEqual(SharedViewerState.confirmedPickupLabel(for: .neutral),
@@ -68,8 +92,9 @@ final class ConfirmedPickupLabelTests: XCTestCase {
         state.pinDropCameraSettled(at: pin)
         XCTAssertEqual(state.pinLabelState, .resolving) // in-flight, synchronously
         state.confirmPickup()
-        // The persisted pickup carries the fallback, NEVER "Finding address…".
-        XCTAssertEqual(state.draftPickup?.label, SharedViewerState.pickupFallbackLabel)
+        // The persisted pickup carries the calm placeholder, NEVER "Finding
+        // address…" — and never the untouched default's name (MYR-445).
+        XCTAssertEqual(state.draftPickup?.label, SharedViewerState.pinNeutralLabel)
         XCTAssertNotEqual(state.draftPickup?.label, SharedViewerState.pinResolvingLabel)
         // Coordinate is the authoritative settled center regardless of the label.
         XCTAssertEqual(state.draftPickup?.coordinate.latitude ?? .nan, pin.latitude, accuracy: 1e-9)
@@ -80,7 +105,7 @@ final class ConfirmedPickupLabelTests: XCTestCase {
         state.pinDropCameraSettled(at: pin)
         XCTAssertEqual(state.pinLabelState, .resolving)
         state.confirmPickup()
-        XCTAssertEqual(state.draftPickup?.label, SharedViewerState.pickupFallbackLabel) // fallback first
+        XCTAssertEqual(state.draftPickup?.label, SharedViewerState.pinNeutralLabel) // placeholder first
         // The bounded re-resolution upgrades the confirmed pickup's label.
         await eventually { state.draftPickup?.label == "Legacy Dr" }
         XCTAssertEqual(state.draftPickup?.coordinate.latitude ?? .nan, pin.latitude, accuracy: 1e-9)
@@ -99,9 +124,9 @@ final class ConfirmedPickupLabelTests: XCTestCase {
         let state = makeLiveState(pinLabeler: ScriptedLabeler([.unresolved]))
         state.pinDropCameraSettled(at: pin)
         state.confirmPickup()
-        // A genuine no-result keeps the calm fallback — never a stuck transient.
+        // A genuine no-result keeps the calm placeholder — never a stuck transient.
         try? await Task.sleep(for: .milliseconds(150))
-        XCTAssertEqual(state.draftPickup?.label, SharedViewerState.pickupFallbackLabel)
+        XCTAssertEqual(state.draftPickup?.label, SharedViewerState.pinNeutralLabel)
     }
 
     func testConfirmWhileResolvingFallsBackAfterRetriesExhausted() async {
@@ -114,7 +139,7 @@ final class ConfirmedPickupLabelTests: XCTestCase {
         await eventually(timeout: 6) {
             labeler.calls.count >= SharedViewerState.pinLabelRetryBackoffs.count + 1
         }
-        XCTAssertEqual(state.draftPickup?.label, SharedViewerState.pickupFallbackLabel)
+        XCTAssertEqual(state.draftPickup?.label, SharedViewerState.pinNeutralLabel)
         XCTAssertNotEqual(state.draftPickup?.label, SharedViewerState.pinResolvingLabel)
     }
 

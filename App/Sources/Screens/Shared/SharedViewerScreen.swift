@@ -818,12 +818,16 @@ struct SharedViewerScreen: View {
 
     /// The preview's pickup coordinate: explicit request/draft pickup, else
     /// the live "Current location" fix.
+    /// MYR-445 — the ladder itself is `RidePreviewPickup.resolve`, so the rule
+    /// defect 4 is downstream of can be asserted rather than only read. The
+    /// ANCHOR, never the live fix: GPS jitter must not re-key the route (MYR-237
+    /// device trace — the collapse/refetch loop).
     private var searchPreviewPickup: CLLocationCoordinate2D? {
-        previewRouteRequest?.input.pickup.coordinate
-            ?? viewerState.draftPickup?.coordinate
-            // The ANCHOR, never the live fix: GPS jitter must not re-key the
-            // route (MYR-237 device trace — the collapse/refetch loop).
-            ?? viewerState.previewPickupAnchor
+        RidePreviewPickup.resolve(
+            requestPickup: previewRouteRequest?.input.pickup.coordinate,
+            draftPickup: viewerState.draftPickup?.coordinate,
+            anchor: viewerState.previewPickupAnchor
+        )
     }
 
     @ViewBuilder

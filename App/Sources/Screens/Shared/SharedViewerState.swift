@@ -958,9 +958,34 @@ public final class SharedViewerState {
         // rider has just named a pickup that is NOT the device fix. Leaving the
         // old anchor up would key the preview route off wherever they happened to
         // be standing when they picked a destination.
-        previewPickupAnchor = place.coordinate
+        reAnchorPreviewPickup(to: place.coordinate)
         pinReturn = .search
         sheetPhase = .pinDrop(returnTo: .search)
+    }
+
+    /// MYR-445 defect 3 — **AN EXPLICIT CHOICE ALWAYS RE-ANCHORS.**
+    ///
+    /// `previewPickupAnchor` has exactly two kinds of writer and they need
+    /// opposite rules, which is what the client's *"if I select current location
+    /// or any other pick up address it doesn't actually set it and is stuck on the
+    /// first one"* is made of.
+    ///
+    ///  • `capturePreviewPickupAnchor()` writes **only into a nil anchor**. That
+    ///    guard is right and stays: it fires from destination selection, where the
+    ///    coordinate on offer is the raw device fix, and MYR-237's device trace is
+    ///    what happens when a ~1Hz stream of those re-keys the route cache — the
+    ///    etched line collapsing back to loading in a visible ~2s loop.
+    ///  • THIS one is a rider naming a pickup. There is no jitter to guard against
+    ///    — a tap is not a fix — and an explicit choice that lost to a guard
+    ///    written for GPS noise is a choice that silently did not happen.
+    ///
+    /// It exists as a named method rather than as two bare assignments so the
+    /// asymmetry is legible at both call sites and so a third explicit-choice door
+    /// added later has somewhere obvious to go. Both of today's callers —
+    /// `selectPickup` and `clearPickup` — are choices, and neither may ever be
+    /// routed through the nil-guarded writer.
+    private func reAnchorPreviewPickup(to coordinate: CLLocationCoordinate2D?) {
+        previewPickupAnchor = coordinate
     }
 
     /// Clear a typed/confirmed pickup back to the implicit "Current location"
@@ -971,11 +996,28 @@ public final class SharedViewerState {
     /// The SEED goes with it: it is the pending half of a chain the rider has
     /// just abandoned, and leaving it would re-open the pin-drop on a place they
     /// removed.
+    /// ⚠️ **MYR-445 DEFECT 3/4 — RETURNING TO THE DEFAULT IS A CHOICE, AND IT HAS
+    /// TO MOVE THE ANCHOR.** This method cleared `draftPickup` and `pinDropSeed`
+    /// and left `previewPickupAnchor` pointing at the pickup the rider had just
+    /// abandoned. Every consumer reads the anchor as the "current location" rung of
+    /// its ladder (`RidePreviewPickup.resolve`, `pickupETARiderAnchor`), so
+    /// choosing the default resolved to the OLD place — the pickup did not move,
+    /// the route cache was never re-keyed with a new pair, and the polyline stayed
+    /// where it was **for the rest of the session**. That is the client's *"if I
+    /// select current location … it doesn't actually set it and is stuck on the
+    /// first one … the map route polyline is also stuck bc the pickup point did not
+    /// update"*, and the two halves of his sentence are one line of code apart.
+    ///
+    /// Re-anchoring to the live fix here is **not** the live-GPS leak MYR-237
+    /// forbids, and the distinction is the one that matters: this is a single WRITE
+    /// at the instant of a tap, not a per-frame READ. The anchor then holds still
+    /// against the fix stream exactly as it does after `selectPickup`.
     public func clearPickup() {
         confirmedPickupLabelTask?.cancel() // MYR-239 — no re-resolution outlives the pickup
         confirmedPickupLabelTask = nil
         draftPickup = nil
         pinDropSeed = nil
+        reAnchorPreviewPickup(to: userLocation.coordinate)
     }
 
     /// Advance from the search sheet once the rider taps "Continue" — identical
@@ -1258,14 +1300,41 @@ public final class SharedViewerState {
 
     /// MYR-239 (pure, testable) — the label to PERSIST for a confirmed pickup,
     /// given the pin-drop label state at confirm time. Never the in-flight
-    /// transient: a still-`.resolving` pin persists the calm fallback (a bounded
+    /// transient: a still-`.resolving` pin persists a calm placeholder (a bounded
     /// re-resolution then upgrades it), a resolved street persists as-is, and a
     /// genuinely-neutral pin keeps "Pinned location".
+    ///
+    /// ⚠️ **MYR-445 DEFECT 2 — THE CALM FALLBACK USED TO BE THE DEFAULT'S OWN
+    /// NAME, AND THAT IS THE WHOLE BUG.** MYR-239 chose `pickupFallbackLabel`
+    /// ("Current location") here on the explicit reasoning that it was *"the same
+    /// string the Search pickup row shows with no confirmed pickup"* — which was
+    /// a virtue when that row was a static `Text` and the only alternative was the
+    /// stuck "Finding address…" transient. **MYR-379 then made that exact string
+    /// the FIELD's default rendering**, and the two collided: a rider who
+    /// confirmed a kerb three blocks away — while the reverse geocode was still in
+    /// flight, which is the ordinary case on a throttled device — came back to a
+    /// field reading "Current location" over a `draftPickup` that is a specific
+    /// coordinate. His words: *"current location shows as the placeholder again
+    /// even though its not actually set"*. The mirror was right; it was faithfully
+    /// mirroring a label that says "nothing is set".
+    ///
+    /// It is `pinNeutralLabel` now — the same honest "Pinned location" a genuinely
+    /// unresolvable pin already takes, which says what is true (you pinned a spot,
+    /// we have no street for it yet) and is DISTINGUISHABLE from the untouched
+    /// default. MYR-239's invariant is untouched: the transient is still never
+    /// persisted, and `resolveConfirmedPickupLabel`'s bounded ladder still upgrades
+    /// it to the real street. The stronger guarantee is asserted directly — **no
+    /// label state may persist `pickupFallbackLabel`**, so a set pickup can never
+    /// again wear the default's name.
+    ///
+    /// This is LIVE-only (`confirmPickup` reads it behind `isLiveLocation`), so
+    /// every simulated pin-drop capture keeps its fixture label and is
+    /// byte-identical.
     static func confirmedPickupLabel(for state: PinLabelDisplayState) -> String {
         switch state {
         case .resolved(let label): return label
         case .neutral: return pinNeutralLabel
-        case .resolving: return pickupFallbackLabel
+        case .resolving: return pinNeutralLabel
         }
     }
 
