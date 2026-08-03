@@ -1,0 +1,352 @@
+import SwiftUI
+import DesignSystem
+
+// MARK: - MYR-428 — the coach-mark layer
+//
+// THE LAYER OVERLAYS AND DOES NOT MODIFY. Not one line of `HomeScreen`,
+// `SharedViewerScreen`, `RideRequestSearchContent` or the pickup surfaces changes
+// to support this, which is a fence requirement (MYR-379 is editing those files
+// in parallel) and independently the right shape: a walkthrough that had to
+// thread an anchor through every screen it tours would make the tour a property
+// of the screens rather than of the tour.
+//
+// That has one honest consequence, recorded rather than glossed: **the caption is
+// placed in a BAND, not pinned to a measured element frame.** A precise ring
+// around the real control would need the control to publish its frame, which is
+// the modification just ruled out. So each step declares which half of the screen
+// its subject lives in and the caption takes the OTHER half — the control the
+// step names is never underneath the card that names it, which is the property
+// that actually matters. `DemoCoachMarkPlacementTests` pins the pairing.
+//
+// TWO THINGS THIS DELIBERATELY DOES NOT DO:
+//
+//  • **NO SPOTLIGHT CUTOUT.** The obvious implementation is a full-screen scrim
+//    with the highlight punched out by `blendMode(.destinationOut)` over a
+//    `compositingGroup()`. Both walkthroughs run over a hosted `MKMapView`, and
+//    MYR-339 is this repo's most expensive lesson about exactly that: a blend
+//    mode with no backdrop to read resolves source-over against a UIKit-hosted
+//    map, *and a screenshot cannot catch it* because flattening the layer tree
+//    for a still is a pass in which the backdrop IS available. The client had to
+//    photograph his phone. The rule that issue left behind — never let an effect
+//    needing a backdrop read stand between the user and a hosted map — is
+//    followed here by having no such effect at all.
+//  • **NO DIMMING OF THE TOURED HALF.** The scrim is confined to the caption's
+//    own band, so the control the tester is being asked to tap is at full
+//    contrast. Dimming the subject of a coach mark to focus attention on it is
+//    self-defeating, and over a dark map at these token alphas it reads as the
+//    app having gone unresponsive.
+
+/// Which half of the screen a step's SUBJECT occupies — a fact about the toured
+/// screen, stated independently of where the caption then goes.
+///
+/// **The independence is the point, and it was bought with a shipped defect.** The
+/// first cut of this file declared only the caption's placement and asserted the
+/// rule with `let subjectIsLow = (placement == .top)` — a tautology that reduced to
+/// `placement == .top` equals `placement == .top` and could not fail. Underneath
+/// it, `.ownerIncomingCard` and `.ownerAcceptButton` were both filed as UPPER
+/// ("the incoming card is top chrome"), which is simply false: `IncomingRequestSheet`
+/// is a BOTTOM sheet — top-radii only, `ignoresSafeArea(edges: .bottom)`, its CTA
+/// row the last thing in it. Measured on a running app, the caption landed at
+/// y≈634–816 directly over an "Accept & send" button at y 736–783 — on the step
+/// whose entire lesson is *tap Accept & send*. Stating the subject separately is
+/// what makes a wrong entry a DISAGREEMENT a test can see rather than a value that
+/// defines its own correctness.
+public enum DemoScreenHalf: Equatable, Sendable {
+    case upper
+    case lower
+}
+
+/// Which half of the screen the caption takes. Always the one its subject does not.
+public enum DemoCaptionPlacement: Equatable, Sendable {
+    /// Subject is in the lower half (a sheet, a CTA, the tab bar) → caption on top.
+    case top
+    /// Subject is in the upper half (the map hero, the dispatch banner) → caption
+    /// at the bottom.
+    case bottom
+
+    /// **DERIVED, never chosen per anchor** — the caption takes the half the
+    /// subject does not, and that is one expression rather than twelve decisions.
+    public static func forAnchor(_ anchor: DemoAnchor) -> DemoCaptionPlacement {
+        anchor.subjectHalf == .lower ? .top : .bottom
+    }
+}
+
+extension DemoAnchor {
+    /// Where this anchor's subject actually sits, read off the screens' OWN layout
+    /// grammar rather than guessed at:
+    ///
+    ///  • the owner dispatch card is pinned at `OwnerMapTopChrome.dispatchCardTop`
+    ///    (112) and its action button rides on that card — the only UPPER pair;
+    ///  • `IncomingRequestSheet` is a bottom sheet, so the card AND its accept
+    ///    button are lower (this is the pair that shipped wrong);
+    ///  • the owner vehicle hero is the detent sheet's peek band, the rider's
+    ///    search bar / destination list / request CTA / tracking sheet / summary
+    ///    card all live in the rider sheet, and both tab bars are `mrtBottomNav`.
+    public var subjectHalf: DemoScreenHalf {
+        switch self {
+        case .ownerVehicleHero: return .lower
+        case .ownerIncomingCard: return .lower
+        case .ownerAcceptButton: return .lower
+        case .ownerDispatchCard: return .upper
+        case .ownerDispatchAction: return .upper
+        case .ownerTabBar: return .lower
+        case .riderSearchBar: return .lower
+        case .riderDestinationList: return .lower
+        case .riderRequestButton: return .lower
+        case .riderTrackingSheet: return .lower
+        case .riderSummaryCard: return .lower
+        case .riderTabBar: return .lower
+        }
+    }
+}
+
+// MARK: - Runtime
+
+/// The walkthrough as it is being played. Holds the cursor and nothing else —
+/// what a step MEANS is `FirstRunDemoScript`'s, and what the underlying ride is
+/// doing is the simulated service's.
+@Observable
+@MainActor
+public final class FirstRunDemoRun {
+    public let role: FirstRunDemoRole
+    public let steps: [FirstRunDemoStep]
+    public private(set) var index: Int = 0
+    /// Set once, by whichever exit fired. The host observes it, marks the flag and
+    /// leaves — one place, so completing and skipping cannot diverge.
+    public private(set) var isFinished = false
+
+    public init(role: FirstRunDemoRole) {
+        self.role = role
+        self.steps = FirstRunDemoScript.steps(for: role)
+    }
+
+    public var step: FirstRunDemoStep { steps[min(index, steps.count - 1)] }
+    public var isLastStep: Bool { index >= steps.count - 1 }
+    public var progress: String { "\(index + 1) of \(steps.count)" }
+
+    /// Move on. The last step's advance finishes the walkthrough.
+    public func advance() {
+        guard !isFinished else { return }
+        if isLastStep {
+            isFinished = true
+        } else {
+            index += 1
+        }
+    }
+
+    /// The persistent Skip. Ends the walkthrough wherever it stands — and marks
+    /// the flag, because the host's finish handler does not ask which exit fired
+    /// (see `FirstRunDemo.swift`, rule 2).
+    public func skip() {
+        isFinished = true
+    }
+
+    /// The app reached a state. Advances only the step that was waiting for
+    /// exactly this one, so a milestone arriving early, late or twice cannot skip
+    /// a step — the MYR-414 restamp trap, pointed at a cursor.
+    ///
+    /// The host calls this on every change of the observed state rather than once
+    /// per transition, so it must be idempotent: re-delivering the milestone the
+    /// CURRENT step is not waiting for is a no-op.
+    public func handleMilestone(_ milestone: DemoMilestone) {
+        guard case .appReaches(let awaited) = step.advance, awaited == milestone else { return }
+        advance()
+    }
+}
+
+// MARK: - The overlay
+
+/// The caption card, the persistent Skip, and the progress dots.
+public struct DemoCoachMarkOverlay: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    let run: FirstRunDemoRun
+
+    /// See the `.padding(.top:)` note below — this is the owner map's own
+    /// below-the-switcher constant, not a second opinion about it.
+    public static let topChromeClearance = OwnerMapTopChrome.dispatchCardTop
+
+    /// The card's own breathing room from whatever chrome it is clearing. One
+    /// number, both edges, so the two placements read as one grammar.
+    public static let captionGutter: CGFloat = 18
+
+    /// **A BOTTOM-PLACED CAPTION HAS TO CLEAR THE FLOATING TAB BAR**, and the
+    /// first cut did not: it used a bare `18` from the physical edge, which puts
+    /// the card's footer at y 762–806 on a 874pt screen while `mrtBottomNav`
+    /// occupies 788–848. Measured on the `ownerDroppedOff` capture, the SKIP row —
+    /// the walkthrough's mandatory way out — ran UNDER the tab bar, which is drawn
+    /// after it and therefore over it.
+    ///
+    /// The top edge was already derived (`OwnerMapTopChrome.dispatchCardTop`) and
+    /// the bottom edge was chosen, which is exactly the asymmetry MYR-345 and
+    /// MYR-419 are both about: a clearance that is not read off the chrome it is
+    /// clearing is a number that stops being true the moment the chrome moves.
+    /// `MRTMetrics.bottomNavTopEdge` is the nav's own 86 (60pt tall, floating 26
+    /// above the edge), so the card lands one gutter above it.
+    public static let bottomChromeClearance = MRTMetrics.bottomNavTopEdge + captionGutter
+
+    public init(run: FirstRunDemoRun) {
+        self.run = run
+    }
+
+    private var placement: DemoCaptionPlacement {
+        DemoCaptionPlacement.forAnchor(run.step.anchor)
+    }
+
+    public var body: some View {
+        // The tester must reach the real control underneath, so the layer holds
+        // NOTHING that takes a touch except the card: `Spacer` does not
+        // participate in hit testing, so the rest of the screen is live.
+        //
+        // Deliberately NOT `Color.clear … .allowsHitTesting(false).overlay { card }`,
+        // which is the obvious spelling and cost three UI-suite rounds: a
+        // hit-testing-disabled subtree also kept Skip and Next OUT OF THE
+        // ACCESSIBILITY TREE, so both were on screen, tappable by a finger, and
+        // findable by no query — and therefore unreachable by VoiceOver too.
+        // The visual result is identical; the difference is only visible to
+        // something that enumerates elements.
+        VStack(spacing: 0) {
+            if placement == .bottom { Spacer(minLength: 0) }
+            card
+            if placement == .top { Spacer(minLength: 0) }
+        }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(
+                reduceMotion ? nil : .timingCurve(0.22, 1, 0.36, 1, duration: 0.32),
+                value: run.index
+            )
+    }
+
+    private var card: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // **THE ACCESSIBILITY GROUP IS THE PROSE, NOT THE CARD**, and this
+            // shape was arrived at by measurement after three UI-suite rounds.
+            // The step's identifier needs a real element to sit on:
+            // `.accessibilityElement(children: .contain)` creates one, and a bare
+            // container carrying only an identifier is not an element at all, so
+            // the identifier resolves to nothing. But applied to the WHOLE card
+            // that same modifier makes Skip and Next unfindable by any query.
+            // Scoping the group to the text block satisfies both — the step is
+            // addressable, and the two controls stay top-level siblings outside
+            // the group. It also reads better to VoiceOver: the caption is one
+            // utterance, and the buttons are buttons.
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                Text(run.step.title)
+                    .mrtTextStyle(.sectionTitle)
+                    .foregroundStyle(Color.mrtText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 8)
+                Text(run.step.body)
+                    .mrtTextStyle(.bodySmall)
+                    .foregroundStyle(Color.mrtTextSec)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 6)
+            }
+            .accessibilityIdentifier(run.step.accessibilityID)
+            .accessibilityElement(children: .contain)
+
+            footer
+                .padding(.top, 14)
+        }
+        .padding(16)
+        .mrtSurface(.card)
+        .padding(.horizontal, MRTMetrics.pageGutter)
+        // A TOP-placed caption has to clear the map's own top chrome — the
+        // `MapHeader` vehicle switcher, whose chip bottom edge sits at 100 from
+        // the physical edge (top 60 + a 40pt chip, MYR-332's own arithmetic). The
+        // first owner capture put the card straight over it. The number is
+        // DERIVED, not chosen: it is `OwnerMapTopChrome.dispatchCardTop`, the
+        // constant this app already uses for "a card that floats below the chip",
+        // so the walkthrough's card and the dispatch card share one answer and a
+        // change to the chrome moves both. MYR-419's lesson, one surface over.
+        .padding(.top, placement == .top ? Self.topChromeClearance : Self.captionGutter)
+        .padding(.bottom, placement == .bottom ? Self.bottomChromeClearance : 0)
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(FirstRunDemoScript.kicker(for: run.role).uppercased())
+                .mrtTextStyle(.label(size: 11))
+                .kerning(0.6)
+                .foregroundStyle(Color.mrtGold)
+            Spacer(minLength: 8)
+            Text(run.progress)
+                .mrtTextStyle(.label(size: 11))
+                .monospacedDigit()
+                .foregroundStyle(Color.mrtTextSec)
+        }
+    }
+
+    @ViewBuilder
+    private var footer: some View {
+        HStack(spacing: 12) {
+            // The MANDATORY persistent Skip. Present on EVERY step including the
+            // last — a deliberate deviation from the prototype's `StoryDeck`,
+            // which hides Skip on its final card (tutorials.jsx:296,
+            // `{!last && <TopAction label="Skip"/>}`). On a deck the last card's
+            // CTA is itself the way out, so hiding Skip costs nothing; here the
+            // last step can be a control the tester has to find, and a
+            // walkthrough with no exit is the thing the rule exists to prevent.
+            Button(action: run.skip) {
+                Text("Skip")
+                    .mrtTextStyle(.label(size: 15))
+                    .foregroundStyle(Color.mrtTextSec)
+                    .frame(minWidth: 44, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            // Forced into the tree as its own element. A `.plain`-styled Button
+            // wrapping a `Text` inside a card the layer marks non-hit-testable
+            // does not reliably surface its identifier on its own — three UI
+            // rounds of "Skip is on screen and unfindable" is the evidence. This
+            // is also the accessibility fix, not just the test fix: a Skip a
+            // query cannot reach is a Skip VoiceOver cannot reach, and Skip is
+            // the mandatory way out of this walkthrough.
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityIdentifier("mrt.demo.skip")
+
+            Spacer(minLength: 0)
+
+            dots
+
+            Spacer(minLength: 0)
+
+            // `.tapTarget` and `.rideStatus` steps carry NO advance button: the
+            // real control (or the ride itself) is the only way on, which is what
+            // makes this a demo rather than a slideshow. The trailing slot keeps
+            // its width so the dots do not jump between step kinds.
+            if case .next = run.step.advance {
+                Button(action: run.advance) {
+                    Text(run.isLastStep
+                         ? FirstRunDemoScript.finishLabel(for: run.role)
+                         : run.step.nextLabel)
+                        .mrtTextStyle(.label(size: 15))
+                        .foregroundStyle(Color.mrtGold)
+                        .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityIdentifier("mrt.demo.next")
+            } else {
+                Color.clear.frame(width: 44, height: 44)
+            }
+        }
+    }
+
+    private var dots: some View {
+        HStack(spacing: 7) {
+            ForEach(Array(run.steps.indices), id: \.self) { i in
+                Capsule(style: .continuous)
+                    // The deck's own dot pair (StoryDeck.swift:158), so the two
+                    // first-run surfaces read as one grammar during the changeover.
+                    .fill(i == run.index ? Color.mrtGold : Color.mrtText.opacity(0.2))
+                    .frame(width: i == run.index ? 22 : 7, height: 7)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}

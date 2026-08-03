@@ -403,6 +403,12 @@ enum DebugScene: String, CaseIterable {
 
     // Owner side (HomeScreen → IncomingRequestSheet)
     case ownerHome         // plain owner Live Map, nothing seeded (live-telemetry captures)
+    // MYR-428 — the two first-run interactive walkthroughs, booted at step 1 so
+    // the capture strip can be driven step by step. They are NOT owner/rider shell
+    // scenes: `initialScreen` routes them to the tutorial cases, which host the
+    // walkthrough over its own simulated composition.
+    case ownerDemo
+    case riderDemo
     case ownerDrives       // owner Drives tab, nothing seeded (live-drives captures)
     case ownerIncoming
     /// MYR-317 — the SAME incoming card with the queue badge up: two more pending
@@ -1593,6 +1599,12 @@ enum DebugScene: String, CaseIterable {
         // MYR-184 — the invite-code screen is its own top-level `AppScreen`, not a
         // rider tab, so it needs an explicit arm.
         case .riderInviteRateLimited, .riderInviteJoined, .riderInviteEntry: return .inviteCode
+        // MYR-428 — the two first-run walkthroughs. These are the ONLY scenes that
+        // route to a tutorial case; every other scene boots past it, and
+        // `RootView.makeFirstRunDemoStore()` hands any scene an in-memory record
+        // with both roles already seen, so no other capture can grow a coach mark.
+        case .ownerDemo: return .ownerTutorial
+        case .riderDemo: return .riderTutorial
         case .some(let scene) where scene.isOwner: return .ownerHome
         case .some: return .sharedHome
         case nil: return .signIn
@@ -3338,6 +3350,12 @@ enum DebugScene: String, CaseIterable {
         // have a real pickup/destination pair in every mid-flow phase.
         viewer.draftFleetMemberID = RideRequestFixtures.fleet[0].id
         switch self {
+        // MYR-428 — the walkthrough composes its OWN `SharedViewerState` and its
+        // own simulated service (`FirstRunDemoComposition`), precisely so it never
+        // borrows the shell's. Seeding RootView's viewer here would prime a screen
+        // the demo does not render.
+        case .ownerDemo, .riderDemo:
+            break
         case .idle, .pending, .pinDropRealPath, .pinDropBackRealPath:
             // `.pinDropRealPath`/`.pinDropBackRealPath` deliberately seed NOTHING
             // beyond idle — the replay driver walks the real transitions after

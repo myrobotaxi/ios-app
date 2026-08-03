@@ -94,6 +94,10 @@ struct RootView: View {
     // MYR-224 — per-user owner/rider view-mode choice. A value-type store over
     // UserDefaults; no @State needed (it holds no observable state itself).
     private let modeStore: any ModeChoiceStore = UserDefaultsModeChoiceStore()
+    // MYR-428 — has this device already played each role's first-run walkthrough?
+    // Device-scoped and deliberately never released on sign-out; see
+    // `FirstRunDemo.swift` rule 1.
+    private let firstRunDemoStore: any FirstRunDemoStoring = RootView.makeFirstRunDemoStore()
     // Lifted above `.ownerHome`'s tab switch (app.jsx's `vehicleIdx`/`sheet`
     // are App-level state, not HomeScreen-local — screens.jsx:369) so the
     // selected vehicle, sheet detent, and each vehicle's ticking telemetry
@@ -554,12 +558,50 @@ struct RootView: View {
         case .owner:
             role = .owner
             ownerTab = "home"
-            screen = .ownerHome
+            screen = playsFirstRunDemo(.owner) ? .ownerTutorial : .ownerHome
         case .rider:
             role = .shared
             sharedTab = "shared"
-            screen = .sharedHome
+            screen = playsFirstRunDemo(.rider) ? .riderTutorial : .sharedHome
         }
+    }
+
+    // MARK: - MYR-428 — the first-run walkthrough gate
+    //
+    // **ONE FUNNEL, THREE DOORS.** The client asked for the walkthrough on first
+    // owner sign-in, on first rider sign-in, and on a switch into rider mode.
+    // `applyViewMode` is already the single place all three arrive — the mode
+    // chooser (MYR-224), the Settings switch row, and a stored-mode resume — so
+    // the gate is asked there, once, rather than at each door. That is MYR-389's
+    // entry-invariant lesson: a rule stated at the entrance cannot be forgotten by
+    // an exit somebody adds later.
+    //
+    // The FOURTH door needs no gate at all: onboarding already routes to
+    // `.ownerTutorial` / `.riderTutorial` on its own (after pairing a Tesla, after
+    // redeeming an invite code), and those cases now host the walkthrough. So a
+    // rider arriving by invite link — MYR-426's join → tutorial → map — gets the
+    // walkthrough at that hand-off and, because finishing it marks the flag,
+    // does NOT get it again when the rider shell mounts. One teaching surface,
+    // not two back to back.
+
+    @MainActor
+    private func playsFirstRunDemo(_ demoRole: FirstRunDemoRole) -> Bool {
+        FirstRunDemoGate.playsWalkthrough(for: demoRole, record: firstRunDemoStore.read())
+    }
+
+    /// Scope the flags away from DEBUG scenes, exactly as
+    /// `recentDestinationsStore()` scopes recents — with the seed INVERTED,
+    /// because a scene needs the walkthrough already seen rather than already
+    /// forgotten. A capture of `ownerHome` must photograph owner Home, not a coach
+    /// mark over it, so **the demo is unreachable from every DEBUG scene by
+    /// construction** and every existing scene stays byte-identical.
+    private static func makeFirstRunDemoStore() -> any FirstRunDemoStoring {
+        #if DEBUG
+        if DebugScene.current != nil {
+            return InMemoryFirstRunDemoStore(.allSeen())
+        }
+        #endif
+        return UserDefaultsFirstRunDemoStore()
     }
 
     /// Flip to the OTHER shell from a Settings "Switch mode" row, persisting the
@@ -1196,16 +1238,33 @@ struct RootView: View {
                     // so this screen is unchanged for everyone else.
                     prefilledCode: inviteLinkCode
                 )
+            // MYR-428 — these two cases keep their place in the routing matrix
+            // (and their deferral in `InviteLinkRouting.acceptsInviteNow`: a link
+            // must not interrupt a walkthrough) but no longer render the 5-card
+            // story deck. They host the INTERACTIVE walkthrough — the real
+            // screens, over the walkthrough's own simulated seams, under a
+            // coach-mark layer. See `FirstRunDemoScript.swift` for why the demo
+            // absorbs the decks rather than preceding them.
+            //
+            // Hosting it HERE rather than as an overlay raised after landing is
+            // what keeps the hand-off flash-free: routing to the shell first and
+            // covering it a frame later is exactly the thing MYR-426 moved the
+            // invite drain into `routeAfterAuth` to avoid.
+            //
+            // `onFinished` fires once for BOTH exits — the closing CTA and the
+            // persistent Skip — so skipping marks the role seen just as
+            // completing does, and neither replays.
             case .ownerTutorial:
-                // tutorials.jsx:363 — onDone (Continue on the last card, or
-                // Skip) → Live Map (MYR-167).
-                OwnerTutorial(onDone: { screen = .ownerHome })
+                FirstRunDemoHost(role: .owner) {
+                    firstRunDemoStore.markSeen(.owner)
+                    screen = .ownerHome
+                }
             case .riderTutorial:
-                // tutorials.jsx:374 — onDone → Shared Live Map.
-                RiderTutorial(onDone: {
+                FirstRunDemoHost(role: .rider) {
+                    firstRunDemoStore.markSeen(.rider)
                     sharedTab = "shared"
                     screen = .sharedHome
-                })
+                }
             case .ownerHome:
                 // app.jsx:110-115 — HomeScreen owns the "home" tab; Drives
                 // (MYR-169), Share, and Settings (MYR-170) are the rest.

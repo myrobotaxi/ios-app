@@ -44,6 +44,40 @@ public final class SimulatedRideRequestService: RideRequestService {
         autoAcceptTimer = timer
     }
 
+    /// MYR-428 — the owner walkthrough's practice request.
+    ///
+    /// Deliberately NOT `debugSeed`, which is `#if DEBUG` and therefore absent
+    /// from the build a beta tester installs — and the owner demo's whole second
+    /// step is a request arriving. The owner side of the simulated service has no
+    /// incoming FEED (MYR-317 records the same gap), so with no rider in the room
+    /// there is nothing to produce one.
+    ///
+    /// **It arms NO timers**, which is the difference from `submit`: the rider's
+    /// auto-accept fallback would resolve the request out from under a tester who
+    /// is still reading the coach mark, and the whole point of the step is that
+    /// THEY tap "Send the car". The ride advances from here exactly as a real one
+    /// does — through `accept()`, which does arm the progress ticker.
+    ///
+    /// MYR-228 is satisfied by WHO CAN CALL THIS: `SimulatedRideRequestService` is
+    /// only ever composed from `AppMode.simulated`, and the walkthrough composes
+    /// that mode explicitly for itself (`FirstRunDemoComposition`). A live surface
+    /// holds a `LiveRideRequestService` and cannot reach this method at all.
+    public func seedDemoIncomingRequest() {
+        guard activeRequest == nil else { return }
+        autoAcceptTimer?.invalidate()
+        autoAcceptTimer = nil
+        progressTimer?.invalidate()
+        progressTimer = nil
+        activeRequest = RideRequestRecord(
+            input: RideRequestInput(
+                pickup: RideRequestFixtures.savedPlaces[0],
+                destination: RideRequestFixtures.recentPlaces[0],
+                fleetMemberID: RideRequestFixtures.fleet[0].id
+            ),
+            status: .pending
+        )
+    }
+
     #if DEBUG
     /// MYR-317 drift-gate seam: the simulated service has no incoming feed, so the
     /// owner's "+N more waiting" chip can only be captured by seeding the count
@@ -99,6 +133,79 @@ public final class SimulatedRideRequestService: RideRequestService {
         autoAcceptTimer = nil
         guard var request = activeRequest, request.status == .pending else { return }
         request.status = .declined
+        activeRequest = request
+    }
+
+    // MARK: The three dispatch transitions (MYR-428)
+    //
+    // **THESE WERE PROTOCOL NO-OPS, AND THAT MADE THE OWNER WALKTHROUGH
+    // UNFINISHABLE.** `RideRequestService`'s defaults return without doing anything
+    // and say why: "the dispatch v2 CTAs are gated to the LIVE path
+    // (`SharedViewerState.isLiveLocation`), so these never reach the sim" (MYR-270).
+    // That was true of every simulated surface in the app until this issue built one
+    // that composes the REAL `HomeScreen` — dispatch card, live CTA and all — over
+    // `AppMode.simulated`. The owner's "Arrived at pickup" button is not gated, so
+    // the walkthrough put it on screen, the coach mark told the tester to tap it,
+    // and the tap reached a method that did nothing: `dispatchInFlight` latched
+    // true (it is only cleared by a status change), the gold button went
+    // permanently dead, and step 4 of 6 — which by design renders no Next — could
+    // never end. Measured on a running app: `ownerDispatchCTA … Disabled`, the pill
+    // still reading "En route to pickup", six seconds after the tap.
+    //
+    // It is the SAME defect the last round fixed for `.tapTarget`, re-entered
+    // through a different door: a step that ends on a real control, and a control
+    // wired to nothing. The rider walkthrough had the quieter half — its
+    // `riderComplete` cue plays the absent owner's three beats, so all three were
+    // no-ops and the "You're there" caption narrated a summary over a tracking
+    // sheet that never resolved.
+    //
+    // **Adding them cannot move any existing capture**, and that is a property of
+    // the call graph rather than a hope: on the simulated path nothing calls these
+    // — the rider's "Start ride" is gated to live, no drift-gate scene taps an
+    // owner dispatch CTA, and the seeded tracking scenes hold still by construction
+    // (`debugSeed` arms no timers). The demo's host is the first and only caller.
+    //
+    // Each mirrors `LiveRideRequestService`'s own guard and effect exactly, minus
+    // the network: the two services must agree about what a transition MEANS, or
+    // the walkthrough teaches a state machine the app does not have.
+
+    /// OWNER "Arrived at pickup" — `accepted → arrived`.
+    public func pickedUp() {
+        guard var request = activeRequest, request.status == .accepted else { return }
+        request.status = .arrived
+        activeRequest = request
+    }
+
+    /// RIDER "Start ride" — `arrived → enroute`, i.e. leg 2. Seeds the leg-2 anchor
+    /// and re-arms the ticker so the car visibly moves again, which is what the
+    /// owner walkthrough's "watch it go" is about.
+    public func startRide() {
+        guard var request = activeRequest, request.status == .arrived else { return }
+        // Stamped for the same reason the live service stamps it here: the flip IS
+        // the observation, and after it there is no transition left to see.
+        request.enrouteObservedAt = RideTripSpan.observing(
+            previous: request.status,
+            next: .enroute,
+            held: request.enrouteObservedAt
+        )
+        request.status = .enroute
+        if request.input.schedule == nil {
+            request.trackProgress = max(request.trackProgress ?? 0, request.enrouteSeedProgress)
+        }
+        activeRequest = request
+        if request.input.schedule == nil { startProgressTicking() }
+    }
+
+    /// OWNER "Dropped off" — `enroute → completed`. The ticker stops here: the ride
+    /// is over, and a car still creeping along its route afterwards would be motion
+    /// asserting something untrue.
+    public func droppedOff() {
+        guard var request = activeRequest, request.status == .enroute else { return }
+        progressTimer?.invalidate()
+        progressTimer = nil
+        request.status = .completed
+        if request.input.schedule == nil { request.trackProgress = 1 }
+        request.completedAt = Date()
         activeRequest = request
     }
 
