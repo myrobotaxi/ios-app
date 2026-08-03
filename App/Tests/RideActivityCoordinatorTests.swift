@@ -178,7 +178,11 @@ final class RideActivityCoordinatorTests: XCTestCase {
 
     // MARK: - Lifecycle end to end
 
-    func testACompletedRideEndsWithTheLingerAndTellsTheServer() async throws {
+    /// **MYR-425 — THE WHOLE FIX, THROUGH THE REAL COORDINATOR.** This test used to
+    /// assert the defect: `endedWith?.dismissal == .completedLinger`, `endpoint.ends
+    /// == ["ride-1"]`, `phase == .idle`, all within half a second of the drop-off.
+    /// Every one of those is now the thing that must NOT happen.
+    func testACompletedRideUPDATESTheCardAndKEEPSItsRegistration() async throws {
         let (coordinator, presenter, endpoint) = makeCoordinator()
 
         await coordinator.handleRideChange(makeRecord(status: .accepted))
@@ -186,9 +190,212 @@ final class RideActivityCoordinatorTests: XCTestCase {
         await settle()
 
         await coordinator.handleRideChange(makeRecord(status: .completed))
+        await settle()
 
-        XCTAssertEqual(presenter.endedWith?.state.status, .completed)
-        XCTAssertEqual(presenter.endedWith?.dismissal, .completedLinger)
+        XCTAssertNil(
+            presenter.endedWith,
+            """
+            Ending here is the production defect: an `.ended` Activity leaves the \
+            Dynamic Island ~1.4s later whatever its dismissal date says.
+            """
+        )
+        XCTAssertEqual(presenter.updates.last?.status, .completed, "the final frame IS written")
+        XCTAssertTrue(presenter.isPresenting)
+        XCTAssertEqual(coordinator.phase.rideID, "ride-1")
+        XCTAssertTrue(
+            endpoint.ends.isEmpty,
+            """
+            THE HALF THAT PRODUCED THE EMPTY alerted_phase 6. The §7.21 DELETE \
+            tombstones the (ride, rider) row, so the server's completed announcement \
+            found zero recipients and its held end had nothing to hold.
+            """
+        )
+        XCTAssertEqual(endpoint.registrations.count, 1, "and the registration is untouched, not re-placed")
+    }
+
+    func testTheCompletedUpdateCarriesNOStaleDate() async throws {
+        // `RideActivityStaleness.window` is three minutes and the server's held end
+        // is five away, so a completed frame written with the default stale date
+        // would grey itself out while it waits. `SystemRideActivityPresenter.end`
+        // has always passed nil here; the UPDATE path had no terminal status until now.
+        let (coordinator, presenter, _) = makeCoordinator()
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        await settle()
+        await coordinator.handleRideChange(makeRecord(status: .enroute))
+        await settle()
+        XCTAssertNotNil(presenter.updateStaleDates.last ?? nil, "a RUNNING ride can still move on without us")
+
+        await coordinator.handleRideChange(makeRecord(status: .completed))
+        await settle()
+
+        XCTAssertEqual(presenter.updates.last?.status, .completed)
+        XCTAssertNil(presenter.updateStaleDates.last ?? Date(), "a finished ride cannot move on")
+    }
+
+    /// **THE SERVER'S HELD END, HONOURED — and no fight over it.** MYR-421's end
+    /// arrives over APNs and reaches this app only as an `.ended` lifecycle. The
+    /// coordinator stands down: no second end, and no DELETE, because the end that
+    /// removed the card is the same event that closed the server's row.
+    func testAServerDeliveredENDArrivingLaterIsHonouredWithoutAFight() async throws {
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        presenter.emit(token: Data([0xaa]))
+        await settle()
+        await coordinator.handleRideChange(makeRecord(status: .completed))
+        await settle()
+        XCTAssertEqual(coordinator.phase.rideID, "ride-1")
+
+        presenter.deliverServerEnd()
+        await settle()
+
+        XCTAssertEqual(coordinator.phase, .idle, "this process stops driving a card that is gone")
+        XCTAssertNil(presenter.endedWith, "the client does not end a card the server already ended")
+        XCTAssertTrue(endpoint.ends.isEmpty, "and does not delete a row the server's end already closed")
+
+        // And nothing brings it back: a later tick over the same completed record
+        // neither restarts a card nor ends one.
+        await coordinator.handleRideChange(makeRecord(status: .completed))
+        await settle()
+        XCTAssertEqual(presenter.startCount, 1)
+        XCTAssertNil(presenter.endedWith)
+        XCTAssertTrue(endpoint.ends.isEmpty)
+    }
+
+    /// The backstop, driven the way it is driven in production: the MYR-405
+    /// launch/foreground reconcile pass, which finishes by re-asking `action`.
+    func testTheBACKSTOPEndsTheCardFiveMinutesOnWithNoServerEnd() async throws {
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        presenter.emit(token: Data([0xaa]))
+        await settle()
+
+        var completed = makeRecord(status: .completed)
+        completed.completedAt = Date().addingTimeInterval(-RideActivityCompletedEnd.backstop - 1)
+
+        await coordinator.handleLaunchOrForeground(account(completed))
+        await settle()
+
+        XCTAssertEqual(presenter.endedWith?.state.status, .completed, "the same final frame, not a blank one")
+        XCTAssertEqual(presenter.endedWith?.dismissal, .immediate)
+        XCTAssertEqual(coordinator.phase, .idle)
+        XCTAssertEqual(endpoint.ends, ["ride-1"], "and only NOW is the registration released")
+    }
+
+    func testTheBackstopDoesNotFireWhileTheServersEndIsStillDue() async throws {
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        await settle()
+
+        var completed = makeRecord(status: .completed)
+        completed.completedAt = Date().addingTimeInterval(-60)
+
+        await coordinator.handleRideChange(completed)
+        await coordinator.handleLaunchOrForeground(account(completed))
+        await settle()
+
+        XCTAssertNil(presenter.endedWith, "one minute in, the server's held end is still four minutes away")
+        XCTAssertEqual(coordinator.phase.rideID, "ride-1")
+        XCTAssertTrue(endpoint.ends.isEmpty)
+    }
+
+    func testTheBackstopDoesNOTFireAfterAServerEnd() async throws {
+        // The double-fire guard. The card is already gone, the row is already closed,
+        // and a backstop that ran anyway would issue a DELETE against a ride the
+        // server has finished with — and, on a fresh card for a NEW ride, would be
+        // the MYR-405 starvation reached by a new door.
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        presenter.emit(token: Data([0xaa]))
+        await settle()
+
+        // The ride completes, the card stays live, and the SERVER'S end lands well
+        // inside the five minutes — the ordinary, healthy sequence.
+        var justCompleted = makeRecord(status: .completed)
+        justCompleted.completedAt = Date().addingTimeInterval(-60)
+        await coordinator.handleRideChange(justCompleted)
+        await settle()
+        presenter.deliverServerEnd()
+        await settle()
+        XCTAssertEqual(coordinator.phase, .idle)
+
+        // Now the backstop's deadline passes and every driver is re-run over the same
+        // ride. Nothing may fire: the card is gone and the row is already closed.
+        var longSinceCompleted = makeRecord(status: .completed)
+        longSinceCompleted.completedAt = Date().addingTimeInterval(-RideActivityCompletedEnd.backstop - 1)
+        await coordinator.handleRideChange(longSinceCompleted)
+        await coordinator.handleLaunchOrForeground(account(longSinceCompleted))
+        await settle()
+
+        XCTAssertNil(presenter.endedWith, "the client must not end a card twice")
+        XCTAssertTrue(endpoint.ends.isEmpty, "nor delete a row the server's own end already closed")
+        XCTAssertEqual(presenter.startCount, 1, "and must not resurrect one either")
+    }
+
+    func testANEWRideStillEndsTheLingeringCompletedCard() async throws {
+        // MYR-405 semantic 4, preserved — and now REACHED through the `.restart`
+        // arm, since the completed card is `.active` rather than an `.ended` row the
+        // reaper deliberately skips. The client's own rule: "clear banners after 5min
+        // OR if new ride begins".
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        await settle()
+        await coordinator.handleRideChange(makeRecord(status: .completed))
+        await settle()
+
+        await coordinator.handleRideChange(makeRecord(id: "ride-2", status: .accepted))
+        await settle()
+
+        // `presenter.endedWith` is cleared by the new `start`, so the observable
+        // proof that the old card came down is the §7.21 release plus the phase move.
+        // What the ending FRAME says is asserted in the pure suite
+        // (`testANEWRideEndsACompletedCardWITHOUTRelabellingItCancelled`).
+        XCTAssertEqual(endpoint.ends, ["ride-1"], "the finished ride's registration is released here")
+        XCTAssertEqual(coordinator.phase.rideID, "ride-2")
+        XCTAssertEqual(presenter.startCount, 2)
+        XCTAssertFalse(
+            presenter.restored.contains { $0.rideID == "ride-1" && $0.lifecycle.isOnScreenAndOurs },
+            "the client's own rule: clear banners after 5min OR if a new ride begins"
+        )
+    }
+
+    func testTheRIDERSSwipeStillEndsACompletedCardsRegistration() async throws {
+        // Semantic 5 is unchanged by MYR-425 and points the other way from the
+        // server's end: a swipe is the RIDER's decision and the server must be told
+        // to stop pushing to a card nobody can see.
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        await settle()
+        await coordinator.handleRideChange(makeRecord(status: .completed))
+        await settle()
+
+        presenter.emit(lifecycle: .dismissed)
+        await settle()
+
+        XCTAssertEqual(coordinator.phase, .idle)
+        XCTAssertEqual(endpoint.ends, ["ride-1"])
+    }
+
+    func testADECLINEDRideStillEndsImmediatelyAndReleasesTheRegistration() async throws {
+        // Byte-identical to before MYR-425: `declined` is outside the design's six
+        // phases, no announcement is coming for it, and the prompt end is the point.
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        presenter.emit(token: Data([0xaa]))
+        await settle()
+
+        await coordinator.handleRideChange(makeRecord(status: .declined))
+        await settle()
+
+        XCTAssertEqual(presenter.endedWith?.state.status, .declined)
+        XCTAssertEqual(presenter.endedWith?.dismissal, .immediate)
         XCTAssertEqual(endpoint.ends, ["ride-1"])
         XCTAssertEqual(coordinator.phase, .idle)
     }
@@ -517,14 +724,20 @@ final class RideActivityCoordinatorTests: XCTestCase {
 
     // MARK: - MYR-405: five minutes
 
-    func testACompletedRideEndsWithTheFIVEMinuteLinger() async throws {
+    /// MYR-405's five minutes SURVIVE MYR-425 — they simply belong to the server's
+    /// held end now, and the card stays LIVE across them instead of `.ended`. What
+    /// this asserts is the client's half: nothing comes down at the drop-off.
+    func testTheFiveMinutesAreNowSpentLIVERatherThanEnded() async throws {
         let (coordinator, presenter, _) = makeCoordinator()
 
         await coordinator.handleRideChange(makeRecord(status: .accepted))
         await settle()
         await coordinator.handleRideChange(makeRecord(status: .completed))
+        await settle()
 
-        XCTAssertEqual(presenter.endedWith?.dismissal, .linger(5 * 60))
+        XCTAssertNil(presenter.endedWith)
+        XCTAssertTrue(presenter.isPresenting)
+        XCTAssertEqual(RideActivityCompletedEnd.backstop, 5 * 60)
     }
 
     // MARK: - MYR-415: the registration must name the SERVER's ride id
@@ -661,6 +874,10 @@ final class RideActivityCoordinatorTests: XCTestCase {
     }
 
     /// The §7.21 DELETE has to name the id the POST named, or it releases nothing.
+    ///
+    /// Driven off `declined` since MYR-425 — a completed ride no longer produces a
+    /// client-side end at all, which is that issue's whole point. The BACKSTOP's
+    /// release is asserted separately, and names the same id by the same code path.
     func testEndingReleasesTheRegistrationUnderTheServerRideID() async throws {
         let (coordinator, presenter, endpoint) = makeCoordinator(serverRideID: { "srv-7" })
 
@@ -668,10 +885,77 @@ final class RideActivityCoordinatorTests: XCTestCase {
         await settle()
         presenter.emit(token: Data([0x01]))
         await settle()
-        await coordinator.handleRideChange(makeRecord(id: "LOCAL", status: .completed))
+        await coordinator.handleRideChange(makeRecord(id: "LOCAL", status: .declined))
         await settle()
 
         XCTAssertEqual(endpoint.ends, ["srv-7"], "the release names what the registration named")
+    }
+
+    func testTheBackstopsReleaseAlsoNamesTheServerRideID() async throws {
+        let (coordinator, presenter, endpoint) = makeCoordinator(serverRideID: { "srv-7" })
+
+        await coordinator.handleRideChange(makeRecord(id: "LOCAL", status: .accepted))
+        await settle()
+        presenter.emit(token: Data([0x01]))
+        await settle()
+
+        var completed = makeRecord(id: "LOCAL", status: .completed)
+        completed.completedAt = Date().addingTimeInterval(-RideActivityCompletedEnd.backstop - 1)
+        await coordinator.handleRideChange(completed)
+        await settle()
+
+        XCTAssertEqual(endpoint.ends, ["srv-7"])
+    }
+
+    /// **THE SUMMARY'S DONE BUTTON MUST NOT EAT THE ARRIVAL CARD** (MYR-425).
+    ///
+    /// Dismissing the post-ride summary releases the rider's slot, so the account
+    /// resolves to `.none` and MYR-405's reaper sees the completed card as an orphan.
+    /// It is not one — it is this process's own card, mid-linger, with the server's
+    /// announcement still to come. Reaping it would take it down `.immediate` AND
+    /// issue the §7.21 DELETE: this issue's defect, from inside its own fix.
+    func testReleasingTheRiderSlotDoesNotREAPTheLingeringCompletedCard() async throws {
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        presenter.emit(token: Data([0xaa]))
+        await settle()
+
+        var completed = makeRecord(status: .completed)
+        completed.completedAt = Date().addingTimeInterval(-30)
+        await coordinator.handleRideChange(completed)
+        await settle()
+
+        // The rider taps Done: `activeRequest` goes nil, and the app foregrounds.
+        await coordinator.handleRideChange(nil)
+        await coordinator.handleLaunchOrForeground(account(nil))
+        await settle()
+
+        XCTAssertNil(presenter.endedWith, "no local end while the server's held end is still due")
+        XCTAssertTrue(presenter.endedActivities.isEmpty, "and the reaper leaves it alone")
+        XCTAssertTrue(endpoint.ends.isEmpty)
+        XCTAssertEqual(coordinator.phase.rideID, "ride-1")
+    }
+
+    func testOnceTheBackstopHasPassedTheOrphanedCompletedCardDoesComeDown() async throws {
+        // The other side of the same guard: the exemption is bounded by the deadline,
+        // so a completed card whose server end never arrived does not become
+        // permanently un-reapable.
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        presenter.emit(token: Data([0xaa]))
+        await settle()
+
+        var completed = makeRecord(status: .completed)
+        completed.completedAt = Date().addingTimeInterval(-RideActivityCompletedEnd.backstop - 1)
+        await coordinator.handleRideChange(completed)
+        await settle()
+
+        XCTAssertEqual(presenter.endedWith?.state.status, .completed)
+        XCTAssertEqual(presenter.endedWith?.dismissal, .immediate)
+        XCTAssertEqual(endpoint.ends, ["ride-1"])
+        XCTAssertEqual(coordinator.phase, .idle)
     }
 
     /// Reaping somebody else's leftover card must not delete the row belonging to
@@ -990,9 +1274,29 @@ final class StubRideActivityPresenter: RideActivityPresenting {
         return true
     }
 
+    /// MYR-425 — the stale date each update carried. A completed frame must carry
+    /// NONE, and nothing else in the stub could tell the difference.
+    private(set) var updateStaleDates: [Date?] = []
+
     func update(state: RideActivityAttributes.ContentState, staleDate: Date?) async {
         updates.append(state)
+        updateStaleDates.append(staleDate)
         if let heldRideID { deliveredStates[heldRideID] = state }
+    }
+
+    /// **Stand in for the SERVER'S HELD END** (MYR-421 / MYR-425) — the one exit this
+    /// process does not perform. APNs ends the Activity outright, so the card leaves
+    /// the screen and the system reports `.ended`; the app learns about it from the
+    /// lifecycle stream and from the restore list, and from nowhere else.
+    func deliverServerEnd() {
+        guard let heldRideID else { return }
+        restored = restored.map {
+            $0.rideID == heldRideID
+                ? RideActivitySnapshot(rideID: $0.rideID, lifecycle: .ended)
+                : $0
+        }
+        isPresenting = false
+        lifecycleContinuation?.yield(.ended)
     }
 
     func end(state: RideActivityAttributes.ContentState, dismissal: RideActivityDismissal) async {

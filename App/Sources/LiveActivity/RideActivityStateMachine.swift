@@ -62,10 +62,90 @@ enum RideActivityDismissal: Equatable {
     /// screen. Conflating them would either throw away pushes the server still
     /// wants delivered or leave yesterday's arrival on this morning's lock screen.
     ///
-    /// The clock starts when the ending frame is written (`uiPolicy` resolves
-    /// `.after(now + interval)`), i.e. at the moment the completed card renders —
-    /// which is what the client asked for.
+    /// ─────────────────────────────────────────────────────────────────────────
+    /// **⚠️ MYR-425 — THIS IS NO LONGER WHAT ENDS A COMPLETED RIDE.** The state
+    /// machine does not reach for it any more; see `RideActivityCompletedEnd`. It
+    /// survives as the DISMISSAL VOCABULARY (and as the DEBUG capture launcher's
+    /// spelling of the same policy), because the five minutes is still the right
+    /// number — it simply belongs to the server's held end now, which the client
+    /// must not preempt.
+    /// ─────────────────────────────────────────────────────────────────────────
     static let completedLinger = RideActivityDismissal.linger(5 * 60)
+}
+
+// MARK: - Who ends a COMPLETED ride's Activity (MYR-425)
+
+/// **THE CLIENT DOES NOT END A COMPLETED RIDE. THE SERVER DOES.**
+///
+/// Prod-DB-proven, r20: every completed ride showed `go_live_activities.ended_at =
+/// completed_at + ~0.5s` with `alerted_phase` stuck at **5**, including rides after
+/// MYR-421's held-end deploy. The cause was one line of client policy that predates
+/// the server owning completion (MYR-418/421) and that nobody retired: a record
+/// folding to `.completed` returned `.end(dismissal: .completedLinger)`, so the app
+/// took the Activity down the instant the ride finished.
+///
+/// A five-minute DISMISSAL DATE does not keep the card alive — it only governs how
+/// long the LOCK-SCREEN frame lingers. An `.ended` Activity leaves the DYNAMIC
+/// ISLAND ~1.4s later whatever the dismissal date says (measured platform truth),
+/// and the coordinator's registration release tombstones the server's row, so the
+/// server's completed announcement — the "You've arrived" alert that raises
+/// `alerted_phase` to 6 and expands the island with the check — arrived at a row
+/// with **zero recipients**, and its held end had nothing left to hold.
+///
+/// So `completed` is an UPDATE now (the final frame, composed through MYR-423's
+/// merge rule so the server's `eta`/`progress`/`asOf` survive), the registration is
+/// RETAINED, and the end belongs to the server's held end at completion + 5 min.
+///
+/// **`declined` / `cancelled` / expired are deliberately untouched.** They are
+/// outside the design's six phases, there is no announcement coming for them, and
+/// their prompt client-side end is the point rather than an accident.
+enum RideActivityCompletedEnd {
+
+    /// **THE LOCAL BACKSTOP'S HORIZON — the same five minutes, from the other end.**
+    ///
+    /// The server's held end (MYR-421) fires at `completed_at + 5 min`. This is the
+    /// deadline after which the client stops waiting for it and takes the card down
+    /// itself, `.immediate`, on the final frame.
+    ///
+    /// It is deliberately the SAME number rather than a padded one. A longer horizon
+    /// would leave a visible gap on every ride whose push is simply late; an equal
+    /// one means the backstop is only ever reached when the server's end genuinely
+    /// did not arrive — a dead APNs token, an unregistered ride (MYR-415's whole
+    /// class), or Live Activities pushed to a device that never came back online.
+    static let backstop: TimeInterval = 5 * 60
+
+    /// Has the wait for the server's end run out?
+    ///
+    /// **`nil` IS NEVER ELAPSED**, and that arm is load-bearing rather than
+    /// defensive. `completedAt` is the SERVER's own instant (`RideRequest
+    /// .completedAt`, MYR-414) and a ride whose completion this client learned about
+    /// through a WS frame can legitimately hold none; the coordinator then supplies
+    /// its own first-observation stamp. Reading an absent instant as "long ago"
+    /// would end the card at the same moment the defect did.
+    static func backstopHasElapsed(completedAt: Date?, now: Date) -> Bool {
+        guard let completedAt else { return false }
+        return now.timeIntervalSince(completedAt) >= backstop
+    }
+
+    /// Is this frame the LAST thing the card will say about this ride?
+    ///
+    /// Used for one thing: a final frame carries **no stale date**. Staleness means
+    /// "this may have moved on without us", and a finished ride cannot — which
+    /// `SystemRideActivityPresenter.end` has always known, and which the completed
+    /// UPDATE path now has to know too. Without it the arrival card would grey
+    /// itself out three minutes into the five-minute linger, i.e. before the
+    /// server's own end arrives.
+    ///
+    /// Deliberately NOT `RideActivityLeg.of(status) == nil`: `completed` has a leg
+    /// (`.dropoff`, so the rail renders full for the whole linger — MYR-398 v3) and
+    /// is precisely the status this predicate exists for.
+    static func isFinalFrame(_ status: LiveActivityRideStatus) -> Bool {
+        switch status {
+        case .completed, .declined, .cancelled, .reservationExpired: return true
+        case .requested, .accepted, .arrived, .enroute: return false
+        case .unrecognized: return false
+        }
+    }
 }
 
 /// What the app knows about the ACCOUNT's own live ride at reconcile time
@@ -119,6 +199,14 @@ struct RideActivityAccountRide: Equatable {
     /// with `.immediate` instead of letting the state machine end it on MYR-405's
     /// five-minute linger. The reconciler establishes WHOSE card it is; the state
     /// machine decides how it ends.
+    ///
+    /// **MYR-425 makes that arm carry more weight than it used to.** A completed
+    /// ride's Activity is now genuinely LIVE — `.active`, holding its registration,
+    /// waiting for the server's announcement and its held end — rather than an
+    /// `.ended` card living out a dismissal date. So this is what the launch and
+    /// foreground reconcile ADOPTS instead of reaping, and the same pass is what
+    /// drives the backstop: `handleLaunchOrForeground` finishes by re-asking
+    /// `action`, which is where a five-minute-old completion is noticed.
     func resolve(now: Date = Date()) -> RideActivityLiveRide {
         guard isResolved else { return .unresolved }
         guard let record, RideReservation.isLiveRide(record, now: now) else { return .none }
@@ -172,6 +260,21 @@ enum RideActivityAction: Equatable {
         rideID: String,
         state: RideActivityAttributes.ContentState
     )
+
+    /// Does carrying this out leave the ALREADY-HELD card in place, still driven by
+    /// this process?
+    ///
+    /// `.start` and `.restart` answer NO even though a card is on screen afterwards:
+    /// it is a different ride's card. MYR-425's backstop arms off this rather than
+    /// off a list of case names, so an action added later has to answer the question
+    /// instead of falling outside it — MYR-395's `Opening.drawsWholeLine` lesson, one
+    /// enum over.
+    var continuesTheHeldCard: Bool {
+        switch self {
+        case .none, .update: return true
+        case .start, .end, .restart: return false
+        }
+    }
 }
 
 enum RideActivityStateMachine {
@@ -246,11 +349,20 @@ enum RideActivityStateMachine {
     /// the system reports one), it can arrive from the restore list for a ride this
     /// process never presented, and more than one ride can be in it. Modelling it
     /// as one more `.dismissed` phase would have made all three of those wrong.
+    ///
+    /// `completedAt` (MYR-425) is when the ride COMPLETED, and it is consulted for
+    /// exactly one question: has the wait for the server's held end run out? It is a
+    /// parameter rather than a read off `record.completedAt` because the coordinator
+    /// holds the better answer — the server's instant when the wire carried one, and
+    /// this process's own first sighting of `completed` when it did not. Defaulted,
+    /// so every call site that is not about the backstop is unchanged, and `nil`
+    /// means "keep waiting" rather than "waited long enough".
     static func action(
         phase: RideActivityPhase,
         record: RideRequestRecord?,
         vehicleName: String,
         dismissedRideIDs: Set<String> = [],
+        completedAt: Date? = nil,
         now: Date = Date()
     ) -> RideActivityAction {
         switch phase {
@@ -269,6 +381,26 @@ enum RideActivityStateMachine {
 
         case .live(let liveID, let lastState):
             guard let record else {
+                // ⚠️ **AN ERASURE OVER A COMPLETED CARD IS NOT A CANCELLATION —
+                // MYR-425**, and this arm is newly reachable because of it. The
+                // rider's slot is released when they dismiss the post-ride summary,
+                // which nils `activeRequest`; before this issue the completed card
+                // had already been ended by then, so a later `nil` found nothing. Now
+                // the card is LIVE for five minutes and an unguarded erasure would
+                // relabel the arrival **"Ride cancelled"** and take it down early —
+                // the defect this issue exists to remove, wearing the summary's
+                // Done button.
+                //
+                // The record going away says nothing about the lock screen here. The
+                // card waits for the server's end exactly as it would have, and the
+                // backstop still applies: the ride is over either way, so the deadline
+                // is the only thing that can still end it locally.
+                if lastState.status == .completed {
+                    guard RideActivityCompletedEnd.backstopHasElapsed(completedAt: completedAt, now: now)
+                    else { return .none }
+                    return .end(rideID: liveID, state: lastState, dismissal: .immediate)
+                }
+
                 // The record was ERASED. In this app that means cancelled: the wire's
                 // `cancelled` maps to no app status, so `integrate` nils the record
                 // rather than folding a `.cancelled` onto it. Ending on the last known
@@ -284,7 +416,19 @@ enum RideActivityStateMachine {
             guard record.id == liveID else {
                 // A different ride is open than the one on the lock screen. End the
                 // old one; start the new one if it is startable, otherwise just end.
-                let endingState = lastState.with(status: .cancelled)
+                //
+                // **A CARD THAT ALREADY SAYS `completed` IS NOT CORRECTED TO
+                // `cancelled` — MYR-425.** The correction exists because a card the
+                // rider is replacing "is over and did not complete"; a completed card
+                // did complete, and this branch is newly reachable for one now that
+                // the five minutes are spent LIVE rather than `.ended` (an `.ended`
+                // card was skipped by the reaper and never came through here). The
+                // client's own rule is "clear banners … if new ride begins", which is
+                // a statement about clearing, not about relabelling an arrival as a
+                // cancellation on its way out.
+                let endingState = lastState.status == .completed
+                    ? lastState
+                    : lastState.with(status: .cancelled)
                 guard let next = startState(for: record, vehicleName: vehicleName, now: now),
                       !dismissedRideIDs.contains(record.id) else {
                     return .end(rideID: liveID, state: endingState, dismissal: .immediate)
@@ -298,6 +442,37 @@ enum RideActivityStateMachine {
             }
 
             let current = contentState(for: record, vehicleName: vehicleName, previous: lastState)
+
+            // ⚠️ **COMPLETED IS AN UPDATE, NOT AN END — MYR-425.** The line that used
+            // to stand here read `if let dismissal = dismissal(for: record.status)`,
+            // and for `completed` it returned `.completedLinger`, so the app ended
+            // the Activity the instant the ride finished — killing the island in
+            // ~1.4s and tombstoning the server's registration before the server's own
+            // completed announcement (phase 6, the alert, the check) could be
+            // delivered. See `RideActivityCompletedEnd`.
+            //
+            // The frame written here is the FINAL one and it goes through the same
+            // `contentState` merge everything else does, which is what keeps MYR-423
+            // intact: the local frame asserts `status: .completed` and the server's
+            // last-delivered `eta` / `progress` / `asOf` are carried forward rather
+            // than overwritten with nil.
+            if record.status == .completed {
+                guard RideActivityCompletedEnd.backstopHasElapsed(completedAt: completedAt, now: now)
+                else {
+                    // The ordinary path, and the one every real ride takes: say the
+                    // final frame and STAY LIVE so the server can announce and then
+                    // end. `.none` when the card already says it — the server's own
+                    // completed push is a perfectly normal way for that to be true,
+                    // and re-writing an identical frame would spend the rider's
+                    // ActivityKit budget saying nothing.
+                    return current == lastState ? .none : .update(rideID: liveID, state: current)
+                }
+                // THE BACKSTOP. Five minutes on and no server end has arrived, so
+                // there is not one coming: take the card down on the final frame,
+                // `.immediate`, because the linger this is the far end of has now
+                // been served in full by the card standing there.
+                return .end(rideID: liveID, state: current, dismissal: .immediate)
+            }
 
             if let dismissal = dismissal(for: record.status) {
                 return .end(rideID: liveID, state: current, dismissal: dismissal)
@@ -387,13 +562,25 @@ enum RideActivityStateMachine {
         }
     }
 
-    /// The dismissal policy for a terminal status, or `nil` if the ride is still
-    /// running.
+    /// The dismissal policy for a status the CLIENT ends on, or `nil` when the
+    /// client does not end this ride at all.
+    ///
+    /// **`completed` RETURNS `nil` NOW — MYR-425**, and that is the fix rather than a
+    /// tidy-up: it is not "no policy", it is "not the client's call". A completed
+    /// ride is ended by the SERVER's held end (+5 min) and, failing that, by the
+    /// backstop in `action`, which chooses `.immediate` on its own rather than
+    /// through this table. Leaving `.completedLinger` here would be one call site
+    /// away from putting the defect straight back.
+    ///
+    /// `declined` is byte-identical to what it always was, deliberately: it is
+    /// outside the design's six phases, no announcement is coming for it, and the
+    /// prompt end is the point. Cancellation and expiry never reach this function —
+    /// they are ERASURES (the record disappears) and are ended by the `record == nil`
+    /// branch above, also unchanged.
     private static func dismissal(for status: RideRequestStatus) -> RideActivityDismissal? {
         switch status {
-        case .completed: return .completedLinger
         case .declined: return .immediate
-        case .pending, .accepted, .arrived, .enroute: return nil
+        case .completed, .pending, .accepted, .arrived, .enroute: return nil
         }
     }
 
