@@ -53,34 +53,38 @@ import WidgetKit
 //   A. **The expanded island is rebuilt out of REGIONS** — see the §0 A block above
 //      `RideActivityIslandExpandedLeading`. The tall black box was wide content in
 //      the row the sensor housing splits.
-//   B. **The progress ring** (`RideActivityRing.swift`) fills the slot that used to
-//      be empty, and MOVES while a live ride has no telemetry yet.
+//   B. **A progress ring** filled the slot that used to be empty — **and MYR-420 has
+//      since deleted it entirely; see below.**
 //   C. **The arrival glyphs get a completion beat** — once, on the transition, then
 //      static.
-//   D. The priority between the three is `RideActivityTrailingSlot`, resolved in the
-//      pure layer.
+//   D. The priority between them is `RideActivityTrailingSlot`, resolved in the pure
+//      layer.
 //
-// **MYR-412 CORRECTS §0 B's COMPOSITION AGAINST THE CLIENT'S OWN BOARD** (build
-// `202608011648`, three screenshots and the board image). The ladder is untouched;
-// what changed is what the two trailing slots DRAW for a given rung. The wave and the
-// check stand alone — no ring around them — the no-telemetry ring holds nothing in
-// its centre and is a solid track plus a partial gold arc rather than #168's dashed
-// full ring, and the compact slot is inset so the region stops shaving the ring's
-// stroke flat. The MINIMAL island keeps its centre content. See
-// `RideActivityIslandTrailingSlot`.
+// **MYR-412 CORRECTED §0 B's COMPOSITION AGAINST THE CLIENT'S OWN BOARD** (build
+// `202608011648`): the wave and the check stand ALONE on the two trailing slots, no
+// ring around them, and the compact slot is inset. Both halves of that survive.
 //
-// **MYR-417 MAKES THAT WAITING RING MOVE, AND CHANGES THE DISPATCH COPY**
-// (CLIENT-DIRECTED, against build `202608020103`). Two things, both narrow:
+// **MYR-417 MADE THE WAITING RING MOVE** — the system's own
+// `ProgressView(timerInterval:)`, the one mechanism on this surface the platform
+// genuinely runs — **and CHANGED THE DISPATCH COPY**: `Ride requested from {car}`
+// over the same vehicle descriptor the rest of the pickup leg carries. There is no
+// matching in this product, so the board's Uber copy is deliberately not ported (see
+// `RideActivityCopy.rideRequestedFrom`). The copy change stands; the ring does not.
 //
-//   • The `.ringIndeterminate` mode is now the SYSTEM's own
-//     `ProgressView(timerInterval:)` over a rolling 90s window — the one mechanism
-//     on this surface the platform genuinely runs, measured rather than assumed
-//     (§0 B's `repeatForever` and MYR-412's symbol effects are both still inert).
-//     Reduce Motion keeps MYR-412's static arc. See `RideActivityWaitingRing`.
-//   • **Dispatch says which car was asked**, `Ride requested from {car}` over the
-//     same vehicle descriptor the rest of the pickup leg carries. There is no
-//     matching in this product, so the board's Uber copy is deliberately not
-//     ported — see `RideActivityCopy.rideRequestedFrom`. No layout moves.
+// ─────────────────────────────────────────────────────────────────────────────
+// **MYR-420 — THE RING IS REMOVED FROM ALL THREE ISLAND SURFACES** (CLIENT-DIRECTED,
+// against build `202608020103`). He asked for a ring that SPINS rather than fills;
+// measurement established that this surface can fill, drain or travel once per push
+// interval and cannot spin at any rate a person reads as spinning (the verdict is in
+// `design/Handoff-Live-Activity.md`'s MYR-420 mirror note). Offered the two real
+// options — a ring that moves but reads as progress, or a correct one that is dead —
+// he took neither: *"remove the ring entirely then and if theres data it appears on
+// the right side."*
+//
+// So the trailing slot is **figure > arrival glyph > EMPTY** on every surface, the
+// MINIMAL island is the bare mark again, and **the lock-screen card and the expanded
+// island's RAIL are untouched** — the rail is where this surface says how far along a
+// ride is, and it always was.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // MARK: - The ground
@@ -454,17 +458,19 @@ struct RideActivityIslandLeading: View {
     }
 }
 
-/// COMPACT TRAILING — **a figure, a BARE glyph, or a BARE ring** (§0 B + §0 D, as
-/// corrected by MYR-412).
+/// COMPACT TRAILING — **a figure, a BARE glyph, or NOTHING** (§0 D, as corrected by
+/// MYR-412 and cut back by MYR-420).
 ///
-/// `8 min` / `1 min` / `3:42 PM` at 15/600 tabular, exactly as before §0: the ring
-/// never displaces a number, and the figure is the ONE branch here that carries no
+/// `8 min` / `1 min` / `3:42 PM` at 15/600 tabular, exactly as before §0: nothing has
+/// ever displaced a number here, and the figure is the ONE branch that carries no
 /// inset, so those four states stay byte-identical. Where there IS no number the slot
-/// used to be empty, and that is what the ring fills.
+/// is EMPTY again — §0 B filled it with a ring and the client removed it: *"remove
+/// the ring entirely then and if theres data it appears on the right side."*
 ///
-/// **NOTHING IS DRAWN INSIDE EITHER** — the client's board has the wave and the check
-/// standing alone and the no-telemetry ring holding nothing at all. See
-/// `RideActivityIslandTrailingSlot`, which is that rule once for both island surfaces.
+/// **THE GLYPH AND THE EMPTY RESOLUTION SHARE ONE VIEW ON PURPOSE.** The arrival beat
+/// is a transition BETWEEN them (an accepted ride with no ETA is empty; the moment it
+/// arrives it is a wave), so splitting them at this switch would give the beat two
+/// view identities and nothing to animate.
 struct RideActivityIslandTrailing: View {
     let card: RideActivityCard
 
@@ -480,14 +486,9 @@ struct RideActivityIslandTrailing: View {
                 .foregroundStyle(Color.mrtText)
                 .lineLimit(1)
 
-        default:
-            // 22 rather than 24: the compact pill is shorter than the island is
-            // tall, and a ring sized for the expanded slot crowds its own cap
-            // against the pill's edge.
+        case .glyph, .empty:
             RideActivityIslandTrailingSlot(
                 slot: card.compact,
-                diameter: RideActivityMetrics.ringDiameterCompact,
-                stroke: RideActivityMetrics.ringStrokeCompact,
                 waveSize: RideActivityMetrics.compactWaveGlyph,
                 checkSize: RideActivityMetrics.compactCheckGlyph,
                 horizontalInset: RideActivityMetrics.compactTrailingInset
@@ -496,30 +497,24 @@ struct RideActivityIslandTrailing: View {
     }
 }
 
-/// MINIMAL — the ring, with the mark inside it (§5: "Minimal 37×37 · ring d24
-/// stroke 2.4 · center arrow 12 / glyph 13").
+/// MINIMAL — **the mark, and nothing around it** (MYR-420).
 ///
-/// This is what the rider sees when another app owns the island, and until §0 it
-/// said one thing: WHOSE ride is running. It now says that AND how far along it is,
-/// out of the same 24pt it already had — the mark did not leave, it moved into the
-/// middle of the ring.
+/// This is what the rider sees when another app owns the island, and it says one
+/// thing: WHOSE ride is running. §0 B wrapped that mark in the progress ring, per §5's
+/// "Minimal 37×37 · ring d24 stroke 2.4 · center arrow 12 / glyph 13"; MYR-412 kept it
+/// here after stripping the two trailing slots, on the reading that a BARE ring on
+/// this surface would be an anonymous circle. **The client then removed the ring
+/// itself**, which settles that argument from the other end: what is left is the
+/// centre — the mark, swapping for the arrival glyph at the two stops on the same beat
+/// the trailing slots run.
 ///
-/// It renders the FIGURE-LESS resolution, for the obvious reason: `3:42 PM` does not
-/// fit in a 37pt circle, and the ladder's answer to "no figure here" is already
-/// written down.
-///
-/// **THIS IS THE ONE SURFACE MYR-412 DID NOT STRIP.** The two trailing slots draw the
-/// glyph and the ring bare; minimal keeps `centre: .mark`, so the ring still holds the
-/// arrow and still swaps it for the arrival glyph. The reading stands on its own:
-/// minimal is the lone 37pt circle another app's Activity leaves us, the mark inside
-/// it is the only thing that says whose ride this is, and the handoff's §5 names the
-/// composition outright — "Minimal 37×37 · ring d24 stroke 2.4 · center arrow 12 /
-/// glyph 13". A bare ring here would be an anonymous circle.
+/// See `RideActivityIslandMark`. The composition is a lone mark on a black circle now,
+/// which is exactly what v3 shipped before §0 B.
 struct RideActivityIslandMinimal: View {
     let card: RideActivityCard
 
     var body: some View {
-        RideActivityProgressRing(slot: card.expandedTrailing, centre: .mark)
+        RideActivityIslandMark(slot: card.expandedTrailing)
             .accessibilityLabel(RideActivityIslandLeading.label(for: card))
     }
 }
@@ -541,7 +536,7 @@ struct RideActivityIslandMinimal: View {
 // So the top row is now TWO SMALL THINGS and nothing else:
 //
 //   `.leading`   the brand mark, 26
-//   `.trailing`  the glyph-or-ring slot, 24
+//   `.trailing`  the arrival glyph (19/17) — or, after MYR-420, nothing
 //   `.center`    **DELIBERATELY UNUSED — the housing owns it.**
 //
 // and EVERYTHING WIDE moves to `.bottom`, which is the one region that spans the
@@ -592,32 +587,28 @@ struct RideActivityIslandExpandedLeading: View {
     }
 }
 
-/// `.trailing` — the BARE glyph or the BARE ring. **Never empty, and never the ETA.**
+/// `.trailing` — **the BARE glyph, or nothing.** Never the ETA.
 ///
 /// The expanded headline already carries the figure, so a second copy of it here
-/// would be the badge the whole redesign removed; the slot instead answers the
-/// question the headline cannot — how far along, or which stop we reached.
+/// would be the badge the whole redesign removed; the slot instead answers the one
+/// question the headline cannot — which stop we reached. **On every other state it is
+/// now empty** (MYR-420), and the region is simply unoccupied: the rail below it is
+/// what says how far along the ride is, on this surface and on the card alike.
 ///
-/// **IT RUNS THE COMPACT SLOT'S OWN VIEW** (MYR-412). The client's correction is
-/// about the composition inside the slot rather than about one surface, and the
-/// board's expanded mocks put the same bare marks in the same place; forking it would
-/// be two spellings of one rule, which is what §0 D's single ladder and this issue's
-/// single view both exist to stop. The only differences are the four numbers — a 24pt
-/// ring and the larger pair of glyphs, because the surface and the ring it replaces
-/// are larger.
+/// **IT RUNS THE COMPACT SLOT'S OWN VIEW.** The rule is about the composition rather
+/// than about one surface, and forking it would be two spellings of one rule — which
+/// is what §0 D's single ladder and MYR-412's single view both exist to stop. The only
+/// difference is the pair of glyph sizes, because this surface is larger.
 ///
 /// It passes **no horizontal inset of its own**: #168's corner-safe padding below is
-/// already 6pt, which more than clears the 1.2pt a centred stroke reaches outside its
-/// frame, and re-measuring that surface's four corner clearances is not this issue's
-/// change to make.
+/// already 6pt, and re-measuring that surface's four corner clearances is not this
+/// issue's change to make.
 struct RideActivityIslandExpandedTrailing: View {
     let card: RideActivityCard
 
     var body: some View {
         RideActivityIslandTrailingSlot(
             slot: card.expandedTrailing,
-            diameter: RideActivityMetrics.ringDiameter,
-            stroke: RideActivityMetrics.ringStroke,
             waveSize: RideActivityMetrics.expandedWaveGlyph,
             checkSize: RideActivityMetrics.expandedCheckGlyph,
             horizontalInset: 0

@@ -567,11 +567,9 @@ final class TokenTests: XCTestCase {
             ("activityRailTrack", 0.13, .mrtActivityRailTrack),
             ("activityRailTrackHighlight", 0.07, .mrtActivityRailTrackHighlight),
             ("activityRailPin", 0.32, .mrtActivityRailPin),
-            // MYR-398 §0 B — the progress ring's track. Its own step at 20% rather
-            // than the rail's 13%: a 2.4pt stroke on a 24pt circle over the island's
-            // true black disappears at 13%, and an invisible track-only state is the
-            // empty slot this ring was added to fill.
-            ("activityRingTrack", 0.20, .mrtActivityRingTrack),
+            // `activityRingTrack` (20%) was here for §0 B's progress ring and went
+            // with it (MYR-420). The RAIL's 13% track stays and is the only track
+            // this surface draws now.
         ]
         for (name, alpha, color) in cases {
             var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0

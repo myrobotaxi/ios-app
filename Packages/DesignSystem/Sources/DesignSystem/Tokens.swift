@@ -741,14 +741,11 @@ public extension Color {
     /// rendering bug.
     static let mrtActivityRailPin = Color(hex: Hex.text, alpha: 0.32)
 
-    /// The PROGRESS RING's track — rgba(255,255,255,0.20) (MYR-398 §0 B).
-    ///
-    /// Deliberately NOT `mrtActivityRailTrack`'s 13%. The rail is 5pt of fill on a
-    /// 350pt card; the ring is a 2.4pt stroke on a 24pt circle, and 13% of white at
-    /// that weight disappears against the island's true black — which would leave the
-    /// track-only ending state rendering as nothing at all, i.e. as the empty slot
-    /// this ring exists to fill.
-    static let mrtActivityRingTrack = Color(hex: Hex.text, alpha: 0.20)
+    // `mrtActivityRingTrack` (white 20%) LIVED HERE and is DELETED with the Live
+    // Activity's progress ring (MYR-420, client-directed). It was the one token on
+    // this surface that existed for a single component, and that component has no
+    // remaining consumer — a colour kept "in case" is the quietest way for a deleted
+    // element to look like it is coming back.
 
     /// The text ladder's second step — 62% white. `in`, the countdown's unit, and
     /// the trip headline's `dropoff`.

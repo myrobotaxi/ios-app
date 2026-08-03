@@ -37,14 +37,22 @@ import MyRobotaxiContracts
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// WHAT §0 CHANGED (MYR-398 §0, the client's change request against the v3 build in
-// TestFlight as `202608011331`)
+// WHAT §0 ADDED AND MYR-420 TOOK BACK OUT
 //
-// One thing, and it is the "or NOTHING" above. The compact island's empty half-pill
-// and the expanded island's empty trailing slot are now a PROGRESS RING, and the
-// choice between a figure, a glyph and each of the ring's three modes is resolved
-// HERE, as `RideActivityTrailingSlot`, for the same reason everything else on this
-// surface is: a priority ladder living in a view is a ladder no test can climb.
+// §0 (the client's change request against the v3 build `202608011331`) filled the
+// "or NOTHING" above with a PROGRESS RING, and the choice between a figure, a glyph
+// and each of the ring's three modes was resolved HERE, as
+// `RideActivityTrailingSlot` — a priority ladder living in a view is a ladder no
+// test can climb.
+//
+// **MYR-420 DELETED THE RING RUNG.** The client asked for the waiting ring to SPIN;
+// measurement established that this surface cannot run any repeating motion at all
+// (the verdict is kept in `design/Handoff-Live-Activity.md`'s MYR-420 mirror note),
+// and presented with "a ring that fills" or "a ring that is dead" he ruled:
+// *"remove the ring entirely then and if theres data it appears on the right side."*
+// So the ladder is **figure > glyph > EMPTY**, and the empty rung is a rung rather
+// than an invisible ring: the enum has no ring case left, so no state can resolve to
+// one however this file is edited later.
 //
 // `compact` keeps its name and its meaning; `expandedTrailing` is the same ladder
 // with the ETA rung removed, and the minimal island renders that one too.
@@ -159,30 +167,40 @@ struct RideActivityRailState: Equatable {
     }
 }
 
-/// **THE TRAILING SLOT, RESOLVED — the §0 D priority ladder as five values.**
+/// **THE TRAILING SLOT, RESOLVED — the §0 D priority ladder, as MYR-420 left it.**
 ///
 /// One type for three surfaces (the compact island's trailing half-pill, the
 /// expanded island's `.trailing` region, and the minimal island), because the RULE
-/// is one rule with one exception, and writing it once is what stops the three
-/// disagreeing about a state nobody thought to check.
+/// is one rule and writing it once is what stops the three disagreeing about a state
+/// nobody thought to check.
 ///
 /// ─────────────────────────────────────────────────────────────────────────────
-/// **THE LADDER RESOLVES STRICTLY, TOP DOWN:**
+/// **THE LADDER RESOLVES STRICTLY, TOP DOWN — FIGURE > GLYPH > EMPTY:**
 ///
-///   1. **The ETA FIGURE**, if the server has one — `8 min` / `1 min` / `3:42 PM`,
-///      rendered exactly as they were before §0. **The ring never displaces a
-///      number.**
+///   1. **The ETA FIGURE**, if the server has one — `8 min` / `1 min` / `3:42 PM`.
 ///   2. **The arrival GLYPH**, at the two stops.
-///   3. **The RING**, and only when neither: Dispatch, both no-ETA states, the
-///      no-telemetry state, and every ending. It fills the half-pill that used to be
-///      EMPTY (v3's `markOnly`), which is the whole of §0 B — a rider who cannot see
-///      an ETA could not previously tell "waiting on the car" from "the app is
-///      dead".
+///   3. **NOTHING.** Dispatch, both no-ETA states, the no-telemetry state and every
+///      ending render an EMPTY slot.
+///
+/// **RUNG 3 USED TO BE A RING AND THE CLIENT DELETED IT** (MYR-420):
+/// *"remove the ring entirely then and if theres data it appears on the right
+/// side."* §0 B raised the ring precisely because a bare mark beside an empty
+/// half-pill reads like an app that has stopped working; three rounds of
+/// measurement then established that the one thing which would have made it read as
+/// waiting — motion — is unavailable on this surface at any rate (see
+/// `design/Handoff-Live-Activity.md`, MYR-420 mirror note). Offered the two real
+/// options, the client took neither. **A bare mark beside an empty half-pill is the
+/// design now, by decision rather than by omission.**
+///
+/// **THE EMPTY RUNG IS A CASE, NOT AN INVISIBLE RING.** There is no ring case left in
+/// this enum, so "a state can never resolve to a ring again" is a property of the
+/// type rather than of anybody's care — and a view cannot re-derive one, because the
+/// fraction it would need was deleted from the ladder with it.
 ///
 /// The expanded island's slot runs the SAME ladder **minus step 1** — the expanded
 /// headline already carries the figure, so a second copy of it 20pt to the right is
-/// the badge the whole redesign removed. That slot is glyph-or-ring, never empty and
-/// never the ETA. The minimal island renders that same figure-less resolution.
+/// the badge the whole redesign removed. The minimal island renders that same
+/// figure-less resolution, and puts the brand mark where the slot is empty.
 /// ─────────────────────────────────────────────────────────────────────────────
 enum RideActivityTrailingSlot: Equatable {
     /// 15/600 tabular, white. The pickup countdown's `{n} {unit}` or the trip leg's
@@ -194,31 +212,15 @@ enum RideActivityTrailingSlot: Equatable {
     /// when the ride is done. Not artwork: Apple's optical weights, the same shapes
     /// the board drew with Material Symbols.
     ///
-    /// It arrives with the §0 C beat, and it outranks the ring rather than sitting
-    /// beside it because the two are one mark. **On the compact and expanded trailing
-    /// slots it stands ALONE** (MYR-412 — the client's board, and his *"why is there a
-    /// circle around the hand"*); on the MINIMAL island it lands inside the completed
-    /// ring, which is the surface that keeps a centre at all.
+    /// It arrives with the §0 C beat and it stands ALONE on every surface — MYR-412
+    /// took the ring off the two trailing slots (*"why is there a circle around the
+    /// hand"*) and MYR-420 took it off the minimal island with all the others.
     case glyph(Glyph)
 
-    /// Telemetry is flowing — a gold arc of `rail.p`, floored so its cap is visible.
-    ///
-    /// **THE FRACTION IS THE RAIL'S OWN**, not a second reading of `progress`: one
-    /// source, so the card's rail and the island's ring can never disagree about how
-    /// far along the same leg is.
-    case ringDeterminate(Double)
-
-    /// The route is known and the car has reported nothing yet — **the board's
-    /// LOADING RING**: solid track, a partial gold arc, round cap, nothing in the
-    /// middle. It was designed to turn (§0 B), and MYR-412 established that no
-    /// mechanism available on this surface will turn it — not `repeatForever`, not an
-    /// appearance-armed animation, and not an SF Symbol effect. It ships static, which
-    /// is what the client's mock draws.
-    case ringIndeterminate
-
-    /// The ring with no arc at all. A ride that ENDED is not making progress and is
-    /// not waiting on anything, so it gets the track and nothing else.
-    case ringTrackOnly
+    /// **NOTHING AT ALL** (MYR-420). No figure, no glyph, and — since that issue — no
+    /// ring either: Dispatch, both no-ETA states, the no-telemetry state and every
+    /// ending leave the trailing slot bare.
+    case empty
 
     enum Glyph: Equatable {
         /// `hand.wave.fill`, 17 — the car greeting you.
@@ -227,38 +229,17 @@ enum RideActivityTrailingSlot: Equatable {
         case check
     }
 
-    /// Whether this resolution puts a RING on the surface that keeps one in every
-    /// non-figure state — the MINIMAL island. The structural form of "never empty":
-    /// every case but `.figure` does, and `.figure` cannot reach that surface.
-    var drawsRing: Bool {
-        if case .figure = self { return false }
-        return true
-    }
-
-    /// **MYR-412 — whether the two BARE surfaces draw the ring.**
-    ///
-    /// The compact trailing half-pill and the expanded `.trailing` region render the
-    /// arrival glyph INSTEAD of the ring rather than inside it, so `.glyph` answers
-    /// `false` here where it answers `true` to `drawsRing`. The client's board is
-    /// explicit about both halves — a bare wave and a bare check at the two stops, and
-    /// a bare loading ring where there is neither a glyph nor a figure — and his
-    /// question was *"why is there a circle around the hand thats not needed"*.
-    ///
-    /// It is a second accessor rather than a redefinition of the first because the
-    /// two surfaces genuinely differ: minimal keeps the mark in the middle of the
-    /// ring, and one boolean answering for both is the shape that makes a surface
-    /// borrow another's rendering.
-    var drawsBareRing: Bool {
-        switch self {
-        case .figure, .glyph: return false
-        case .ringDeterminate, .ringIndeterminate, .ringTrackOnly: return true
-        }
-    }
-
-    /// The arrival glyph this resolution renders on its own, if any.
+    /// The arrival glyph this resolution renders, if any.
     var bareGlyph: Glyph? {
         if case .glyph(let glyph) = self { return glyph }
         return nil
+    }
+
+    /// Whether the slot renders nothing — the MINIMAL island's question, since that
+    /// is the one surface with something else to put there (the brand mark).
+    var isEmpty: Bool {
+        if case .empty = self { return true }
+        return false
     }
 }
 
@@ -349,10 +330,10 @@ struct RideActivityCard: Equatable {
             subline: subline(state: state, vehicle: vehicle, isStale: stale, time: time),
             rail: rail,
             compact: trailingSlot(
-                state: state, leg: leg, rail: rail, allowsFigure: true, now: now, time: time
+                state: state, leg: leg, allowsFigure: true, now: now, time: time
             ),
             expandedTrailing: trailingSlot(
-                state: state, leg: leg, rail: rail, allowsFigure: false, now: now, time: time
+                state: state, leg: leg, allowsFigure: false, now: now, time: time
             ),
             isStale: stale
         )
@@ -527,14 +508,14 @@ struct RideActivityCard: Equatable {
     private static func trailingSlot(
         state: RideActivityAttributes.ContentState,
         leg: RideActivityLeg?,
-        rail: RideActivityRailState,
         allowsFigure: Bool,
         now: Date,
         time: (Date) -> String
     ) -> RideActivityTrailingSlot {
         // 1 · THE FIGURE, and it outranks everything. `8 min` / `1 min` / `3:42 PM`
-        // resolve exactly as they did before §0 — the ring is an addition to the
-        // states that had NOTHING, never a replacement for a number.
+        // resolve exactly as they did before §0 and exactly as they do after MYR-420
+        // — every edit to this ladder since v3 has been about the states that carry
+        // NO number, and none of them has ever moved one.
         if allowsFigure, let figure = figure(state: state, leg: leg, now: now, time: time) {
             return .figure(figure)
         }
@@ -547,8 +528,11 @@ struct RideActivityCard: Equatable {
         // have to prove the tie can never happen to know which way it breaks.
         if let glyph = glyph(for: state.status) { return .glyph(glyph) }
 
-        // 3 · THE RING.
-        return ring(for: state.status, rail: rail)
+        // 3 · NOTHING (MYR-420). This rung was §0 B's ring and the client removed it;
+        // `rail` was a parameter of this function for the sole purpose of feeding the
+        // determinate arc, and it went with the rung rather than being left threaded
+        // through unread.
+        return .empty
     }
 
     /// The ETA-derived figure, or `nil` where the status may not carry one.
@@ -575,33 +559,12 @@ struct RideActivityCard: Equatable {
         }
     }
 
-    /// **THE RING'S THREE STATES**, and each of them is a different thing to say.
-    ///
-    /// ```
-    /// telemetry flowing        determinate   the rail's own p, floored at 2%
-    /// route known, car quiet   indeterminate a 25% arc turning — "waiting on the car"
-    /// the ride ended           track only    nothing is in progress, nothing is coming
-    /// ```
-    ///
-    /// **THE ENDED TEST IS `RideActivityLeg.of(status) == nil`, NOT A SECOND LIST OF
-    /// STATUSES.** That accessor already answers "is this ride part-way along
-    /// anything", and it is the one that has to stay in step with the rail — a second
-    /// list would be a second definition of "over", and the first status added to one
-    /// and not the other renders a spinner beside "Ride cancelled". It also settles
-    /// the `unrecognized` arm the right way: a status this build cannot interpret is
-    /// not evidence a car is on its way, so it claims nothing.
-    ///
-    /// Dispatch is INDETERMINATE and that is the state the rotation was asked for:
-    /// no car has been assigned, the rail is idle, and the ring saying "still
-    /// working on it" is the difference between a waiting app and a dead one.
-    static func ring(
-        for status: LiveActivityRideStatus,
-        rail: RideActivityRailState
-    ) -> RideActivityTrailingSlot {
-        guard RideActivityLeg.of(status) != nil else { return .ringTrackOnly }
-        guard !rail.isIdle else { return .ringIndeterminate }
-        return .ringDeterminate(max(RideActivityMetrics.ringMinimumArc, rail.progress))
-    }
+    // **`ring(for:rail:)` LIVED HERE AND IS DELETED** (MYR-420). It resolved the
+    // ring's three modes — determinate on the rail's own fraction, indeterminate
+    // while a live ride had no telemetry, track-only once the ride ended — and every
+    // one of them is now `.empty`. Nothing replaced it: there is no fraction to
+    // derive, no ended test to keep in step with the rail, and therefore no second
+    // definition of "over" left on this surface to drift.
 
     private static func nonEmpty(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
