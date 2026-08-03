@@ -3510,9 +3510,20 @@ six characters somewhere to point.
   carrying `k` plus `from` AND `to`, all three covered by one Ed25519 signature.
   This client composes the link only as the documented fallback for a pre-0.22.0
   server; `code(from:)` ignoring the query is what makes both grammars work.
-- **End-to-end cannot be verified until the web AASA deploys** — until then
-  `simctl openurl` opens Safari, not the app. The routing is pinned by
-  `App/Tests/InviteLinkRoutingTests.swift`; to drive the real screens use the
+- **THE AASA IS LIVE (verified MYR-426, 2026-08-02).**
+  `https://myrobotaxi.app/.well-known/apple-app-site-association` answers `200`
+  with `content-type: application/json` off Vercel and carries exactly
+  `appID: NFKX777598.app.myrobotaxi.ios` + `components: [{"/": "/join/*"}]`, so
+  the second of MYR-346's THREE things that must agree is confirmed against the
+  first (`InviteLink.host`, pinned by `InviteLinkHostTests`). **The third — the
+  provisioning profile — and the fact that iOS ACTUALLY HANDS THE APP THE
+  ACTIVITY are still device-only**: `simctl openurl` opens Safari whatever the
+  AASA says, so nothing in this repo can photograph a real universal-link tap.
+  Verify on a device by tapping a `/join/{CODE}` link from Messages (never the
+  Safari address bar, which never resolves a universal link) and confirm the app
+  opens rather than the web page; Settings ▸ Developer ▸ Associated Domains
+  Development bypasses Apple's CDN if the AASA was fetched before it deployed.
+- **The routing is pinned by** `App/Tests/InviteLinkRoutingTests.swift`; to drive the real screens use the
   DEBUG hook **`MRT_JOIN_LINK`** (a full URL or a bare code; `-MRT_JOIN_LINK
   <value>` arg fallback), which posts to the mailbox from `RootView.init` — i.e.
   in the same before-the-view-exists window a real activation lands in, so it
@@ -3521,12 +3532,94 @@ six characters somewhere to point.
   ```sh
   SIMCTL_CHILD_MRT_SCENE=ownerHome SIMCTL_CHILD_MRT_JOIN_LINK=RBO246 \
     xcrun simctl launch <udid> app.myrobotaxi.ios          # signed in → prefilled + submitted
+  SIMCTL_CHILD_MRT_SCENE=modeChooser SIMCTL_CHILD_MRT_JOIN_LINK=RBO246 \
+    xcrun simctl launch <udid> app.myrobotaxi.ios          # MYR-426, the FRESH-ACCOUNT arm
   SIMCTL_CHILD_MRT_JOIN_LINK=https://myrobotaxi.app/join/RBO246 \
     xcrun simctl launch <udid> app.myrobotaxi.ios          # cold + signed out → held silently
   ```
 
   Unset — which it is for every scene and capture — nothing reads it and no scene
   changes by a pixel.
+
+**THE CHOOSER'S QUESTION IS THE ONE THE LINK ALREADY ANSWERED** (MYR-426,
+CLIENT-DIRECTED, external-beta launch set). The invite system IS the beta
+onboarding path, and the client's spec is one sentence: *"upon logging with apple
+their code should auto fill in the rider setup flow if new account and of course
+they are coming from clicking the link. if they didnt click the link then they
+can just enter their code. if they already signed up they could just click on the
+link and we'll automatically fill the code and add the vehicle or they can
+manually enter it in the app."*
+
+**THE AUDIT FOUND TWO OF THE THREE PATHS ALREADY BUILT.** Existing-account
+(tap → auto-fill → auto-submit → vehicle added → rider map) and manual entry are
+MYR-346/MYR-184 as shipped, and both are now driven by real launches in
+`App/UITests/InviteLinkOnboardingUITests.swift` rather than only by the pure
+matrix. The NEW-ACCOUNT path was the gap, and the gap was one enum case.
+
+- **`.modeChooser` WAS FILED WITH THE FLOWS THAT HOLD WORK, AND IT HOLDS NONE.**
+  MYR-346's matrix deferred there as "an unanswered question". Nothing is typed
+  into that screen, nothing is in flight behind it, and dismissing it destroys
+  nothing — while the question it asks ("owner or rider?") is precisely what a
+  `/join/{CODE}` link has already answered. It now ACCEPTS, and the other three
+  deferrals (`addTesla`'s live OAuth handoff, the two tutorials) are untouched.
+- **⚠️ `.emptyState` IS LIVE-UNREACHABLE, WHICH IS WHY THIS LOOKED FINE.** MYR-346
+  gave the first-run choice screen the `.onboarding` origin and reasoned about it
+  as the fresh-account case — but `PostAuthRouter` routes there only when
+  `user == nil`, i.e. SIM and static-token dev. A REAL new tester goes sign-in →
+  `.modeChooser` → shell and never sees it. So the one screen the matrix had
+  already got right for a fresh account was the one no fresh account reaches, and
+  every test and every capture of it was correct. **A screen that is correct and
+  unreachable is indistinguishable from a screen that works.**
+- **`.modeChooser` TAKES THE FIRST-RUN GRAMMAR, not the deep-link one.** It is
+  reachable from exactly one place — a real account with NO stored `ViewMode`,
+  which is a new account or one that signed out (MYR-224 releases the choice with
+  the session) — so the person holds no shell: they want the RiderTutorial after
+  joining and have nothing to be returned to, which is `.onboarding` verbatim.
+  The single difference from `.emptyState` is the RETURN: Cancel restores the
+  CHOOSER through `InviteLinkReturn`, where `.emptyState` deliberately snapshots
+  nothing, so the `.onboarding` cancel arm consults `restoreAfterInviteLink()`
+  and falls back to `.emptyState` exactly as a tap on that screen always has.
+- **THE DRAIN MOVED INTO `routeAfterAuth`, and that is a FLASH fix rather than a
+  routing one.** `.onChange(of: inviteLinkContext)` would deliver the held code
+  too — but only after the post-auth screen had rendered once, so the tester
+  would see one frame of the chooser (or, for a stored-mode account, of an empty
+  rider shell captioned "no vehicles shared with you") before the prefilled flow
+  covered it. Draining in the SAME state update the routing happens in costs one
+  line and is a no-op when nothing is held. MYR-343's lesson on the surface this
+  issue is about: a shell someone is about to leave must not narrate a situation
+  that is already resolved.
+- **A JOIN SETTLES THE VIEW MODE** (`adoptRiderModeAfterJoin`). Both completion
+  arms that a link can reach land the user on the rider side — MYR-346 chose that
+  deliberately, since the car they just gained access to does not appear in the
+  owner shell at all — so the mode is persisted to match, and only when the
+  account has none. Without it the next launch asks the chooser's question again
+  of someone who answered it by redeeming a code. An owner redeeming an invite
+  from inside their own session already has a stored mode and is untouched; the
+  SIM/static path has no `currentUser` and writes nothing, which is what keeps
+  every DEBUG scene byte-identical.
+- **THE MATRIX IS NOW SWEPT OVER THE WHOLE ENUM**
+  (`testNoScreenHoldsACodeForever`): every `AppScreen` must either accept a code
+  now or NAME the screen the event that ends its deferral puts the user on, and
+  each named screen is walked until it lands. A screen added later has to appear
+  in one of those two sets. MYR-346 promised "every deferral state resolves on
+  its own" and proved it with one hand-written walk; this is the promise stated
+  over the type.
+- **⚠️ THE JOIN STEP IS TOO FAST TO ASSERT ON.** The prefill submits on the sixth
+  character and the simulated redeem answers immediately, so "Enter invite code"
+  is gone before XCUITest's first poll — a first cut of the UI test failed on a
+  build whose behaviour was correct. The evidence that the code was CARRIED is
+  that the success screen is reached with NO interaction on a scene whose only
+  input is the link (`autoSubmitsSampleCode` is false for `modeChooser`), and the
+  CTA is the receipt for the origin: **"Continue"** on the fresh-account arm
+  (`.onboarding` → RiderTutorial → rider Live Map) against **"Done"** on the
+  existing-account arm (`.deepLink` → straight to the map). The no-flash property
+  is NOT this test's to prove either — a DEBUG scene seeds `initialScreen` and so
+  drains on `onAppear`, one frame later than the real `routeAfterAuth` path.
+- **No pixels move.** Every change is on a path a link opens, plus a
+  `UserDefaults` write gated on a live `currentUser`; the chooser with no code
+  held still asks its question (asserted), and manual entry still opens empty and
+  submits nothing (asserted, with a real wait — a negative without one proves
+  only that the screen is slow).
 
 **Route-availability capture modifier** (MYR-395, DEBUG-only, orthogonal to the scene): `MRT_ROUTE_UNAVAILABLE=1` (env or `-MRT_ROUTE_UNAVAILABLE 1`) swaps the rider's route provider for `StraightLineRideRouteProvider`, i.e. exactly the `[from, to]` pair `AppleRideRouteProvider` returns when MKDirections is throttled, offline or loses its 8s deadline. Everything downstream is the shipping store, predicate and presentation, so the capture is the real degradation rather than a hand-set state. Applies to any route surface — `reviewLongDistance`, `review`, `booking`, `searchSelected`. Unset, every scene runs the real Apple provider and is byte-identical.
 

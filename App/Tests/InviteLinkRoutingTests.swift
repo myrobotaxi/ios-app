@@ -291,14 +291,71 @@ final class InviteLinkRoutingTests: XCTestCase {
         XCTAssertEqual(route(.sharedHome, busy: true), .awaitIdle(code: "RBO246"))
     }
 
-    /// Mid-onboarding screens each hold state a screen swap would destroy: an
-    /// unanswered mode question, a live Tesla OAuth handoff, and someone three
-    /// cards into a five-card tutorial.
+    /// Mid-onboarding screens each hold state a screen swap would destroy: a
+    /// live Tesla OAuth handoff, and someone three cards into a five-card
+    /// tutorial.
+    ///
+    /// MYR-426 took `.modeChooser` OUT of this list — see the test below. It
+    /// holds nothing, and the question it asks is the one the link answers.
     func testAnUnfinishedOnboardingFlowDefersTheLink() {
-        for screen: AppScreen in [.modeChooser, .addTesla, .ownerTutorial, .riderTutorial] {
+        for screen: AppScreen in [.addTesla, .ownerTutorial, .riderTutorial] {
             XCTAssertEqual(route(screen), .awaitIdle(code: "RBO246"),
                            "\(screen) holds work a link must not discard")
         }
+    }
+
+    // MARK: - MYR-426 — the fresh account
+
+    /// THE MAIN GAP THIS ISSUE CLOSES. `.modeChooser` is reachable from exactly
+    /// one place — a real signed-in account with no stored `ViewMode` (new, or
+    /// signed out; MYR-224 releases the choice with the session) — so a link
+    /// landing there is landing on somebody holding no shell, and the "owner or
+    /// rider?" question it asks has already been answered by the fact that
+    /// somebody invited this person to ride THEIR Tesla.
+    ///
+    /// It is also the only fresh-account screen on the LIVE path: `.emptyState`
+    /// is `PostAuthRouter`'s SIM/static-token arm and a real new tester never
+    /// sees it. So before this the code waited behind a fork the tester could
+    /// answer wrong and then arrived as a sheet over whichever shell they picked.
+    func testTheModeChooserAcceptsALinkBecauseItIsTheAnswerToItsQuestion() {
+        XCTAssertEqual(route(.modeChooser), .presentPrefilledInvite(code: "RBO246"))
+    }
+
+    /// The client's sentence, walked as a state machine: *"upon logging with
+    /// apple their code should auto fill in the rider setup flow if new account
+    /// and of course they are coming from clicking the link."*
+    ///
+    /// The tap lands before the app exists (`InviteLinkBridge` holds it), the
+    /// code is held silently through Apple sign-in with nothing said about it,
+    /// and the FIRST screen a fresh account reaches after account creation opens
+    /// the join step prefilled. Nowhere in this sequence is the code dropped, and
+    /// nowhere is the tester asked to re-find it.
+    func testAFreshAccountsCodeSurvivesAppleSignInAndOpensTheJoinStep() {
+        var context = InviteLinkContext(screen: .resolvingSession, isBusy: false)
+        XCTAssertEqual(
+            InviteLinkRouting.route(code: "RBO246", context: context), .awaitSignIn(code: "RBO246"),
+            "cold launch: the mailbox drained onto a shell that does not exist yet"
+        )
+        context.screen = .signIn
+        XCTAssertEqual(
+            InviteLinkRouting.route(code: "RBO246", context: context), .awaitSignIn(code: "RBO246"),
+            "Sign in with Apple: still held, and the sign-in screen says nothing about it"
+        )
+        context.screen = .modeChooser
+        XCTAssertEqual(
+            InviteLinkRouting.route(code: "RBO246", context: context),
+            .presentPrefilledInvite(code: "RBO246"),
+            "account created, no stored mode — the join step opens carrying the code"
+        )
+    }
+
+    /// A fresh account is never BUSY — there is no ride to be mid-way through
+    /// before the account has a car — but the ordering is asserted anyway,
+    /// because `isBusy` is read from live services that a future change could
+    /// make true here, and holding on the chooser would be holding for a
+    /// condition nothing on that screen can clear.
+    func testBusyStillOutranksTheChooserRatherThanBeingIgnoredThere() {
+        XCTAssertEqual(route(.modeChooser, busy: true), .awaitIdle(code: "RBO246"))
     }
 
     /// Pre-auth beats busy: there is no ride to be mid-way through before the
@@ -313,7 +370,7 @@ final class InviteLinkRoutingTests: XCTestCase {
     func testAHeldCodeEventuallyLandsAsTheShellSettles() {
         var context = InviteLinkContext(screen: .signIn, isBusy: false)
         XCTAssertEqual(InviteLinkRouting.route(code: "RBO246", context: context), .awaitSignIn(code: "RBO246"))
-        context.screen = .modeChooser
+        context.screen = .riderTutorial
         XCTAssertEqual(InviteLinkRouting.route(code: "RBO246", context: context), .awaitIdle(code: "RBO246"))
         context.screen = .sharedHome
         context.isBusy = true
@@ -323,6 +380,67 @@ final class InviteLinkRoutingTests: XCTestCase {
             InviteLinkRouting.route(code: "RBO246", context: context),
             .presentPrefilledInvite(code: "RBO246")
         )
+    }
+
+    /// MYR-426 — the promise stated over the WHOLE enum rather than over a list
+    /// of screens someone remembered to write down.
+    ///
+    /// Every screen this app can be on either takes the code NOW or defers it,
+    /// and every screen that defers has a named event that ends it. Sweeping the
+    /// enum is what makes this a guard rather than a sample: a screen added later
+    /// has to appear in one of these two sets, and the second set has to say what
+    /// resolves it. Nothing may defer to a condition that never arrives.
+    func testNoScreenHoldsACodeForever() {
+        /// Every screen either takes the code now, or names the screen the event
+        /// that ends it puts the user on.
+        enum Landing {
+            case now
+            case defers(into: AppScreen)
+        }
+        let matrix: [AppScreen: Landing] = [
+            // Accepts now.
+            .ownerHome: .now,
+            .sharedHome: .now,
+            .emptyState: .now,
+            .modeChooser: .now,
+            .inviteCode: .now,
+            // Defers, and what it resolves INTO.
+            .resolvingSession: .defers(into: .signIn),   // the silent refresh answers, either way
+            .signIn: .defers(into: .modeChooser),        // the account is created
+            .addTesla: .defers(into: .ownerTutorial),    // the OAuth handoff returns
+            .ownerTutorial: .defers(into: .ownerHome),   // five cards, or Skip
+            .riderTutorial: .defers(into: .sharedHome),  // five cards, or Skip
+        ]
+        let all: [AppScreen] = [
+            .resolvingSession, .signIn, .modeChooser, .emptyState, .addTesla,
+            .inviteCode, .ownerTutorial, .riderTutorial, .ownerHome, .sharedHome,
+        ]
+        let landed = InviteLinkRoute.presentPrefilledInvite(code: "RBO246")
+
+        for screen in all {
+            guard let entry = matrix[screen] else {
+                return XCTFail("\(screen) is not in the matrix — it must accept or name what resolves it")
+            }
+            let here = route(screen)
+            switch entry {
+            case .now:
+                XCTAssertEqual(here, landed, "\(screen) is listed as accepting immediately")
+            case .defers(let next):
+                XCTAssertNotEqual(here, .ignore, "\(screen) must never DROP a held code")
+                XCTAssertNotEqual(here, landed, "\(screen) is listed as deferring")
+                // …and the screen it resolves into is strictly closer to landing:
+                // either it accepts, or it defers to something that does.
+                var walked = next
+                var hops = 0
+                while route(walked) != landed {
+                    guard case .defers(let onward) = matrix[walked] ?? .now, hops < all.count else {
+                        return XCTFail("\(screen) resolves into \(walked), which never lands")
+                    }
+                    walked = onward
+                    hops += 1
+                }
+            }
+        }
     }
 
     /// AN UNUSABLE LINK IS NOT AN ERROR. The AASA claims `/join/*` and the web
