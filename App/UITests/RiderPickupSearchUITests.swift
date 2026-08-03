@@ -103,8 +103,10 @@ final class RiderPickupSearchUITests: XCTestCase {
 
         let pickup = pickupField(app)
         XCTAssertTrue(pickup.waitForExistence(timeout: 10), "the pickup row is a FIELD now, not a label")
-        XCTAssertEqual(
-            pickup.placeholderValue, Labels.pickupPlaceholder,
+        // The empty state is drawn as our own full-strength `Text`, not as the
+        // system's muted placeholder — see the overlay's note in `routeCard`.
+        XCTAssertTrue(
+            app.staticTexts[Labels.pickupPlaceholder].exists,
             "and its empty state still says exactly what it said before"
         )
 
@@ -189,10 +191,13 @@ final class RiderPickupSearchUITests: XCTestCase {
 
         let returned = pickupField(app)
         XCTAssertTrue(returned.waitForExistence(timeout: 10), "back on the search sheet")
-        // An empty `TextField` reports its placeholder as its value.
-        XCTAssertEqual(
-            returned.value as? String, Labels.pickupPlaceholder,
+        XCTAssertTrue(
+            app.staticTexts[Labels.pickupPlaceholder].exists,
             "nothing was confirmed, so the row is back on the default"
+        )
+        XCTAssertFalse(
+            app.staticTexts["Ferry Building"].exists,
+            "and the abandoned pickup's name is not left standing in the row"
         )
         attach(app, named: "05-abandoned-chain-clears")
     }

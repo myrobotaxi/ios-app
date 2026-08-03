@@ -817,11 +817,32 @@ struct RideRequestSearchContent: View {
                     // empty. `.fullStreetAddress` is the destination field's own
                     // content type (MYR-363a — a field that declares nothing gets
                     // offered one-time codes).
-                    TextField(SharedViewerState.pickupFallbackLabel, text: $pickupQuery)
+                    TextField("", text: $pickupQuery)
                         .font(.system(size: 14.5, weight: .medium))
                         .foregroundStyle(Color.mrtText)
                         .textContentType(RideRequestFieldContentType.destination)
                         .focused($pickupFieldFocused)
+                        // ⚠️ PINNED — see `MRTMetrics.rideRoutePickupFieldHeight`.
+                        // A TextField is taller than the Text it replaced, and
+                        // unpinned it pushed the whole results list 4.24pt down.
+                        .frame(height: MRTMetrics.rideRoutePickupFieldHeight)
+                        // The empty state is drawn as our OWN Text rather than as
+                        // the system placeholder, because a placeholder renders
+                        // MUTED and "Current location" is not a prompt — it is the
+                        // pickup's real default VALUE, and it was full-strength
+                        // `mrtText` before this issue. A muted default would be a
+                        // second, quieter way of changing what an untouched rider
+                        // sees. `allowsHitTesting(false)` keeps the field itself
+                        // the tap target.
+                        .overlay(alignment: .leading) {
+                            if pickupQuery.isEmpty {
+                                Text(SharedViewerState.pickupFallbackLabel)
+                                    .font(.system(size: 14.5, weight: .medium))
+                                    .foregroundStyle(Color.mrtText)
+                                    .lineLimit(1)
+                                    .allowsHitTesting(false)
+                            }
+                        }
                         .accessibilityIdentifier("mrt.search.pickupField")
                 }
                 if !pickupQuery.isEmpty {
