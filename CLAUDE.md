@@ -162,6 +162,45 @@ A `-MRT_SCENE <name>` launch **argument** is accepted as a fallback for tooling 
   `simctl spawn <udid> defaults write com.apple.Accessibility ReduceMotionEnabled
   -bool true`) to prove the step transition falls back to a cut.
 
+  **⚠️ THE TRIGGER IS SWITCHED OFF — `FirstRunDemo.enabled = false` (MYR-444,
+  CLIENT-DIRECTED, 2026-08-03 on build `202608022357`):** *"I don't like the new
+  demo mode, can we disable it for now. I want to go back and refine it."* So
+  **no first entry plays a walkthrough for anyone** — not a first owner sign-in,
+  not a first rider sign-in, not a mode switch, not the hand-off after pairing a
+  Tesla, and not an invite-link arrival. Everything below this paragraph is
+  DORMANT rather than gone: the script, the coach marks, the host, the store, the
+  tests and these two scenes are untouched, and **re-enabling is that one
+  constant** in `App/Sources/Screens/Demo/FirstRunDemo.swift`.
+
+  - **The switch lives in the GATE, which is the one place the trigger decision
+    is made** (`FirstRunDemoGate.playsWalkthrough`, checked FIRST, before the
+    record). A switch on the HOST or the script would disable the DEBUG scenes
+    with it; a switch at a routing call site would disable one door.
+  - **⚠️ TWO OF THE FOUR DOORS WERE UNGATED, AND THAT WAS INVISIBLE UNTIL THERE
+    WAS A SWITCH.** MYR-428 gated `applyViewMode` and let onboarding route to
+    `.ownerTutorial` / `.riderTutorial` on its own — *"the fourth door needs no
+    gate"* — which was true while the walkthrough was always on, since an ungated
+    route and a gated one are indistinguishable when the answer is always yes.
+    `AddTeslaFlow.onComplete` and `InviteCodeFlow`'s `.onboarding` completion both
+    call `playsFirstRunDemo` now. **A feature with no off state hides which of its
+    call sites ask permission.**
+  - **The DEBUG scenes do not pass through the gate at all** — they seed
+    `DebugScene.initialScreen(for:)` directly — which is exactly why the switch
+    takes the demo off every tester's first entry and leaves both captures and
+    `FirstRunDemoUITests` working unchanged. That property is pinned two ways:
+    the scene table is asserted (and swept, so no OTHER scene grew a tutorial
+    route), and the UI suite still drives all nine tests through a running app.
+  - **The MYR-428 rules are gated on the switch, not deleted** —
+    `playsWalkthrough` takes `enabled: Bool = FirstRunDemo.enabled`, so shipping
+    callers get the client's answer by saying nothing while
+    `FirstRunDemoGateTests` still proves the record semantics with `enabled:
+    true`. Without that parameter every rule underneath would become unreachable
+    code no test could check, which is how a "temporary" disable becomes a
+    deletion nobody decided on.
+  - `InviteLinkOnboardingUITests`' fresh-account walk is the behavioural guard:
+    joined → the rider Live Map **directly**, with the walkthrough's Skip asserted
+    ABSENT after the map has settled.
+
   **⚠️ THE FIRST CUT OF THIS FEATURE SHIPPED A WALKTHROUGH THAT COULD NOT
   ADVANCE, AND A GREEN 1951-TEST SUITE SAID IT WAS FINE.** Four of the twelve
   steps had a `.tapTarget` advance moved by a `handleTargetTapped()` **nothing

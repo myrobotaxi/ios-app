@@ -56,31 +56,137 @@ final class FirstRunDemoRecordTests: XCTestCase {
     }
 }
 
+// MARK: - MYR-444 — the kill switch
+
+/// The client's ask, as assertions: the walkthrough must not fire on ANY first
+/// entry, and re-enabling it must be one constant.
+///
+/// These are written against the SHIPPING default — no `enabled:` argument — so
+/// they fail the moment the constant is flipped back without the client's say-so,
+/// which is precisely the guard this issue wants. Every MYR-428 rule underneath
+/// is still asserted, one suite down, with the switch passed explicitly.
+final class FirstRunDemoKillSwitchTests: XCTestCase {
+    private let t0 = Date(timeIntervalSince1970: 1_000_000)
+
+    func testTheSwitchIsOff() {
+        XCTAssertFalse(
+            FirstRunDemo.enabled,
+            "MYR-444: the first-run demo is disabled until the client has refined it"
+        )
+    }
+
+    /// No demo on a first OWNER entry — a fresh sign-in, a mode switch, or the
+    /// hand-off after pairing a Tesla. All of them ask this one function.
+    func testNoDemoOnAFirstOwnerEntry() {
+        XCTAssertFalse(FirstRunDemoGate.playsWalkthrough(for: .owner, record: FirstRunDemoRecord()))
+    }
+
+    /// No demo on a first RIDER entry — a fresh sign-in, a switch into rider
+    /// mode, or MYR-426's invite-link arrival.
+    func testNoDemoOnAFirstRiderEntry() {
+        XCTAssertFalse(FirstRunDemoGate.playsWalkthrough(for: .rider, record: FirstRunDemoRecord()))
+    }
+
+    /// The sweep, over the whole role set and over every record shape a first
+    /// entry can arrive with: nothing plays, for anybody, on any path.
+    func testNothingPlaysForAnyRoleOnAnyRecord() {
+        let records = [
+            FirstRunDemoRecord(),
+            FirstRunDemoRecord().marking(.owner, at: t0),
+            FirstRunDemoRecord().marking(.rider, at: t0),
+            FirstRunDemoRecord.allSeen(at: t0)
+        ]
+        for role in FirstRunDemoRole.allCases {
+            for record in records {
+                XCTAssertFalse(
+                    FirstRunDemoGate.playsWalkthrough(for: role, record: record),
+                    "\(role) must not play while the demo is disabled"
+                )
+            }
+        }
+    }
+
+    /// **RE-ENABLING IS ONE CONSTANT.** Passing the switch back on restores the
+    /// MYR-428 behaviour whole, with nothing else changed — which is what makes
+    /// this a disable rather than a removal, and what the refinement round will
+    /// flip. It also proves the code under the switch is still live rather than
+    /// unreachable.
+    func testFlippingTheOneSwitchRestoresTheWholeFeature() {
+        XCTAssertTrue(FirstRunDemoGate.playsWalkthrough(
+            for: .owner, record: FirstRunDemoRecord(), enabled: true
+        ))
+        XCTAssertTrue(FirstRunDemoGate.playsWalkthrough(
+            for: .rider, record: FirstRunDemoRecord(), enabled: true
+        ))
+    }
+}
+
+/// The MYR-428 rules, unchanged and still asserted — **gated on the switch
+/// rather than deleted**, so the record semantics the refinement round inherits
+/// are still proven rather than merely present.
 final class FirstRunDemoGateTests: XCTestCase {
     private let t0 = Date(timeIntervalSince1970: 1_000_000)
 
     /// First entry into owner mode plays the owner walkthrough.
     func testFirstOwnerEntryPlays() {
-        XCTAssertTrue(FirstRunDemoGate.playsWalkthrough(for: .owner, record: FirstRunDemoRecord()))
+        XCTAssertTrue(FirstRunDemoGate.playsWalkthrough(
+            for: .owner, record: FirstRunDemoRecord(), enabled: true
+        ))
     }
 
     /// First entry into rider mode plays the rider walkthrough.
     func testFirstRiderEntryPlays() {
-        XCTAssertTrue(FirstRunDemoGate.playsWalkthrough(for: .rider, record: FirstRunDemoRecord()))
+        XCTAssertTrue(FirstRunDemoGate.playsWalkthrough(
+            for: .rider, record: FirstRunDemoRecord(), enabled: true
+        ))
     }
 
     /// …and each fires exactly once.
     func testASeenRoleNeverPlaysAgain() {
         let record = FirstRunDemoRecord().marking(.owner, at: t0)
-        XCTAssertFalse(FirstRunDemoGate.playsWalkthrough(for: .owner, record: record))
-        XCTAssertTrue(FirstRunDemoGate.playsWalkthrough(for: .rider, record: record),
-                      "The rider walkthrough is still owed")
+        XCTAssertFalse(FirstRunDemoGate.playsWalkthrough(
+            for: .owner, record: record, enabled: true
+        ))
+        XCTAssertTrue(FirstRunDemoGate.playsWalkthrough(
+            for: .rider, record: record, enabled: true
+        ), "The rider walkthrough is still owed")
     }
 
     func testNothingPlaysWhenTheWalkthroughIsUnavailable() {
         for role in FirstRunDemoRole.allCases {
             XCTAssertFalse(FirstRunDemoGate.playsWalkthrough(
-                for: role, record: FirstRunDemoRecord(), isAvailable: false
+                for: role, record: FirstRunDemoRecord(), isAvailable: false, enabled: true
+            ))
+        }
+    }
+
+    /// **THE DEBUG SCENES STILL BOOT THE WALKTHROUGH**, which is the other half of
+    /// "disable, don't delete": they seed `initialScreen` directly and never ask
+    /// the gate, so the refinement round can still drive and photograph the demo
+    /// on a build where no tester can reach it. `FirstRunDemoUITests` proves it in
+    /// a running app; this is the structural pin that the routing did not move.
+    func testTheDebugScenesStillBootTheWalkthrough() {
+        XCTAssertEqual(DebugScene.initialScreen(for: .ownerDemo), .ownerTutorial)
+        XCTAssertEqual(DebugScene.initialScreen(for: .riderDemo), .riderTutorial)
+    }
+
+    /// …and no OTHER scene grew one on the way past. The demo scenes are the two
+    /// arms MYR-428 named, and they are still the only two.
+    func testNoOtherSceneRoutesToATutorial() {
+        for scene in DebugScene.allCases where scene != .ownerDemo && scene != .riderDemo {
+            let screen = DebugScene.initialScreen(for: scene)
+            XCTAssertNotEqual(screen, .ownerTutorial, "\(scene) must not boot a walkthrough")
+            XCTAssertNotEqual(screen, .riderTutorial, "\(scene) must not boot a walkthrough")
+        }
+    }
+
+    /// The switch OUTRANKS an available walkthrough and an unseen record both —
+    /// i.e. it is checked first and cannot be talked past by the two inputs that
+    /// used to decide this alone.
+    func testTheSwitchOutranksEveryOtherInput() {
+        for role in FirstRunDemoRole.allCases {
+            XCTAssertFalse(FirstRunDemoGate.playsWalkthrough(
+                for: role, record: FirstRunDemoRecord(), isAvailable: true, enabled: false
             ))
         }
     }

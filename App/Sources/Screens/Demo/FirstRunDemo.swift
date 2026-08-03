@@ -170,6 +170,38 @@ public final class InMemoryFirstRunDemoStore: FirstRunDemoStoring, @unchecked Se
     }
 }
 
+// MARK: - MYR-444 — the kill switch
+
+/// The feature's ONE switch.
+///
+/// Client-directed (2026-08-03, on build 202608022357): *"I don't like the new
+/// demo mode, can we disable it for now. I want to go back and refine it."*
+/// DISABLE rather than delete — the walkthrough, its script, its coach marks,
+/// its tests and its two DEBUG scenes all survive untouched for the refinement
+/// round; only the TRIGGER is off.
+///
+/// Three rules about where this lives, each of which is a way it could have been
+/// put somewhere useless:
+///
+///  • **IT IS CONSULTED IN THE GATE, WHICH IS THE ONE PLACE THE TRIGGER DECISION
+///    IS MADE.** `FirstRunDemoGate.playsWalkthrough` is a pure function over the
+///    record and it is the only thing `RootView` asks. A switch on the HOST, or
+///    on the script, would disable the walkthrough *and* the DEBUG scenes with
+///    it; a switch at one of the four routing call sites would disable one door.
+///  • **THE DEBUG SCENES DO NOT PASS THROUGH THIS GATE AT ALL** — `ownerDemo` /
+///    `riderDemo` seed `DebugScene.initialScreen` directly, so the walkthrough is
+///    still bootable, still capturable and still driven by `FirstRunDemoUITests`
+///    exactly as it was. That is why the switch belongs on the *trigger* and not
+///    on the feature.
+///  • **RE-ENABLING IS THIS ONE CONSTANT.** Flip it to `true` and every door —
+///    first owner entry, first rider entry, a mode switch, the post-pairing
+///    hand-off and the invite-link arrival — resumes the MYR-428 behaviour, with
+///    no other edit anywhere.
+public enum FirstRunDemo {
+    /// Whether a first entry may trigger the walkthrough. **OFF** — MYR-444.
+    public static let enabled = false
+}
+
 // MARK: - The gate
 
 /// Should entering `role` play its walkthrough?
@@ -186,12 +218,23 @@ public final class InMemoryFirstRunDemoStore: FirstRunDemoStoring, @unchecked Se
 /// fixtures are unavailable. See `FirstRunDemoHost`: the walkthrough composes its
 /// OWN simulated seams, so the answer is unconditionally yes in the shipping app,
 /// and this parameter exists so a DEBUG scene can say no without a second rule.
+///
+/// **MYR-444 — `enabled` is the kill switch and it is checked FIRST.** It
+/// defaults to `FirstRunDemo.enabled`, so every shipping caller gets the client's
+/// answer by saying nothing, and the parameter exists only so the MYR-428 rules
+/// underneath it stay assertable from a test rather than becoming unreachable
+/// code nobody can check. Its being first is deliberate: a switch placed below
+/// the record question would still be correct here, and would be one refactor
+/// away from a caller that reads the record before asking whether the feature is
+/// on at all.
 public enum FirstRunDemoGate {
     public static func playsWalkthrough(
         for role: FirstRunDemoRole,
         record: FirstRunDemoRecord,
-        isAvailable: Bool = true
+        isAvailable: Bool = true,
+        enabled: Bool = FirstRunDemo.enabled
     ) -> Bool {
+        guard enabled else { return false }
         guard isAvailable else { return false }
         return !record.hasSeen(role)
     }
