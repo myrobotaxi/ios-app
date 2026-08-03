@@ -357,6 +357,9 @@ final class RideActivityHeldServerFieldsTests: XCTestCase {
             vehicleName: { "Blue Whale" },
             vehicle: { nil },
             serverRideID: { "ride-1" },
+            // MYR-416 — in memory, so no test's `local ↔ server` mapping can reach
+            // another test through `UserDefaults.standard`.
+            identities: InMemoryRideActivityRideIDs(),
             sleep: { _ in }
         )
         return (coordinator, presenter, endpoint)

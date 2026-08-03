@@ -60,6 +60,27 @@ final class RideActivityCoordinator {
     /// there is legitimately no server id yet. See `flushPendingRegistration`.
     private let serverRideID: @MainActor () -> String?
 
+    /// **THE `local ↔ server` MAPPING, AND IT HAS TO OUTLIVE THE PROCESS** (MYR-416).
+    ///
+    /// MYR-415 fixed the half of the two-id split that talks to the SERVER. This is
+    /// the half that talks to the LOCK SCREEN: `RideActivityAttributes.rideID` is
+    /// stamped at `Activity.request` — before the create POST has fired — and is
+    /// immutable for the card's life, so a rider-submitted ride's card carries the
+    /// LOCAL draft UUID for ever while a relaunched process rebuilds the record from
+    /// the wire and holds only the SERVER's id.
+    ///
+    /// An in-memory map cannot close that: the only process that ever holds both ids
+    /// is the one that submitted the ride, and it is dead by the time adoption is
+    /// asked the question. So the pair is persisted, exactly as MYR-396's
+    /// `OwnerDispatchPointer` persists the owner's dispatch id, and for the same
+    /// reason — *it is a fact this device already knew and threw away when the
+    /// process died.*
+    private let identities: RideActivityRideIDStoring
+
+    /// The mapping as the pure layer consumes it. Cached because nothing outside this
+    /// process can write it while this process runs; refreshed only by `noteIdentity`.
+    private var identity: RideActivityRideIdentity
+
     private(set) var phase: RideActivityPhase = .idle
 
     /// The token last successfully registered, and the SERVER ride id it was
@@ -140,6 +161,7 @@ final class RideActivityCoordinator {
         vehicleName: @escaping @MainActor () -> String = { "" },
         vehicle: @escaping @MainActor () -> RideActivityVehicle? = { nil },
         serverRideID: @escaping @MainActor () -> String? = { nil },
+        identities: RideActivityRideIDStoring = UserDefaultsRideActivityRideIDs(),
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
         backstopWait: @escaping @Sendable (TimeInterval) async -> Void = {
             try? await Task.sleep(for: .seconds($0))
@@ -152,6 +174,8 @@ final class RideActivityCoordinator {
         self.vehicleName = vehicleName
         self.vehicle = vehicle
         self.serverRideID = serverRideID
+        self.identities = identities
+        self.identity = identities.identity()
         self.sleep = sleep
         self.backstopWait = backstopWait
     }
@@ -185,6 +209,11 @@ final class RideActivityCoordinator {
         // ANYTHING. See `reseatPhaseOnDeliveredState`.
         reseatPhaseOnDeliveredState()
 
+        // MYR-416 — the two ids are both knowable HERE, in the process that submitted
+        // the ride, and nowhere else. Written before the decision so the very tick
+        // that learns the server id can already reason with it.
+        noteIdentity()
+
         let completedAt = noteCompletion(of: record)
 
         let action = RideActivityStateMachine.action(
@@ -192,6 +221,7 @@ final class RideActivityCoordinator {
             record: record,
             vehicleName: vehicleName(),
             dismissedRideIDs: dismissedRideIDs,
+            identity: identity,
             completedAt: completedAt
         )
 
@@ -199,7 +229,7 @@ final class RideActivityCoordinator {
 
         switch action {
         case .none:
-            return
+            break
 
         case .start(let rideID, let state):
             await performStart(rideID: rideID, state: state, record: record)
@@ -228,6 +258,38 @@ final class RideActivityCoordinator {
             await performEnd(rideID: endingRideID, state: endingState, dismissal: .immediate)
             await performStart(rideID: rideID, state: state, record: record)
         }
+
+        // And again after the fact: a `.start` is the tick that first gives this
+        // process a card to map, and on the common path (MYR-218's grace window) the
+        // server id is already in hand by then.
+        noteIdentity()
+    }
+
+    // MARK: - Remembering which card is which ride (MYR-416)
+
+    /// Record that the card this process holds is the ride the SERVER calls
+    /// `serverRideID()`.
+    ///
+    /// Cheap, idempotent and safe on every tick: it writes only when there is a held
+    /// card, a server id, and the two genuinely differ — i.e. only for a ride this
+    /// device SUBMITTED, which is the only case with a split to remember. A ride
+    /// adopted from the wire (MYR-230) has one id and writes nothing at all, so the
+    /// ledger stays empty for every account that only ever relaunches into rides the
+    /// server told it about.
+    ///
+    /// It is deliberately NOT written from `flushPendingRegistration`, where both
+    /// facts are also in scope: that path runs only when ActivityKit has issued a
+    /// token, and a simulator never does (MYR-415). Tying the mapping to a token
+    /// would make adoption work in production and silently not on any device without
+    /// APNs — the "correct and unreachable" shape this repo has been bitten by twice.
+    private func noteIdentity() {
+        guard let activityRideID = phase.rideID,
+              let serverID = serverRideID(),
+              serverID != activityRideID,
+              !identity.namesTheSameRide(activityRideID: activityRideID, as: serverID)
+        else { return }
+        identities.note(activityRideID: activityRideID, serverRideID: serverID)
+        identity = identities.identity()
     }
 
     // MARK: - The completed ride's clock (MYR-425)
@@ -240,7 +302,14 @@ final class RideActivityCoordinator {
     /// tick would walk the deadline forward for ever and the backstop would never
     /// fire at all, which is the quietest way to ship this fix un-shipped.
     private func noteCompletion(of record: RideRequestRecord?) -> Date? {
-        let recordSaysCompleted = record.map { $0.status == .completed && phase.rideID == $0.id } ?? false
+        // MYR-416 — "is this record the held card's ride" is the same two-id question
+        // the adoption asks, so it is asked the same way. With `==` a relaunched
+        // rider-submitted ride would never stamp the SERVER's `completedAt` and the
+        // backstop would measure from this process's first sighting instead.
+        let recordSaysCompleted: Bool = {
+            guard let record, record.status == .completed, let held = phase.rideID else { return false }
+            return identity.namesTheSameRide(activityRideID: held, as: record.id)
+        }()
         guard phase.rideID != nil, isHoldingACompletedCard || recordSaysCompleted else {
             completionInstant = nil
             return nil
@@ -357,6 +426,12 @@ final class RideActivityCoordinator {
     /// is genuinely waiting to be placed.
     func handleServerRideIDChange() async {
         guard isLive else { return }
+        // MYR-416 — THIS IS THE MOMENT THE TWO IDS ARE FIRST KNOWN TOGETHER, and it
+        // is the reason the mapping can be written at all: the create's
+        // acknowledgement does not touch `activeRequest`, so no other entry point
+        // fires for it. A card started at REQUEST plus a server id landing seconds
+        // later is the whole shape of a rider-submitted ride.
+        noteIdentity()
         await flushPendingRegistration()
     }
 
@@ -377,6 +452,12 @@ final class RideActivityCoordinator {
         for snapshot in presenter.presentedActivities where snapshot.lifecycle.isOnScreenAndOurs {
             await reap(rideID: snapshot.rideID, isDuplicateOfAdopted: false)
         }
+        // MYR-416 — the mapping is a statement about THIS ACCOUNT's rides, so it goes
+        // out with the session, alongside the profile, the view mode and the owner's
+        // dispatch pointer. Nothing on the lock screen survives a sign-out either, so
+        // there is nothing left for it to name.
+        identities.clear()
+        identity = .unmapped
     }
 
     // MARK: - Launch and foreground (MYR-405)
@@ -400,9 +481,15 @@ final class RideActivityCoordinator {
         guard isLive else { return }
 
         let settled = await settledInputs(ride)
+        // MYR-416 — THE COMPARISON THAT COULD NOT MATCH. `resolve()` names the
+        // RECORD's id, which after a relaunch is the server's, while the restored
+        // snapshot carries the local draft UUID this device stamped into the card's
+        // immutable attributes. Without the mapping the rider's own live banner is
+        // reaped here and a second one is started three lines later.
         let plan = RideActivityStateMachine.reconcile(
             snapshots: settled.snapshots,
-            liveRide: settled.ride.resolve()
+            liveRide: settled.ride.resolve(),
+            identity: identity
         )
         dismissedRideIDs.formUnion(plan.dismissed)
 
@@ -547,10 +634,15 @@ final class RideActivityCoordinator {
         }
         let plan = RideActivityStateMachine.reconcile(
             snapshots: settled.snapshots,
-            liveRide: .live(rideID: rideID)
+            liveRide: .live(rideID: rideID),
+            identity: identity
         )
         dismissedRideIDs.formUnion(plan.dismissed)
-        guard !dismissedRideIDs.contains(rideID) else { return }
+        // MYR-416 — the swipe was recorded under the CARD's id and `rideID` here is
+        // the record's, which a relaunch makes the server's. Asked through the
+        // mapping, a dismissal survives the process it happened in exactly as
+        // MYR-405 semantic 5 promises.
+        guard !identity.anyIdentity(of: rideID, isIn: dismissedRideIDs) else { return }
 
         // Adopt before reaping — see `handleLaunchOrForeground` for why the order
         // is load-bearing when the duplicate carries the same ride id.

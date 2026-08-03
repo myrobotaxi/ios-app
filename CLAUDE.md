@@ -3432,6 +3432,75 @@ xcrun simctl spawn <udid> log stream --level=info \
 # "NO TOKEN" is a statement about the SIMULATOR (no APNs), never about the fix.
 ```
 
+**THE SAME TWO IDS, NOW ON THE LOCK SCREEN — ADOPTION COULD NOT MATCH ITS OWN
+CARD** (MYR-416, found during MYR-415 and not fixed there). MYR-415 closed the
+half of the split that talks to the SERVER. This is the half that talks to
+ACTIVITYKIT: `RideActivityAttributes.rideID` is a STATIC attribute, stamped at
+`Activity.request` and immutable for the card's life — and MYR-398 v3 requests the
+card at REQUEST, before the create POST has fired, so at the only moment the
+attributes can be written there is legitimately **no server id to write**. Every
+rider-submitted ride's card therefore carries the LOCAL draft UUID.
+
+Invisible while the process lives (the record carries the same local id) and
+deterministic across a relaunch: `adoptOpenRiderRide` rebuilds the record from the
+wire, so `RideActivityAccountRide.resolve()` answers `.live(<SERVER id>)` while the
+restored snapshot still says `<local draft UUID>`. MYR-405 compared them with `==`,
+found no match, and took the branch it wrote for a stranger's card — **reap the
+rider's own live banner, then start a second one beside it.** MYR-405's duplicate
+class, re-entered through the id it never had to think about, and self-healing
+post-MYR-415 only in the sense that the replacement card registers correctly.
+
+- **THE FIX IS A MATCHING LAYER, AND IT HAD TO BE.** ActivityKit attributes cannot
+  be rewritten after `request`, so stamping the server id onto an existing card is
+  not a thing that can be done. `RideActivityRideIdentity.namesTheSameRide` replaces
+  `==` at the four comparisons in this feature that are about a RIDE rather than
+  about a string — `reconcile`'s adopt/reap split, `action`'s "a different ride is
+  open", `noteCompletion`'s held-card test, and both dismissal checks. Its default
+  is `.unmapped`, which IS `==`, so every pre-MYR-416 call site and test is
+  unchanged by construction (`RideActivityStateMachineTests`' 46 stay green with the
+  fix reverted).
+- **⚠️ THE MAPPING HAS TO OUTLIVE THE PROCESS, BECAUSE THE PROCESS BOUNDARY IS THE
+  BUG.** An in-memory `local ↔ server` map — the shape MYR-415's `pendingToken` /
+  `activeServerRideID` plumbing half-built — is correct and useless on its own: the
+  only process that ever holds both ids is the one that SUBMITTED the ride, and it
+  is dead by the time adoption asks. `RideActivityRideIDStoring` persists the pair
+  following `OwnerDispatchPointer` (MYR-396) exactly, and for its reason verbatim —
+  *the id is a fact this device already knew and threw away when the process died.*
+  Reverse-DNS key, `Codable`, `init(defaults:)`, **24h expiry** (shorter than the
+  pointer's 30 days on purpose: this names a card that is on the lock screen NOW,
+  and nothing there outlives a ride plus MYR-425's five minutes), 8-entry cap.
+- **THE WRITE IS NOT ON THE REGISTRATION PATH, and that placement is the whole
+  difference between a fix and a fix that only works in production.** Both ids are
+  also in scope inside `flushPendingRegistration` — which runs only once ActivityKit
+  has issued a token, and **a simulator never issues one** (MYR-415). A mapping
+  written there would be correct on a device and absent everywhere it can be
+  observed. `noteIdentity()` hangs off `handleRideChange` and
+  `handleServerRideIDChange` instead; the latter is the moment the two ids are first
+  known together, since the create's acknowledgement does not touch `activeRequest`.
+- **A MAPPING IS NOT A RIDE**, the same way MYR-396's pointer is not one. Nothing is
+  rendered from it and nothing is adopted on its say-so — it only answers whether two
+  ids the app already holds are the same ride, and dormancy, the `.ended`/`.dismissed`
+  skips, the `.unresolved` third arm, adopt-before-reap and `isDuplicateOfAdopted`
+  all run unchanged on top of the answer. A card this account does not hold has no
+  entry, matches nothing, and is reaped exactly as before (asserted with a mapping
+  held, because a looser comparison would have cost precisely that).
+- **THE RIDER'S SWIPE OUTLIVES THE PROCESS NOW TOO**, which before this it could
+  not: a dismissal is only ever recordable under the CARD's id (the restore list and
+  the lifecycle stream are the only two things that can report one) and was consulted
+  against the RECORD's, so a relaunch handed back a card the rider had removed.
+- **A ride ADOPTED FROM THE WIRE writes no mapping at all** (one id), so the ledger
+  is empty for any account that only ever relaunches into rides the server told it
+  about, and the owner-accepted path is byte-identical. The ledger is cleared on
+  SIGN-OUT with the profile, the view mode and the dispatch pointer.
+- **THE MYR-405 PROBE DOES NOT EXERCISE THIS AND WAS NOT CHANGED.** Its `relaunch`
+  arm calls `handleRideChange` with the SAME id it seeded and never calls
+  `handleLaunchOrForeground`, so it cannot produce the split. A two-process
+  on-simulator repro of MYR-416 wants a `relaunchSubmitted` arm (seed under a local
+  id, relaunch with a server-id record and a seeded ledger) in
+  `App/Sources/Debug/DebugLiveActivity.swift` — **not written here**, and until it
+  exists every claim in this section is a claim about code and about a unit suite,
+  not about a picture.
+
 **Invite links have an address** (MYR-346) — an invite is shared as
 `https://myrobotaxi.app/join/{CODE}`, a branded web page whose OG card renders in
 the thread and which, on a phone that has the app, opens it straight to the

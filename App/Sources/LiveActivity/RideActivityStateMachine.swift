@@ -302,9 +302,20 @@ enum RideActivityStateMachine {
     ///     other one is REAPED — terminal, unknown, another account's leftovers, or
     ///     a duplicate of the very ride being adopted. `.unresolved` reaps and
     ///     adopts nothing at all.
+    ///
+    /// **⚠️ "MATCHING" IS NOT `==` — MYR-416.** For a ride this device SUBMITTED the
+    /// snapshot carries the LOCAL draft UUID stamped into the Activity's immutable
+    /// attributes, while `liveRide` on a relaunch carries the SERVER id the record
+    /// was rebuilt from. Compared with `==` the rider's own live banner reads as a
+    /// stranger's card: rule 3 reaps it and the start path puts a second one up
+    /// beside it, which is this issue's own defect wearing MYR-405's fix. `identity`
+    /// is the account's `local ↔ server` mapping and the comparison goes through it;
+    /// with no mapping (`.unmapped`, the default) this is byte-for-byte the equality
+    /// it replaces.
     static func reconcile(
         snapshots: [RideActivitySnapshot],
-        liveRide: RideActivityLiveRide
+        liveRide: RideActivityLiveRide,
+        identity: RideActivityRideIdentity = .unmapped
     ) -> RideActivityReconciliation {
         var plan = RideActivityReconciliation()
 
@@ -316,7 +327,9 @@ enum RideActivityStateMachine {
         guard liveRide != .unresolved else { return plan }
 
         for snapshot in snapshots where snapshot.lifecycle.isOnScreenAndOurs {
-            let isTheLiveRide = snapshot.rideID == liveRide.rideID
+            let isTheLiveRide = liveRide.rideID.map {
+                identity.namesTheSameRide(activityRideID: snapshot.rideID, as: $0)
+            } ?? false
             // The FIRST on-screen Activity for the live ride is the one kept. Any
             // further one is a duplicate of it — the client's exact screenshot —
             // and is reaped like any other orphan, which is what heals an install
@@ -357,11 +370,21 @@ enum RideActivityStateMachine {
     /// this process's own first sighting of `completed` when it did not. Defaulted,
     /// so every call site that is not about the backstop is unchanged, and `nil`
     /// means "keep waiting" rather than "waited long enough".
+    ///
+    /// `identity` (MYR-416) is the account's `local ↔ server` id mapping, and it is
+    /// consulted for the two comparisons in here that are about a RIDE rather than
+    /// about a string: "is the card on screen this record's card" and "did the rider
+    /// swipe this ride away". Both are asked across a process boundary — the card's
+    /// id was stamped by the process that submitted the ride and the record's id is
+    /// rebuilt from the wire by the one that relaunched — so `==` answers them
+    /// wrongly for exactly the rides this device created. Defaulted to `.unmapped`,
+    /// which is that same `==`.
     static func action(
         phase: RideActivityPhase,
         record: RideRequestRecord?,
         vehicleName: String,
         dismissedRideIDs: Set<String> = [],
+        identity: RideActivityRideIdentity = .unmapped,
         completedAt: Date? = nil,
         now: Date = Date()
     ) -> RideActivityAction {
@@ -376,7 +399,13 @@ enum RideActivityStateMachine {
             // on the next launch — would overrule them repeatedly and look like the
             // dismissal never worked. A DIFFERENT ride is a different decision and
             // starts normally, which is the client's "or if new ride begins".
-            guard !dismissedRideIDs.contains(record.id) else { return .none }
+            //
+            // MYR-416 — asked through `identity`, because a swipe is only ever
+            // recorded under the ACTIVITY's id (the restore list and the lifecycle
+            // stream are the only two things that can report one) and this record's
+            // id is the SERVER's after a relaunch. With `==` the dismissal would be
+            // invisible to the very launch that most wants to overrule it.
+            guard !identity.anyIdentity(of: record.id, isIn: dismissedRideIDs) else { return .none }
             return .start(rideID: record.id, state: state)
 
         case .live(let liveID, let lastState):
@@ -413,9 +442,19 @@ enum RideActivityStateMachine {
                 )
             }
 
-            guard record.id == liveID else {
+            guard identity.namesTheSameRide(activityRideID: liveID, as: record.id) else {
                 // A different ride is open than the one on the lock screen. End the
                 // old one; start the new one if it is startable, otherwise just end.
+                //
+                // **⚠️ "DIFFERENT" IS A QUESTION ABOUT THE RIDE, NOT ABOUT TWO
+                // STRINGS — MYR-416.** This guard used to read `record.id == liveID`,
+                // and for a ride this device SUBMITTED the two ids differ while
+                // naming the same ride the moment a relaunch rebuilds the record from
+                // the wire (the card holds the local draft UUID, the record holds the
+                // server's id). So the app ended its own live card and started a
+                // second one in the same breath — a `.restart` that reads as correct
+                // at every line of this branch and is wrong about which ride it is
+                // looking at.
                 //
                 // **A CARD THAT ALREADY SAYS `completed` IS NOT CORRECTED TO
                 // `cancelled` — MYR-425.** The correction exists because a card the
@@ -430,7 +469,7 @@ enum RideActivityStateMachine {
                     ? lastState
                     : lastState.with(status: .cancelled)
                 guard let next = startState(for: record, vehicleName: vehicleName, now: now),
-                      !dismissedRideIDs.contains(record.id) else {
+                      !identity.anyIdentity(of: record.id, isIn: dismissedRideIDs) else {
                     return .end(rideID: liveID, state: endingState, dismissal: .immediate)
                 }
                 return .restart(

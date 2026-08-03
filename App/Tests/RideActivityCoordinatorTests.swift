@@ -984,6 +984,228 @@ final class RideActivityCoordinatorTests: XCTestCase {
         XCTAssertEqual(endpoint.registrations.map(\.rideID), ["srv-live"])
     }
 
+    // MARK: - MYR-416: adopt-on-relaunch across the two-id split
+
+    /// **THE DEFECT, END TO END.** A ride this device SUBMITTED puts the LOCAL draft
+    /// UUID into the Activity's immutable attributes (MYR-398 v3 requests the card at
+    /// REQUEST, before the create POST has fired, so there is no server id to stamp).
+    /// A relaunch rebuilds the record from the wire, so the account's live ride is
+    /// named by the SERVER's id — and MYR-405's adoption compared the two with `==`.
+    ///
+    /// Pre-fix, this test's card is REAPED and a second one started in its place:
+    /// MYR-405's own duplicate-banner symptom, produced by MYR-405's own fix.
+    func testARELAUNCHIntoARiderSubmittedRideADOPTSTheCardItAlreadyHas() async throws {
+        let ledger = InMemoryRideActivityRideIDs(["1E572C40-LOCAL": "clride-server-1"])
+        let (coordinator, presenter, endpoint) = makeCoordinator(
+            serverRideID: { "clride-server-1" },
+            identities: ledger
+        )
+        // What the PREVIOUS process left on the lock screen.
+        presenter.restored = [snapshot("1E572C40-LOCAL")]
+
+        await coordinator.handleLaunchOrForeground(
+            account(makeRecord(id: "clride-server-1", status: .enroute))
+        )
+        await settle()
+
+        XCTAssertEqual(presenter.adopted, ["1E572C40-LOCAL"], "the card keeps the id it was STAMPED with")
+        XCTAssertEqual(presenter.startCount, 0, "a second card is the whole defect")
+        XCTAssertTrue(presenter.endedActivities.isEmpty, "and the rider's own banner is not reaped on the way")
+        XCTAssertTrue(endpoint.ends.isEmpty, "nor is its §7.21 registration released")
+        XCTAssertEqual(coordinator.phase.rideID, "1E572C40-LOCAL")
+
+        // ADOPTION RE-REGISTERS — under the SERVER's id, which is MYR-415's rule and
+        // is what makes the kept banner live again.
+        presenter.emit(token: Data([0xfe, 0xed]))
+        await settle()
+        XCTAssertEqual(endpoint.registrations.map(\.rideID), ["clride-server-1"])
+    }
+
+    /// **THE OTHER DOOR TO THE SAME DUPLICATE.** Adoption is only half of a relaunch:
+    /// `handleLaunchOrForeground` finishes by re-asking the state machine, and that
+    /// tick used to read "a different ride is open" and `.restart` the card it had
+    /// just adopted.
+    func testTheADOPTEDCardSurvivesTheTickThatFollowsTheAdoption() async throws {
+        let ledger = InMemoryRideActivityRideIDs(["1E572C40-LOCAL": "clride-server-1"])
+        let (coordinator, presenter, _) = makeCoordinator(
+            serverRideID: { "clride-server-1" },
+            identities: ledger
+        )
+        presenter.restored = [snapshot("1E572C40-LOCAL")]
+
+        await coordinator.handleLaunchOrForeground(
+            account(makeRecord(id: "clride-server-1", status: .enroute))
+        )
+        await settle()
+        // A status change arriving over the socket, on the SERVER's id.
+        await coordinator.handleRideChange(makeRecord(id: "clride-server-1", status: .enroute))
+        await settle()
+
+        XCTAssertNil(presenter.endedWith)
+        XCTAssertEqual(presenter.startCount, 0)
+        XCTAssertEqual(coordinator.phase.rideID, "1E572C40-LOCAL")
+    }
+
+    /// The START path reconciles too, and reaches the same question by a different
+    /// road: on a relaunch `RootView`'s record observer can fire before the launch
+    /// reconcile does, so `performStart` must adopt across the split as well or it
+    /// requests the second card itself.
+    func testTheSTARTPathAlsoAdoptsAcrossTheSplit() async throws {
+        let ledger = InMemoryRideActivityRideIDs(["1E572C40-LOCAL": "clride-server-1"])
+        let (coordinator, presenter, _) = makeCoordinator(
+            serverRideID: { "clride-server-1" },
+            identities: ledger
+        )
+        presenter.restored = [snapshot("1E572C40-LOCAL")]
+
+        await coordinator.handleRideChange(makeRecord(id: "clride-server-1", status: .enroute))
+        await settle()
+
+        XCTAssertEqual(presenter.adopted, ["1E572C40-LOCAL"])
+        XCTAssertEqual(presenter.startCount, 0)
+        XCTAssertTrue(presenter.endedActivities.isEmpty)
+    }
+
+    /// **THE WRITE HALF, WITHOUT WHICH THE TESTS ABOVE ARE A TAUTOLOGY.** The mapping
+    /// is only knowable in the process that SUBMITTED the ride, and only once the
+    /// create is acknowledged — which does not touch `activeRequest`, so
+    /// `handleServerRideIDChange` is the one entry point that sees it.
+    func testTheSUBMITTINGProcessIsWhatRecordsTheMapping() async throws {
+        let ledger = InMemoryRideActivityRideIDs()
+        var serverID: String?
+        let (coordinator, _, _) = makeCoordinator(serverRideID: { serverID }, identities: ledger)
+
+        await coordinator.handleRideChange(makeRecord(id: "1E572C40-LOCAL", status: .pending))
+        await settle()
+        XCTAssertEqual(
+            ledger.identity(),
+            .unmapped,
+            "nothing to map yet — the create has not been acknowledged"
+        )
+
+        serverID = "clride-server-1"
+        await coordinator.handleServerRideIDChange()
+        await settle()
+
+        XCTAssertTrue(
+            ledger.identity().namesTheSameRide(
+                activityRideID: "1E572C40-LOCAL",
+                as: "clride-server-1"
+            ),
+            "the pair the NEXT process needs to recognise this card"
+        )
+    }
+
+    /// A ride adopted from the wire has ONE id, so it maps nothing at all — the
+    /// ledger stays empty for an account that only ever relaunches into rides the
+    /// server told it about.
+    func testARideWhoseIDsCoincideWritesNoMappingAtAll() async throws {
+        let ledger = InMemoryRideActivityRideIDs()
+        let (coordinator, presenter, _) = makeCoordinator(
+            serverRideID: { "ride-1" },
+            identities: ledger
+        )
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        presenter.emit(token: Data([0x01]))
+        await settle()
+
+        XCTAssertEqual(ledger.identity(), .unmapped)
+    }
+
+    /// **ORPHAN REAPING IS UNCHANGED**, with a mapping held and a live ride on
+    /// screen. This is the property a looser comparison would have quietly cost.
+    func testAGenuinelyFOREIGNCardIsStillReapedOnARelaunch() async throws {
+        let ledger = InMemoryRideActivityRideIDs(["1E572C40-LOCAL": "clride-server-1"])
+        let (coordinator, presenter, endpoint) = makeCoordinator(
+            serverRideID: { "clride-server-1" },
+            identities: ledger
+        )
+        presenter.restored = [snapshot("1E572C40-LOCAL"), snapshot("somebody-elses-ride")]
+
+        await coordinator.handleLaunchOrForeground(
+            account(makeRecord(id: "clride-server-1", status: .enroute))
+        )
+        await settle()
+
+        XCTAssertEqual(presenter.adopted, ["1E572C40-LOCAL"])
+        XCTAssertEqual(presenter.endedActivities.map(\.rideID), ["somebody-elses-ride"])
+        XCTAssertEqual(
+            endpoint.ends,
+            ["somebody-elses-ride"],
+            """
+            the orphan keeps its best-effort release under the ACTIVITY's own id \
+            (MYR-415), and the held ride's registration is untouched
+            """
+        )
+    }
+
+    /// An account with NO live ride still has every card reaped, mapping or not.
+    func testAMappedCardIsStillAnORPHANOnceTheAccountHoldsNoRide() async throws {
+        let ledger = InMemoryRideActivityRideIDs(["1E572C40-LOCAL": "clride-server-1"])
+        let (coordinator, presenter, _) = makeCoordinator(identities: ledger)
+        presenter.restored = [snapshot("1E572C40-LOCAL")]
+
+        await coordinator.handleLaunchOrForeground(account(nil))
+        await settle()
+
+        XCTAssertEqual(presenter.endedActivities.map(\.rideID), ["1E572C40-LOCAL"])
+        XCTAssertTrue(presenter.adopted.isEmpty)
+    }
+
+    /// **AN OWNER-ACCEPTED (wire-adopted) RIDE RELAUNCHES EXACTLY AS IT DID.** Both
+    /// ids are the server's, no mapping exists, and every assertion here is the
+    /// pre-MYR-416 behaviour.
+    func testARelaunchIntoAWireAdoptedRideIsUnchanged() async throws {
+        let (coordinator, presenter, endpoint) = makeCoordinator(serverRideID: { "ride-1" })
+        presenter.restored = [snapshot("ride-1")]
+
+        await coordinator.handleLaunchOrForeground(account(makeRecord(status: .enroute)))
+        await settle()
+
+        XCTAssertEqual(presenter.adopted, ["ride-1"])
+        XCTAssertEqual(presenter.startCount, 0)
+        XCTAssertTrue(presenter.endedActivities.isEmpty)
+        XCTAssertTrue(endpoint.ends.isEmpty)
+    }
+
+    /// **THE RIDER'S SWIPE OUTLIVES THE PROCESS**, which before MYR-416 it could not:
+    /// the dismissal is reported under the CARD's id and the relaunched record
+    /// carries the server's, so the app handed back a card the rider had removed.
+    func testADismissedRiderSubmittedCardIsNotRestartedAfterARelaunch() async throws {
+        let ledger = InMemoryRideActivityRideIDs(["1E572C40-LOCAL": "clride-server-1"])
+        let (coordinator, presenter, _) = makeCoordinator(
+            serverRideID: { "clride-server-1" },
+            identities: ledger
+        )
+        presenter.restored = [snapshot("1E572C40-LOCAL", .dismissed)]
+
+        await coordinator.handleLaunchOrForeground(
+            account(makeRecord(id: "clride-server-1", status: .enroute))
+        )
+        await settle()
+
+        XCTAssertEqual(presenter.startCount, 0, "the rider swiped this ride away")
+        XCTAssertTrue(presenter.adopted.isEmpty)
+        XCTAssertEqual(coordinator.phase, .idle)
+    }
+
+    /// The mapping is a statement about THIS ACCOUNT's rides, so it goes out with the
+    /// session — alongside the profile, the view mode and the owner's dispatch
+    /// pointer.
+    func testSigningOutFORGETSTheMapping() async throws {
+        let ledger = InMemoryRideActivityRideIDs(["1E572C40-LOCAL": "clride-server-1"])
+        let (coordinator, _, _) = makeCoordinator(
+            serverRideID: { "clride-server-1" },
+            identities: ledger
+        )
+
+        await coordinator.handleSignOut()
+        await settle()
+
+        XCTAssertEqual(ledger.identity(), .unmapped)
+    }
+
     // MARK: - Harness
 
     /// MYR-415 — the default answers `"ride-1"`, i.e. the same id `makeRecord`
@@ -992,10 +1214,15 @@ final class RideActivityCoordinatorTests: XCTestCase {
     /// id, because its record was built by `RideRequestContractMapping.record(from:)`
     /// off the server's own row. The case where the two DIVERGE is a ride this
     /// device SUBMITTED, and it gets its own tests below.
+    ///
+    /// MYR-416 — the `local ↔ server` ledger is IN MEMORY here, always. A store on
+    /// `UserDefaults.standard` would carry one test's mapping into the next, and a
+    /// mapping is exactly the input that decides whether a card is adopted or reaped.
     private func makeCoordinator(
         sandbox: Bool = true,
         vehicle: @escaping @MainActor () -> RideActivityVehicle? = { nil },
-        serverRideID: @escaping @MainActor () -> String? = { "ride-1" }
+        serverRideID: @escaping @MainActor () -> String? = { "ride-1" },
+        identities: RideActivityRideIDStoring = InMemoryRideActivityRideIDs()
     ) -> (RideActivityCoordinator, StubRideActivityPresenter, SpyRideActivityEndpoint) {
         let presenter = StubRideActivityPresenter()
         let endpoint = SpyRideActivityEndpoint()
@@ -1007,6 +1234,7 @@ final class RideActivityCoordinatorTests: XCTestCase {
             vehicleName: { "Blue Whale" },
             vehicle: vehicle,
             serverRideID: serverRideID,
+            identities: identities,
             // MYR-405 — the restore budget is real seconds in production and zero
             // here. The POLL still runs, read for read; only the waiting is skipped,
             // so `restoreReads` remains a true count of how hard the coordinator
