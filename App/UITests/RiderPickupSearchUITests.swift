@@ -195,9 +195,14 @@ final class RiderPickupSearchUITests: XCTestCase {
             app.staticTexts[Labels.pickupPlaceholder].exists,
             "nothing was confirmed, so the row is back on the default"
         )
-        XCTAssertFalse(
-            app.staticTexts["Ferry Building"].exists,
-            "and the abandoned pickup's name is not left standing in the row"
+        // ⚠️ Asserted on the FIELD, not on the screen. A first cut checked that
+        // `app.staticTexts["Ferry Building"]` was gone and failed — correctly:
+        // the list is back on the destination's pre-typing sections and "Ferry
+        // Building" is one of its RECENT rows. A row offering a place is not the
+        // row CLAIMING one, and only the field can tell the two apart.
+        XCTAssertTrue(
+            (returned.value as? String ?? "").isEmpty,
+            "and the abandoned pickup's name is not left standing in the field"
         )
         attach(app, named: "05-abandoned-chain-clears")
     }
