@@ -892,6 +892,82 @@ public final class SharedViewerState {
         previewPickupAnchor = nil
     }
 
+    // MARK: MYR-379 — THE PICKUP IS TYPEABLE, AND TYPING IT CHAINS INTO THE PIN
+    //
+    // The client, r18: *"No option to type in pick up location and then fine set
+    // up exact spot to pick up on map. It locks to current location."*
+    //
+    // The pickup had exactly two affordances — an implicit "Current location"
+    // (which is what `draftPickup == nil` renders as) and "Set on map". The
+    // DESTINATION has had typed search, MKLocalSearch autocomplete, MYR-237's
+    // selection-time resolution and a recents list since MYR-211. This is that
+    // machinery pointed at the other end of the trip: **the same
+    // `PlaceSearching` seam, the same results list, the same rows, the same
+    // resolver.** Nothing here is a second search stack — see
+    // `RideRequestSearchContent.searchTarget`, which is the whole of how one
+    // seam serves two fields.
+    //
+    // ⚠️ THE PROTOTYPE HAS NO SUCH AFFORDANCE, and its accessibility tree is the
+    // cleanest statement of the gap: the pickup is `StaticText "Current
+    // location"` beside `button "Set on map"`, while the destination is
+    // `textbox "Where to?"`. `ride-request.jsx:179` is `const pickupLabel =
+    // pickup?.label || 'Current location'` and :239 is the lone "Set on map"
+    // capsule — there is no pickup field to port. So this follows the
+    // DESTINATION's own grammar rather than inventing one, under the standing
+    // precedent that **the client outranks the prototype** (MYR-346's FSD
+    // celebration, MYR-347's Share tab).
+
+    /// Select a searched pickup and chain into the pin-drop to fine-tune it.
+    ///
+    /// **This does NOT set `draftPickup`**, and that is the design rather than an
+    /// omission. A typed place is a rider saying roughly where they are; the
+    /// pickup a car is dispatched to is the exact kerb, and the surface that
+    /// settles that question already exists. So the searched coordinate becomes
+    /// the pin-drop's ENTRY (`pinDropSeed`) and the rider's own "Confirm pickup
+    /// here" is still what commits — through the same `confirmPickup()` a
+    /// pin-dropped pickup has always gone through, producing the same `id: "pin"`
+    /// `RidePlace` with the same labeler-resolved street.
+    ///
+    /// **ONE REPRESENTATION, NOT A PARALLEL ONE**: nothing downstream —
+    /// `previewPickupAnchor`, the route preview, `createBody`, the itinerary's
+    /// pickup label — can tell a searched pickup from a dropped one, because
+    /// after this chain there is no such thing as a searched pickup. There is
+    /// only a pin, reached by a new door.
+    ///
+    /// The chain mirrors `selectDestination`'s own: that funnel has routed
+    /// through the pin-drop when no pickup is set since MYR-171, so "a place
+    /// selection can open the pin-drop" is this flow's existing grammar and not
+    /// a new one.
+    public func selectPickup(_ place: RidePlace) {
+        // MYR-278, the same belt-and-suspenders `selectDestination` carries: a
+        // "Search Nearby" category row has no single coordinate and must never
+        // become an endpoint by any path.
+        guard !RidePlaceMapper.isCategorySearch(place) else { return }
+        pinDropSeed = place.coordinate
+        // MYR-237 — the anchor is pickup identity for the route cache, and the
+        // rider has just named a pickup that is NOT the device fix. Leaving the
+        // old anchor up would key the preview route off wherever they happened to
+        // be standing when they picked a destination.
+        previewPickupAnchor = place.coordinate
+        pinReturn = .search
+        sheetPhase = .pinDrop(returnTo: .search)
+    }
+
+    /// Clear a typed/confirmed pickup back to the implicit "Current location"
+    /// default — the pickup field's `xmark`, which is the destination field's own
+    /// clear affordance (`mrt.search.clearDestination`) at the other end of the
+    /// route card rather than a new control.
+    ///
+    /// The SEED goes with it: it is the pending half of a chain the rider has
+    /// just abandoned, and leaving it would re-open the pin-drop on a place they
+    /// removed.
+    public func clearPickup() {
+        confirmedPickupLabelTask?.cancel() // MYR-239 — no re-resolution outlives the pickup
+        confirmedPickupLabelTask = nil
+        draftPickup = nil
+        pinDropSeed = nil
+    }
+
     /// Advance from the search sheet once the rider taps "Continue" — identical
     /// semantics to `selectDestination` (pin-drop to confirm the pickup when none
     /// is set yet, else straight to Review), but the destination is already
@@ -975,13 +1051,45 @@ public final class SharedViewerState {
     /// "Finding address…" transient) until a bounded re-resolution upgrades it.
     public static let pickupFallbackLabel = "Current location"
 
+    /// MYR-379 — a pickup the rider TYPED, waiting to be fine-tuned on the map.
+    ///
+    /// Written by `selectPickup(_:)` as it chains into the pin-drop, and cleared
+    /// on every exit from that session (`confirmPickup`, `returnFromPinDropToSearch`,
+    /// `discardDraftTrip`). It is deliberately a ONE-SHOT: see the rung-1 note in
+    /// `RiderPickupEntry` for why a seed that outlived its session would silently
+    /// undo a drag the rider had already committed.
+    public private(set) var pinDropSeed: CLLocationCoordinate2D?
+
+    /// MYR-379 — where the pin-drop's entry camera seats. The whole rule is
+    /// `RiderPickupEntry`, so the ladder is pinned by a pure test and there is one
+    /// definition of it; this is the binding of that rule to this state's facts.
+    /// Read by `SharedViewerScreen` as `PinDropOverlay.entryFix`.
+    public var pinDropEntryCoordinate: CLLocationCoordinate2D? {
+        RiderPickupEntry.coordinate(
+            seed: pinDropSeed,
+            confirmedPickup: draftPickup?.coordinate,
+            deviceFix: userLocation.coordinate
+        )
+    }
+
     /// Pin-drop pickup coordinate: in live mode the map's settled center (the
     /// authoritative pin position the rider dragged to), falling back to the
     /// region center until the first camera settle; the fixture point in sim
     /// (byte-identical).
+    ///
+    /// MYR-379 threads the SEED through both arms, and the reason is the same on
+    /// each: a rider who searched a pickup and confirmed it before the first
+    /// camera settle reported must get the place they typed, never the fallback
+    /// underneath it. On live that fallback is `mapRegionCenter`, whose own ladder
+    /// resolves to the device fix — i.e. exactly the "it locks to current
+    /// location" defect, surviving in the one window where the camera has not
+    /// spoken yet. In sim the fallback is the fixture point, and honouring the
+    /// seed there is what makes the chain photographable at all; **no simulated
+    /// scene carries a seed unless it is about one**, so every existing capture
+    /// is byte-identical.
     public var pinDropCoordinate: CLLocationCoordinate2D {
-        guard isLiveLocation else { return DriveFixtures.financialDistrict }
-        return pinDropCameraCenter ?? mapRegionCenter
+        guard isLiveLocation else { return pinDropSeed ?? DriveFixtures.financialDistrict }
+        return pinDropCameraCenter ?? pinDropSeed ?? mapRegionCenter
     }
 
     /// Pin-drop pickup label (MYR-223): in live mode the current label display
@@ -1015,6 +1123,13 @@ public final class SharedViewerState {
         // coordinate), rather than a flash of neutral. The sim path ignores this
         // (pinDropLabel returns the fixture behind the isLiveLocation guard).
         pinLabelState = .resolving
+        // MYR-379 — the refresh is asked for ONLY when this session is about the
+        // device. See `RiderPickupEntry.isPlaceLed`: a fresh fix landing under a
+        // place-led session moves `mapRegionCenter`, which `pinDropCoordinate`
+        // falls back to before the first camera settle — i.e. the reported
+        // "it locks to current location" defect coming back through the one door
+        // left open. A session that IS about the device is unchanged.
+        guard !RiderPickupEntry.isPlaceLed(seed: pinDropSeed, confirmedPickup: draftPickup?.coordinate) else { return }
         userLocation.refresh()
     }
 
@@ -1157,6 +1272,12 @@ public final class SharedViewerState {
         let coordinate = pinDropCoordinate
         let label = isLiveLocation ? Self.confirmedPickupLabel(for: pinLabelState) : pinDropLabel
         draftPickup = Self.pinPickup(label: label, coordinate: coordinate)
+        // MYR-379 — the seed is spent the moment a pin is committed. It is rung 1
+        // of `RiderPickupEntry`'s ladder and `draftPickup` is rung 2, so a seed
+        // left standing would outrank the coordinate the rider just confirmed and
+        // re-open the next pin-drop on the pre-drag place — silently undoing the
+        // fine-tune this whole feature exists to offer.
+        pinDropSeed = nil
         if isLiveLocation, pinLabelState == .resolving {
             resolveConfirmedPickupLabel(for: coordinate)
         }
@@ -1437,6 +1558,12 @@ public final class SharedViewerState {
     /// destination (CTA state) — the rider adjusts or restarts. No pickup is
     /// confirmed. Nothing else in the draft is touched.
     public func returnFromPinDropToSearch() {
+        // MYR-379 — backing out commits NOTHING, so the searched pickup that led
+        // here goes with the session. The search sheet's pickup field is a mirror
+        // of `draftPickup` (which this leaves untouched), so the row falls back to
+        // "Current location" and the sheet tells the truth: the rider looked at a
+        // place and did not take it.
+        pinDropSeed = nil
         sheetPhase = .search
     }
 
@@ -1485,6 +1612,12 @@ public final class SharedViewerState {
         confirmedPickupLabelTask?.cancel() // MYR-239 — no re-resolution outlives the draft
         confirmedPickupLabelTask = nil
         draftPickup = nil
+        // MYR-379 — and so is a searched pickup that never reached the pin. This
+        // is MYR-389's own lesson applied to the field it added: the ONE list of
+        // what a draft is has to name every part of it, or the next trip inherits
+        // the leftover. A stale seed is the sharpest possible version of that —
+        // it would open a brand-new trip's pin-drop on the previous trip's pickup.
+        pinDropSeed = nil
         draftDestination = nil
         draftFleetMemberID = RideRequestFixtures.fleet[0].id
         draftPassenger = nil

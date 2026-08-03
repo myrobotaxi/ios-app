@@ -897,9 +897,14 @@ struct SharedViewerScreen: View {
                     ? PinDropOverlay(
                         glyphGlobalPoint: glyphGlobalPoint,
                         onCoordinate: { viewerState.pinDropCameraSettled(at: $0) },
-                        // MYR-216 d3: the blue-dot fix to seat under the glyph on
-                        // entry — the live device coordinate (nil in sim / no fix).
-                        entryFix: viewerState.userLocation.coordinate,
+                        // MYR-216 d3: the coordinate to seat under the glyph on
+                        // entry. MYR-379 makes that a LADDER rather than the bare
+                        // device fix (`RiderPickupEntry`): a searched pickup
+                        // awaiting fine-tuning, else a pickup already confirmed,
+                        // else the device coordinate — which is what this read was
+                        // before, so a rider who has touched neither affordance
+                        // gets the identical camera.
+                        entryFix: viewerState.pinDropEntryCoordinate,
                         // MYR-217: feeds the owner's analytic entry framing.
                         viewportSize: viewportSize
                     )

@@ -52,6 +52,22 @@ enum DebugScene: String, CaseIterable {
     /// tapping. The client bug: after this back-nav the search sheet stranded
     /// at the TOP of the screen instead of its bottom-anchored search detent.
     case pinDropBackRealPath
+    /// MYR-379 — the search sheet with the PICKUP field owning the results list:
+    /// the field filled with "fer", the same fixture rows `searchFiltered` shows,
+    /// and the row identifiers reading `mrt.search.pickup.*`. Its pair is
+    /// `searchFiltered`, which is byte-identical and shows the identical result
+    /// set belonging to the DESTINATION — so the two are a clean one-target diff.
+    case riderPickupSearch
+    /// MYR-379 — the far end of the chain: the pin-drop entered from a SEARCHED
+    /// pickup, i.e. seeded. Its pair is `pinDrop`, which is byte-identical and
+    /// opens on the fixture Financial District; this one opens on
+    /// `DriveFixtures.home`, the searched place's own coordinate travelling
+    /// through the shipping `selectPickup` → `pinDropSeed` → `RiderPickupEntry`
+    /// ladder. The camera is the production `PinDropCameraController` and the
+    /// sheet is `RideRequestPinDropContent` verbatim — the entry coordinate is the
+    /// only thing that differs, which is the entire claim this issue makes about
+    /// REUSING the pin-drop rather than forking it.
+    case riderPickupPinDrop
     /// MYR-389 — the Review sheet carrying a COMMITTED SCHEDULE, i.e. the one
     /// whose CTA reads "Schedule with {owner}" rather than "Request from
     /// {owner}". No scene reached it before, and it is the entry point of the
@@ -2300,10 +2316,29 @@ enum DebugScene: String, CaseIterable {
     /// for `.searchFiltered` (matches "Ferry Building" in RECENT_PLACES).
     var searchQuery: String? { self == .searchFiltered ? "fer" : nil }
 
+    /// MYR-379 — prefill for `RideRequestSearchContent`'s local `pickupQuery`,
+    /// plus the focus that makes the results list serve the PICKUP. Non-nil for
+    /// exactly one scene, so every other search capture keeps `searchTarget ==
+    /// .destination` and is byte-identical.
+    ///
+    /// "fer" is `searchFiltered`'s own fragment on purpose: the two scenes then
+    /// differ by exactly WHICH FIELD the identical result set belongs to, which is
+    /// the whole of what this issue changed about the results list.
+    var pickupSearchQuery: String? { self == .riderPickupSearch ? "fer" : nil }
+
     /// MYR-356 — boot the search sheet with the keyboard DOWN. True for exactly one
     /// scene, whose subject (the pre-typing Recent section) is otherwise behind it.
     /// See `RideRequestSearchContent.scheduleSearchFocus`.
-    var suppressesSearchAutoFocus: Bool { self == .riderRecentDestinations }
+    /// MYR-379 joins `riderPickupSearch` to this for the same reason MYR-356 wrote
+    /// it, now measured rather than assumed: on this runtime the keyboard covers
+    /// the ENTIRE search sheet below the Now/Schedule chips — the route card and
+    /// every result row with it. `searchFiltered` and `riderPickupSearch` captured
+    /// with the keyboard up are pixel-identical pictures of a keyboard, which is
+    /// also why the first run of `RiderPickupSearchUITests` found its rows present
+    /// but "not hittable". Booting this scene keyboard-DOWN is what makes its
+    /// subject — a filled PICKUP field over a results list that belongs to it —
+    /// visible at all. `searchFiltered` keeps the auto-focus and is untouched.
+    var suppressesSearchAutoFocus: Bool { self == .riderRecentDestinations || self == .riderPickupSearch }
 
     /// MYR-356 — the recents this scene boots with. EMPTY for every scene but
     /// `riderRecentDestinations`, which is what keeps every existing capture
@@ -3349,6 +3384,33 @@ enum DebugScene: String, CaseIterable {
             viewer.showDeclinedNotice = true
         case .search, .searchFiltered:
             viewer.sheetPhase = .search
+        case .riderPickupSearch:
+            // MYR-379 — `search` verbatim. Everything that makes this scene its
+            // own picture (the pickup field's text, the focus that re-points the
+            // results list) is view-local `@State`, seeded from
+            // `pickupSearchQuery` in `RideRequestSearchContent.onAppear` — the
+            // same route `searchFiltered`'s own query takes.
+            viewer.sheetPhase = .search
+        case .riderPickupPinDrop:
+            // MYR-379 — the chain, driven through the SHIPPING funnel rather than
+            // by hand: `selectPickup` is what a tapped pickup row calls, and it is
+            // what sets the seed and flips the phase. A scene that assigned
+            // `pinDropSeed` and `sheetPhase` itself would keep passing with
+            // `selectPickup` deleted, which is the "cold scenes passing while real
+            // paths fail" trap this repo has been bitten by before.
+            //
+            // The seed is the FERRY BUILDING — the row `riderPickupSearch`'s "fer"
+            // query resolves to — so the two scenes are one story told in two
+            // frames: type "fer", tap Ferry Building, and the pin opens at the
+            // Ferry Building.
+            //
+            // ⚠️ IT IS ALSO CHOSEN FOR DISTANCE, and that took a round. The first
+            // cut seeded `savedPlaces[0]` (Home, 221 Folsom St), which sits a few
+            // blocks from the sim fallback `DriveFixtures.financialDistrict` — the
+            // capture pair differed by a slight pan and read as noise. A seeded
+            // scene is evidence only if its frame could not be the unseeded one.
+            viewer.draftDestination = DebugScene.sampleDestination
+            viewer.selectPickup(RideRequestFixtures.recentPlaces[2])
         case .riderRecentDestinations:
             // MYR-356 — `search` verbatim. The ONLY difference is the store
             // `RootView` handed the state at init (`seededRecentDestinations`).

@@ -60,6 +60,26 @@ struct RideRequestSearchContent: View {
     // kept local so the field/CTA presentation is a pure view concern.
     @State private var pickedDestination: RidePlace?
     @FocusState private var destinationFieldFocused: Bool
+
+    // MARK: MYR-379 — the pickup half of the route card
+    //
+    // The pickup was `Text(draftPickup?.label ?? "Current location")` — literally
+    // not focusable, which is what the client hit. It is a `TextField` now, with
+    // the destination field's own grammar: same font, same row, same clear
+    // `xmark`, same `textContentType`, same results list underneath.
+
+    /// The pickup field's live text. A MIRROR of `viewerState.draftPickup`,
+    /// re-synced on arrival exactly as `query`/`pickedDestination` are (MYR-389) —
+    /// so a pin-drop backed out of without confirming leaves the row reading
+    /// "Current location" rather than claiming a pickup the draft does not hold.
+    @State private var pickupQuery = ""
+    @FocusState private var pickupFieldFocused: Bool
+
+    /// MYR-379 — which field the ONE results list currently serves. See
+    /// `RideSearchField` for why the seam is shared rather than duplicated.
+    /// `.destination` is the resting value, which is what keeps every pre-MYR-379
+    /// path (and every drift-gate capture) exactly as it was.
+    @State private var searchTarget: RideSearchField = .destination
     /// MYR-250 item 2 — the deferred auto-focus task (focus the destination
     /// field AFTER the sheet settles, never mid-transition). Cancelled if the
     /// sheet leaves search before it fires.
@@ -79,11 +99,21 @@ struct RideRequestSearchContent: View {
         let draft = viewerState.draftDestination
         _query = State(initialValue: draft?.label ?? "")
         _pickedDestination = State(initialValue: draft)
+        // MYR-379 — the pickup field seeds from the draft at INIT for the same
+        // reason the destination does: a remount straight back into a set pickup
+        // (pin-drop "Change trip" → search, a declined rebook) must render the
+        // confirmed label from the first frame rather than flashing the
+        // "Current location" placeholder and then filling in.
+        _pickupQuery = State(initialValue: viewerState.draftPickup?.label ?? "")
     }
 
     /// MYR-216 deliverable 1 — the collapse trigger: true once a destination is
     /// chosen (CTA state). Drives the animated sheet resize down/up.
-    private var isChoosing: Bool { pickedDestination != nil }
+    /// MYR-379 — a pickup search re-opens the typing envelope. The collapse is a
+    /// statement that the sheet is DONE taking input; it is not, and letting it
+    /// collapse over a live results list would put the rows the rider is reading
+    /// below the sheet's own edge.
+    private var isChoosing: Bool { pickedDestination != nil && searchTarget != .pickup }
 
     // MYR-200 search-gap fix — measured heights that let the sheet size to its
     // content up to the 712pt cap (see `scrollRegionHeight`).
@@ -326,6 +356,35 @@ struct RideRequestSearchContent: View {
             }
             viewerState.updateSearch(query: newValue)
         }
+        // MYR-379 — the pickup field's typing, and it is deliberately the SAME
+        // one-liner the destination's is: one seam, one `update`, one debounce,
+        // one throttle budget. The guard is `searchTarget`, not a second search.
+        .onChange(of: pickupQuery) { _, newValue in
+            guard searchTarget == .pickup else { return }
+            viewerState.updateSearch(query: newValue)
+        }
+        // MYR-379 — FOCUS IS WHAT OWNS THE LIST. Gaining first responder re-points
+        // the seam at this field's own text, so switching fields never leaves the
+        // other field's results standing under it (which would let a rider commit
+        // a pickup they never searched for).
+        .onChange(of: pickupFieldFocused) { _, focused in
+            guard focused else { return }
+            searchTarget = .pickup
+            viewerState.updateSearch(query: pickupQuery)
+        }
+        .onChange(of: destinationFieldFocused) { _, focused in
+            guard focused else { return }
+            searchTarget = .destination
+            viewerState.updateSearch(query: query)
+        }
+        // MYR-379 — the pickup field is a MIRROR (MYR-389's rule): the pin-drop is
+        // what COMMITS a pickup, so the row follows `draftPickup` rather than the
+        // text that led there. Confirming writes the labeler's street into the
+        // field; backing out leaves it empty, i.e. "Current location", which is
+        // the truth about a chain the rider abandoned.
+        .onChange(of: viewerState.draftPickup?.label) { _, newLabel in
+            pickupQuery = newLabel ?? ""
+        }
         // MYR-211 region-bias fix (live-audit defect): a search issued BEFORE
         // the first location fix (the permission prompt is still up on first
         // launch; the `searchFiltered` scene seeds its query on appear)
@@ -388,6 +447,21 @@ struct RideRequestSearchContent: View {
             // Arriving at `.search` WITH a draft is left alone on purpose: that is
             // the retention path (pin-drop back, MYR-233's scheduling route, a
             // declined rebook), where the filled field is the point.
+            // MYR-379 — the pickup mirror re-syncs on the SAME two arrivals, and
+            // unconditionally: unlike the destination there is no retention path
+            // to protect, because the only thing that sets a pickup is the
+            // pin-drop's own confirm and `draftPickup` is therefore always the
+            // whole truth about one. This is also the field's half of the draft
+            // reset — a fresh search opens on "Current location", never on the
+            // last trip's kerb.
+            if newPhase == .idle || newPhase == .search {
+                let pickupLabel = viewerState.draftPickup?.label ?? ""
+                if pickupQuery != pickupLabel { pickupQuery = pickupLabel }
+                // The list belongs to the destination again on every arrival, so a
+                // sheet re-entered after a pickup search opens on the destination
+                // grammar every other issue in this flow assumes.
+                searchTarget = .destination
+            }
             guard newPhase == .idle || newPhase == .search,
                   viewerState.draftDestination == nil else { return }
             pickedDestination = nil
@@ -418,6 +492,21 @@ struct RideRequestSearchContent: View {
             consumeScheduleRouting()
             #if DEBUG
             if let debugQuery = DebugScene.current?.searchQuery { query = debugQuery } // MYR-200 searchFiltered scene
+            // MYR-379 — the pickup half of the same hook. Setting `searchTarget`
+            // here rather than relying on focus is the stand-in-for-a-tap
+            // precedent (`ownerFreshnessWaking`): headless capture tooling cannot
+            // put first responder in a field, and the SUBJECT of the capture is
+            // which field the results list belongs to.
+            if let debugPickupQuery = DebugScene.current?.pickupSearchQuery {
+                searchTarget = .pickup
+                pickupQuery = debugPickupQuery
+                // Deliberately NOT focusing the field: the scene pairs this with
+                // `suppressesSearchAutoFocus`, because on this runtime a raised
+                // keyboard covers the whole sheet and the capture would be a
+                // picture of the keyboard. `searchTarget` is what the scene is
+                // about, and it is set directly — the stand-in-for-a-tap
+                // precedent (`ownerFreshnessWaking`).
+            }
             #endif
             // MYR-215 deliverable 3: re-entering Search with a destination already
             // chosen (e.g. bouncing back from pin-drop, or a declined rebook)
@@ -430,7 +519,10 @@ struct RideRequestSearchContent: View {
             }
             // MYR-211 — seed the search backend with the (possibly debug-set)
             // query so the seam's `results` match the field on first render.
-            viewerState.updateSearch(query: query)
+            // MYR-379 — "the field" is whichever one owns the list; seeding from
+            // `query` unconditionally would hand a pickup search the destination
+            // field's (empty) results on its very first frame.
+            viewerState.updateSearch(query: searchTarget == .pickup ? pickupQuery : query)
             // MYR-250 item 2 — COLD search scene / back-nav REMOUNT (review /
             // pin-drop → search) reaches search through a fresh mount, which does
             // not fire the `sheetPhase` onChange above; schedule the auto-focus here.
@@ -451,6 +543,12 @@ struct RideRequestSearchContent: View {
             try? await Task.sleep(for: .milliseconds(450))
             guard !Task.isCancelled else { return }
             guard viewerState.sheetPhase == .search, pickedDestination == nil else { return }
+            // MYR-379 — and never OVER the pickup field. This auto-focus is about
+            // the destination ("the prototype's `SearchContent autoFocus`"), so
+            // firing it while the rider is mid-pickup-search would move first
+            // responder out from under them 450ms after they tapped in — and take
+            // the results list with it, since focus is what owns the list.
+            guard searchTarget != .pickup else { return }
             // MYR-353 — and never UNDER the schedule card. The Review-routed
             // entry (`consumeScheduleRouting`) opens the card from inside the very
             // same `.onChange(of: sheetPhase)` that arms this focus, so a card can
@@ -711,10 +809,36 @@ struct RideRequestSearchContent: View {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
                     RideEyebrowText(text: "Pickup")
-                    Text(viewerState.draftPickup?.label ?? SharedViewerState.pickupFallbackLabel)
+                    // MYR-379 — the client's ask, and the parity fix. The
+                    // PLACEHOLDER is the old static string, so a rider who never
+                    // touches the field reads exactly what they read before and
+                    // "Current location" is still the default in the most literal
+                    // sense available: it is what the row says when the field is
+                    // empty. `.fullStreetAddress` is the destination field's own
+                    // content type (MYR-363a — a field that declares nothing gets
+                    // offered one-time codes).
+                    TextField(SharedViewerState.pickupFallbackLabel, text: $pickupQuery)
                         .font(.system(size: 14.5, weight: .medium))
                         .foregroundStyle(Color.mrtText)
-                        .lineLimit(1)
+                        .textContentType(RideRequestFieldContentType.destination)
+                        .focused($pickupFieldFocused)
+                        .accessibilityIdentifier("mrt.search.pickupField")
+                }
+                if !pickupQuery.isEmpty {
+                    // The destination field's own clear affordance, at the other
+                    // end of the same card. This is what "Current location"
+                    // becomes as an explicit CHOICE rather than only a default:
+                    // the one control that puts the pickup back to nothing.
+                    Button {
+                        pickupQuery = ""
+                        viewerState.clearPickup()
+                        searchTarget = .pickup
+                        viewerState.updateSearch(query: "")
+                    } label: {
+                        Image(systemName: "xmark").font(.system(size: 13)).foregroundStyle(Color.mrtTextMuted)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("mrt.search.clearPickup")
                 }
                 Spacer(minLength: 0)
                 Button {
@@ -789,7 +913,14 @@ struct RideRequestSearchContent: View {
     /// deliverable 3) — the "Continue" CTA in their place.
     @ViewBuilder
     private var belowHeaderRegion: some View {
-        if let picked = pickedDestination {
+        // MYR-379 — while the PICKUP owns the list, the list is what shows. The
+        // "Continue" CTA is a statement about the destination step and would sit
+        // over the very results a rider mid-pickup-search is reaching for; the
+        // destination they already chose is still chosen and its CTA comes back
+        // the moment focus returns.
+        if searchTarget == .pickup {
+            resultsRegion
+        } else if let picked = pickedDestination {
             proceedRegion(for: picked)
         } else {
             // Results list — capped to the space the header leaves inside the
@@ -798,15 +929,23 @@ struct RideRequestSearchContent: View {
             // no black void below the last row (MYR-200). Live pins it to the full
             // envelope so the frame never jumps on the first keystroke (MYR-215
             // defect 1 — see `scrollRegionHeight`).
-            ScrollView {
-                resultsList
-                    .padding(.bottom, 16)
-                    .background(GeometryReader { geo in
-                        Color.clear.preference(key: SearchResultsHeightKey.self, value: geo.size.height)
-                    })
-            }
-            .frame(height: scrollRegionHeight)
+            resultsRegion
         }
+    }
+
+    /// MYR-379 — the results region, extracted so the destination branch and the
+    /// pickup branch are the SAME view rather than two that look alike. The height
+    /// measurement (MYR-200/215) is part of it, so a pickup search sizes the sheet
+    /// by the identical rule and cannot grow its own layout behaviour.
+    private var resultsRegion: some View {
+        ScrollView {
+            resultsList
+                .padding(.bottom, 16)
+                .background(GeometryReader { geo in
+                    Color.clear.preference(key: SearchResultsHeightKey.self, value: geo.size.height)
+                })
+        }
+        .frame(height: scrollRegionHeight)
     }
 
     /// The destination is chosen: the results list gives way to an explicit
@@ -924,9 +1063,39 @@ struct RideRequestSearchContent: View {
     /// MYR-344 — the force-resign itself now lives in `MRTKeyboard.dismiss()`,
     /// because the owner's invite composer needs the identical discipline before
     /// presenting the share sheet. Behaviour here is unchanged.
-    private func dismissKeyboardBeforeLeaving() {
+    @discardableResult
+    private func dismissKeyboardBeforeLeaving() -> Bool {
         destinationFieldFocused = false
-        MRTKeyboard.dismiss()
+        // MYR-379 — the pickup field is a first responder on this sheet too, so it
+        // joins the same discipline. Dropping only the destination's binding would
+        // leave the exact orphaned-keyboard-over-an-exiting-sheet frame MYR-239
+        // was about, reachable from the new field.
+        pickupFieldFocused = false
+        return MRTKeyboard.dismiss()
+    }
+
+    /// MYR-379 — a searched PICKUP was tapped: chain into the pin-drop, seeded at
+    /// that place, so the rider can nudge the pin to the exact kerb.
+    ///
+    /// MYR-353's rule is the reason this is not a two-line function. The pickup
+    /// field was focused a frame ago — that is the ONLY way to reach this row — so
+    /// the keyboard is genuinely up, and the pin-drop it opens is a bottom-flush
+    /// surface whose CTA sits exactly where the keyboard is. The settle beat is
+    /// paid ONLY when a responder actually resigned (`MRTKeyboard.dismiss()`'s
+    /// return), which is the same conditional-cost shape `openScheduleCard()`
+    /// uses, so a path that reaches here with no keyboard up is byte-identical to
+    /// a straight phase flip.
+    @MainActor
+    private func choosePickup(_ place: RidePlace) {
+        pickupQuery = place.label
+        guard dismissKeyboardBeforeLeaving() else {
+            viewerState.selectPickup(place)
+            return
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: MRTKeyboard.dismissalSettle)
+            viewerState.selectPickup(place)
+        }
     }
 
     // MARK: Results
@@ -1023,6 +1192,9 @@ struct RideRequestSearchContent: View {
             // an arbitrary place / broke the flow). Concrete rows still choose.
             if RidePlaceMapper.isCategorySearch(place) {
                 runNearbyCategorySearch(place)
+            } else if searchTarget == .pickup {
+                // MYR-379 — the SAME row, committing to the other end of the trip.
+                choosePickup(place)
             } else {
                 choose(place)
             }
@@ -1075,7 +1247,10 @@ struct RideRequestSearchContent: View {
         // (MYR-250), so a UI test is the only way to reach it, and a SwiftUI Button
         // built from an icon + two Texts + a distance stack composes an
         // accessibility label a query cannot rely on. Identifiers only — no pixels.
-        .accessibilityIdentifier("mrt.search.dest.\(place.id)")
+        // MYR-379 — the identifier names WHICH END the row would commit to, so a
+        // UI test taps a pickup result rather than hoping the target is what it
+        // assumed. Same row, same pixels; only the id changes with the target.
+        .accessibilityIdentifier("mrt.search.\(searchTarget == .pickup ? "pickup" : "dest").\(place.id)")
     }
 
     private func nearbyCard(_ place: RidePlace) -> some View {
