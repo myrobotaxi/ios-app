@@ -534,6 +534,15 @@ struct RootView: View {
         case .chooser: screen = .modeChooser
         case .shell(let mode): applyViewMode(mode)
         }
+        // MYR-426 — a code held through sign-in lands in the SAME state update
+        // the post-auth screen does. `.onChange(of: inviteLinkContext)` would
+        // deliver it too, but only AFTER that screen has rendered once — so the
+        // tester would see one frame of the chooser (or of an empty rider shell
+        // captioned "no vehicles shared with you") before the prefilled flow
+        // covered it. That flash is MYR-343's lesson on the surface this issue
+        // is about: the shell someone is about to leave must not narrate a
+        // situation that is already resolved. A no-op when nothing is held.
+        drainPendingInviteLink()
     }
 
     /// Apply a view-mode choice to the shell: pick the role, reset its landing
@@ -986,11 +995,25 @@ struct RootView: View {
     /// byte-identical to tapping "Join with an invite code" there, which is
     /// exactly what the link means at that moment. Anyone already in a shell is
     /// `.deepLink`, and their shell is remembered so Cancel restores it.
+    ///
+    /// **MYR-426 — `.modeChooser` IS FIRST RUN, and takes the first-run
+    /// grammar.** It is reachable from exactly one place (a real account with no
+    /// stored `ViewMode` — new, or signed out, which MYR-224 treats the same),
+    /// so a link landing there belongs to someone holding no shell: they want
+    /// the RiderTutorial after joining, and there is nothing behind them to go
+    /// back to — which is `.onboarding`, verbatim. The one thing it does NOT share with
+    /// `.emptyState` is the fallback: Cancel must return to the CHOOSER, not to
+    /// `PostAuthRouter`'s SIM/static-token screen, so the return snapshot is
+    /// taken here where `.emptyState` deliberately takes none.
     @MainActor
     private func presentInviteLink(code: String) {
-        if screen == .emptyState {
+        if screen == .emptyState || screen == .modeChooser {
             inviteOrigin = .onboarding
-            inviteLinkReturn = nil
+            inviteLinkReturn = screen == .modeChooser
+                ? InviteLinkReturn(
+                    role: role, screen: .modeChooser, ownerTab: ownerTab, sharedTab: sharedTab
+                )
+                : nil
         } else {
             inviteOrigin = .deepLink
             // Don't overwrite a snapshot taken by an earlier link — the shell we
@@ -1003,6 +1026,29 @@ struct RootView: View {
         }
         inviteLinkCode = code
         screen = .inviteCode
+    }
+
+    /// MYR-426 — a fresh account that JOINED a car is a rider, so record it.
+    ///
+    /// Without this the invite lands correctly and then the next launch asks the
+    /// chooser's question all over again, of someone who has already answered it
+    /// by redeeming a code.
+    ///
+    /// It persists the shell they are actually being PUT ON. Both completion
+    /// arms that reach here land the user on the rider side — MYR-346 decided
+    /// that deliberately ("not back to where they came from, which may be the
+    /// owner shell, where the car they just gained access to does not appear at
+    /// all") — so writing anything else would leave the next launch disagreeing
+    /// with this one. Written only when the account has NO stored mode, so an
+    /// owner who redeems somebody else's invite from inside their own session
+    /// keeps the owner shell they chose; the Settings switch row is the way back
+    /// for anyone the default is wrong for. The SIM/static path has no
+    /// `currentUser` and writes nothing at all, which is what leaves every DEBUG
+    /// scene untouched.
+    @MainActor
+    private func adoptRiderModeAfterJoin() {
+        guard let id = session.currentUser?.id, modeStore.mode(forUserID: id) == nil else { return }
+        modeStore.setMode(.rider, forUserID: id)
     }
 
     /// Put the user back exactly where the link found them.
@@ -1064,6 +1110,10 @@ struct RootView: View {
                     onAdd: { screen = .addTesla },
                     onInvite: {
                         inviteOrigin = .onboarding
+                        // MYR-426 — a TAP has no shell to restore. Clear any
+                        // snapshot an earlier link left, now that the
+                        // `.onboarding` cancel path consults one.
+                        inviteLinkReturn = nil
                         screen = .inviteCode
                     }
                 )
@@ -1090,6 +1140,9 @@ struct RootView: View {
                 InviteCodeFlow(
                     onComplete: {
                         inviteLinkCode = nil
+                        // MYR-426 — they hold a share now, so the account's view
+                        // mode is settled if it was not already.
+                        adoptRiderModeAfterJoin()
                         switch inviteOrigin {
                         case .onboarding:
                             role = .shared
@@ -1114,7 +1167,12 @@ struct RootView: View {
                         inviteLinkCode = nil
                         switch inviteOrigin {
                         case .onboarding:
-                            screen = .emptyState
+                            // MYR-426 — the snapshot, when there is one, is the
+                            // MODE CHOOSER a fresh account's link arrived over;
+                            // its absence still falls back to the first-run
+                            // choice screen, which is what a tap on that screen
+                            // has always restored.
+                            restoreAfterInviteLink()
                         case .sharedSettings:
                             screen = .sharedHome
                             sharedTab = "sharedSettings"

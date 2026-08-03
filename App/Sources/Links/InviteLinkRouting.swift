@@ -322,13 +322,34 @@ enum InviteLinkRouting {
     /// so a second link re-prefills the flow already up rather than being held
     /// behind it forever.
     ///
-    /// Everything else is a flow with state in it: `.modeChooser` (an unanswered
-    /// question), `.addTesla` (a live OAuth handoff), and the two tutorials
-    /// (someone is partway through five cards). Those are held, not stomped.
+    /// **`.modeChooser` JOINED THEM IN MYR-426, and it is the same argument.**
+    /// MYR-346 filed it with the flows that hold work, as "an unanswered
+    /// question". It holds no work at all — nothing is typed into it, nothing is
+    /// in flight behind it, and dismissing it destroys nothing — and the
+    /// question it asks is the one the link has ALREADY ANSWERED: a
+    /// `/join/{CODE}` link means somebody invited this person to view or ride
+    /// THEIR Tesla, which is the rider answer. It is also the app's proof that
+    /// the person holds NO SHELL: `RootView` reaches it from exactly one place,
+    /// when `PostAuthRouter` finds a real signed-in user with no stored
+    /// `ViewMode` — a brand-new account, or one that signed out, since MYR-224
+    /// releases the choice with the session. Either way there is nothing behind
+    /// them to protect and nothing on the screen to lose.
+    ///
+    /// Deferring there was the client's gap. On the LIVE path a new tester goes
+    /// sign-in → chooser → shell and never sees `.emptyState` at all (that screen
+    /// is the SIM/static-token arm of `PostAuthRouter`), so the held code waited
+    /// behind a fork the tester could answer WRONG, and then arrived as a rider
+    /// sheet over whichever shell they had just picked. The client's words are
+    /// "upon logging with apple their code should auto fill in the rider setup
+    /// flow if new account" — which is this screen, and this moment.
+    ///
+    /// Everything else is a flow with state in it: `.addTesla` (a live OAuth
+    /// handoff) and the two tutorials (someone is partway through five cards).
+    /// Those are held, not stomped.
     private static func acceptsInviteNow(_ screen: AppScreen) -> Bool {
         switch screen {
-        case .ownerHome, .sharedHome, .emptyState, .inviteCode: return true
-        case .resolvingSession, .signIn, .modeChooser, .addTesla, .ownerTutorial, .riderTutorial: return false
+        case .ownerHome, .sharedHome, .emptyState, .modeChooser, .inviteCode: return true
+        case .resolvingSession, .signIn, .addTesla, .ownerTutorial, .riderTutorial: return false
         }
     }
 }
