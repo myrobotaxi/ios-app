@@ -60,27 +60,46 @@ public enum DemoAnchor: String, Sendable, Hashable, CaseIterable {
     case riderTabBar
 }
 
-/// What ends a step.
-public enum DemoAdvance: Equatable, Sendable {
-    /// The tester taps the real control the step is pointing at. The overlay
-    /// renders NO Next button for these — the control is the only way on.
-    case tapTarget
-    /// Nothing to tap: the caption carries a Next (or, on the last step, the
-    /// role's closing CTA).
-    case next
-    /// The simulated ride reaches this status. Used for the two steps that are
-    /// about a process rather than a control.
-    case rideStatus(DemoRideStatus)
+/// A state the app can be IN, which a step can wait for.
+///
+/// **This is how an interactive step ends, and the reason it is a state rather
+/// than a tap is a bug this file shipped once.** The first cut had a `.tapTarget`
+/// case advanced by a `handleTargetTapped()` the walkthrough was supposed to call
+/// when the tester hit the real control — and nothing ever called it, because
+/// nothing could: the coach-mark layer deliberately does not modify the screens it
+/// tours, so it never sees their taps. Four of the twelve steps rendered no Next
+/// button and could never advance. A brand-new rider was stranded on step one.
+///
+/// Observing the STATE the control mutates fixes it and is strictly better
+/// evidence: the step advances because the app really did open search / really did
+/// take the request, not because a gesture recognizer fired. It also collapses the
+/// old `.tapTarget` / `.rideStatus` distinction, which was never real — "the
+/// tester tapped Accept" and "the car arrived" are both just the app reaching a
+/// state, and only the walkthrough cared which agent caused it.
+public enum DemoMilestone: String, Sendable, Hashable, CaseIterable {
+    /// The rider opened the search sheet.
+    case searchOpened
+    /// The rider chose a destination and is looking at the review sheet.
+    case destinationChosen
+    /// The rider asked for the car.
+    case requestSubmitted
+    /// The owner sent the car.
+    case rideAccepted
+    /// The car reached the pickup.
+    case rideArrived
+    /// The ride ended.
+    case rideCompleted
 }
 
-/// The ride statuses a step can wait on, mirrored as its own type so this script
-/// layer does not depend on the service module (and so a test can drive it with
-/// no service at all). `FirstRunDemoHost` maps `RideRequestStatus` onto it.
-public enum DemoRideStatus: String, Sendable, Hashable {
-    case accepted
-    case arrived
-    case enroute
-    case completed
+/// What ends a step.
+public enum DemoAdvance: Equatable, Sendable {
+    /// Nothing to do but read: the caption carries a Next (or, on the last step,
+    /// the role's closing CTA).
+    case next
+    /// The app reaches this state. The overlay renders NO advance button for
+    /// these — the real control (or the ride itself) is the only way on, which is
+    /// what makes this a demo rather than a slideshow.
+    case appReaches(DemoMilestone)
 }
 
 /// One coach-marked step.
@@ -165,23 +184,27 @@ public enum FirstRunDemoScript {
         FirstRunDemoStep(
             id: "ownerAccept",
             title: "Send the car.",
-            body: "One tap dispatches your Tesla. Go ahead — this is a practice request, so nothing real is sent.",
+            // Names the button's REAL label. The first draft said "tap Send the
+            // car" and the control reads "Accept & send" — a coach mark naming a
+            // control that does not exist is worse than no coach mark, and only
+            // reading the button's own definition caught it.
+            body: "Tap Accept & send and your Tesla is on its way. Go ahead — this is a practice request, so nothing real is sent.",
             anchor: .ownerAcceptButton,
-            advance: .tapTarget
+            advance: .appReaches(.rideAccepted)
         ),
         FirstRunDemoStep(
             id: "ownerDispatch",
             title: "Watch it go.",
-            body: "The car drives itself to the pickup. You will see it move, and the status line tells you where it is.",
+            body: "The car drives itself to the pickup and the card up here tracks it. When it gets there, tap Arrived at pickup.",
             anchor: .ownerDispatchCard,
-            advance: .rideStatus(.arrived)
+            advance: .appReaches(.rideArrived)
         ),
         FirstRunDemoStep(
             id: "ownerDroppedOff",
             title: "End the ride.",
-            body: "When your rider is out, tap Dropped off. That closes the ride and frees the car for the next one.",
+            body: "Your rider is aboard. When they get out, tap Dropped off — that closes the ride and frees the car for the next one.",
             anchor: .ownerDispatchAction,
-            advance: .tapTarget
+            advance: .appReaches(.rideCompleted)
         ),
         FirstRunDemoStep(
             id: "ownerTabs",
@@ -201,28 +224,34 @@ public enum FirstRunDemoScript {
             title: "Where to?",
             body: "Tap the search bar to start a ride. This is a practice run on a sample car — no real request is made.",
             anchor: .riderSearchBar,
-            advance: .tapTarget
+            advance: .appReaches(.searchOpened)
         ),
         FirstRunDemoStep(
             id: "riderDestination",
             title: "Pick a destination.",
             body: "Type an address or choose one of these. Tap a destination to carry on.",
             anchor: .riderDestinationList,
-            advance: .tapTarget
+            advance: .appReaches(.destinationChosen)
         ),
         FirstRunDemoStep(
             id: "riderRequest",
             title: "Ask for the car.",
             body: "Check the trip, then request it. The owner gets your request instantly and can send the car your way.",
             anchor: .riderRequestButton,
-            advance: .tapTarget
+            advance: .appReaches(.requestSubmitted)
         ),
+        // Waits on ACCEPTED, not completed. The rest of a ride's states belong to
+        // the owner (`pickedUp`) and this rider's own later tap (`startRide`), and
+        // the rider walkthrough has no owner in the room — see
+        // `FirstRunDemoHost.prepareStep`, which plays the absent owner's parts as
+        // a cue on the NEXT step rather than stranding this one waiting for a
+        // transition nobody present can make.
         FirstRunDemoStep(
             id: "riderTrack",
             title: "Track every minute.",
-            body: "Follow the Tesla on the map with a live ETA, from the moment it sets off to the second it arrives.",
+            body: "The owner takes the request and the car sets off. Follow it on the map with a live ETA, right up to the second it arrives.",
             anchor: .riderTrackingSheet,
-            advance: .rideStatus(.completed)
+            advance: .appReaches(.rideAccepted)
         ),
         FirstRunDemoStep(
             id: "riderComplete",

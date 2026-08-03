@@ -157,10 +157,38 @@ A `-MRT_SCENE <name>` launch **argument** is accepted as a fallback for tooling 
   grow a coach mark and every existing scene is byte-identical by construction
   (the `recentDestinationsStore()` scoping, with the seed inverted). Drive the
   strip step by step — `mrt.demo.next` advances a `.next` step, `mrt.demo.skip`
-  ends the run from any step, and the `.tapTarget` steps advance only on the REAL
-  control the caption names. Capture each twice (once with
+  ends the run from any step, and an `.appReaches` step advances ONLY when the app
+  reaches the state its caption named. Capture each twice (once with
   `simctl spawn <udid> defaults write com.apple.Accessibility ReduceMotionEnabled
   -bool true`) to prove the step transition falls back to a cut.
+
+  **⚠️ THE FIRST CUT OF THIS FEATURE SHIPPED A WALKTHROUGH THAT COULD NOT
+  ADVANCE, AND A GREEN 1951-TEST SUITE SAID IT WAS FINE.** Four of the twelve
+  steps had a `.tapTarget` advance moved by a `handleTargetTapped()` **nothing
+  ever called** — nothing could, because the coach-mark layer deliberately does
+  not modify the screens it tours and therefore never sees their taps. A new
+  rider was stranded on step one of six in the first minute of the first launch.
+  The advance model is now `.appReaches(DemoMilestone)`: the step ends when the
+  app reaches the STATE the real control mutates, observed off the same
+  observable the toured screen renders from. That is strictly better evidence
+  than a tap — the step advances because search really opened or the request was
+  really taken — and it collapses a distinction that was never real, since "the
+  tester tapped Accept" and "the car arrived" are both just the app reaching a
+  state. `FirstRunDemoUITests` exists because only a running app can show the
+  overlay passes taps through to the control underneath.
+
+  **⚠️ AND THE WALKTHROUGH HAS TO PLAY THE ABSENT SECOND PARTY.** A ride needs
+  BOTH roles: `arrived → enroute` is the RIDER's transition (`OwnerDispatchStatus
+  .actionTitle` returns nil for `arrived` on purpose — MYR-411: "a second owner
+  button here would be a way to take the ride enroute with nobody in the car"),
+  and `pickedUp`/`droppedOff` are the OWNER's. Each walkthrough has only one of
+  them in the room, so the owner demo parked at `arrived` for ever with no
+  "Dropped off" button, and the rider demo sat on a tracking sheet that could
+  never resolve. `FirstRunDemoHost.prepareStep` plays the missing party's beats
+  as a step CUE — exactly what each caption tells the tester has happened — and
+  the present role's own taps stay real. **Only driving it in a running app found
+  either of these**; the simulated service's ticker advances `trackProgress` and
+  never the STATUS, which is not visible from any unit test of the cursor.
 
   ```sh
   SIMCTL_CHILD_MRT_SCENE=ownerDemo xcrun simctl launch <udid> app.myrobotaxi.ios

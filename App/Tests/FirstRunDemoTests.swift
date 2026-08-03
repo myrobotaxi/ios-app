@@ -210,30 +210,67 @@ final class FirstRunDemoRunTests: XCTestCase {
         XCTAssertEqual(run.index, index)
     }
 
-    /// A `.tapTarget` step moves only on its target being tapped.
-    func testATapTargetStepAdvancesOnTheTargetAndNotOnAStatus() {
-        let run = FirstRunDemoRun(role: .rider)   // riderWhereTo is .tapTarget
-        XCTAssertEqual(run.step.advance, .tapTarget)
-        run.handleRideStatus(.completed)
-        XCTAssertEqual(run.index, 0, "A status must not move a step waiting on a tap")
-        run.handleTargetTapped()
+    /// An interactive step moves only on the milestone it named.
+    func testAnInteractiveStepAdvancesOnlyOnItsOwnMilestone() {
+        let run = FirstRunDemoRun(role: .rider)   // riderWhereTo waits on .searchOpened
+        XCTAssertEqual(run.step.advance, .appReaches(.searchOpened))
+        run.handleMilestone(.rideCompleted)
+        XCTAssertEqual(run.index, 0, "An unrelated milestone must not move the step")
+        run.handleMilestone(.searchOpened)
         XCTAssertEqual(run.index, 1)
     }
 
-    /// A `.rideStatus` step moves only on the status it named — an early or
-    /// repeated status cannot skip a step.
-    func testARideStatusStepAdvancesOnlyOnItsOwnStatus() {
+    func testAnOwnerStatusStepAdvancesOnlyOnItsOwnMilestone() {
         let run = FirstRunDemoRun(role: .owner)
         while run.step.id != "ownerDispatch" { run.advance() }
-        XCTAssertEqual(run.step.advance, .rideStatus(.arrived))
+        XCTAssertEqual(run.step.advance, .appReaches(.rideArrived))
 
-        run.handleRideStatus(.accepted)
-        XCTAssertEqual(run.step.id, "ownerDispatch", "A different status must not advance the step")
-        run.handleTargetTapped()
-        XCTAssertEqual(run.step.id, "ownerDispatch", "A tap must not advance a status step")
+        run.handleMilestone(.rideAccepted)
+        XCTAssertEqual(run.step.id, "ownerDispatch", "A different milestone must not advance the step")
 
-        run.handleRideStatus(.arrived)
+        run.handleMilestone(.rideArrived)
         XCTAssertEqual(run.step.id, "ownerDroppedOff")
+    }
+
+    /// The host re-delivers the observed state on every change, not once per
+    /// transition, so a repeat must be a no-op.
+    func testARepeatedMilestoneAdvancesOnlyOnce() {
+        let run = FirstRunDemoRun(role: .rider)
+        run.handleMilestone(.searchOpened)
+        run.handleMilestone(.searchOpened)
+        run.handleMilestone(.searchOpened)
+        XCTAssertEqual(run.index, 1, "A milestone re-delivered must not walk the cursor forward")
+    }
+
+    /// **Regression, and the reason this file's advance model changed.** The first
+    /// cut had a `.tapTarget` case whose only mover was a `handleTargetTapped()`
+    /// that NOTHING called — the coach-mark layer does not modify the screens it
+    /// tours, so it never sees their taps. Four of twelve steps rendered no Next
+    /// and could never advance; a new rider was stranded on step one of six.
+    ///
+    /// The structural guarantee that replaces it: **every step is either
+    /// `.next` (and so carries a button) or `.appReaches` (and so is moved by
+    /// state the host actually observes).** There is no third kind, and
+    /// `FirstRunDemoHostMilestoneTests` pins that the host can produce each
+    /// milestone the scripts wait on.
+    func testEveryStepHasAWorkingWayForward() {
+        for role in FirstRunDemoRole.allCases {
+            for step in FirstRunDemoScript.steps(for: role) {
+                switch step.advance {
+                case .next:
+                    continue // the caption renders a button
+                case .appReaches(let milestone):
+                    let run = FirstRunDemoRun(role: role)
+                    while run.step.id != step.id { run.advance() }
+                    let before = run.index
+                    run.handleMilestone(milestone)
+                    XCTAssertEqual(
+                        run.index, before + 1,
+                        "\(step.id) cannot be advanced by the milestone it waits on"
+                    )
+                }
+            }
+        }
     }
 }
 

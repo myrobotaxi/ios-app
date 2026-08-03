@@ -85,11 +85,12 @@ struct FirstRunDemoHost: View {
         .onChange(of: run.isFinished) { _, finished in
             if finished { onFinished() }
         }
-        // The two `.rideStatus` steps. Read off the SAME record the toured screen
-        // is rendering, so the walkthrough and the ride cannot disagree about
-        // where the ride is.
-        .onChange(of: demoRideStatus) { _, status in
-            if let status { run.handleRideStatus(status) }
+        // EVERY interactive step. Read off the SAME state the toured screen is
+        // rendering, so the walkthrough and the app cannot disagree about where
+        // the ride is — and so the tester's tap on the real control is what moves
+        // the walkthrough, without the walkthrough ever seeing the tap.
+        .onChange(of: milestone) { _, reached in
+            if let reached { run.handleMilestone(reached) }
         }
         .onAppear(perform: prepareStep)
         .onChange(of: run.index) { _, _ in prepareStep() }
@@ -128,21 +129,64 @@ struct FirstRunDemoHost: View {
         switch run.step.id {
         case "ownerIncoming":
             composition.rideRequestService.seedDemoIncomingRequest()
+
+        case "ownerDroppedOff":
+            // **THE RIDER WHO ISN'T THERE.** `arrived → enroute` is the RIDER's
+            // transition — `OwnerDispatchStatus.actionTitle` returns nil for
+            // `arrived` on purpose, because "a second owner button here would be a
+            // way to take the ride enroute with nobody in the car" (MYR-411). The
+            // owner walkthrough has no rider, so without this the ride parks at
+            // `arrived` forever, the "Dropped off" button never appears, and the
+            // step it belongs to can never end. Running it is what found that;
+            // no unit test could, because the rule lives in the screen.
+            //
+            // So the walkthrough plays the missing rider's one line, which is
+            // exactly what the copy tells the owner has happened ("Your rider is
+            // aboard"). The owner's own closing tap stays real.
+            composition.rideRequestService.startRide()
+
+        case "riderComplete":
+            // **THE OWNER WHO ISN'T THERE** — the mirror of the step above, and
+            // the same discovery. A ride reaches its summary only by
+            // `pickedUp` (owner) → `startRide` (rider) → `droppedOff` (owner),
+            // and the rider walkthrough has no owner. Left alone, the rider sat
+            // on a tracking sheet that would never resolve.
+            //
+            // The walkthrough plays the two owner beats so the step's own subject
+            // — the post-ride summary — actually exists to be pointed at.
+            let service = composition.rideRequestService
+            service.pickedUp()
+            service.startRide()
+            service.droppedOff()
+
         default:
             break
         }
     }
 
-    /// The demo-facing projection of the ride the toured screen holds.
-    private var demoRideStatus: DemoRideStatus? {
-        let record = role == .owner
-            ? composition.rideRequestService.ownerDispatch
-            : composition.rideRequestService.activeRequest
-        switch record?.status {
-        case .accepted: return .accepted
-        case .arrived: return .arrived
-        case .enroute: return .enroute
-        case .completed: return .completed
+    /// The demo-facing projection of what the app is currently doing.
+    ///
+    /// The ride states are read off the SERVICE and the two rider-navigation ones
+    /// off the viewer's sheet phase — in both cases the same observable the toured
+    /// screen renders from, which is the property that makes a real tap on a real
+    /// control move the walkthrough without the walkthrough touching that screen.
+    ///
+    /// Ride status is checked FIRST so a rider who has reached tracking is not
+    /// re-reported as `.destinationChosen` by a stale sheet phase.
+    private var milestone: DemoMilestone? {
+        if let status = composition.rideRequestService.activeRequest?.status {
+            switch status {
+            case .completed: return .rideCompleted
+            case .arrived: return .rideArrived
+            case .accepted, .enroute: return .rideAccepted
+            case .pending: return role == .rider ? .requestSubmitted : nil
+            case .declined: return nil
+            }
+        }
+        guard role == .rider else { return nil }
+        switch composition.viewerState.sheetPhase {
+        case .review, .booking: return .destinationChosen
+        case .search, .pinDrop: return .searchOpened
         default: return nil
         }
     }

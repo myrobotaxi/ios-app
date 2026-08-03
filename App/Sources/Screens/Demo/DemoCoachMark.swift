@@ -109,17 +109,15 @@ public final class FirstRunDemoRun {
         isFinished = true
     }
 
-    /// The tester tapped the real control this step is pointing at.
-    public func handleTargetTapped() {
-        guard case .tapTarget = step.advance else { return }
-        advance()
-    }
-
-    /// The simulated ride reached a status. Advances only the step that was
-    /// waiting for exactly this one, so a status arriving early or twice cannot
-    /// skip a step — the MYR-414 restamp trap, pointed at a cursor.
-    public func handleRideStatus(_ status: DemoRideStatus) {
-        guard case .rideStatus(let awaited) = step.advance, awaited == status else { return }
+    /// The app reached a state. Advances only the step that was waiting for
+    /// exactly this one, so a milestone arriving early, late or twice cannot skip
+    /// a step — the MYR-414 restamp trap, pointed at a cursor.
+    ///
+    /// The host calls this on every change of the observed state rather than once
+    /// per transition, so it must be idempotent: re-delivering the milestone the
+    /// CURRENT step is not waiting for is a no-op.
+    public func handleMilestone(_ milestone: DemoMilestone) {
+        guard case .appReaches(let awaited) = step.advance, awaited == milestone else { return }
         advance()
     }
 }
@@ -145,13 +143,23 @@ public struct DemoCoachMarkOverlay: View {
     }
 
     public var body: some View {
-        // The tester must be able to reach the real control underneath, so the
-        // layer is an empty full-bleed frame that takes no touches, and only the
-        // card itself is hit-testable.
-        Color.clear
+        // The tester must reach the real control underneath, so the layer holds
+        // NOTHING that takes a touch except the card: `Spacer` does not
+        // participate in hit testing, so the rest of the screen is live.
+        //
+        // Deliberately NOT `Color.clear … .allowsHitTesting(false).overlay { card }`,
+        // which is the obvious spelling and cost three UI-suite rounds: a
+        // hit-testing-disabled subtree also kept Skip and Next OUT OF THE
+        // ACCESSIBILITY TREE, so both were on screen, tappable by a finger, and
+        // findable by no query — and therefore unreachable by VoiceOver too.
+        // The visual result is identical; the difference is only visible to
+        // something that enumerates elements.
+        VStack(spacing: 0) {
+            if placement == .bottom { Spacer(minLength: 0) }
+            card
+            if placement == .top { Spacer(minLength: 0) }
+        }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .allowsHitTesting(false)
-            .overlay(alignment: placement == .top ? .top : .bottom) { card }
             .animation(
                 reduceMotion ? nil : .timingCurve(0.22, 1, 0.36, 1, duration: 0.32),
                 value: run.index
@@ -160,17 +168,33 @@ public struct DemoCoachMarkOverlay: View {
 
     private var card: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
-            Text(run.step.title)
-                .mrtTextStyle(.sectionTitle)
-                .foregroundStyle(Color.mrtText)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 8)
-            Text(run.step.body)
-                .mrtTextStyle(.bodySmall)
-                .foregroundStyle(Color.mrtTextSec)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 6)
+            // **THE ACCESSIBILITY GROUP IS THE PROSE, NOT THE CARD**, and this
+            // shape was arrived at by measurement after three UI-suite rounds.
+            // The step's identifier needs a real element to sit on:
+            // `.accessibilityElement(children: .contain)` creates one, and a bare
+            // container carrying only an identifier is not an element at all, so
+            // the identifier resolves to nothing. But applied to the WHOLE card
+            // that same modifier makes Skip and Next unfindable by any query.
+            // Scoping the group to the text block satisfies both — the step is
+            // addressable, and the two controls stay top-level siblings outside
+            // the group. It also reads better to VoiceOver: the caption is one
+            // utterance, and the buttons are buttons.
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                Text(run.step.title)
+                    .mrtTextStyle(.sectionTitle)
+                    .foregroundStyle(Color.mrtText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 8)
+                Text(run.step.body)
+                    .mrtTextStyle(.bodySmall)
+                    .foregroundStyle(Color.mrtTextSec)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 6)
+            }
+            .accessibilityIdentifier(run.step.accessibilityID)
+            .accessibilityElement(children: .contain)
+
             footer
                 .padding(.top, 14)
         }
@@ -187,8 +211,6 @@ public struct DemoCoachMarkOverlay: View {
         // change to the chrome moves both. MYR-419's lesson, one surface over.
         .padding(.top, placement == .top ? Self.topChromeClearance : 18)
         .padding(.bottom, placement == .bottom ? 18 : 0)
-        .accessibilityIdentifier(run.step.accessibilityID)
-        .accessibilityElement(children: .contain)
     }
 
     private var header: some View {
@@ -223,6 +245,15 @@ public struct DemoCoachMarkOverlay: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            // Forced into the tree as its own element. A `.plain`-styled Button
+            // wrapping a `Text` inside a card the layer marks non-hit-testable
+            // does not reliably surface its identifier on its own — three UI
+            // rounds of "Skip is on screen and unfindable" is the evidence. This
+            // is also the accessibility fix, not just the test fix: a Skip a
+            // query cannot reach is a Skip VoiceOver cannot reach, and Skip is
+            // the mandatory way out of this walkthrough.
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
             .accessibilityIdentifier("mrt.demo.skip")
 
             Spacer(minLength: 0)
@@ -246,6 +277,8 @@ public struct DemoCoachMarkOverlay: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
                 .accessibilityIdentifier("mrt.demo.next")
             } else {
                 Color.clear.frame(width: 44, height: 44)
