@@ -208,7 +208,28 @@ let package = Package(
         // "Waiting for an update" rather than inventing an instant. Same tolerant
         // decode as `rideShareEnabled` and `hasActiveRide`, for the same reason.
         // `v` stays `1` again, on the same additive-optional reasoning.
-        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.28.0")
+        //
+        // MYR-440 — 0.29.0 moves `VehicleState.interiorTemp` and `.exteriorTemp`
+        // OUT of the schema's `required` list, so both generate as `Int?` instead
+        // of `Int`. This is the one contracts bump so far that fixes a LIVE
+        // client bug rather than adding a field.
+        //
+        // Telemetry MYR-435 narrows the shared-viewer mask: a viewer stops
+        // receiving media, cabin state, and all vehicle-controls state — 34
+        // fields. Thirty-two were already optional here. These two were the only
+        // withheld fields still `required`, so on 0.28.0 a viewer's GET /snapshot
+        // threw `keyNotFound` on the first missing temp and the WHOLE document
+        // was discarded. `TelemetrySocket.attemptSnapshot` catches a
+        // `DecodingError` in the same generic arm it uses for a network blip, so
+        // it retried silently forever and the viewer's map sat on "Locating…"
+        // with nothing naming a contract mismatch.
+        //
+        // The floor moves to 0.29.0 rather than riding `from: "0.28.0"`'s
+        // automatic resolution because correctness now DEPENDS on the optional
+        // shape — a resolve that landed on 0.28.0 would compile and then fail in
+        // the field. WS frames were never affected (sparse by contract), and the
+        // owner path is byte-identical: the owner always receives both temps.
+        .package(url: "https://github.com/myrobotaxi/contracts.git", from: "0.29.0")
     ],
     targets: [
         .target(
