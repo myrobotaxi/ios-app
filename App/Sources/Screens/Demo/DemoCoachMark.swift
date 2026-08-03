@@ -36,34 +36,66 @@ import DesignSystem
 //    self-defeating, and over a dark map at these token alphas it reads as the
 //    app having gone unresponsive.
 
-/// Which half of the screen a step's subject occupies. The caption takes the
-/// other one.
+/// Which half of the screen a step's SUBJECT occupies — a fact about the toured
+/// screen, stated independently of where the caption then goes.
+///
+/// **The independence is the point, and it was bought with a shipped defect.** The
+/// first cut of this file declared only the caption's placement and asserted the
+/// rule with `let subjectIsLow = (placement == .top)` — a tautology that reduced to
+/// `placement == .top` equals `placement == .top` and could not fail. Underneath
+/// it, `.ownerIncomingCard` and `.ownerAcceptButton` were both filed as UPPER
+/// ("the incoming card is top chrome"), which is simply false: `IncomingRequestSheet`
+/// is a BOTTOM sheet — top-radii only, `ignoresSafeArea(edges: .bottom)`, its CTA
+/// row the last thing in it. Measured on a running app, the caption landed at
+/// y≈634–816 directly over an "Accept & send" button at y 736–783 — on the step
+/// whose entire lesson is *tap Accept & send*. Stating the subject separately is
+/// what makes a wrong entry a DISAGREEMENT a test can see rather than a value that
+/// defines its own correctness.
+public enum DemoScreenHalf: Equatable, Sendable {
+    case upper
+    case lower
+}
+
+/// Which half of the screen the caption takes. Always the one its subject does not.
 public enum DemoCaptionPlacement: Equatable, Sendable {
     /// Subject is in the lower half (a sheet, a CTA, the tab bar) → caption on top.
     case top
-    /// Subject is in the upper half (the map hero, the incoming card, the dispatch
-    /// banner) → caption at the bottom.
+    /// Subject is in the upper half (the map hero, the dispatch banner) → caption
+    /// at the bottom.
     case bottom
 
-    /// Where each anchor's subject actually is. Derived from the screens' own
-    /// layout grammar rather than guessed: the owner dispatch card sits at
-    /// `OwnerMapTopChrome.dispatchCardTop` (112) and the incoming card is top
-    /// chrome, so both are upper; the rider sheet, both tab bars and the owner
-    /// vehicle sheet are bottom chrome (`mrtBottomNav`, the sheet detents).
+    /// **DERIVED, never chosen per anchor** — the caption takes the half the
+    /// subject does not, and that is one expression rather than twelve decisions.
     public static func forAnchor(_ anchor: DemoAnchor) -> DemoCaptionPlacement {
-        switch anchor {
-        case .ownerVehicleHero: return .top
-        case .ownerIncomingCard: return .bottom
-        case .ownerAcceptButton: return .bottom
-        case .ownerDispatchCard: return .bottom
-        case .ownerDispatchAction: return .bottom
-        case .ownerTabBar: return .top
-        case .riderSearchBar: return .top
-        case .riderDestinationList: return .top
-        case .riderRequestButton: return .top
-        case .riderTrackingSheet: return .top
-        case .riderSummaryCard: return .top
-        case .riderTabBar: return .top
+        anchor.subjectHalf == .lower ? .top : .bottom
+    }
+}
+
+extension DemoAnchor {
+    /// Where this anchor's subject actually sits, read off the screens' OWN layout
+    /// grammar rather than guessed at:
+    ///
+    ///  • the owner dispatch card is pinned at `OwnerMapTopChrome.dispatchCardTop`
+    ///    (112) and its action button rides on that card — the only UPPER pair;
+    ///  • `IncomingRequestSheet` is a bottom sheet, so the card AND its accept
+    ///    button are lower (this is the pair that shipped wrong);
+    ///  • the owner vehicle hero is the detent sheet's peek band, the rider's
+    ///    search bar / destination list / request CTA / tracking sheet / summary
+    ///    card all live in the rider sheet, and both tab bars are `mrtBottomNav`.
+    public var subjectHalf: DemoScreenHalf {
+        switch self {
+        case .ownerVehicleHero: return .lower
+        case .ownerIncomingCard: return .lower
+        case .ownerAcceptButton: return .lower
+        case .ownerDispatchCard: return .upper
+        case .ownerDispatchAction: return .upper
+        case .ownerTabBar: return .lower
+        case .riderSearchBar: return .lower
+        case .riderDestinationList: return .lower
+        case .riderRequestButton: return .lower
+        case .riderTrackingSheet: return .lower
+        case .riderSummaryCard: return .lower
+        case .riderTabBar: return .lower
         }
     }
 }
@@ -132,7 +164,26 @@ public struct DemoCoachMarkOverlay: View {
 
     /// See the `.padding(.top:)` note below — this is the owner map's own
     /// below-the-switcher constant, not a second opinion about it.
-    static let topChromeClearance = OwnerMapTopChrome.dispatchCardTop
+    public static let topChromeClearance = OwnerMapTopChrome.dispatchCardTop
+
+    /// The card's own breathing room from whatever chrome it is clearing. One
+    /// number, both edges, so the two placements read as one grammar.
+    public static let captionGutter: CGFloat = 18
+
+    /// **A BOTTOM-PLACED CAPTION HAS TO CLEAR THE FLOATING TAB BAR**, and the
+    /// first cut did not: it used a bare `18` from the physical edge, which puts
+    /// the card's footer at y 762–806 on a 874pt screen while `mrtBottomNav`
+    /// occupies 788–848. Measured on the `ownerDroppedOff` capture, the SKIP row —
+    /// the walkthrough's mandatory way out — ran UNDER the tab bar, which is drawn
+    /// after it and therefore over it.
+    ///
+    /// The top edge was already derived (`OwnerMapTopChrome.dispatchCardTop`) and
+    /// the bottom edge was chosen, which is exactly the asymmetry MYR-345 and
+    /// MYR-419 are both about: a clearance that is not read off the chrome it is
+    /// clearing is a number that stops being true the moment the chrome moves.
+    /// `MRTMetrics.bottomNavTopEdge` is the nav's own 86 (60pt tall, floating 26
+    /// above the edge), so the card lands one gutter above it.
+    public static let bottomChromeClearance = MRTMetrics.bottomNavTopEdge + captionGutter
 
     public init(run: FirstRunDemoRun) {
         self.run = run
@@ -209,8 +260,8 @@ public struct DemoCoachMarkOverlay: View {
         // constant this app already uses for "a card that floats below the chip",
         // so the walkthrough's card and the dispatch card share one answer and a
         // change to the chrome moves both. MYR-419's lesson, one surface over.
-        .padding(.top, placement == .top ? Self.topChromeClearance : 18)
-        .padding(.bottom, placement == .bottom ? 18 : 0)
+        .padding(.top, placement == .top ? Self.topChromeClearance : Self.captionGutter)
+        .padding(.bottom, placement == .bottom ? Self.bottomChromeClearance : 0)
     }
 
     private var header: some View {

@@ -1,4 +1,5 @@
 import XCTest
+import DesignSystem
 @testable import MyRoboTaxi
 
 // MARK: - MYR-428 — the per-role flag state machine
@@ -335,17 +336,75 @@ final class FirstRunDemoScriptTests: XCTestCase {
         XCTAssertEqual(FirstRunDemoScript.finishLabel(for: .rider), "Start riding")
     }
 
-    /// A step's caption must never sit on top of the control it is naming.
+    /// A step's caption must never sit in the half of the screen its subject
+    /// occupies.
+    ///
+    /// **This test used to be a tautology, and that is how the defect it now
+    /// catches shipped.** It read `let subjectIsLow = (placement == .top)` and then
+    /// asserted `placement == .top` equalled it — i.e. `x == x`, green for any
+    /// table whatsoever, including the one that filed the bottom-sheet incoming
+    /// card as top chrome and put the caption over its own "Accept & send".
+    /// The subject half is a SEPARATE declaration now (`DemoAnchor.subjectHalf`),
+    /// so this compares two things instead of one thing with itself.
+    ///
+    /// It is still only half the guard — a table can be independently stated and
+    /// still wrong about a screen. `FirstRunDemoUITests
+    /// .testNoCaptionOverlapsTheControlItNames` is the other half: it measures the
+    /// two frames in a running app.
     func testTheCaptionNeverCoversItsOwnSubject() {
         for role in FirstRunDemoRole.allCases {
             for step in FirstRunDemoScript.steps(for: role) {
-                let subjectIsLow = DemoCaptionPlacement.forAnchor(step.anchor) == .top
                 let placement = DemoCaptionPlacement.forAnchor(step.anchor)
-                XCTAssertEqual(
-                    placement == .top, subjectIsLow,
-                    "\(step.id): the caption must take the half its subject does not"
-                )
+                switch step.anchor.subjectHalf {
+                case .lower:
+                    XCTAssertEqual(placement, .top,
+                                   "\(step.id): subject is in the lower half, so the caption must take the top")
+                case .upper:
+                    XCTAssertEqual(placement, .bottom,
+                                   "\(step.id): subject is in the upper half, so the caption must take the bottom")
+                }
             }
+        }
+    }
+
+    /// **Both clearances are DERIVED from the chrome they clear, not chosen.** The
+    /// top edge always was (`OwnerMapTopChrome.dispatchCardTop`); the bottom edge
+    /// was a bare 18 from the physical edge, which put the caption's SKIP row under
+    /// the floating tab bar — seen in the `ownerDroppedOff` capture, not in any
+    /// test. A number that is not read off the chrome stops being true the moment
+    /// the chrome moves.
+    func testBothCaptionClearancesAreReadOffTheChromeTheyClear() {
+        XCTAssertEqual(DemoCoachMarkOverlay.topChromeClearance, OwnerMapTopChrome.dispatchCardTop,
+                       "the top clearance is the map's own below-the-switcher constant")
+        XCTAssertEqual(DemoCoachMarkOverlay.bottomChromeClearance,
+                       MRTMetrics.bottomNavTopEdge + DemoCoachMarkOverlay.captionGutter,
+                       "the bottom clearance is the floating nav's own top edge plus one gutter")
+        XCTAssertGreaterThan(DemoCoachMarkOverlay.bottomChromeClearance, MRTMetrics.bottomNavTopEdge,
+                             "a bottom-placed caption must sit entirely above the tab bar")
+    }
+
+    /// The two anchors whose subject is the OWNER DISPATCH CARD are the only upper
+    /// ones, and every anchor that names a bottom sheet or a tab bar is lower.
+    /// Pinned explicitly because `subjectHalf` is the input the rule above derives
+    /// from — a rule cannot check its own premise, so the premise is asserted
+    /// against the screens' layout grammar here, by name.
+    func testTheSubjectHalvesMatchTheScreensTheyName() {
+        XCTAssertEqual(DemoAnchor.ownerDispatchCard.subjectHalf, .upper,
+                       "the dispatch card is pinned at OwnerMapTopChrome.dispatchCardTop")
+        XCTAssertEqual(DemoAnchor.ownerDispatchAction.subjectHalf, .upper,
+                       "the dispatch action rides on the dispatch card")
+
+        // IncomingRequestSheet is a BOTTOM sheet — top-radii only, bottom safe area
+        // ignored, CTA row last. Both of these were filed as upper and shipped a
+        // caption over the button the step tells the tester to tap.
+        XCTAssertEqual(DemoAnchor.ownerIncomingCard.subjectHalf, .lower)
+        XCTAssertEqual(DemoAnchor.ownerAcceptButton.subjectHalf, .lower)
+
+        for anchor in [DemoAnchor.ownerVehicleHero, .ownerTabBar, .riderSearchBar,
+                       .riderDestinationList, .riderRequestButton, .riderTrackingSheet,
+                       .riderSummaryCard, .riderTabBar] {
+            XCTAssertEqual(anchor.subjectHalf, .lower,
+                           "\(anchor.rawValue) names a bottom sheet or a bottom nav")
         }
     }
 

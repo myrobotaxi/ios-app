@@ -229,7 +229,35 @@ public enum FirstRunDemoScript {
         FirstRunDemoStep(
             id: "riderDestination",
             title: "Pick a destination.",
-            body: "Type an address or choose one of these. Tap a destination to carry on.",
+            // **NAMES BOTH TAPS, BECAUSE THE FLOW HAS TWO.** The first draft read
+            // "Tap a destination to carry on" and it was wrong in the same way
+            // "tap Send the car" was wrong last round — and it took TWO rounds of
+            // driving the real flow to find out how wrong, because the step ends on
+            // the REVIEW sheet and there are two controls between a destination row
+            // and that sheet:
+            //
+            //  1. choosing a row FILLS the field and reveals a gold "Continue"
+            //     (MYR-215/MYR-356 — `selectDestination` is the funnel that
+            //     advances, and a row tap is not it), and
+            //  2. Continue does not go to Review either: it goes to the PIN-DROP
+            //     pickup confirmation ("Confirm pickup here"), which is the
+            //     shipping path `pinDropRealPath` exists to capture.
+            //
+            // So a tester following the first draft tapped a destination and
+            // stopped, on a step that had told them they were done. Reading the
+            // script could not show this; only walking it could.
+            // **AND IT NO LONGER SAYS "TYPE AN ADDRESS", BECAUSE THE FIELD IS NOT
+            // VISIBLE ON THIS STEP.** The search sheet puts its destination field at
+            // its own top edge, which is precisely the band a top-placed caption
+            // takes — so the card covers it (the capture shows a sliver of the gold
+            // field peeking out beside the card). The keyboard is up and focused, so
+            // a tester who followed that instruction would be typing into something
+            // they cannot see. This is the honest cost of placing captions in a BAND
+            // rather than around a measured frame (see `DemoCoachMark`'s header: an
+            // anchored ring would mean the toured screens publishing their geometry),
+            // and the answer is to name only what is on screen: the rows the step's
+            // own anchor points at.
+            body: "Choose one of these, then tap Continue and confirm your pickup.",
             anchor: .riderDestinationList,
             advance: .appReaches(.destinationChosen)
         ),

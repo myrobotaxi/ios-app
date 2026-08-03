@@ -80,7 +80,32 @@ struct FirstRunDemoHost: View {
             shell
             DemoCoachMarkOverlay(run: run)
         }
-        .accessibilityIdentifier("mrt.demo.host")
+        // **THERE IS DELIBERATELY NO IDENTIFIER ON THIS CONTAINER, AND THE REASON
+        // IS A DEFECT IT SHIPPED.** A `.accessibilityIdentifier("mrt.demo.host")`
+        // here reads as harmless — a name for the walkthrough's root, so a test can
+        // ask whether the demo is still up. It is not harmless: SwiftUI applies a
+        // container's accessibility identifier to the ELEMENTS BENEATH IT, and the
+        // outermost one wins. Measured on a running app, every control in the
+        // toured screen came back carrying `mrt.demo.host` — the MapHeader vehicle
+        // chip, the recenter button, all four tab-bar buttons, the incoming card's
+        // rows, its **Accept & send** and **Decline** buttons, and the coach mark's
+        // own Skip and Next. So `mrt.demo.next` resolved to NOTHING, on every step,
+        // from the first frame.
+        //
+        // Nothing about this was visible to a user: labels and traits survive the
+        // smear intact, so VoiceOver read "SKIP", "Next" and "Accept & send"
+        // correctly throughout, and a finger reached all three. What it broke was
+        // ADDRESSABILITY — every identifier the toured screens publish for their own
+        // tests (`mrt.riderSheet`, `mrt.search.dest.<id>`) was overwritten for as
+        // long as the walkthrough was on screen. **A walkthrough that renames the
+        // app's controls while it runs is not a pure overlay**, which is this
+        // feature's whole premise.
+        //
+        // The walkthrough is addressed by the step it is on — `mrt.demo.step.<id>`,
+        // which sits on the caption's own text group and survives, because that
+        // group is the innermost thing annotating those leaves. That identifier is
+        // strictly more useful than a root marker anyway: it says WHICH step, and
+        // its absence is exactly "the walkthrough is gone".
         // ONE finish observer — see this file's header.
         .onChange(of: run.isFinished) { _, finished in
             if finished { onFinished() }

@@ -190,6 +190,72 @@ A `-MRT_SCENE <name>` launch **argument** is accepted as a fallback for tooling 
   either of these**; the simulated service's ticker advances `trackProgress` and
   never the STATUS, which is not visible from any unit test of the cursor.
 
+  **⚠️ THE WALKTHROUGH RENAMED EVERY CONTROL IN THE APP WHILE IT RAN.** One
+  `.accessibilityIdentifier("mrt.demo.host")` on `FirstRunDemoHost`'s container:
+  SwiftUI applies a container's identifier to the ELEMENTS BENEATH IT and the
+  outermost one wins, so a dump of the real tree came back with Skip, Next, the
+  MapHeader chip, the recenter button, all four tab buttons, `mrt.riderSheet`,
+  `mrt.search.dest.*` and the incoming card's **Accept & send** ALL reporting
+  `mrt.demo.host`. `mrt.demo.next` therefore resolved to nothing on every step —
+  which is what the previous round mis-read as "step 2 breaks". **Nothing about it
+  was visible to a user**: labels and traits survive intact, VoiceOver read every
+  control correctly, and a finger reached all of them. What broke was
+  ADDRESSABILITY, and a walkthrough that renames the app's controls is not the
+  pure overlay this feature is premised on. There is no container identifier now;
+  the walkthrough is addressed by `mrt.demo.step.<id>`, whose absence is exactly
+  "the walkthrough is gone".
+
+  **THE ACCESSIBILITY-TREE VERDICT, SINCE IT WAS THE STANDING HYPOTHESIS: NO.**
+  `IncomingRequestSheet`'s `.accessibilityAddTraits(.isModal)` does **not** prune
+  the coach mark. Measured at step 2 on a running app: the caption's four step
+  elements, SKIP, the dots and Next are all enumerated, alongside the whole toured
+  shell. No overlay needed hosting at window level, and the layer stays a plain
+  `ZStack` sibling.
+
+  **⚠️ THE CAPTION SAT ON TOP OF THE BUTTON IT TOLD THE TESTER TO TAP, AND ITS
+  GUARD WAS A TAUTOLOGY.** `DemoCaptionPlacement.forAnchor` filed the incoming card
+  as "top chrome"; `IncomingRequestSheet` is a BOTTOM sheet, so steps 2 and 3 put
+  the caption in the bottom band — measured, the card at y≈634–816 directly over an
+  "Accept & send" at y 736–783, on the step whose whole lesson is *tap Accept &
+  send*. `testTheCaptionNeverCoversItsOwnSubject` could not catch it because it
+  derived the subject's half FROM the placement it was checking (`x == x`, green
+  for any table). The subject half is a SEPARATE declaration now
+  (`DemoAnchor.subjectHalf`) and the placement is DERIVED from it, plus a real
+  runtime guard: `FirstRunDemoUITests.assertCaptionClears` measures the card's
+  footprint against the frame of the control each step names.
+
+  **⚠️ THE SIMULATED SERVICE'S THREE DISPATCH TRANSITIONS WERE PROTOCOL NO-OPS, SO
+  THE OWNER WALKTHROUGH WAS UNFINISHABLE.** `RideRequestService`'s defaults for
+  `pickedUp` / `startRide` / `droppedOff` return without doing anything, on
+  MYR-270's perfectly good reasoning that those CTAs are gated to the live path and
+  "never reach the sim". This feature built the first simulated surface that shows
+  them: the owner's "Arrived at pickup" is not gated, the coach mark told the
+  tester to tap it, and the tap reached a no-op — `dispatchInFlight` latched (only
+  a status change clears it), the gold button went permanently dead, and step 4 of
+  6, which renders no Next by design, could never end. `SimulatedRideRequestService`
+  implements all three now, mirroring the live guards and effects minus the
+  network. **Adding them moves no capture**, by call graph rather than by hope:
+  nothing else on the simulated path calls them.
+
+  **⚠️ THE RIDER'S DESTINATION STEP HID TWO TAPS.** Its copy said "Tap a
+  destination to carry on"; choosing a row only FILLS the field (MYR-215/MYR-356 —
+  `selectDestination` is the funnel that advances, and a row tap is not it), the
+  gold **Continue** carries on, and Continue goes to the PIN-DROP pickup
+  confirmation, not to Review. Two controls between the row and the sheet the step
+  ends on, neither named. The copy names both now. It also stopped saying "type an
+  address": the search sheet's field sits in the band a top-placed caption takes,
+  so **the card covers it** — the honest cost of BAND placement (an anchored ring
+  would mean the toured screens publishing geometry), and the answer is to name
+  only what is on screen.
+
+  **⚠️ A BOTTOM-PLACED CAPTION RAN UNDER THE FLOATING TAB BAR.** The top edge was
+  derived (`OwnerMapTopChrome.dispatchCardTop`); the bottom edge was a bare `18`
+  from the physical edge, which put the SKIP row at y 762–806 under an
+  `mrtBottomNav` occupying 788–848 — the walkthrough's mandatory exit, beneath the
+  chrome that is drawn over it. Caught in the `ownerDroppedOff` CAPTURE, by nothing
+  else. It is `MRTMetrics.bottomNavTopEdge + captionGutter` now, i.e. read off the
+  chrome it clears, per MYR-345/MYR-419.
+
   ```sh
   SIMCTL_CHILD_MRT_SCENE=ownerDemo xcrun simctl launch <udid> app.myrobotaxi.ios
   SIMCTL_CHILD_MRT_SCENE=riderDemo xcrun simctl launch <udid> app.myrobotaxi.ios
