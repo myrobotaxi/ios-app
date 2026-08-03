@@ -44,6 +44,40 @@ public final class SimulatedRideRequestService: RideRequestService {
         autoAcceptTimer = timer
     }
 
+    /// MYR-428 — the owner walkthrough's practice request.
+    ///
+    /// Deliberately NOT `debugSeed`, which is `#if DEBUG` and therefore absent
+    /// from the build a beta tester installs — and the owner demo's whole second
+    /// step is a request arriving. The owner side of the simulated service has no
+    /// incoming FEED (MYR-317 records the same gap), so with no rider in the room
+    /// there is nothing to produce one.
+    ///
+    /// **It arms NO timers**, which is the difference from `submit`: the rider's
+    /// auto-accept fallback would resolve the request out from under a tester who
+    /// is still reading the coach mark, and the whole point of the step is that
+    /// THEY tap "Send the car". The ride advances from here exactly as a real one
+    /// does — through `accept()`, which does arm the progress ticker.
+    ///
+    /// MYR-228 is satisfied by WHO CAN CALL THIS: `SimulatedRideRequestService` is
+    /// only ever composed from `AppMode.simulated`, and the walkthrough composes
+    /// that mode explicitly for itself (`FirstRunDemoComposition`). A live surface
+    /// holds a `LiveRideRequestService` and cannot reach this method at all.
+    public func seedDemoIncomingRequest() {
+        guard activeRequest == nil else { return }
+        autoAcceptTimer?.invalidate()
+        autoAcceptTimer = nil
+        progressTimer?.invalidate()
+        progressTimer = nil
+        activeRequest = RideRequestRecord(
+            input: RideRequestInput(
+                pickup: RideRequestFixtures.savedPlaces[0],
+                destination: RideRequestFixtures.recentPlaces[0],
+                fleetMemberID: RideRequestFixtures.fleet[0].id
+            ),
+            status: .pending
+        )
+    }
+
     #if DEBUG
     /// MYR-317 drift-gate seam: the simulated service has no incoming feed, so the
     /// owner's "+N more waiting" chip can only be captured by seeding the count
