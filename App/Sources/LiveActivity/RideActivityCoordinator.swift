@@ -99,6 +99,39 @@ final class RideActivityCoordinator {
     /// passes nothing.
     private let sleep: @Sendable (Duration) async -> Void
 
+    // MARK: - MYR-425: waiting for the server's end
+
+    /// When the ride this process holds a card for COMPLETED, as best this app can
+    /// say: the server's own `completedAt` when the wire carried one, and otherwise
+    /// this process's first sighting of the `completed` status.
+    ///
+    /// The fallback is not a nicety — a completion that reaches the client as a WS
+    /// `ride_status_changed` frame carries no instant at all, and a backstop with no
+    /// clock is a backstop that never fires. The cost of the fallback is stated
+    /// honestly: a relaunch re-stamps it, so a card that outlived the process gets
+    /// its five minutes measured from the relaunch rather than from the drop-off.
+    ///
+    /// **It is about the CARD, not about the record**, and that distinction is
+    /// load-bearing: the rider's slot is released the moment they dismiss the
+    /// post-ride summary, so for most of the five minutes there is no record left to
+    /// re-derive this from.
+    private var completionInstant: Date?
+
+    /// The one deferred WAKE-UP for the backstop, and deliberately nothing more.
+    ///
+    /// It contains no policy: it sleeps to the deadline and then re-asks
+    /// `handleRideChange`, so the DECISION is the same pure `RideActivityStateMachine
+    /// .action` call every other tick makes. Without it the backstop would only be
+    /// reached at the next launch or foreground — which is the common case, since a
+    /// completed card matters most on a locked phone, but not the only one.
+    private var backstopTask: Task<Void, Never>?
+
+    /// How the backstop waits. Injected for the same reason `sleep` is, and kept
+    /// SEPARATE from it on purpose: the restore budget is skipped wholesale in tests
+    /// (`sleep: { _ in }`), and a backstop sharing that closure would fire instantly
+    /// in every test that ever completes a ride.
+    private let backstopWait: @Sendable (TimeInterval) async -> Void
+
     init(
         presenter: any RideActivityPresenting,
         endpoint: (any RideActivityTokenEndpoint)?,
@@ -107,7 +140,10 @@ final class RideActivityCoordinator {
         vehicleName: @escaping @MainActor () -> String = { "" },
         vehicle: @escaping @MainActor () -> RideActivityVehicle? = { nil },
         serverRideID: @escaping @MainActor () -> String? = { nil },
-        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+        backstopWait: @escaping @Sendable (TimeInterval) async -> Void = {
+            try? await Task.sleep(for: .seconds($0))
+        }
     ) {
         self.presenter = presenter
         self.endpoint = endpoint
@@ -117,6 +153,7 @@ final class RideActivityCoordinator {
         self.vehicle = vehicle
         self.serverRideID = serverRideID
         self.sleep = sleep
+        self.backstopWait = backstopWait
     }
 
     // MARK: - The one entry point
@@ -139,16 +176,26 @@ final class RideActivityCoordinator {
         // foreground and a status change all re-attempt without three call sites.
         await flushPendingRegistration()
 
+        // MYR-425 — IF SOMEBODY ELSE ALREADY ENDED THE CARD, STOP DRIVING IT. The
+        // server's held end is the normal way a completed ride's Activity goes away
+        // now, and it happens entirely outside this process.
+        standDownIfTheSystemEndedTheHeldCard()
+
         // MYR-423 — RE-SEAT THE REMEMBERED FRAME ON THE REAL ONE BEFORE DECIDING
         // ANYTHING. See `reseatPhaseOnDeliveredState`.
         reseatPhaseOnDeliveredState()
+
+        let completedAt = noteCompletion(of: record)
 
         let action = RideActivityStateMachine.action(
             phase: phase,
             record: record,
             vehicleName: vehicleName(),
-            dismissedRideIDs: dismissedRideIDs
+            dismissedRideIDs: dismissedRideIDs,
+            completedAt: completedAt
         )
+
+        armBackstopIfStillWaiting(action: action, record: record, completedAt: completedAt)
 
         switch action {
         case .none:
@@ -158,7 +205,20 @@ final class RideActivityCoordinator {
             await performStart(rideID: rideID, state: state, record: record)
 
         case .update(let rideID, let state):
-            await presenter.update(state: state, staleDate: RideActivityStaleness.date())
+            // MYR-425 — A FINAL FRAME CARRIES NO STALE DATE. `completed` reaches this
+            // arm now, and it is the one status whose card must not grey itself out
+            // while it waits: the server's held end is five minutes away and
+            // `RideActivityStaleness.window` is three, so a completed card written
+            // with the default stale date would start admitting it might be out of
+            // date about a ride that is over. `SystemRideActivityPresenter.end` has
+            // always passed `nil` here for exactly this reason; the update path
+            // simply had no terminal status to worry about until now.
+            await presenter.update(
+                state: state,
+                staleDate: RideActivityCompletedEnd.isFinalFrame(state.status)
+                    ? nil
+                    : RideActivityStaleness.date()
+            )
             phase = .live(rideID: rideID, state: state)
 
         case .end(let rideID, let state, let dismissal):
@@ -168,6 +228,124 @@ final class RideActivityCoordinator {
             await performEnd(rideID: endingRideID, state: endingState, dismissal: .immediate)
             await performStart(rideID: rideID, state: state, record: record)
         }
+    }
+
+    // MARK: - The completed ride's clock (MYR-425)
+
+    /// Establish (and remember) WHEN the held ride completed, or forget it.
+    ///
+    /// Returns the instant the backstop measures from, which is the server's own
+    /// `completedAt` whenever the wire carried one. The local stamp is written ONCE
+    /// and never re-written while the ride stays completed — re-stamping on every
+    /// tick would walk the deadline forward for ever and the backstop would never
+    /// fire at all, which is the quietest way to ship this fix un-shipped.
+    private func noteCompletion(of record: RideRequestRecord?) -> Date? {
+        let recordSaysCompleted = record.map { $0.status == .completed && phase.rideID == $0.id } ?? false
+        guard phase.rideID != nil, isHoldingACompletedCard || recordSaysCompleted else {
+            completionInstant = nil
+            return nil
+        }
+        // The server's own instant wins whenever the wire carries one. The local
+        // stamp is written ONCE — re-stamping on every tick would walk the deadline
+        // forward for ever and the backstop would never fire at all, which is the
+        // quietest way to ship this fix un-shipped.
+        completionInstant = record?.completedAt ?? completionInstant ?? Date()
+        return completionInstant
+    }
+
+    /// Does the card on screen say the ride is over?
+    ///
+    /// Read off the PHASE rather than off the record, for the reason `completionInstant`
+    /// spells out: the record is gone for most of the wait.
+    private var isHoldingACompletedCard: Bool {
+        phase.state?.status == .completed
+    }
+
+    /// Is the held card a completed ride still inside its wait for the server's end?
+    ///
+    /// **This is what stops MYR-405's reaper eating the arrival card.** With the five
+    /// minutes now spent LIVE rather than `.ended`, an Activity for a ride whose
+    /// record has been released (the rider tapped Done on the summary) looks exactly
+    /// like an orphan to `reconcile` — and reaping it would take the card down
+    /// `.immediate` AND issue the §7.21 DELETE, i.e. reproduce this issue's defect
+    /// from inside its own fix, the way MYR-405's `.ended` skip was written to
+    /// prevent.
+    private var isHoldingALingeringCompletedCard: Bool {
+        isHoldingACompletedCard
+            && !RideActivityCompletedEnd.backstopHasElapsed(completedAt: completionInstant, now: Date())
+    }
+
+    /// Arm the deferred wake-up when — and only when — the app is still waiting for
+    /// the server to end a completed card.
+    ///
+    /// Any other answer cancels it: a `.start`, a `.restart`, an `.end` (including
+    /// the backstop's own, so it cannot re-arm itself) and a ride that is no longer
+    /// completed all mean there is nothing left to wait for.
+    private func armBackstopIfStillWaiting(
+        action: RideActivityAction,
+        record: RideRequestRecord?,
+        completedAt: Date?
+    ) {
+        guard let completedAt,
+              phase.rideID != nil,
+              isHoldingACompletedCard || record?.status == .completed,
+              action.continuesTheHeldCard
+        else {
+            backstopTask?.cancel()
+            backstopTask = nil
+            return
+        }
+
+        let deadline = completedAt.addingTimeInterval(RideActivityCompletedEnd.backstop)
+        let delay = max(0, deadline.timeIntervalSinceNow)
+        let wait = backstopWait
+
+        backstopTask?.cancel()
+        backstopTask = Task { [weak self] in
+            await wait(delay)
+            guard !Task.isCancelled else { return }
+            // Re-ASK rather than re-decide: `handleRideChange` runs the same pure
+            // `action` call, over inputs that may well have moved on (the server's
+            // end may have landed while we slept), so a wake-up can never end a card
+            // the state machine would have kept.
+            await self?.handleRideChange(record)
+        }
+    }
+
+    /// **THE SERVER'S END, HONOURED WITHOUT A FIGHT** (MYR-425).
+    ///
+    /// A held Activity that the system reports as no longer on screen was ended by
+    /// somebody other than this coordinator — in the shipping case, by the server's
+    /// held end landing while the app was away. This process stands down: it stops
+    /// driving a card that is gone, and it issues **no §7.21 DELETE**, because the
+    /// end that removed the card is the same event that closed the server's row.
+    ///
+    /// Absence is deliberately NOT evidence: a ride the restore list does not mention
+    /// at all leaves everything exactly where it is (MYR-405's own rule, and the
+    /// reason `reconcile` waits out the restore budget before believing an empty
+    /// list).
+    private func standDownIfTheSystemEndedTheHeldCard() {
+        guard let rideID = phase.rideID,
+              let snapshot = presenter.presentedActivities.first(where: { $0.rideID == rideID }),
+              !snapshot.lifecycle.isOnScreenAndOurs,
+              snapshot.lifecycle != .dismissed // the rider's swipe has its own path
+        else { return }
+        standDown()
+    }
+
+    /// Forget the held Activity without ending anything and without telling the
+    /// server. Used only where the card is ALREADY gone.
+    private func standDown() {
+        backstopTask?.cancel()
+        backstopTask = nil
+        tokenTask?.cancel()
+        tokenTask = nil
+        stateTask?.cancel()
+        stateTask = nil
+        registered = nil
+        pendingToken = nil
+        completionInstant = nil
+        phase = .idle
     }
 
     /// **The server's id for the rider's ride became known** (MYR-415).
@@ -237,6 +415,11 @@ final class RideActivityCoordinator {
         }
 
         for rideID in plan.reap {
+            // MYR-425 — see `isHoldingALingeringCompletedCard`. The rider dismissing
+            // the summary releases the ride slot, so the account resolves to `.none`
+            // and the completed card the server is about to announce on reads as an
+            // orphan. It is not one: it is this process's own card, mid-linger.
+            if rideID == phase.rideID, isHoldingALingeringCompletedCard { continue }
             await reap(rideID: rideID, isDuplicateOfAdopted: plan.isDuplicateOfAdopted(rideID))
         }
 
@@ -419,6 +602,10 @@ final class RideActivityCoordinator {
         guard presenter.adopt(rideID: rideID) else { return false }
         phase = .live(rideID: rideID, state: presenter.deliveredContentState(rideID: rideID) ?? state)
         registered = nil
+        // MYR-425 — a completion stamp belongs to the ride it was taken for. Carrying
+        // one onto an adopted card would measure a NEW ride's backstop from an old
+        // ride's drop-off; `noteCompletion` re-establishes it from the record.
+        completionInstant = nil
         // MYR-415 — a token still pending for a DIFFERENT Activity must not be
         // placed against this one. The adopted card publishes its own token on
         // subscription, which is what `observe` is here for.
@@ -468,12 +655,15 @@ final class RideActivityCoordinator {
         let deleteID = registrationIDToRelease(forActivity: rideID)
 
         if phase.rideID == rideID {
+            backstopTask?.cancel()
+            backstopTask = nil
             tokenTask?.cancel()
             tokenTask = nil
             stateTask?.cancel()
             stateTask = nil
             registered = nil
             pendingToken = nil
+            completionInstant = nil
             phase = .idle
         }
         guard let deleteID else { return }
@@ -487,12 +677,15 @@ final class RideActivityCoordinator {
     ) async {
         let deleteID = registrationIDToRelease(forActivity: rideID)
 
+        backstopTask?.cancel()
+        backstopTask = nil
         tokenTask?.cancel()
         tokenTask = nil
         stateTask?.cancel()
         stateTask = nil
         registered = nil
         pendingToken = nil
+        completionInstant = nil
         phase = .idle
 
         await presenter.end(state: state, dismissal: dismissal)
@@ -579,18 +772,36 @@ final class RideActivityCoordinator {
     }
 
     private func handle(lifecycle: RideActivitySnapshot.Lifecycle, rideID: String) async {
-        guard lifecycle == .dismissed, phase.rideID == rideID else { return }
+        guard phase.rideID == rideID else { return }
+
+        // **THE SERVER ENDED IT — MYR-425.** With `completed` no longer ended by the
+        // client, the held card's ordinary exit is the server's held end (+5 min),
+        // which arrives over APNs and reaches this app only as an `.ended` lifecycle.
+        // Standing down here is what makes "the server end is honoured, and there is
+        // no fight" true rather than merely intended: the backstop's wake-up is
+        // cancelled with everything else, so it cannot re-end a card that is already
+        // gone, and no §7.21 DELETE is issued because the end that removed the card
+        // is the same event that closed the row.
+        if lifecycle == .ended {
+            standDown()
+            return
+        }
+
+        guard lifecycle == .dismissed else { return }
 
         // MYR-415 — resolved before the teardown clears the registration it names.
         let deleteID = registrationIDToRelease(forActivity: rideID)
 
         dismissedRideIDs.insert(rideID)
+        backstopTask?.cancel()
+        backstopTask = nil
         tokenTask?.cancel()
         tokenTask = nil
         stateTask?.cancel()
         stateTask = nil
         registered = nil
         pendingToken = nil
+        completionInstant = nil
         phase = .idle
 
         // Tell the server to stop pushing to a card nobody can see. The rider ended

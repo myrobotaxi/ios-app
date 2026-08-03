@@ -500,13 +500,14 @@ final class RideReservationLifecycleTests: XCTestCase {
         ) else { return XCTFail("expected an update") }
         XCTAssertEqual(enroute.status, .enroute)
 
-        // enroute → completed ends, with the arrival linger.
+        // enroute → completed UPDATES (MYR-425): the arrival frame is written and
+        // the card stays live for the server's announcement and its held end. A
+        // reservation runs the identical arc an instant ride does, here too.
         record.status = .completed
-        guard case .end(_, let final, let dismissal) = RideActivityStateMachine.action(
+        guard case .update(_, let final) = RideActivityStateMachine.action(
             phase: .live(rideID: record.id, state: enroute), record: record, vehicleName: "Lunar"
-        ) else { return XCTFail("expected an end") }
+        ) else { return XCTFail("expected an update — the client no longer ends a completed ride") }
         XCTAssertEqual(final.status, .completed)
-        XCTAssertEqual(dismissal, .completedLinger)
     }
 
     /// A dormant reservation that is CANCELLED must not manufacture an Activity to
