@@ -499,6 +499,21 @@ public enum MRTMetrics {
     /// jsx's own retired constant) is a reasonable stand-in for that sheet's
     /// actual auto-height (ride-request.jsx:51 `SHEET_HEIGHTS.pinDrop`).
     public static let rideRequestPinDropMapInset: CGFloat = 280
+    /// MYR-379 — the height the search sheet's PICKUP field is pinned to.
+    ///
+    /// The pickup row was a `Text` and is a `TextField` now, and a `TextField` is
+    /// simply taller than a `Text` of the same font — it reserves room for an
+    /// editing caret and its text container's insets. Left unpinned that grew the
+    /// route card and pushed the whole results list **4.24pt** down, measured
+    /// full-frame on `riderRecentDestinations`: nothing clipped, nothing
+    /// overflowed, and the guarantee that "a rider who never touches the pickup
+    /// sees exactly what they saw before" was quietly false.
+    ///
+    /// The value is the height the replaced line occupied, measured through a
+    /// `UIHostingController` against the REAL views by
+    /// `RiderPickupRowMetricsTests` — the `OwnerPeekBandTests` precedent, and the
+    /// reason this is a number a test owns rather than one read off a screenshot.
+    public static let rideRoutePickupFieldHeight: CGFloat = 17.5
     /// MYR-216 deliverable 4 — the bottom area the route-fitted trip sheets
     /// (Review / Booking / Tracking) physically cover, plus a margin, used to
     /// inset the route camera fit so both endpoints + the full polyline clear the
