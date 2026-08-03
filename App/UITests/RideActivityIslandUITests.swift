@@ -42,16 +42,15 @@ import XCTest
 // `lineLimit(1)`, which `RideActivityGeometryTests` measures directly and
 // `testTheLongestStringsAreCaptured` photographs.
 //
-// ⚠️ **MYR-412 CHANGES WHAT THESE FRAMES SHOW, ON PURPOSE.** `arrived` and
-// `completed` render a BARE wave and a BARE check in the trailing slot (compact and
-// expanded) instead of the same glyphs inside a ring, and every ring state renders a
-// solid track plus a partial gold arc with nothing in its middle instead of #168's
-// dashed full ring with the east arrow in it. Those frames are also where the
-// CLIPPING fix is read: the ring's ink used to come back 23.00pt wide against
-// 24.67pt tall — the horizontal axis shaved flat to its declared frame — and now
-// comes back square. The FIGURE states are byte-identical (measured base vs branch:
-// `accepted` bbox `None`; `enroute` differs only in the wall-clock minute its
-// `{h:mm A}` is composed from).
+// ⚠️ **MYR-412 CHANGED WHAT THESE FRAMES SHOW AND MYR-420 CHANGED IT AGAIN, BOTH ON
+// PURPOSE.** MYR-412 made `arrived` and `completed` render a BARE wave and a BARE
+// check in the trailing slot, and inset that slot so the region stopped shaving the
+// ring's stroke flat. **MYR-420 then deleted the ring from every island surface**
+// (client-directed: *"remove the ring entirely then and if theres data it appears on
+// the right side"*), so ten of the fourteen rows now photograph an EMPTY trailing
+// half-pill beside the mark. The two glyph rows and the four figure rows are
+// byte-identical to the shipped build — nothing about them was touched, and the
+// inset that positions the glyphs is unchanged at 4pt.
 final class RideActivityIslandUITests: XCTestCase {
 
     override func setUp() {
@@ -290,7 +289,8 @@ final class RideActivityIslandUITests: XCTestCase {
     /// measuring the island's own black rounded rect in each: equal heights mean
     /// something in the builder is pinned, which is the whole defect. The compact
     /// frames come with them so the pair also shows the trailing slot resolving to a
-    /// FIGURE on one surface and a ring on the other in the same instant.
+    /// FIGURE on one surface and (since MYR-420) to NOTHING on the other in the same
+    /// instant.
     func testTheExpandedIslandHeightFollowsItsContent() throws {
         for state in ["enroute", "longPlace"] {
             captureBothIslandStates(state)
@@ -307,8 +307,11 @@ final class RideActivityIslandUITests: XCTestCase {
     /// surface can draw into each corner in turn:
     ///
     ///   • `noTelemetry` — the rail is IDLE, so the 26pt ground disc of the puck
-    ///     sits at the rail's ORIGIN, which is the bottom-LEFT case; the ring is in
-    ///     its waiting mode, which draws ink all the way round the top-right.
+    ///     sits at the rail's ORIGIN, which is the bottom-LEFT case. **Its top-right
+    ///     corner is no longer a case at all after MYR-420**: the ring that drew ink
+    ///     all the way round it is deleted, so this state's trailing slot is empty
+    ///     and only `completed`'s glyph still occupies that corner. The state is kept
+    ///     in the sweep for the two BOTTOM corners, which are unchanged.
     ///   • `completed` — `p = 1`, so the same disc sits at the rail's END, which is
     ///     the bottom-RIGHT case, with the destination pin removed from under it.
     ///   • `longPlace` — the three-line frame, i.e. the TALLEST island, where the
@@ -325,51 +328,73 @@ final class RideActivityIslandUITests: XCTestCase {
         }
     }
 
-    /// **MYR-417 — THE WAITING RING MOVES, AND THIS IS THE FRAME SEQUENCE THAT SAYS
-    /// SO.**
+    /// **MYR-420 — THE RING IS GONE, AND THIS IS THE FRAME THAT SAYS SO.**
     ///
     /// `noTelemetry` is the client's own screenshot: an accepted ride whose car has
-    /// reported no fraction. §0 B gave that empty slot a ring; MYR-412 gave it the
-    /// board's arc; **neither of them could make it move, and the client's video of
-    /// a dead ring is what sent this round looking again.**
+    /// reported no fraction. It is the state this whole element was raised for, so it
+    /// is the state that has to show it removed.
     ///
-    /// ⚠️ **THE TWO EARLIER VERDICTS STAND AND THE CONCLUSION DRAWN FROM THEM DOES
-    /// NOT.** §0 B measured `repeatForever` inert (six frames, bbox `None`); MYR-412
-    /// measured SF Symbol effects inert (22 frames across two runs, bbox `None`).
-    /// Both are about animations the APP arms, and a Live Activity's view is
-    /// rendered out of process where none of those are run. **The system's own
-    /// timer-driven elements are not animations** — they carry a DATE RANGE and the
-    /// renderer re-derives them as the clock moves — and
-    /// `ProgressView(timerInterval:)` in the circular style is one of them, which is
-    /// what `RideActivityWaitingRing` now draws.
+    /// ⚠️ **THIS TEST REPLACES `testTheWaitingRingMovesWhileALiveRideHasNoTelemetry`,
+    /// AND THE MEASUREMENTS THAT TEST CARRIED ARE NOT LOST — THEY MOVED.** MYR-417's
+    /// timer ring genuinely moved here (bright-gold ink 116 → 192 → 270 → 348 px
+    /// across 18s), and the client rejected the fill it read as; MYR-420 then measured
+    /// the last untested candidate, a plain indeterminate `ProgressView`, and found it
+    /// both spokeless AND inert. The whole verdict, including the ceiling it
+    /// establishes — a self-updating element on this surface is a ramp over a date
+    /// range, and a ramp cannot repeat — is in
+    /// `design/Handoff-Live-Activity.md`'s MYR-420 mirror note. There is nothing left
+    /// on this surface for a motion test to be about.
     ///
-    /// So this test inverts its own predecessor: the frames must **DIFFER**. The
-    /// assertion is on the trailing slot's own rectangle rather than on the whole
-    /// screen, because the status bar's clock changes by itself and a whole-frame
-    /// diff would pass over a motionless ring.
+    /// So the assertions invert twice over, and each one is a different way the
+    /// deletion could have been done wrong:
     ///
-    /// Measured outside the suite on the same simulator, `simctl` frames 6s apart:
-    /// bright-gold ink in the ring **116 → 192 → 270 → 348 px** across 18 seconds.
-    /// Under Reduce Motion the same three frames are byte-identical (bbox `None`,
-    /// max delta 0) — MYR-412's static arc, which is the fallback.
-    func testTheWaitingRingMovesWhileALiveRideHasNoTelemetry() throws {
+    ///   1. **NO GOLD IN THE TRAILING SLOT.** Every rendering the ring ever had — the
+    ///      determinate arc, the waiting arc, MYR-417's tinted timer ring — was gold,
+    ///      and this state carries neither a figure nor a glyph, so the slot must hold
+    ///      no warm ink at all. A ring left behind at any opacity fails this.
+    ///   2. **THE SLOT IS STILL** across 6 seconds — byte-identical, where the shipped
+    ///      build's frames had to differ. A timer ring left running fails this even if
+    ///      something dimmed it past the ink threshold.
+    ///   3. **THE MARK IS STILL THERE.** The leading half-pill keeps the east arrow at
+    ///      full strength, which is the whole of what this state now renders and is
+    ///      what makes an empty trailing slot a design rather than a blank pill.
+    func testTheNoTelemetryStateRendersTheBareMarkAndAnEmptyTrailingSlot() throws {
         let app = startActivity(state: "noTelemetry")
 
         XCUIDevice.shared.press(.home)
         Thread.sleep(forTimeInterval: 3)
 
-        // ≥5s apart against a 90s window — about 7% of the circle, which is many
-        // times the antialiasing noise a static ring could produce.
         let first = XCUIScreen.main.screenshot()
-        attach(first, named: "island-compact-noTelemetry-move-0")
+        attach(first, named: "island-compact-noTelemetry-empty-0")
         Thread.sleep(forTimeInterval: 6)
         let second = XCUIScreen.main.screenshot()
-        attach(second, named: "island-compact-noTelemetry-move-1")
+        attach(second, named: "island-compact-noTelemetry-empty-1")
 
-        XCTAssertNotEqual(
-            Self.trailingSlotPixels(first),
-            Self.trailingSlotPixels(second),
-            "the waiting ring did not move in 6 seconds — the timer ring is not being run"
+        // 1 · nothing gold survives in the trailing slot. The threshold is a handful
+        // of pixels rather than zero, because the crop is deliberately generous and
+        // its edges can catch the pill's own antialiasing.
+        let trailingGold = Self.warmInkCount(first, rect: Self.trailingSlotRect)
+        XCTAssertLessThan(
+            trailingGold,
+            20,
+            "\(trailingGold) gold pixels in the trailing slot — the ring is still being drawn"
+        )
+
+        // 2 · and nothing there moves, because nothing is there.
+        XCTAssertEqual(
+            Self.crop(first, rect: Self.trailingSlotRect),
+            Self.crop(second, rect: Self.trailingSlotRect),
+            "the trailing slot changed in 6 seconds — something is still running in it"
+        )
+
+        // 3 · the mark is untouched. This is the control for both assertions above:
+        // it proves the crop geometry and the ink predicate are looking at a live
+        // island rather than at an empty screen.
+        let leadingGold = Self.warmInkCount(first, rect: Self.leadingSlotRect)
+        XCTAssertGreaterThan(
+            leadingGold,
+            50,
+            "the compact leading mark is missing — \(leadingGold) gold pixels"
         )
 
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
@@ -378,30 +403,69 @@ final class RideActivityIslandUITests: XCTestCase {
             .withOffset(CGVector(dx: 0, dy: Self.islandCentreYOffset))
             .press(forDuration: 1.1)
         Thread.sleep(forTimeInterval: 1.5)
-        for index in 0..<2 {
-            attach(XCUIScreen.main.screenshot(), named: "island-expanded-noTelemetry-move-\(index)")
-            Thread.sleep(forTimeInterval: 6)
-        }
+        attach(XCUIScreen.main.screenshot(), named: "island-expanded-noTelemetry-empty")
 
         springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
         Thread.sleep(forTimeInterval: 1)
         app.terminate()
     }
 
-    /// The compact island's TRAILING slot, cropped out of a full-screen shot as raw
-    /// pixels.
+    /// The compact island's two half-pills, as fractions of the 402pt screen.
     ///
-    /// The rectangle is the SYSTEM's geometry (iPhone 17 Pro), measured off a real
-    /// frame exactly as `islandCentre` was, and deliberately generous: it holds the
-    /// ring and nothing that changes for another reason. **Cropping is the whole
-    /// point** — the status bar's own clock ticks, so a whole-screen comparison would
-    /// report "changed" over a ring that never moved.
-    private static func trailingSlotPixels(_ screenshot: XCUIScreenshot) -> Data? {
+    /// The SYSTEM's geometry (iPhone 17 Pro), measured off a real frame exactly as
+    /// `islandCentre` was, and deliberately generous: each holds its own element and
+    /// nothing that changes for another reason. **Cropping is the whole point** — the
+    /// status bar's own clock ticks, so a whole-screen comparison would report
+    /// "changed" over a slot that never moved.
+    private static let trailingSlotRect = CGRect(x: 255, y: 15, width: 45, height: 35)
+    private static let leadingSlotRect = CGRect(x: 105, y: 15, width: 45, height: 35)
+
+    /// A crop of a full-screen shot as raw PNG bytes, for identity comparisons.
+    private static func crop(_ screenshot: XCUIScreenshot, rect: CGRect) -> Data? {
+        cropped(screenshot, rect: rect).flatMap { UIImage(cgImage: $0).pngData() }
+    }
+
+    /// How many pixels in `rect` are WARM GOLD — the island's ground is the
+    /// hardware's true black and the mark's two facets are `#E4D08A` / `#9C7E2C`, so
+    /// "much more red than blue" separates brand ink from everything else on this
+    /// surface without pinning either facet's exact value.
+    private static func warmInkCount(_ screenshot: XCUIScreenshot, rect: CGRect) -> Int {
+        guard let image = cropped(screenshot, rect: rect) else { return 0 }
+        let width = image.width
+        let height = image.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return 0 }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        var count = 0
+        for index in stride(from: 0, to: pixels.count, by: 4) {
+            let red = Int(pixels[index])
+            let green = Int(pixels[index + 1])
+            let blue = Int(pixels[index + 2])
+            if red > 90, red - blue > 40, green - blue > 20 { count += 1 }
+        }
+        return count
+    }
+
+    private static func cropped(_ screenshot: XCUIScreenshot, rect: CGRect) -> CGImage? {
         guard let cgImage = screenshot.image.cgImage else { return nil }
         let scale = CGFloat(cgImage.width) / 402
-        let rect = CGRect(x: 255 * scale, y: 15 * scale, width: 45 * scale, height: 35 * scale)
-        guard let cropped = cgImage.cropping(to: rect) else { return nil }
-        return UIImage(cgImage: cropped).pngData()
+        return cgImage.cropping(
+            to: CGRect(
+                x: rect.origin.x * scale,
+                y: rect.origin.y * scale,
+                width: rect.width * scale,
+                height: rect.height * scale
+            )
+        )
     }
 
     /// **§0 B — THE MINIMAL ISLAND, AND THE HONEST ANSWER THAT IT CANNOT BE
@@ -418,20 +482,19 @@ final class RideActivityIslandUITests: XCTestCase {
     /// So this suite CANNOT claim a minimal frame, and the attachment is kept as the
     /// evidence of that rather than mislabelled as one.
     ///
-    /// ⚠️ **MYR-412 WEAKENED WHAT CAN BE CLAIMED IN ITS PLACE, AND SAYING SO IS THE
-    /// POINT.** This comment used to close by arguing that the minimal composition
-    /// needs no frame because it is "the same `RideActivityProgressRing` over the same
-    /// `expandedTrailing` resolution that the EXPANDED capture does show". That was
-    /// true until the expanded slot went BARE: minimal is now the ONLY surface that
-    /// draws a centre inside the ring, so **no capture in this repo shows the
-    /// arrow-in-ring composition at all** — an unphotographed surface that used to
-    /// borrow a photographed one's evidence. What survives is narrower and is stated
-    /// rather than implied: the same component, the same slot resolution, the same
-    /// 24pt/2.4, and `centre: .mark` is the parameter's DEFAULT, so the minimal call
-    /// site is the un-parameterised one. The geometry is pinned by
-    /// `RideActivityGeometryTests.testTheRingsCentreClearsItsOwnStroke`, which is now
-    /// the minimal island's only guard.
-    func testTheMinimalIslandRendersTheRing() throws {
+    /// ⚠️ **MYR-412 WEAKENED WHAT COULD BE CLAIMED IN ITS PLACE; MYR-420 SHRINKS THE
+    /// CLAIM TO ALMOST NOTHING, WHICH IS THE HONEST OUTCOME.** This comment used to
+    /// argue that the minimal composition needed no frame because it was "the same
+    /// ring over the same `expandedTrailing` resolution the EXPANDED capture does
+    /// show"; MYR-412 broke that by stripping the expanded slot, and MYR-420 has now
+    /// deleted the ring from both. What minimal renders is a lone `ArrowMarkEast`,
+    /// swapping for the arrival glyph at the two stops — **the same composition v3
+    /// shipped before §0 B**, and the same two marks the COMPACT LEADING slot
+    /// photographs in every frame of this suite at a different size. So the
+    /// unphotographed part is now just those sizes (12 / 13), which
+    /// `RideActivityGeometryTests.testTheMinimalMarksFitTheCircleTheyStandInAlone`
+    /// pins.
+    func testTheMinimalIslandStillRendersOneCompactPill() throws {
         let app = startActivity(state: "accepted", extra: ["MRT_ACTIVITY_MINIMAL": "1"])
 
         XCUIDevice.shared.press(.home)
@@ -478,12 +541,14 @@ final class RideActivityIslandUITests: XCTestCase {
     ///
     /// No `MRT_ACTIVITY_STATE` value can show this: a scene starts the Activity
     /// already IN its state, and the beat is keyed to the CHANGE (which is the whole
-    /// point — see `RideActivityRing.swift`), so a cold `arrived` scene correctly
-    /// renders the settled frame and photographs nothing.
+    /// point — see `RideActivityTrailingSlot.swift`), so a cold `arrived` scene
+    /// correctly renders the settled frame and photographs nothing.
     /// `MRT_ACTIVITY_ADVANCE=16` pushes `accepted → arrived` through the shipping
     /// update path sixteen seconds in, with the island already EXPANDED, so the
-    /// frames carry the full sequence: a determinate ring at 0.38 completing to 1,
-    /// fading to 40%, and the wave scaling in over it.
+    /// frames carry the sequence. **MYR-420 shortened what that sequence contains**:
+    /// there is no arc completing to 1 and fading to 40% under the glyph any more,
+    /// because there is no arc — the empty slot gives way and the wave scales in
+    /// 0.1s later.
     ///
     /// Shot back to back at ~0.2s so the beat (≈0.9s end to end) cannot fall between
     /// two frames.
@@ -584,8 +649,8 @@ final class RideActivityIslandUITests: XCTestCase {
         attach(second, named: "island-418-endonly-1")
 
         XCTAssertEqual(
-            Self.trailingSlotPixels(first),
-            Self.trailingSlotPixels(second),
+            Self.crop(first, rect: Self.trailingSlotRect),
+            Self.crop(second, rect: Self.trailingSlotRect),
             "a cold completed frame must be static — a beat here would be one keyed to appearance"
         )
 

@@ -116,9 +116,56 @@ The state machine is unchanged. What each state renders, and every rider-facing 
 >    - **DETERMINATE PROGRESS AND TRACK-ONLY ARE UNTOUCHED.** Only the indeterminate
 >      mode moves, on all three surfaces that draw it.
 
-> **Mirror note (2026-08-02, MYR-420) — THE CLIENT REJECTED THE FILL, THE LAST
-> UNTESTED CANDIDATE IS DEAD, AND NOTHING SHIPPED. This note is the measurement, so
-> the next round does not spend itself re-testing a spinner that does not exist.**
+> **Mirror note (2026-08-02, MYR-420) — ⚠️ THE RING IS REMOVED FROM THE ISLAND
+> ENTIRELY. CLIENT-DIRECTED, AND IT OVERRIDES §0 B, MYR-412's items 1-2, MYR-417's
+> item 2 and §5's "Minimal … ring d24" wherever they conflict.**
+>
+> **THE RULING, VERBATIM:** *"remove the ring entirely then and if theres data it
+> appears on the right side."* It was given after the measurement below established
+> that the spinner he asked for cannot be built on this surface at any rate, and
+> after he was offered the only two real alternatives — MYR-417's ring that moves but
+> reads as progress, and MYR-412's static arc that is correct and dead. He took
+> neither.
+>
+> **THE NEW RULE, ON EVERY ISLAND SURFACE — `figure > arrival glyph > EMPTY`:**
+>
+> | rung | what renders | where |
+> |---|---|---|
+> | 1 | the ETA figure (`8 min` / `1 min` / `3:42 PM`, 15/600 tabular) | COMPACT trailing only |
+> | 2 | the arrival glyph — `hand.wave.fill`, `checkmark.circle.fill`, bare, white | compact (17/15), expanded (19/17), minimal (13) |
+> | 3 | **nothing at all** | everywhere else |
+>
+> - **TEN OF THE FOURTEEN ROWS NOW RENDER AN EMPTY TRAILING HALF-PILL** beside the
+>   mark — Dispatch, both no-ETA rows, no-telemetry, and all four endings. **That is
+>   the design, by decision.** §0 B raised the ring precisely because this frame
+>   "reads like an app that has stopped working"; the client has seen it and chosen
+>   it over the two rings that were available, and that is not a judgement for an
+>   implementer to re-litigate.
+> - **THE MINIMAL ISLAND IS THE MARK ALONE.** MYR-412 kept the ring there on the
+>   reading that a BARE ring would be an anonymous circle; with no ring anywhere, what
+>   is left is §5's CENTRE — the east arrow at 12, swapping for the arrival glyph at
+>   13. That is exactly what v3 shipped before §0 B.
+> - **NOTHING ELSE MOVES.** The lock-screen card is untouched in every state, and so
+>   is the expanded island's BOTTOM RAIL. **The rail is where this surface says how
+>   far along a ride is** — it always was, the ring only ever drew the rail's own
+>   fraction, and the four rows whose slot went empty keep exactly the rail they had.
+>   The ETA figures and the two arrival glyphs are byte-identical to the shipped
+>   build, including `compactTrailingInset` = 4, which survives as the GLYPH's clear
+>   space (its stroke-overhang justification went with the ring, and `strokeOverhang`
+>   is deleted).
+> - **DELETED IN THE APP:** the whole `RideActivityProgressRing` / waiting-ring / arc
+>   component (the file is now `RideActivityTrailingSlot.swift` and holds the glyph
+>   rule alone), the `.ringDeterminate` / `.ringIndeterminate` / `.ringTrackOnly`
+>   cases with `RideActivityCard.ring(for:rail:)`, the ring's ten metrics, the
+>   `arrivalRing*` half of the §0 C beat, and the `mrtActivityRingTrack` token. **The
+>   empty rung is an enum CASE, not an invisible ring**, so no state can resolve to
+>   one however the ladder is edited later.
+>
+> **THE MEASUREMENT THAT MADE THE ASK IMPOSSIBLE IS KEPT BELOW, VERBATIM AND
+> DELIBERATELY**, because it is the reason there is no spinner AND now no ring, and
+> the app no longer has a file of its own for it to live beside. The next person told
+> "make this move" needs it before they spend a round re-testing a candidate that has
+> already been photographed dead.
 >
 > The client on MYR-417's timer ring: *"The loading icon should just be a ring
 > spinning not slowly filling. It essentially means we're waiting for live data."*
@@ -158,11 +205,11 @@ The state machine is unchanged. What each state renders, and every rider-facing 
 >   symbol effects, both still inert). So the honest ceiling is: this surface can
 >   fill, drain, or travel **once** per push interval (60–90s) — it cannot spin at
 >   any rate a person would read as spinning.
-> - **NOTHING SHIPPED.** The timer-fill ring stands, unchanged, because the two
->   things that could replace it are MYR-412's static arc (which is the complaint
->   this ring was raised to answer) and a fake — and a fake is worse than either. The
->   choice between "moves but reads as progress" and "correct but dead" is the
->   client's, and it is put to him with these frames rather than settled here.
+> - **WHAT WAS PUT TO THE CLIENT, AND WHAT HE ANSWERED.** The two things that could
+>   replace the timer-fill ring were MYR-412's static arc (which is the complaint the
+>   fill was raised to answer) and a fake — and a fake is worse than either. The
+>   choice between "moves but reads as progress" and "correct but dead" was his to
+>   make, and **he made a third one: remove it.** See the head of this note.
 
 ---
 
@@ -187,7 +234,7 @@ things. Do not set a width or a height anywhere in the expanded builder.
 ```swift
 DynamicIsland {
   DynamicIslandExpandedRegion(.leading)  { BrandMark(size: 26) }
-  DynamicIslandExpandedRegion(.trailing) { TrailingSlot(state: ctx.state) }  // glyph or ring, 24pt
+  DynamicIslandExpandedRegion(.trailing) { TrailingSlot(state: ctx.state) }  // glyph or nothing (MYR-420)
   // .center intentionally unused — the housing owns it
   DynamicIslandExpandedRegion(.bottom) {
     VStack(alignment: .leading, spacing: 2) {

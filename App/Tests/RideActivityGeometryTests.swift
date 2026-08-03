@@ -320,13 +320,20 @@ final class RideActivityGeometryTests: XCTestCase {
     /// The row is 34 in the design and the SYSTEM's in the build — a
     /// `DynamicIslandExpandedRegion` is sized by iOS, and §0 A forbids setting a
     /// height anywhere in that builder. So what a test can do is check the two pieces
-    /// of content against the number the design drew them into: a 26pt mark and a
-    /// 24pt ring, either of which growing past 34 would push the row out and start
-    /// the crowding over again.
+    /// of content against the number the design drew them into: a 26pt mark and —
+    /// since MYR-420 deleted the 24pt ring — a 19pt glyph, either of which growing
+    /// past 34 would push the row out and start the crowding over again.
     func testTheExpandedTopRowContentFitsTheRowTheDesignDrewIt() {
         XCTAssertLessThanOrEqual(RideActivityMetrics.expandedLogo, RideActivityMetrics.expandedTopRowHeight)
         XCTAssertLessThanOrEqual(RideActivityMetrics.expandedTrailingSlot, RideActivityMetrics.expandedTopRowHeight)
-        XCTAssertEqual(RideActivityMetrics.expandedTrailingSlot, RideActivityMetrics.ringDiameter)
+        // The widest thing the region can hold, which is now the bare wave rather
+        // than the ring that used to enclose it.
+        XCTAssertEqual(RideActivityMetrics.expandedTrailingSlot, RideActivityMetrics.expandedWaveGlyph)
+        XCTAssertGreaterThanOrEqual(
+            RideActivityMetrics.expandedTrailingSlot,
+            RideActivityMetrics.expandedCheckGlyph,
+            "the slot's stated size must cover BOTH glyphs, not just the one it was set from"
+        )
     }
 
     /// **THE EXPANDED HEADLINE STILL FITS ONE LINE AT 19/600**, and it has to fit a
@@ -386,125 +393,86 @@ final class RideActivityGeometryTests: XCTestCase {
         )
     }
 
-    // MARK: - 4. §0 B/C — the ring and the beat
+    // MARK: - 4. §0 C — the arrival beat, and the ring that is no longer here
+    //
+    // ─────────────────────────────────────────────────────────────────────────────
+    // **WHAT MYR-420 DELETED FROM THIS SECTION, AND WHY NONE OF IT WAS REPLACED.**
+    //
+    // Four tests lived here and went with the component they measured:
+    // `testTheRingIsOneComponentAtTwoScales` (24/2.4 against 22/2.2),
+    // `testTheRingsCentreClearsItsOwnStroke` (the 12pt arrow and 13pt glyph inside a
+    // 19.2pt hole), `testTheSettledRingIsStillVisible` (the 40% the arc faded to
+    // under a landed glyph) and `testTheWaitingArcIsAPartialArcInsideTheBoardsRange`
+    // (0.25 inside the board's 25-35%, and MYR-417's 90s window against the ticker's
+    // own push cadence). Every constant they pinned is deleted, so each of them would
+    // now be a test that cannot compile rather than a guard that can fail — which is
+    // the honest signal, and the reason none was rewritten to assert the absence.
+    //
+    // **THE GEOMETRY THAT SURVIVED IS THE GLYPHS' AND THE MINIMAL ISLAND'S**, and it
+    // is below and in section 6. The MEASUREMENT that killed the ring is prose rather
+    // than arithmetic and lives in `design/Handoff-Live-Activity.md`'s MYR-420 mirror
+    // note.
+    // ─────────────────────────────────────────────────────────────────────────────
 
-    /// The two sizes, and the rule that they are ONE ring at two scales: the stroke
-    /// tracks the diameter, so the compact ring is not a thicker ring drawn smaller.
-    func testTheRingIsOneComponentAtTwoScales() {
-        XCTAssertEqual(RideActivityMetrics.ringDiameter, 24)
-        XCTAssertEqual(RideActivityMetrics.ringDiameterCompact, 22)
-        XCTAssertEqual(RideActivityMetrics.ringStroke, 2.4)
-        XCTAssertEqual(RideActivityMetrics.ringStrokeCompact, 2.2)
-        XCTAssertLessThan(
-            RideActivityMetrics.ringStrokeCompact,
-            RideActivityMetrics.ringStroke,
-            "the smaller ring takes the thinner stroke, or the two read as two rings"
-        )
-    }
-
-    /// **THE CENTRE HAS TO FIT INSIDE THE STROKE, WITH AIR.**
+    /// **THE MINIMAL ISLAND'S TWO MARKS FIT THE CIRCLE THEY NOW SIT IN ALONE.**
     ///
-    /// The arrow (12) and the glyph (13) sit inside a 24pt circle drawn with a 2.4pt
-    /// stroke, i.e. a 19.2pt hole. A centre that touched the ring would read as one
-    /// blob at island scale, so the check is the clearance rather than the diameter.
-    ///
-    /// **ONLY THE MINIMAL ISLAND STILL HAS A CENTRE** (MYR-412), so only the 24pt
-    /// ring is measured here — the compact and expanded trailing slots draw the ring
-    /// bare and the glyph beside it rather than inside it.
-    func testTheRingsCentreClearsItsOwnStroke() {
-        for (name, centre, diameter, stroke) in [
-            ("arrow · minimal", RideActivityMetrics.ringArrow, RideActivityMetrics.ringDiameter, RideActivityMetrics.ringStroke),
-            ("glyph · minimal", RideActivityMetrics.ringGlyph, RideActivityMetrics.ringDiameter, RideActivityMetrics.ringStroke),
+    /// §5 sized the arrow (12) and the glyph (13) as the CENTRE of a 24pt ring — they
+    /// had to clear a 19.2pt hole with air. MYR-420 removed the ring and kept both
+    /// numbers, so the constraint they are measured against changes: what they have
+    /// to fit now is the minimal presentation's own 37pt circle, which they do with
+    /// room to spare. **They are deliberately NOT raised to the bare trailing sizes**
+    /// (17/19) — nothing about this surface grew, and a mark re-sized because its
+    /// enclosure left would be this issue redesigning a state it was told to leave
+    /// alone.
+    func testTheMinimalMarksFitTheCircleTheyStandInAlone() {
+        for (name, mark) in [
+            ("arrow", RideActivityMetrics.minimalArrow),
+            ("glyph", RideActivityMetrics.minimalGlyph),
         ] {
-            let hole = diameter - stroke * 2
-            XCTAssertLessThan(centre, hole, "\(name): \(centre)pt centre in a \(hole)pt hole")
+            XCTAssertLessThan(
+                mark,
+                RideActivityMetrics.minimalCircle,
+                "\(name): \(mark)pt in a \(RideActivityMetrics.minimalCircle)pt circle"
+            )
             XCTAssertGreaterThan(
-                hole - centre, 1.5,
-                "\(name): the centre all but touches the ring"
+                RideActivityMetrics.minimalCircle - mark, 20,
+                "\(name): a mark this close to the circle's edge reads as a filled disc"
             )
         }
+        // §5's own pair, unchanged by the removal — the glyph is a point larger than
+        // the arrow because an SF Symbol's optical size sits inside its bounding box
+        // in a way the mark's polygons do not.
+        XCTAssertEqual(RideActivityMetrics.minimalArrow, 12)
+        XCTAssertEqual(RideActivityMetrics.minimalGlyph, 13)
+        XCTAssertGreaterThan(RideActivityMetrics.minimalGlyph, RideActivityMetrics.minimalArrow)
     }
 
-    /// **THE BEAT'S LADDER, IN ORDER.** The ring completes, THEN fades, and the glyph
-    /// springs in a beat after the fade starts. Written as inequalities rather than
-    /// as three literals, because what matters is the sequence: a delay edited to sit
-    /// before the completion would play the glyph over an arc still sweeping under
-    /// it.
-    func testTheArrivalBeatPlaysInOrderAndEndsInOneSecondish() {
-        XCTAssertEqual(
-            RideActivityMetrics.arrivalRingCompletion,
-            RideActivityMetrics.railTravel,
-            "the ring completes on the rail's own curve and duration"
-        )
-        XCTAssertEqual(RideActivityMetrics.arrivalRingFadeDelay, RideActivityMetrics.arrivalRingCompletion)
+    /// **THE BEAT IS ONE DELAY ON THREE SURFACES NOW, AND ITS VALUE DID NOT MOVE.**
+    ///
+    /// §0 C's beat was a sequence — the ring completed on the rail's own curve, faded,
+    /// and the glyph sprang in 0.1s later. MYR-412 already reduced the two trailing
+    /// slots to the last step alone (a bare surface has no arc to sweep), and MYR-420
+    /// brings the minimal island onto the same one. So what is left to assert is that
+    /// the interval is the handoff's own 0.1s — the number the arrival states shipped
+    /// with, so those two rows animate exactly as they did — and that the whole beat
+    /// is over long before the five-minute linger it plays at the start of.
+    func testTheArrivalBeatIsOneShortDelayAndIsOverLongBeforeTheLinger() {
+        XCTAssertEqual(RideActivityMetrics.arrivalGlyphDelay, 0.1, accuracy: 0.0001)
         XCTAssertGreaterThan(
-            RideActivityMetrics.arrivalGlyphDelay,
-            RideActivityMetrics.arrivalRingFadeDelay,
-            "the glyph follows the fade, it does not race it"
+            RideActivityMetrics.arrivalGlyphDelay, 0,
+            "a glyph that lands in the same frame as the thing it replaces is a swap, not a beat"
         )
-        XCTAssertEqual(
-            RideActivityMetrics.arrivalGlyphDelay - RideActivityMetrics.arrivalRingFadeDelay,
-            0.1,
-            accuracy: 0.0001,
-            "the handoff's 0.1s"
-        )
-
-        // A COMPLETION BEAT, NOT AN AMBIENCE. The whole thing has to be over long
-        // before the five-minute linger it plays at the start of.
+        // A COMPLETION BEAT, NOT AN AMBIENCE.
         XCTAssertLessThan(
             RideActivityMetrics.arrivalGlyphDelay + RideActivityMetrics.arrivalSpringResponse * 2,
             2.0
         )
-    }
-
-    /// The ring settles UNDER the glyph rather than disappearing: the leg really is
-    /// finished, and 40% is what says so without competing with the mark that
-    /// replaced the arrow.
-    func testTheSettledRingIsStillVisible() {
-        XCTAssertEqual(RideActivityMetrics.arrivalRingSettledOpacity, 0.4)
-        XCTAssertGreaterThan(RideActivityMetrics.arrivalRingSettledOpacity, 0.2)
-        XCTAssertLessThan(RideActivityMetrics.arrivalRingSettledOpacity, 1)
-    }
-
-    /// **THE LOADING RING IS A PARTIAL ARC, AND MYR-412 PUT IT INSIDE THE BOARD'S OWN
-    /// RANGE.** The client's mock is a solid track plus a gold arc of roughly a
-    /// quarter to a third; #168 shipped a DASHED full ring instead, on the deduction
-    /// that a static quarter is pixel-for-pixel `ringDeterminate(0.25)`. He overruled
-    /// it with the mock in hand, so the number is checked against the range he stated
-    /// rather than against the deduction.
-    ///
-    /// 1.4s is slow enough not to strobe on a lock screen, and remains the period the
-    /// rotation would use if the platform ever ran one.
-    func testTheWaitingArcIsAPartialArcInsideTheBoardsRange() {
-        XCTAssertEqual(RideActivityMetrics.ringIndeterminateArc, 0.25)
-        XCTAssertGreaterThanOrEqual(
-            RideActivityMetrics.ringIndeterminateArc, 0.25,
-            "the board's mock reads ~25-35% of the circle"
-        )
-        XCTAssertLessThanOrEqual(RideActivityMetrics.ringIndeterminateArc, 0.35)
+        XCTAssertEqual(RideActivityMetrics.arrivalGlyphFromScale, 0.6)
         XCTAssertLessThan(
-            RideActivityMetrics.ringIndeterminateArc, 1,
-            "a FULL ring is #168's dashed rendering, which the client rejected"
-        )
-        XCTAssertEqual(RideActivityMetrics.ringSpin, 1.4)
-        // MYR-417 — the STATIC arc above is now the Reduce Motion rendering only.
-        // The moving one is the system's timer ring over this window, and the window
-        // is sized against §7.21's own 60–90s push cadence: a window shorter than the
-        // gap between pushes spends its life sitting full, which is the one thing a
-        // waiting ring must not look like.
-        XCTAssertEqual(RideActivityMetrics.waitingWindow, 90)
-        XCTAssertGreaterThanOrEqual(
-            RideActivityMetrics.waitingWindow, 90,
-            "a window under the ticker's slowest push completes before it is restarted"
-        )
-        XCTAssertGreaterThan(RideActivityMetrics.ringMinimumArc, 0)
-        XCTAssertLessThan(
-            RideActivityMetrics.ringMinimumArc,
-            RideActivityMetrics.ringIndeterminateArc,
-            "the determinate floor must never be mistakable for the waiting arc"
+            RideActivityMetrics.arrivalGlyphFromScale, 1,
+            "the glyph scales UP into place"
         )
     }
-
     // MARK: - 5. §0 A · the corner-safe insets
 
     /// **THE THREE INSETS EXIST, THEY ARE POSITIVE, AND THEY ARE SMALL.**
@@ -616,14 +584,16 @@ final class RideActivityGeometryTests: XCTestCase {
         )
     }
 
-    /// **A BARE GLYPH IS NOT A RING'S CENTRE GLYPH**, and the sizes are what say so.
+    /// **A SLOT-FILLING GLYPH IS NOT THE MINIMAL ISLAND'S MARK**, and the sizes are
+    /// what say so.
     ///
-    /// `ringGlyph` (13) is the mark INSIDE the ring and survives for the minimal
-    /// island alone. If a future edit collapsed the two — rendering the bare glyph at
-    /// the centre size — the trailing slot would go back to looking like a ring with
-    /// its ring deleted, which is a smaller mark than the one it replaced rather than
-    /// the board's own.
-    func testTheBareGlyphIsBiggerThanTheOneThatSitsInsideTheRing() {
+    /// `minimalGlyph` (13) was §5's centre-of-the-ring size and is still the minimal
+    /// island's, where the mark shares a 37pt circle with nothing. The trailing slots'
+    /// glyphs carry a whole slot on their own and are larger. If a future edit
+    /// collapsed the two — rendering the trailing glyph at the minimal size — the
+    /// arrival states would visibly shrink, which is exactly the regression MYR-420's
+    /// "the glyph states are byte-identical" promise rules out.
+    func testTheTrailingGlyphIsBiggerThanTheMinimalIslandsMark() {
         for (name, bare) in [
             ("wave · compact", RideActivityMetrics.compactWaveGlyph),
             ("check · compact", RideActivityMetrics.compactCheckGlyph),
@@ -631,38 +601,37 @@ final class RideActivityGeometryTests: XCTestCase {
             ("check · expanded", RideActivityMetrics.expandedCheckGlyph),
         ] {
             XCTAssertGreaterThan(
-                bare, RideActivityMetrics.ringGlyph,
-                "\(name): a bare glyph carries the slot on its own and must not be drawn at the centre size"
+                bare, RideActivityMetrics.minimalGlyph,
+                "\(name): a slot-filling glyph must not be drawn at the minimal island's size"
             )
         }
     }
 
-    /// **THE INSET EXISTS BECAUSE A CENTRED STROKE REACHES OUTSIDE ITS OWN FRAME.**
+    /// **THE INSET SURVIVES THE RING, AND ITS REASON CHANGED WITH IT** (MYR-420).
     ///
-    /// `Circle().stroke(lineWidth: w)` centres the line on the path, so a ring in a
-    /// `frame(width: d)` draws to `d + w` and the outer `w / 2` per side lands outside
-    /// the bounds the compact trailing region clips to. Measured on the #168 build:
-    /// the ring's ink came back **23.00pt wide and 24.0-24.67pt tall** where an
-    /// unclipped 22pt ring with a 2.2pt stroke measures 24.2pt in both axes — the
-    /// width is the declared frame plus antialiasing, i.e. the stroke shaved flat on
-    /// the horizontal axis, which is the client's *"cut off on the leading edge"*.
+    /// MYR-412 introduced `compactTrailingInset` as a CLIPPING fix:
+    /// `Circle().stroke(lineWidth: w)` centres the line on the path, so a 22pt ring
+    /// drew to 24.2pt and the compact trailing region — which clips on the HORIZONTAL
+    /// axis and not the vertical — shaved 1.1pt off each side (measured on #168: the
+    /// ring's ink came back 23.00pt wide against 24.0-24.67pt tall, the client's *"cut
+    /// off on the leading edge"*). **That reason is gone with the ring**: an SF Symbol
+    /// draws inside its own bounds, `strokeOverhang` is deleted, and nothing this slot
+    /// renders can overflow the frame the region clips to.
     ///
-    /// So the inset has to EXCEED the overhang, not merely exist. The rest of it is
-    /// the clear space he asked for.
-    func testTheCompactTrailingInsetClearsTheRingsOwnStrokeOverhang() {
-        let overhang = RideActivityMetrics.strokeOverhang(RideActivityMetrics.ringStrokeCompact)
-        XCTAssertEqual(overhang, 1.1, accuracy: 0.0001)
-        XCTAssertGreaterThan(
-            RideActivityMetrics.compactTrailingInset,
-            overhang,
-            "an inset at or under \(overhang)pt leaves the ring shaved, which is the reported defect"
+    /// **WHAT THE INSET IS NOW IS THE GLYPH'S CLEAR SPACE, AND THAT IS WHY IT STAYS AT
+    /// 4.** The arrival states are the half of this slot MYR-420 did not change;
+    /// removing the inset would move both marks 4pt outward, toward the very boundary
+    /// the system clips at — a visible change to two states nobody asked to change, in
+    /// the name of tidying up a constant. So the assertion is no longer "it exceeds
+    /// the overhang": it is that the number did not move.
+    func testTheCompactTrailingInsetIsTheGlyphsClearSpaceAndDidNotMove() {
+        XCTAssertEqual(
+            RideActivityMetrics.compactTrailingInset, 4,
+            "the glyph states are byte-identical across MYR-420, and this is the number that keeps them so"
         )
-        // And genuine CLEAR SPACE on top of it, rather than an inset that merely
-        // stops the clip: the element must not sit flush against the boundary.
-        XCTAssertGreaterThanOrEqual(
-            RideActivityMetrics.compactTrailingInset - overhang,
-            2,
-            "the element is un-shaved but still touching the edge it is clipped at"
+        XCTAssertGreaterThan(
+            RideActivityMetrics.compactTrailingInset, 0,
+            "an element flush against the edge this region clips at is the MYR-412 report"
         )
     }
 
@@ -672,36 +641,17 @@ final class RideActivityGeometryTests: XCTestCase {
     /// budget was probed before the inset was chosen: rulers of known width rendered
     /// in this very region came back whole at 34pt (pill 191.0) and at 46pt (pill
     /// 212.0), and the shipping `3:42 PM` figure measures 65.3pt of ink and renders
-    /// whole. The ring plus two insets is 30pt, inside every one of those.
+    /// whole. The widest content the slot can hold is now the compact WAVE plus its
+    /// two insets — 25pt, further inside that bound than the 30pt ring ever was.
     func testTheInsetCompactTrailingElementFitsTheMeasuredBudget() {
-        let widest = RideActivityMetrics.ringDiameterCompact
-            + RideActivityMetrics.strokeOverhang(RideActivityMetrics.ringStrokeCompact) * 2
-            + RideActivityMetrics.compactTrailingInset * 2
+        let widest = max(
+            RideActivityMetrics.compactWaveGlyph,
+            RideActivityMetrics.compactCheckGlyph
+        ) + RideActivityMetrics.compactTrailingInset * 2
         XCTAssertLessThanOrEqual(
             widest,
             RideActivityMetrics.compactTrailingMeasuredBudget,
-            "\(widest)pt of trailing content is past the widest ruler proved to render whole"
-        )
-    }
-
-    /// **THE BEAT KEEPS ITS SHAPE ON A SURFACE WITH NO RING TO COMPLETE.**
-    ///
-    /// The bare slots have no arc for the glyph to land inside, so the completion
-    /// sweep is absent there — but the interval between the ring giving way and the
-    /// glyph landing is the beat's own 0.1s on all three surfaces, and it is DERIVED
-    /// rather than typed so an edit to the beat cannot move one surface and leave the
-    /// other behind.
-    func testTheBareArrivalBeatIsTheSameBeatMinusTheCompletion() {
-        XCTAssertEqual(
-            RideActivityMetrics.bareArrivalGlyphDelay,
-            RideActivityMetrics.arrivalGlyphDelay - RideActivityMetrics.arrivalRingFadeDelay,
-            accuracy: 0.0001
-        )
-        XCTAssertEqual(RideActivityMetrics.bareArrivalGlyphDelay, 0.1, accuracy: 0.0001)
-        XCTAssertLessThan(
-            RideActivityMetrics.bareArrivalGlyphDelay,
-            RideActivityMetrics.arrivalGlyphDelay,
-            "the bare glyph does not wait out a completion that is not being drawn"
+            "\(widest)pt of trailing content is past the narrowest ruler proved to render whole"
         )
     }
 
