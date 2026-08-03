@@ -84,6 +84,9 @@ final class LiveVehicleFleet: VehicleFleet {
     private var hasLoaded = false
     private var activeIndex = 0
     private var loadTask: Task<Void, Never>?
+    /// MYR-432 — the observer on the socket's access-revocation stream. Lives for
+    /// as long as the fleet is started, like the subscription itself.
+    private var accessTask: Task<Void, Never>?
     /// MYR-315 — when the app last went to `.background`, so the resume can tell a
     /// glance at Control Center from a genuine spell away (see
     /// `ForegroundRefetchPolicy`). `nil` before the first background transition.
@@ -133,6 +136,11 @@ final class LiveVehicleFleet: VehicleFleet {
             webSocketURL: config.environment.webSocketURL,
             tokenProvider: config.tokenProvider,
             snapshotSource: rest,
+            // MYR-432 — the post-4002 access set is `GET /api/vehicles`, i.e. the
+            // very list this fleet is built from. Handing the socket the same
+            // client means the prune and the list this screen renders can never
+            // disagree about which cars the account has.
+            accessListing: rest,
             channelFactory: config.channelFactory ?? URLSessionWebSocketChannelFactory()
         )
     }
@@ -226,6 +234,7 @@ final class LiveVehicleFleet: VehicleFleet {
     func start() {
         guard !started else { return }
         started = true
+        observeAccessRevocations()
         loadFleet()
     }
 
@@ -235,9 +244,32 @@ final class LiveVehicleFleet: VehicleFleet {
         loadTask = nil
         coldLoadWatchdog?.cancel()
         coldLoadWatchdog = nil
+        accessTask?.cancel()
+        accessTask = nil
         sources.forEach { $0.stop() }
         let socket = self.socket
         Task { await socket.disconnect() }
+    }
+
+    /// MYR-432 — a §6.2 revocation lands here as a §7.0 RE-READ, not as a second
+    /// teardown path.
+    ///
+    /// The socket has already pruned its own subscriptions by the time this
+    /// fires; what the SCREEN needs is the list, because `summaries` is what the
+    /// switcher, the hero and `remove(vehicleID:)`'s bookkeeping are all built
+    /// from. `loadFleet()` is the read every other "the fleet may have changed"
+    /// event already uses (mount, foreground, retry, teardown), so a revoked car
+    /// leaves this surface by exactly the route a removed one does — including
+    /// the empty-account line when it was the only one.
+    private func observeAccessRevocations() {
+        guard accessTask == nil else { return }
+        let socket = self.socket
+        accessTask = Task { [weak self] in
+            for await _ in await socket.accessRevocations() {
+                guard let self, self.started else { break }
+                self.loadFleet()
+            }
+        }
     }
 
     func setActive(index: Int) {

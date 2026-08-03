@@ -187,6 +187,64 @@ actor StubSnapshotSource: SnapshotFetching {
     func callCount() -> Int { count }
 }
 
+/// MYR-432 — a `SnapshotFetching` scripted PER VEHICLE, so one car's `403` can be
+/// observed alongside another car's healthy read on the same socket.
+///
+/// Counting per vehicle is the whole point: "the retry stopped" and "the retry
+/// stopped for the RIGHT car" are different claims, and a single global counter
+/// cannot tell them apart.
+actor PerVehicleSnapshotSource: SnapshotFetching {
+    private let state: VehicleState
+    /// Vehicle ids whose read is refused, and with what status.
+    private var refusals: [String: Int]
+    private var counts: [String: Int] = [:]
+
+    init(state: VehicleState, refusals: [String: Int] = [:]) {
+        self.state = state
+        self.refusals = refusals
+    }
+
+    func snapshot(vehicleId: String) async throws -> VehicleState {
+        counts[vehicleId, default: 0] += 1
+        if let status = refusals[vehicleId] {
+            throw RestError.http(status: status, code: nil, message: nil, subCode: nil)
+        }
+        var scoped = state
+        scoped.vehicleId = vehicleId
+        return scoped
+    }
+
+    func callCount(_ vehicleId: String) -> Int { counts[vehicleId] ?? 0 }
+    func totalCallCount() -> Int { counts.values.reduce(0, +) }
+    /// Lift a refusal mid-test — access coming back.
+    func allow(_ vehicleId: String) { refusals.removeValue(forKey: vehicleId) }
+}
+
+// MARK: - Access listing (MYR-432)
+
+/// MYR-432 — a scripted ``VehicleAccessListing``. Hands out a set that a test can
+/// change between handshakes (the whole point: the post-4002 handshake must see a
+/// REDUCED set) and counts how often the socket asked.
+actor StubAccessListing: VehicleAccessListing {
+    private var ids: Set<String>
+    private var failure: (any Error)?
+    private var count = 0
+
+    init(_ ids: Set<String>, failure: (any Error)? = nil) {
+        self.ids = ids
+        self.failure = failure
+    }
+
+    func accessibleVehicleIDs() async throws -> Set<String> {
+        count += 1
+        if let failure { throw failure }
+        return ids
+    }
+
+    func setIDs(_ next: Set<String>) { ids = next }
+    func callCount() -> Int { count }
+}
+
 // MARK: - WebSocket channel
 
 /// Scripted `WebSocketChannel`. Auto-emits an `auth_ok` frame the moment the
@@ -200,6 +258,10 @@ actor MockWebSocketChannel: WebSocketChannel {
     private var waiter: CheckedContinuation<String, any Error>?
     private var closed = false
     private var sent: [String] = []
+    /// MYR-432 — the close code this channel reports once it has closed. `nil` is
+    /// the ordinary transport drop every pre-MYR-432 test produces, which is what
+    /// keeps their behaviour byte-identical.
+    private var reportedCloseCode: Int?
 
     init(label: Int) { self.label = label }
 
@@ -229,9 +291,18 @@ actor MockWebSocketChannel: WebSocketChannel {
         if let waiter { self.waiter = nil; waiter.resume(throwing: Closed()) }
     }
 
+    func closeCode() -> Int? { reportedCloseCode }
+
     // Test hooks
     func push(_ text: String) { enqueue(text) }
     func sentFrames() -> [String] { sent }
+    /// MYR-432 — close the way a SERVER does, with a code. Set before the close so
+    /// the socket's read of `closeCode()` (which happens the instant `receive()`
+    /// fails) can never race it.
+    func closeWith(code: Int) {
+        reportedCloseCode = code
+        close()
+    }
 
     private func enqueue(_ text: String) {
         if let waiter { self.waiter = nil; waiter.resume(returning: text) }

@@ -234,6 +234,9 @@ actor AuthenticatingWebSocketChannel: WebSocketChannel {
     private var waiter: CheckedContinuation<String, any Error>?
     private var closed = false
     private var sent: [String] = []
+    /// MYR-432 — the close code this channel reports once it has closed. `nil` for
+    /// every pre-MYR-432 use, i.e. an ordinary transport drop.
+    private var reportedCloseCode: Int?
 
     func send(_ text: String) async throws {
         if closed { throw Closed() }
@@ -261,6 +264,16 @@ actor AuthenticatingWebSocketChannel: WebSocketChannel {
 
     func sentFrames() -> [String] { sent }
 
+    func closeCode() -> Int? { reportedCloseCode }
+
+    /// MYR-432 — close the way a SERVER does, with a code. The code is set BEFORE
+    /// the close so the socket's read of it (which happens the instant `receive()`
+    /// fails) can never race the assignment.
+    func closeWith(code: Int) async {
+        reportedCloseCode = code
+        await close()
+    }
+
     private func enqueue(_ text: String) {
         if let waiter { self.waiter = nil; waiter.resume(returning: text) }
         else { inbound.append(text) }
@@ -278,6 +291,14 @@ final class AuthenticatingChannelFactory: WebSocketChannelFactory, @unchecked Se
         let channel = AuthenticatingWebSocketChannel()
         lock.lock(); channels.append(channel); lock.unlock()
         return channel
+    }
+
+    /// MYR-432 — every channel handed out so far, newest last. A test needs the
+    /// LIVE one to close it with a code, and needs the COUNT to assert that the
+    /// access close bought exactly one re-handshake.
+    func madeChannels() -> [AuthenticatingWebSocketChannel] {
+        lock.lock(); defer { lock.unlock() }
+        return channels
     }
 }
 

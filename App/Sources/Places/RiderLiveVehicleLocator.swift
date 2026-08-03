@@ -126,6 +126,11 @@ final class RiderLiveVehicleLocator {
             webSocketURL: config.environment.webSocketURL,
             tokenProvider: config.tokenProvider,
             snapshotSource: rest,
+            // MYR-432 — the same §7.0 read this locator already makes, handed to
+            // the socket so a §6.2 close can resolve the REDUCED access set from
+            // the one list the whole rider shell treats as the truth about access
+            // (MYR-369: a suspended grant simply leaves it).
+            accessListing: rest,
             channelFactory: config.channelFactory ?? URLSessionWebSocketChannelFactory()
         )
     }
@@ -167,8 +172,56 @@ final class RiderLiveVehicleLocator {
     /// while a list load is in flight; safe to call again on foreground.
     func start() {
         started = true
+        observeAccessRevocations()
         telemetrySource?.start()
         loadFleet()
+    }
+
+    // MARK: - MYR-432 — a revoked grant stands the rider surface down
+
+    /// MYR-432 — the count of access revocations this locator has seen.
+    ///
+    /// A COUNTER rather than a flag, and that is what makes it a usable trigger:
+    /// a second revocation (the other car, minutes later) has to be
+    /// distinguishable from the first, and a `Bool` that is already `true` fires
+    /// no `onChange`. Nothing reads its VALUE — it is the edge that matters.
+    private(set) var accessRevocationTick = 0
+
+    @ObservationIgnored private var accessTask: Task<Void, Never>?
+
+    /// MYR-432 — turn a §6.2 close into the ONE thing that already releases this
+    /// surface: another §7.0 read.
+    ///
+    /// The socket has pruned its subscription by the time this runs, so the
+    /// stream is over either way. What is left is the shell, which decides what
+    /// the rider SEES from `RiderVehicleSet.resolve` over the catalog's two
+    /// partitions — and that only moves when the list is re-read. So this does
+    /// two things and builds nothing new: it drops the watched id (a car we may
+    /// not see is not one to hold a slot for, and holding it would block
+    /// `loadFleet`'s fallback from adopting a surviving car), and it bumps a tick
+    /// the shell funnels into `refreshRideEndGateInputs()` + the catalog re-read.
+    ///
+    /// **A viewer revoked from ONE of two cars keeps the other**, and that falls
+    /// out of the set rather than out of a branch here: the socket pruned only the
+    /// absent vehicle, `refreshFleet()` republishes the reduced list, and the
+    /// shell re-resolves `.ridable` on whatever survived.
+    private func observeAccessRevocations() {
+        guard accessTask == nil else { return }
+        let socket = self.socket
+        accessTask = Task { [weak self] in
+            for await revocation in await socket.accessRevocations() {
+                guard let self, self.started else { break }
+                self.applyAccessRevocation(revocation)
+            }
+        }
+    }
+
+    private func applyAccessRevocation(_ revocation: VehicleAccessRevocation) {
+        if let watched = watchedVehicleID, revocation.revoked.contains(watched) {
+            watch(vehicleID: nil)
+        }
+        refreshFleet()
+        accessRevocationTick += 1
     }
 
     /// MYR-402 — RE-READ `GET /api/vehicles`.
@@ -231,6 +284,8 @@ final class RiderLiveVehicleLocator {
         started = false
         loadTask?.cancel()
         loadTask = nil
+        accessTask?.cancel()
+        accessTask = nil
         telemetrySource?.stop()
         let socket = self.socket
         Task { await socket.disconnect() }
