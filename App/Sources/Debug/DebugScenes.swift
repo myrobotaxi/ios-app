@@ -1593,8 +1593,15 @@ enum DebugScene: String, CaseIterable {
 
     // MARK: Initial routing (consumed by RootView's @State defaults)
 
-    static var initialScreen: AppScreen {
-        switch current {
+    static var initialScreen: AppScreen { initialScreen(for: current) }
+
+    /// Split out from the `current`-reading property so a test can ask it about a
+    /// named scene — `current` is an environment read and no test can set it.
+    /// **MYR-444 leans on this**: with the first-run demo's trigger switched off,
+    /// the two demo scenes are the ONLY way the walkthrough boots at all, and that
+    /// is a claim worth asserting rather than assuming.
+    static func initialScreen(for scene: DebugScene?) -> AppScreen {
+        switch scene {
         case .modeChooser: return .modeChooser
         // MYR-184 — the invite-code screen is its own top-level `AppScreen`, not a
         // rider tab, so it needs an explicit arm.
@@ -1603,6 +1610,11 @@ enum DebugScene: String, CaseIterable {
         // route to a tutorial case; every other scene boots past it, and
         // `RootView.makeFirstRunDemoStore()` hands any scene an in-memory record
         // with both roles already seen, so no other capture can grow a coach mark.
+        //
+        // MYR-444 — they route here DIRECTLY, never through
+        // `FirstRunDemoGate.playsWalkthrough`, which is exactly why the client's
+        // kill switch takes the walkthrough off every first entry and leaves both
+        // capture scenes bootable.
         case .ownerDemo: return .ownerTutorial
         case .riderDemo: return .riderTutorial
         case .some(let scene) where scene.isOwner: return .ownerHome

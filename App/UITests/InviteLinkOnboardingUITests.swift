@@ -94,20 +94,22 @@ final class InviteLinkOnboardingUITests: XCTestCase {
         )
         // The CTA is the receipt for the ORIGIN. A fresh account gets
         // `.onboarding` — MYR-346's own treatment of a link on the first-run
-        // choice screen — because a rider who has never seen this app wants the
-        // walkthrough and has no shell to be returned to. `.deepLink` would read
-        // "Done" here.
+        // choice screen — because a rider who has never seen this app has no
+        // shell to be returned to. `.deepLink` would read "Done" here. The origin
+        // is unchanged by MYR-444; only where `.onboarding` ROUTES on completion
+        // moved, and this string is what still tells the two arms apart.
         XCTAssertTrue(
             app.buttons["Continue"].waitForExistence(timeout: 10),
-            "first-run grammar: Continue into the rider tutorial, not the returning Done"
+            "first-run grammar: Continue, not the returning Done"
         )
         attach(app, named: "MYR-426 fresh account — joined, first-run CTA")
     }
 
     /// …and the sequence ENDS on the rider Live Map, which is the issue's own
-    /// acceptance. Joined → RiderTutorial → the rider shell, watching the car
-    /// the code just granted. Driven with real taps because the landing is three
-    /// screens past the redeem and no single mounted view holds that.
+    /// acceptance: joined → the rider shell, watching the car the code just
+    /// granted. Driven with real taps because the landing is two screens past the
+    /// redeem and no single mounted view holds that. **MYR-444 removed the
+    /// RiderTutorial step in the middle** — see the assertion at the end.
     func testTheFreshAccountSequenceEndsOnTheRiderLiveMap() {
         let app = launch(scene: "modeChooser", joinLink: code)
 
@@ -115,17 +117,20 @@ final class InviteLinkOnboardingUITests: XCTestCase {
         XCTAssertTrue(cont.waitForExistence(timeout: 25), "the joined screen's CTA")
         cont.tap()
 
-        let skip = app.buttons["Skip"]
-        XCTAssertTrue(
-            skip.waitForExistence(timeout: 20),
-            "a fresh account gets the rider walkthrough before the map"
-        )
-        attach(app, named: "MYR-426 fresh account — rider tutorial")
-        skip.tap()
-
         XCTAssertTrue(
             app.buttons["Live Map"].waitForExistence(timeout: 20),
             "the tester lands on the rider shell, where the joined vehicle is"
+        )
+        // **MYR-444 — and lands there DIRECTLY.** Until this issue the sequence
+        // was join → RiderTutorial → map, and this test tapped Skip on the way
+        // through. The client disabled the walkthrough for the refinement round,
+        // so the invite-link arrival — one of the first entries he named — no
+        // longer routes through it. Asserted AFTER the map has been reached, so
+        // the negative is a statement about the settled screen rather than about
+        // how fast the simulator got there.
+        XCTAssertFalse(
+            app.buttons["Skip"].exists,
+            "MYR-444: the first-run walkthrough must not fire on an invite-link arrival"
         )
         attach(app, named: "MYR-426 fresh account — rider Live Map")
     }

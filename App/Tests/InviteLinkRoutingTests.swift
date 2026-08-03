@@ -407,9 +407,14 @@ final class InviteLinkRoutingTests: XCTestCase {
             // Defers, and what it resolves INTO.
             .resolvingSession: .defers(into: .signIn),   // the silent refresh answers, either way
             .signIn: .defers(into: .modeChooser),        // the account is created
-            .addTesla: .defers(into: .ownerTutorial),    // the OAuth handoff returns
-            .ownerTutorial: .defers(into: .ownerHome),   // five cards, or Skip
-            .riderTutorial: .defers(into: .sharedHome),  // five cards, or Skip
+            // MYR-444 — the OAuth handoff returns to the owner SHELL now; with
+            // the first-run demo's trigger switched off it no longer routes
+            // through `.ownerTutorial`. The two tutorial rows stay: they are
+            // still reachable from the `ownerDemo`/`riderDemo` DEBUG scenes, and
+            // a screen the matrix stops naming is a screen nothing sweeps.
+            .addTesla: .defers(into: .ownerHome),        // the OAuth handoff returns
+            .ownerTutorial: .defers(into: .ownerHome),   // the walkthrough ends, or Skip
+            .riderTutorial: .defers(into: .sharedHome),  // the walkthrough ends, or Skip
         ]
         let all: [AppScreen] = [
             .resolvingSession, .signIn, .modeChooser, .emptyState, .addTesla,

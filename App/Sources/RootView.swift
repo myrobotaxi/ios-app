@@ -576,13 +576,15 @@ struct RootView: View {
     // entry-invariant lesson: a rule stated at the entrance cannot be forgotten by
     // an exit somebody adds later.
     //
-    // The FOURTH door needs no gate at all: onboarding already routes to
-    // `.ownerTutorial` / `.riderTutorial` on its own (after pairing a Tesla, after
-    // redeeming an invite code), and those cases now host the walkthrough. So a
-    // rider arriving by invite link — MYR-426's join → tutorial → map — gets the
-    // walkthrough at that hand-off and, because finishing it marks the flag,
-    // does NOT get it again when the rider shell mounts. One teaching surface,
-    // not two back to back.
+    // **MYR-444 — THE OTHER TWO DOORS ASK THE SAME QUESTION NOW.** MYR-428 let
+    // onboarding route to `.ownerTutorial` / `.riderTutorial` on its own (after
+    // pairing a Tesla, after redeeming an invite code) and called that "the fourth
+    // door needs no gate": with the walkthrough always on, an ungated route and a
+    // gated one were indistinguishable, and finishing marked the flag so the shell
+    // never showed it twice. A kill switch makes the difference load-bearing — an
+    // ungated door is a door the switch does not reach — so all four call
+    // `playsFirstRunDemo` and the client's "not for anyone" is a property of this
+    // one function rather than of four call sites agreeing.
 
     @MainActor
     private func playsFirstRunDemo(_ demoRole: FirstRunDemoRole) -> Bool {
@@ -1165,7 +1167,13 @@ struct RootView: View {
                 AddTeslaFlow(
                     onComplete: {
                         role = .owner
-                        screen = .ownerTutorial
+                        ownerTab = "home"
+                        // MYR-444 — this hand-off used to route to the tutorial
+                        // unconditionally, on MYR-428's reasoning that onboarding
+                        // "needs no gate". That was true while the walkthrough was
+                        // always on; with a kill switch it made this door the one
+                        // that ignores it. Every door asks the same question now.
+                        screen = playsFirstRunDemo(.owner) ? .ownerTutorial : .ownerHome
                     },
                     onCancel: { screen = .emptyState },
                     // MYR-246 — live path wires the real authenticator; sim passes
@@ -1188,7 +1196,15 @@ struct RootView: View {
                         switch inviteOrigin {
                         case .onboarding:
                             role = .shared
-                            screen = .riderTutorial
+                            sharedTab = "shared"
+                            // MYR-444 — same correction as `AddTeslaFlow`'s
+                            // hand-off: the invite-link arrival is one of the
+                            // first entries the client named, so it consults the
+                            // gate rather than routing past it. With the demo off
+                            // this lands exactly where finishing the walkthrough
+                            // landed — the rider Live Map, watching the car the
+                            // code just granted.
+                            screen = playsFirstRunDemo(.rider) ? .riderTutorial : .sharedHome
                         case .sharedSettings:
                             role = .shared
                             screen = .sharedHome
