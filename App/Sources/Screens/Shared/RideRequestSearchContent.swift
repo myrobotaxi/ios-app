@@ -367,9 +367,24 @@ struct RideRequestSearchContent: View {
         // the seam at this field's own text, so switching fields never leaves the
         // other field's results standing under it (which would let a rider commit
         // a pickup they never searched for).
+        // MYR-445 defect 1 — AND THE FIELD BEHAVES LIKE A VALUE ON FOCUS. The rule
+        // is `RidePickupFieldFocus`; this is its binding. Gaining first responder
+        // empties a field holding a committed pickup so the next keystroke
+        // REPLACES it (the client had to "type over it"), and losing first
+        // responder with nothing typed re-seeds the mirror from the draft, so the
+        // clear is an editing affordance rather than a silent erasure.
+        //
+        // `searchTarget` is re-pointed BEFORE the text is cleared, so the clear's
+        // own `onChange(of: pickupQuery)` is already the pickup's search.
         .onChange(of: pickupFieldFocused) { _, focused in
-            guard focused else { return }
+            guard focused else {
+                pickupQuery = RidePickupFieldFocus.textOnFocusLost(
+                    current: pickupQuery, draftLabel: viewerState.draftPickup?.label
+                )
+                return
+            }
             searchTarget = .pickup
+            pickupQuery = RidePickupFieldFocus.textOnFocusGained(current: pickupQuery)
             viewerState.updateSearch(query: pickupQuery)
         }
         .onChange(of: destinationFieldFocused) { _, focused in
@@ -834,8 +849,18 @@ struct RideRequestSearchContent: View {
                         // second, quieter way of changing what an untouched rider
                         // sees. `allowsHitTesting(false)` keeps the field itself
                         // the tap target.
+                        //
+                        // MYR-445 defect 1 — and it is NEVER drawn while the field
+                        // holds first responder. A cursor sitting next to
+                        // full-strength "Current location" is the whole of the
+                        // client's *"It doesn't disappear when selecting on it"*:
+                        // the default is deliberately indistinguishable from a
+                        // value (above), so the one moment it must not be on
+                        // screen is the moment the rider is about to type.
                         .overlay(alignment: .leading) {
-                            if pickupQuery.isEmpty {
+                            if RidePickupFieldFocus.showsDefaultOverlay(
+                                text: pickupQuery, isFocused: pickupFieldFocused
+                            ) {
                                 Text(SharedViewerState.pickupFallbackLabel)
                                     .font(.system(size: 14.5, weight: .medium))
                                     .foregroundStyle(Color.mrtText)
@@ -845,15 +870,24 @@ struct RideRequestSearchContent: View {
                         }
                         .accessibilityIdentifier("mrt.search.pickupField")
                 }
-                if !pickupQuery.isEmpty {
+                if RidePickupFieldFocus.showsClearAffordance(
+                    text: pickupQuery, hasDraftPickup: viewerState.draftPickup != nil
+                ) {
                     // The destination field's own clear affordance, at the other
                     // end of the same card. This is what "Current location"
                     // becomes as an explicit CHOICE rather than only a default:
                     // the one control that puts the pickup back to nothing.
+                    //
+                    // MYR-445 defect 1/3 — it now survives the focus clear above.
+                    // A rider who taps into the field to change a set pickup and
+                    // then decides they want their own feet after all must still
+                    // have the control that says so; keyed on the TEXT alone it
+                    // vanished the instant they focused the field. An untouched
+                    // search (no draft, no text) still offers nothing at all.
                     Button {
+                        searchTarget = .pickup
                         pickupQuery = ""
                         viewerState.clearPickup()
-                        searchTarget = .pickup
                         viewerState.updateSearch(query: "")
                     } label: {
                         Image(systemName: "xmark").font(.system(size: 13)).foregroundStyle(Color.mrtTextMuted)
@@ -879,6 +913,13 @@ struct RideRequestSearchContent: View {
                     .overlay(Capsule().strokeBorder(viewerState.draftPickup != nil ? Color.mrtGold.opacity(Double(0x66) / 255.0) : Color.mrtBorder, lineWidth: MRTMetrics.hairline))
                 }
                 .buttonStyle(.plain)
+                // MYR-445 — identifier only, no pixels. This capsule is the ONE
+                // control that renders `draftPickup != nil` as a word ("On map"
+                // vs "Set on map"), which makes it the only screen-visible proof
+                // that an explicit re-choice genuinely landed in the draft — the
+                // client's *"it doesn't actually set it"*. It is also the
+                // fine-tune door his report says he could not reach.
+                .accessibilityIdentifier("mrt.search.pickupOnMap")
             }
             .padding(.vertical, 11)
 

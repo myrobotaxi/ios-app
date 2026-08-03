@@ -502,6 +502,22 @@ final class RideRouteStore {
             guard leg2Task == nil, leg2.count <= 2 else { return }
             if let last = leg2AttemptAt, Date().timeIntervalSince(last) < retryCooldown { return }
         }
+        // ⚠️ MYR-445 defect 4 — A NEW PAIR DROPS THE CACHED POLYLINE IMMEDIATELY.
+        // This is the guard `ensureLeg1`'s own header has claimed leg 2 "already
+        // had" since MYR-293, and leg 2 never had it: it re-keyed and refetched but
+        // left `leg2` holding the PREVIOUS pickup's road geometry for as long as
+        // MKDirections took (~1s on a good day, 3.5s measured on a bad one, and the
+        // whole 8s deadline when it is throttled). The rider re-chooses a pickup,
+        // the app is already correct about every coordinate it holds, and the map
+        // keeps drawing the route from where they used to be — which is exactly
+        // what "the map route polyline is also stuck" looks like once the anchor
+        // half of the defect is fixed and the pair genuinely does change.
+        //
+        // Dropping it lands on MYR-395's honest `.resolving` opening (a breathing
+        // head, no line) rather than on a confident wrong line — that issue's own
+        // rule that a map which cannot draw must say so, applied to the window
+        // where the answer is on its way.
+        if leg2Key != l2Key { leg2 = [] }
         leg2Key = l2Key
         leg2AttemptAt = Date()
         leg2Task?.cancel()
