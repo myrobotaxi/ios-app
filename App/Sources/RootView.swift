@@ -1381,7 +1381,15 @@ struct RootView: View {
                             homeState: ownerHomeState,
                             drivesState: ownerDrivesState,
                             ownerTab: $ownerTab,
-                            isLive: isLiveMode
+                            isLive: isLiveMode,
+                            // MYR-463 — the owner's own live ride, so Drives →
+                            // Upcoming can say where a reservation went at its
+                            // pickup time instead of rendering "No upcoming
+                            // rides" over one that is running. Read-only, and
+                            // the SAME record `HomeScreen`'s dispatch card
+                            // narrates — two owner surfaces cannot disagree
+                            // about one ride because there is only one.
+                            ownerDispatch: rideRequestService.ownerDispatch
                         )
                     }
                 case "invites":

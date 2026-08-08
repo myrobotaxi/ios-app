@@ -34,7 +34,7 @@ final class RideScheduleDaysTests: XCTestCase {
         date(DateComponents(year: 2026, month: 7, day: 30, hour: 6, minute: 0))
     }
 
-    private var times: [String] { RideRequestFixtures.scheduleTimes }
+    private var times: [String] { RideScheduleTimes.grid }
 
     private func days(_ now: Date) -> [RideScheduleDay] {
         RideScheduleDays.days(now: now, calendar: calendar)
@@ -188,15 +188,23 @@ final class RideScheduleDaysTests: XCTestCase {
     /// The past-slot half of that invariant, named — and with NO service window
     /// at all, so this is purely the wall clock.
     ///
-    /// At 22:09 the picker's grid (7:00 AM … 10:30 PM) has exactly one slot left
-    /// on Today. Before MYR-370 all 32 were offered, and tapping any of the 31
+    /// At 22:09 the picker's grid (7:00 AM … 10:45 PM) has three slots left on
+    /// Today. Before MYR-370 every slot was offered, and tapping any of the ones
     /// that had gone booked TOMORROW at that hour under a chip reading "Today" —
     /// the same silent day-substitution "Thu" was making, one row up.
-    func testTodaysPastSlotsAreDroppedAndOnlyTheRemainingOneIsOffered() {
+    ///
+    /// MYR-464 widened the grid to fifteen minutes, so the survivors are three
+    /// rather than one and the row now runs to 10:45 PM. The RULE is unchanged
+    /// and is what this asserts: everything at or before the wall clock is gone,
+    /// everything after it is offered.
+    func testTodaysPastSlotsAreDroppedAndOnlyTheRemainingOnesAreOffered() {
         let remaining = RideScheduleFloor.allowedTimes(
             on: "Today", times: times, floor: nil, now: thursdayNight, calendar: calendar
         )
-        XCTAssertEqual(remaining, ["10:30 PM"], "only the slot still ahead of 22:09 survives")
+        XCTAssertEqual(
+            remaining, ["10:15 PM", "10:30 PM", "10:45 PM"],
+            "only the slots still ahead of 22:09 survive"
+        )
         XCTAssertLessThan(remaining.count, times.count, "the morning is gone; it must not roll to tomorrow")
 
         let allowedDays = RideScheduleFloor.allowedDays(

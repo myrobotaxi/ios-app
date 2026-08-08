@@ -204,6 +204,74 @@ struct DrivesListSkeleton: View {
     }
 }
 
+// MARK: - Drives → Upcoming (MYR-463)
+
+/// One `UpcomingRow`-shaped placeholder: the 42pt icon tile, a destination line
+/// and the "{day} {time} · For {rider}" line, at the real row's 14pt padding,
+/// card radius, gutter and 11pt row gap — so the server's rows landing does not
+/// reflow the list.
+///
+/// Neutral fill for `DriveRowSkeleton`'s reason, restated because it is the more
+/// tempting mistake here: the real row is GOLD, and a gold-tinted card with no
+/// content in it reads as a reservation the owner could tap or cancel.
+struct UpcomingRowSkeleton: View {
+    let index: Int
+
+    private static let destinationWidths: [CGFloat] = [148, 176]
+    private static let detailWidths: [CGFloat] = [162, 138]
+
+    var body: some View {
+        HStack(spacing: 13) {
+            MRTSkeletonBar(
+                width: MRTMetrics.upcomingIconTileSize,
+                height: MRTMetrics.upcomingIconTileSize,
+                radius: 11,
+                emphasis: .strong
+            )
+            VStack(alignment: .leading, spacing: 5) {
+                MRTSkeletonBar(
+                    width: Self.destinationWidths[index % Self.destinationWidths.count],
+                    height: 15, radius: 5, emphasis: .strong
+                )
+                MRTSkeletonBar(
+                    width: Self.detailWidths[index % Self.detailWidths.count],
+                    height: 12
+                )
+            }
+            Spacer(minLength: 0)
+            // The X is an affordance that exists regardless of the data, so its
+            // slot is left EMPTY rather than blocked out — MYR-386's rule, which
+            // that issue applied to a roster row's overflow menu.
+        }
+        .padding(14)
+        .background(Color.mrtSkeletonRowFill, in: RoundedRectangle(cornerRadius: MRTMetrics.cardRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: MRTMetrics.cardRadius, style: .continuous)
+                .strokeBorder(Color.mrtSkeletonRowBorder, lineWidth: MRTMetrics.hairline)
+        )
+        .padding(.horizontal, MRTMetrics.pageGutter)
+        .padding(.bottom, 11)
+    }
+}
+
+/// The Upcoming segment's first-read placeholder.
+///
+/// TWO rows, not three: a reservation list is short by nature, and a taller
+/// skeleton promises a page size the server never stated.
+struct UpcomingListSkeleton: View {
+    static let rowCount = 2
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(0..<Self.rowCount, id: \.self) { index in
+                UpcomingRowSkeleton(index: index)
+            }
+        }
+        .padding(.top, 4)
+        .mrtSkeletonAccessibility("Loading reservations")
+    }
+}
+
 // MARK: - Rider Live Map (MYR-343)
 
 /// The rider Live Map while the account's VEHICLE SET is still being resolved —

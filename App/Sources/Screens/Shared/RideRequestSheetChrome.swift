@@ -353,7 +353,7 @@ struct RideSlideUpCard<Content: View>: View {
                 .onTapGesture(perform: onDismiss)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 0) { content }
-                .padding(.horizontal, 22)
+                .padding(.horizontal, MRTMetrics.rideSlideUpCardGutter)
                 .padding(.top, 20)
                 .padding(.bottom, 26)
                 .frame(maxWidth: .infinity)
@@ -384,6 +384,54 @@ struct RideSlideUpCard<Content: View>: View {
         }
         .transition(.opacity)
         .accessibilityAddTraits(.isModal)
+    }
+}
+
+// MARK: - RideChipScroller (MYR-464)
+
+/// A horizontally scrolling chip row inside `RideSlideUpCard` that reaches the
+/// card's TRUE edges.
+///
+/// THE DEFECT. External beta, build 202608030843: *"Something is off in design
+/// here."* The schedule picker's time row is a plain `ScrollView` laid out as a
+/// child of the card's `VStack`, so its viewport was inset by the card's 22pt
+/// content gutter and its content was guillotined exactly there — the tester's
+/// screenshot reads **`0 PM`** at the leading edge (the tail of "6:30 PM") and
+/// `8:30` at the trailing one, both cut mid-label with 22pt of plain card fill
+/// beyond them. Nothing about that says *scrollable*; a label cut off short of
+/// the edge, with empty card either side of it, says *broken*.
+///
+/// THE FIX IS GEOMETRY, NOT DECORATION. The scroller BLEEDS by the card gutter so
+/// its viewport runs to the card's real edges, and the row inside it INSETS by
+/// the same gutter so its resting position is byte-identical to before. Chips
+/// then scroll under the card's own edge exactly as every scrolling row in iOS
+/// does, and a partly-visible chip AT the edge is the affordance — that is what
+/// the eye reads as "there is more this way".
+///
+/// **NO EDGE FADE, and that is a decision rather than an omission.** A gradient
+/// mask is the obvious way to soften the cut, and on this row it would be a bug:
+/// `RideChip` renders an UNAVAILABLE slot by dimming it to 0.32 (MYR-316/MYR-385),
+/// so a static fade over the leading chip would render a perfectly bookable time
+/// as though the service floor or a booked window had taken it. A row whose first
+/// chip looks unavailable is a worse lie than a row that looks cut.
+///
+/// `.contentMargins` is the other obvious spelling and is deliberately not used:
+/// this repo has already measured one surface where it compiles, reads correctly
+/// and is silently dropped (MYR-398 §0 A, the Dynamic Island), and padding a real
+/// view is a mechanism whose effect is visible in a layout dump.
+struct RideChipScroller<Content: View>: View {
+    /// Bled and re-inset by the same constant, so the row starts where it always
+    /// did and only its CLIPPING moves.
+    private static var gutter: CGFloat { MRTMetrics.rideSlideUpCardGutter }
+
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 7) { content }
+                .padding(.horizontal, Self.gutter)
+        }
+        .padding(.horizontal, -Self.gutter)
     }
 }
 
