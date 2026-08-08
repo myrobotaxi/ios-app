@@ -10,7 +10,8 @@ import UIKit
 //
 // entry → validating → joined. Six cells backed by a hidden text field with
 // an animated caret; the active cell gets a gold ring; a rejected code
-// shakes (`mrtShake`). "Use sample code →" fills RBO246. On the 6th
+// shakes (`mrtShake`). "Use sample code →" fills RBO246 — DEBUG BUILDS ONLY,
+// see the gate at its own call site below. On the 6th
 // character a ~1.3s validating spinner runs, then JoinedSuccess blooms in.
 //
 // MYR-184 — the code check is now REAL (`POST /api/invites/redeem`, §7.5.5).
@@ -64,7 +65,9 @@ struct InviteCodeFlow: View {
     }
 
     private static let length = InviteCodeEntry.length
+    #if DEBUG
     private static let sample = "RBO246" // jsx:409
+    #endif
 
     @State private var code = ""
     @State private var phase: Phase = .entry
@@ -193,6 +196,18 @@ struct InviteCodeFlow: View {
 
             Spacer(minLength: 0)
 
+            // The prototype's dev affordance (jsx:409), and DEBUG-ONLY now.
+            // It was UNGATED: its only condition was `phase != .entry`, so
+            // every external TestFlight rider was shown a gold button that
+            // fires a REAL `POST /api/invites/redeem` for the fixture code
+            // against whatever backend the build points at — somebody else's
+            // sample invite, redeemed by a stranger, on the live path.
+            //
+            // A release build does not compile it AT ALL, which is the guard:
+            // there is no runtime flag to get backwards. The two capture scenes
+            // reach the same fill through `autoSubmitsSampleCode` below (also
+            // DEBUG-only), so every DEBUG scene is byte-identical.
+            #if DEBUG
             Button {
                 useSampleCode()
             } label: {
@@ -204,6 +219,8 @@ struct InviteCodeFlow: View {
             }
             .disabled(phase != .entry)
             .opacity(phase == .entry ? 1 : 0.4)
+            .accessibilityIdentifier("mrt.invite.useSampleCode")
+            #endif
         }
         .padding(.top, 132)
         .padding(.horizontal, MRTMetrics.onboardingGutter)
@@ -232,8 +249,15 @@ struct InviteCodeFlow: View {
             guard phase == .entry else { return }
             if let prefilledCode {
                 prefill(prefilledCode)
-            } else if autoSubmitsSampleCode, code.isEmpty {
-                useSampleCode() // submit fires from `onChange`, exactly as a tap would
+            } else {
+                // DEBUG-only with the affordance it stands in for. Written as a
+                // nested `if` rather than an `else if` because a bare `else if`
+                // is not a complete statement and cannot be wrapped in `#if`.
+                #if DEBUG
+                if autoSubmitsSampleCode, code.isEmpty {
+                    useSampleCode() // submit fires from `onChange`, exactly as a tap would
+                }
+                #endif
             }
         }
     }
@@ -349,11 +373,13 @@ struct InviteCodeFlow: View {
             }
     }
 
+    #if DEBUG
     private func useSampleCode() {
         code = Self.sample
         // (submit fires from onChange; jsx adds a 200ms beat for the fill
         // to read before the spinner — folded into the same path here.)
     }
+    #endif
 
     /// MYR-346 — seat a code that came from a universal link. Deliberately the
     /// same one-line shape as `useSampleCode`: assign, and let `onChange` clean,
