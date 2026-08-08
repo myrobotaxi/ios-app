@@ -182,7 +182,17 @@ final class InviteLinkParsingTests: XCTestCase {
     /// or a look-alike domain — and none of them may produce a code.
     func testAUrlThatIsNotOursYieldsNothing() {
         XCTAssertNil(code("http://myrobotaxi.app/join/RBO246"), "https only — a universal link cannot be http")
-        XCTAssertNil(code("myrobotaxi://join/RBO246"), "the custom scheme is the Tesla-link callback, not this")
+        // MYR-453 DELIBERATELY REVERSED THIS ONE. It used to read "the custom
+        // scheme is the Tesla-link callback, not this" — true when the universal
+        // link was the only channel, and the reason a Telegram tap reached the
+        // code screen with the cells empty: iOS does not fire a universal link
+        // out of an in-app browser, and there was no second door. There is one
+        // now, and `myrobotaxi://join/{CODE}` is it. The envelope, the refusals
+        // and the proof that this arm did not loosen the https arm are all in
+        // `InviteLinkSchemeTests`; the four cases left in this test are the
+        // https rule, unchanged.
+        XCTAssertEqual(code("myrobotaxi://join/RBO246"), "RBO246",
+                       "MYR-453 — the app-scheme fallback channel; see InviteLinkSchemeTests")
         XCTAssertNil(code("https://myrobotaxi.app.evil.com/join/RBO246"), "suffix look-alike")
         XCTAssertNil(code("https://evil.com/join/RBO246"))
         XCTAssertNil(code("https://www.myrobotaxi.app/join/RBO246"),

@@ -13,6 +13,20 @@
 	on. Both callbacks share the single `myrobotaxi` scheme below (distinguished by
 	host); ASWebAuthenticationSession matches on the scheme, so no second entry is
 	needed.
+
+	MYR-453 gives that same scheme a THIRD use — `myrobotaxi://join/{CODE}`, the
+	invite link's fallback channel for when iOS declines to fire the universal
+	link (a WKWebView-backed in-app browser, i.e. Telegram's default). It needs no
+	new entry here either: CFBundleURLTypes registers the SCHEME, and the scheme
+	is already ours. What was missing was a HANDLER — a `myrobotaxi://` URL
+	arriving outside an active ASWebAuthenticationSession was silently discarded,
+	because nothing in the app implemented `onOpenURL`. `RootView` does now, and
+	routes it into the same `InviteLinkBridge` the universal link uses.
+
+	The two Tesla hosts are unaffected: the session intercepts its own callback
+	while it is running, and a stray `myrobotaxi://tesla-linked` with no session
+	reaches `InviteLink.code(from:)`, fails its envelope, and is ignored — the
+	same nothing that happened before.
 	-->
 	<!--
 	MYR-172 — Live Activities. This key is what lets the app call

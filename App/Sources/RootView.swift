@@ -1586,6 +1586,30 @@ struct RootView: View {
             guard let url = activity.webpageURL else { return }
             InviteLinkBridge.shared.receive(url)
         }
+        // MYR-453 — THE SECOND CHANNEL, and the reason a tapped invite could
+        // reach the code screen with the code missing.
+        //
+        // Until this line the universal link was the ONLY way a code could enter
+        // the app, and iOS does not fire a universal link out of a WKWebView-backed
+        // in-app browser — which is what Telegram (and most messaging apps) open
+        // an `https://` link in. The tester's link therefore resolved to the web
+        // page, she arrived in the app with no activity, and the six cells were
+        // empty with nothing anywhere able to fill them.
+        //
+        // The `myrobotaxi` scheme was ALREADY registered for the two Tesla OAuth
+        // callbacks, so the app could always be opened this way; what was missing
+        // was anyone listening. Anything the parser does not recognise — including
+        // a stray `myrobotaxi://tesla-linked` that arrives with no
+        // ASWebAuthenticationSession running — routes to `.ignore` and does
+        // nothing, exactly as it did when this modifier did not exist.
+        //
+        // It feeds the SAME mailbox, so a scheme link inherits the cold-launch
+        // hold, the deferral matrix and the auto-submit without a second copy of
+        // any of it. The web page emitting `InviteLink.appURL(code:)` is the other
+        // half and is not this repo's to ship.
+        .onOpenURL { url in
+            InviteLinkBridge.shared.receive(url)
+        }
         // MYR-346 — re-ask where a HELD code should go whenever the shell moves.
         // This is the whole deferral mechanism: sign-in landing, a tutorial
         // finishing, an incoming request being answered, a ride reaching its
