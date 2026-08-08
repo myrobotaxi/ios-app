@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- MYR-434 — privacy manifest for the WIDGET EXTENSION.
+
+	     WHY A SECOND FILE. A privacy manifest is BUNDLE-scoped: Apple reads it from
+	     the root of each bundle and the aggregate privacy report is the union across
+	     the app and everything embedded in it. `MyRoboTaxiWidgets` is embedded at
+	     `MyRoboTaxi.app/PlugIns/MyRoboTaxiWidgets.appex`, a bundle of its own, so the
+	     app's `App/Sources/PrivacyInfo.xcprivacy` does NOT cover it — before this file
+	     the `.appex` had no Resources build phase at all and shipped no manifest.
+	     Nothing in `project.yml` needs to change to fix that: XcodeGen classifies
+	     `.xcprivacy` as a resource from its position under the target's `sources:`
+	     root and synthesises the Resources phase, exactly as it already does for the
+	     app target.
+
+	     WHY EVERY ARRAY IS EMPTY, AND WHY THAT IS NOT THE MYR-434 BUG AGAIN. The app's
+	     manifest was empty because nobody had checked; this one is empty because the
+	     extension genuinely does neither thing, and that was checked:
+
+	       • COLLECTS NOTHING. The extension cannot transmit. `project.yml` links it to
+	         `DesignSystem` and `contracts` only and to `MyRoboTaxiKit` NOT AT ALL, so
+	         there is no REST client, no telemetry socket and no token provider in this
+	         process. Its content arrives push-shaped — `Activity.request` from the app
+	         and APNs updates on the `…push-type.liveactivity` topic — and it only
+	         renders. Displaying data is not collecting it.
+
+	       • CALLS NO REQUIRED-REASON API. Verified across the extension's ENTIRE
+	         compiled surface, which is `Widgets/Sources` plus `App/ActivityShared`
+	         (the `RideActivityAttributes` family, compiled into both targets) plus
+	         `DesignSystem`: zero `UserDefaults`, zero file-timestamp calls, zero
+	         system-boot-time calls, zero disk-space calls, zero active-keyboard calls.
+	         There is deliberately no App Group — see the note in `project.yml` — so
+	         the extension cannot even reach the app's shared defaults.
+
+	     So the honest declaration is an empty one, and stating it explicitly is worth
+	     a file: it turns "this bundle declares nothing" from an ABSENCE that nobody
+	     audited into an ASSERTION that `PrivacyManifestTests` re-checks on every run.
+	     If this extension ever gains a network client or an App Group, this is the
+	     file that has to stop being empty. -->
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array/>
+</dict>
+</plist>
