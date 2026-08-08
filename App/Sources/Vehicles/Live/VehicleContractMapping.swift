@@ -367,7 +367,8 @@ enum VehicleContractMapping {
             // `seatVentEnabled` is a runtime on/off — a vent spinning right now —
             // so reading it as the capability (the shipped bug) left a vented car
             // with both seats off looking heat-only and Cool unreachable. Before
-            // the first snapshot every input is nil → honest heating-only UI.
+            // MYR-441 — before the first snapshot every input is nil, and that is
+            // `.unknown` rather than the confident heat-only this used to claim.
             // MYR-308 — contracts 0.16.0 adds the REAL spec field
             // (`seatCoolingCapable`, from Tesla REST `vehicle_config`). It leads:
             // `true`/`false` are authoritative (an explicit false hides the Heat↔Cool
@@ -376,7 +377,7 @@ enum VehicleContractMapping {
             // hasn't finished a vehicle-config read — falls back to the MYR-299
             // presence heuristic below. Snapshot-only by contract, so it arrives with
             // the cold read and never on a delta.
-            seatVent: SeatClimatePresentation.hasVentilatedSeats(
+            seatClimate: SeatClimatePresentation.capability(
                 seatCoolingCapable: state?.seatCoolingCapable,
                 seatCoolerLeft: state?.seatCoolerLeft,
                 seatCoolerRight: state?.seatCoolerRight,

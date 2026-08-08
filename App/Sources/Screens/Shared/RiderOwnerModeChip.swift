@@ -29,14 +29,29 @@ import DesignSystem
 // renders it and every tracking capture is byte-identical.
 
 /// The gate, as a pure function so the whole matrix is assertable.
+///
+/// **MYR-441 — THIS IS NOW A THIN NAME OVER `OwnerShellAccess`, NOT A SECOND
+/// RULE.** MYR-397 spelled the chip's gate as `!ownedVehicles.isEmpty` and the
+/// rider Settings row spelled its own as `liveProfile != nil` — two surfaces
+/// answering one question ("may this account enter the owner shell?") in two
+/// places, and the weaker spelling is the one external testers walked through.
+/// The chip keeps its name because that is what `SharedViewerScreen` reads, and
+/// delegates so the two can never disagree again.
+///
+/// The chip's inputs are unchanged in practice: it renders only inside the
+/// shell's `.ridable` arm, so `.empty` — the fresh-owner case `OwnerShellAccess`
+/// admits — is unreachable here by construction, and a viewer-only account gets
+/// no chip exactly as before.
 enum RiderOwnerModeChipGate {
     /// - Parameters:
-    ///   - holdsOwnerRole: does the account own at least one linked vehicle?
+    ///   - vehicleSet: the MYR-343 resolution over the §7.0 list's two partitions
+    ///     — the SAME value the shell switches on, so the chip cannot be offered
+    ///     over a shell that resolved differently.
     ///   - canSwitchModes: is there a real signed-in account to persist a mode
     ///     choice for? `switchViewMode()` no-ops without one, and a chip whose tap
     ///     does nothing is worse than no chip.
-    static func showsChip(holdsOwnerRole: Bool, canSwitchModes: Bool) -> Bool {
-        holdsOwnerRole && canSwitchModes
+    static func showsChip(vehicleSet: RiderVehicleSet, canSwitchModes: Bool) -> Bool {
+        OwnerShellAccess.offersOwnerMode(vehicleSet: vehicleSet, canSwitchModes: canSwitchModes)
     }
 }
 

@@ -149,8 +149,8 @@ final class OwnerVehicleDetailsLivePathTests: XCTestCase {
         // server populates it, so the row stops showing its honest empty state.
         XCTAssertEqual(vehicle.colorName, "Quicksilver", "VEHICLE DETAILS · Color")
         XCTAssertEqual(vehicle.fsdVersion, "FSD (Supervised) v14.3.5", "VEHICLE DETAILS · FSD")
-        XCTAssertTrue(
-            vehicle.seatVent,
+        XCTAssertEqual(
+            vehicle.seatClimate, .ventilated,
             "seatCoolingCapable=true must reach the row, or the Heat↔Cool toggle never renders")
 
         let snapshot = fleet.telemetry(at: 0).snapshot
@@ -184,7 +184,7 @@ final class OwnerVehicleDetailsLivePathTests: XCTestCase {
         XCTAssertEqual(vehicle.model, "2026 Model Y Performance")
         XCTAssertEqual(vehicle.colorName, "Quicksilver")
         XCTAssertEqual(vehicle.fsdVersion, "FSD (Supervised) v14.3.5")
-        XCTAssertTrue(vehicle.seatVent)
+        XCTAssertEqual(vehicle.seatClimate, .ventilated)
         XCTAssertFalse(fleet.isConnecting)
 
         fleet.stop()
@@ -198,7 +198,7 @@ final class OwnerVehicleDetailsLivePathTests: XCTestCase {
         fleet.start()
         await eventually { fleet.telemetry(at: 0).snapshot.odometerMiles != nil }
 
-        XCTAssertTrue(fleet.vehicles[0].seatVent)
+        XCTAssertEqual(fleet.vehicles[0].seatClimate, .ventilated)
 
         fleet.stop()
     }

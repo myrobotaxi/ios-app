@@ -124,32 +124,48 @@ final class RiderTrackingSheetCompositionTests: XCTestCase {
     /// CLIENT CONSTRAINT: *"render it ONLY for accounts that actually hold an owner
     /// role (own a linked Tesla). Viewers/riders without an owner profile never see
     /// it."*
+    ///
+    /// MYR-441 — the gate takes the whole `RiderVehicleSet` now (it delegates to
+    /// `OwnerShellAccess`, so the chip and the Settings row cannot disagree), and
+    /// the chip renders only inside the shell's `.ridable` arm.
     func testOnlyAnOwnerRoleSeesTheModeChip() {
-        XCTAssertTrue(RiderOwnerModeChipGate.showsChip(holdsOwnerRole: true, canSwitchModes: true))
-        XCTAssertFalse(RiderOwnerModeChipGate.showsChip(holdsOwnerRole: false, canSwitchModes: true))
+        XCTAssertTrue(RiderOwnerModeChipGate.showsChip(
+            vehicleSet: .ridable(Self.adoption(.owned)), canSwitchModes: true))
+        XCTAssertFalse(RiderOwnerModeChipGate.showsChip(
+            vehicleSet: .ridable(Self.adoption(.shared)), canSwitchModes: true))
     }
 
     /// …and no chip without a real account behind it: `switchViewMode()` needs a
     /// user id to persist the choice against and no-ops without one, so the tap
     /// would do nothing at all.
     func testNoChipWithoutAnAccountToSwitch() {
-        XCTAssertFalse(RiderOwnerModeChipGate.showsChip(holdsOwnerRole: true, canSwitchModes: false))
-        XCTAssertFalse(RiderOwnerModeChipGate.showsChip(holdsOwnerRole: false, canSwitchModes: false))
+        XCTAssertFalse(RiderOwnerModeChipGate.showsChip(
+            vehicleSet: .ridable(Self.adoption(.owned)), canSwitchModes: false))
+        XCTAssertFalse(RiderOwnerModeChipGate.showsChip(
+            vehicleSet: .ridable(Self.adoption(.shared)), canSwitchModes: false))
     }
 
     /// **SIM SEES NO CHIP, BY CONSTRUCTION.** `SimulatedSharedVehicleCatalog`
-    /// owns nothing, so `holdsOwnerRole` is false on every simulated boot and every
-    /// pre-existing DEBUG scene — which is what keeps every tracking capture
-    /// byte-identical. Driven through the real catalog rather than asserted about
-    /// it, so a future seed that gave the simulated catalog an owned row would fail
-    /// here rather than in a screenshot.
+    /// owns nothing, so it resolves to a SHARED adoption on every simulated boot
+    /// and every pre-existing DEBUG scene — which is what keeps every tracking
+    /// capture byte-identical. Driven through the real catalog and the real
+    /// resolution rather than asserted about them, so a future seed that gave the
+    /// simulated catalog an owned row would fail here rather than in a screenshot.
     @MainActor
     func testTheSimulatedCatalogHoldsNoOwnerRoleAndSoRendersNoChip() {
         let catalog = SimulatedSharedVehicleCatalog()
         XCTAssertTrue(catalog.ownedVehicles.isEmpty)
-        XCTAssertFalse(
-            RiderOwnerModeChipGate.showsChip(holdsOwnerRole: !catalog.ownedVehicles.isEmpty, canSwitchModes: true)
+        let resolved = RiderVehicleSet.resolve(
+            hasLoaded: catalog.hasLoaded,
+            loadFailed: catalog.loadFailed,
+            grants: catalog.grants,
+            ownedVehicles: catalog.ownedVehicles
         )
+        XCTAssertFalse(RiderOwnerModeChipGate.showsChip(vehicleSet: resolved, canSwitchModes: true))
+    }
+
+    private static func adoption(_ source: RiderVehicleAdoption.Source) -> RiderVehicleAdoption {
+        RiderVehicleAdoption(source: source, vehicle: nil, tier: source == .shared ? .rides : nil)
     }
 
     /// The chip is `MapHeader` grammar, not a look-alike: same chip height, and a

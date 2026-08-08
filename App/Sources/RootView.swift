@@ -609,10 +609,30 @@ struct RootView: View {
     /// Flip to the OTHER shell from a Settings "Switch mode" row, persisting the
     /// new choice. Only reachable on the live path (the row renders only when a
     /// real account is signed in).
+    ///
+    /// **MYR-441 — THE RIDER→OWNER DIRECTION IS GATED, AND THE ACTION IS GATED AS
+    /// WELL AS THE AFFORDANCE.** The client's report was that a shared viewer
+    /// could reach the owner shell, and the affordances are where that was fixed
+    /// (`OwnerShellAccess`, consulted by the rider Settings row and MYR-397's
+    /// tracking chip). This guard is the second half of the same rule: an action
+    /// must not outlive the affordance that reaches it. Every caller of this
+    /// method today is one of those two gated controls, so the guard is
+    /// unreachable in practice — which is the point. A third control added later
+    /// cannot re-open the door by forgetting to ask, and the rule is stated where
+    /// the transition happens rather than only where it is drawn.
+    ///
+    /// The OWNER→RIDER direction is deliberately ungated: every owner may ride,
+    /// and MYR-343 is the whole reason the rider shell handles an owner correctly.
     @MainActor
     private func switchViewMode() {
         guard let user = session.currentUser else { return }
         let next: ViewMode = (role == .owner ? ViewMode.owner : ViewMode.rider).toggled
+        if next == .owner {
+            guard OwnerShellAccess.offersOwnerMode(
+                vehicleSet: riderVehicleSet,
+                canSwitchModes: true
+            ) else { return }
+        }
         modeStore.setMode(next, forUserID: user.id)
         applyViewMode(next)
     }
@@ -1415,8 +1435,10 @@ struct RootView: View {
                 case "sharedSettings":
                     SharedSettingsScreen(
                         sharedTab: $sharedTab,
-                        // MYR-224 — real profile (nil in SIM → fixture persona);
-                        // the "Switch to Owner" row renders only when non-nil.
+                        // MYR-224 — real profile (nil in SIM → fixture persona).
+                        // MYR-441 — non-nil is now only HALF the "Switch to Owner"
+                        // row's gate; the page also asks the catalog whether this
+                        // account owns anything (`OwnerShellAccess`).
                         liveProfile: settingsLiveProfile,
                         // MYR-184 — "Shared with me" now reads the REAL catalog
                         // (`role: viewer` rows off §7.0). This supersedes MYR-255's
@@ -1516,13 +1538,14 @@ struct RootView: View {
                                     )
                                 }
                             },
-                            // MYR-397 item 2 — the tracking map's owner chip, gated
-                            // on the account actually holding an owner role. The
-                            // SAME `ownedVehicles` partition `riderVehicleSet` above
-                            // reads, so the chip and MYR-354's "Your car" row can
-                            // never give one account two different answers about
-                            // whether it owns anything.
-                            holdsOwnerRole: !sharedVehicleCatalog.ownedVehicles.isEmpty,
+                            // MYR-397 item 2 / MYR-441 — the tracking map's owner
+                            // chip, gated on the account actually holding an owner
+                            // role. It is handed the WHOLE resolution this shell
+                            // was rendered from rather than a boolean derived
+                            // beside it, so the chip, the shell, MYR-354's "Your
+                            // car" row and the Settings switch row all consult ONE
+                            // fact (`OwnerShellAccess`).
+                            vehicleSet: riderVehicleSet,
                             // `nil` without a real signed-in account: `switchViewMode`
                             // needs a user id to persist the choice against and
                             // no-ops without one, so the chip must not offer the tap

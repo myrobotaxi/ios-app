@@ -342,7 +342,7 @@ final class DrivingHeroPeekBaseTests: XCTestCase {
     private func vehicle(navigation: DrivingNavigation) -> Vehicle {
         Vehicle(
             id: "v", name: "Lunar", model: "Model Y", colorName: "", plate: "",
-            seatHeat: false, seatVent: false,
+            seatHeat: false, seatClimate: .unknown,
             activity: .driving(DrivingTrip(
                 navigation: navigation,
                 originLabel: "Market St",

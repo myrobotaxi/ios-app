@@ -9,7 +9,9 @@ import DesignSystem
 
 struct ClimateSection: View {
     let controls: VehicleControlsSnapshot
-    let seatVent: Bool
+    /// MYR-441 — the ventilated-seat CAPABILITY in three states; `.unknown` is a
+    /// car nobody has read, and must not be rendered as a no.
+    let seatClimate: SeatClimateCapability
     let executor: any VehicleCommandExecutor
     /// Real cabin/ambient temps (MYR-251); `nil` = unknown → rendered "—".
     let cabinTemp: Int?
@@ -107,10 +109,22 @@ struct ClimateSection: View {
                         .font(.system(size: 12.5, weight: .semibold))
                         .monospacedDigit()
                 }
-                // Unknown fan → an empty bar dimmed (not asserting a level);
-                // dragging it sets + confirms the value (MYR-251).
+                // MYR-441 — the comment above this line used to read "an empty bar
+                // dimmed (not asserting a level)", and the code did the opposite:
+                // `fanKnown ? controls.fanSpeed : 0` handed the bar a literal 0,
+                // which is pixel-for-pixel a CONFIRMED fan-off (every segment takes
+                // the same `mrtControlSegmentOff` fill either way). The row was
+                // internally contradictory too — the numeral one line above already
+                // read "— / 10" while the bar under it drew a confident zero.
+                //
+                // Unknown is passed as `nil` now and `FanBar` draws EMPTY SLOTS
+                // rather than filled-off blocks. Dragging still sets + confirms the
+                // value (MYR-251), and the 0.5 opacity is unchanged.
                 let fanKnown = executor.isKnown(.fanSpeed)
-                FanBar(value: fanKnown ? controls.fanSpeed : 0) { newValue in
+                FanBar(
+                    value: VehicleControlReadout.fanLevel(
+                        known: fanKnown, reported: controls.fanSpeed)
+                ) { newValue in
                     Task { try? await executor.setFanSpeed(newValue) }
                 }
                 .opacity(fanKnown ? 1 : 0.5)
@@ -143,8 +157,13 @@ struct ClimateSection: View {
         // flag, so the toggle only appeared while the car was already cooling.
         // Nothing in this view changes: a vented car now simply reads `true`
         // with both seats off, which is what the client asked for.
+        //
+        // MYR-441 — `seatClimate` is three-state now. `.unknown` still offers no
+        // Heat↔Cool toggle (a control the car may not have is the schema's own
+        // prohibition), but it no longer LABELS the section "SEAT HEATING", which
+        // is a claim about hardware nobody has read. See `sectionLabel`.
         let supportsCool = SeatClimatePresentation.supportsCool(
-            seatVent: seatVent,
+            capability: seatClimate,
             driverMode: controls.driverSeatMode,
             passengerMode: controls.passengerSeatMode
         )
@@ -152,12 +171,15 @@ struct ClimateSection: View {
             Rectangle().fill(Color.mrtBorder).frame(height: MRTMetrics.hairline)
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(SeatClimatePresentation.sectionLabel(supportsCool: supportsCool))
+                    Text(SeatClimatePresentation.sectionLabel(
+                        capability: seatClimate, supportsCool: supportsCool))
                         .font(.system(size: 11, weight: .bold))
                         .tracking(0.8)
                         .foregroundStyle(Color.mrtTextMuted)
                     Spacer()
-                    if seatVent {
+                    // MYR-441 — only a CONFIRMED capability earns this caption.
+                    // `.unknown` stays silent rather than claiming either way.
+                    if seatClimate == .ventilated {
                         Text("Heat & ventilation")
                             .font(.system(size: 10.5, weight: .medium))
                             .foregroundStyle(Color.mrtTextMuted)
@@ -522,7 +544,14 @@ private struct SeatRow: View {
 // MARK: - FanBar (vehicle-controls.jsx:106-122)
 
 private struct FanBar: View {
-    let value: Int
+    /// The confirmed fan speed, or `nil` when the car has not reported one
+    /// (MYR-441). **`nil` is not `0`**: a filled `mrtControlSegmentOff` block IS
+    /// the rendering of a segment that is confirmed off, so passing 0 for unknown
+    /// drew a confident "fan is off" over a car that had said nothing. The unknown
+    /// bar draws each slot as a hairline OUTLINE instead — the same ten shapes in
+    /// the same places, so the control is still obviously there and still
+    /// draggable, with no level asserted.
+    let value: Int?
     let onChange: (Int) -> Void
 
     private static let containerHeight: CGFloat = 26
@@ -531,10 +560,12 @@ private struct FanBar: View {
         HStack(alignment: .bottom, spacing: 3) {
             ForEach(1...10, id: \.self) { level in
                 Button {
+                    // An unknown bar has no level to toggle OFF, so a tap always
+                    // sets the level tapped — which is also what confirms the
+                    // field (MYR-251) and returns the bar to its known rendering.
                     onChange(value == level ? level - 1 : level)
                 } label: {
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(value >= level ? Color.mrtGold : Color.mrtControlSegmentOff)
+                    segment(level: level)
                         .frame(maxWidth: .infinity)
                         // `${42 + i*6.4}%` of a 26pt container (vehicle-controls.jsx:114).
                         .frame(height: Self.containerHeight * (0.42 + Double(level - 1) * 0.064))
@@ -543,5 +574,18 @@ private struct FanBar: View {
             }
         }
         .frame(height: Self.containerHeight, alignment: .bottom)
+    }
+
+    @ViewBuilder
+    private func segment(level: Int) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 3, style: .continuous)
+        if let value {
+            shape.fill(value >= level ? Color.mrtGold : Color.mrtControlSegmentOff)
+        } else {
+            // The off-fill colour as an OUTLINE: the slot reads as unfilled rather
+            // than as filled-at-zero, on the token the known bar already uses, so
+            // nothing new enters the palette.
+            shape.strokeBorder(Color.mrtControlSegmentOff, lineWidth: MRTMetrics.hairline)
+        }
     }
 }

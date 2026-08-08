@@ -37,11 +37,12 @@ struct SharedViewerScreen: View {
     var liveProfile: UserProfile? = nil
     /// MYR-186 — forwarded to `RideRequestReviewContent`; see its declaration.
     var onRideRequestSubmitted: (() -> Void)? = nil
-    /// MYR-397 item 2 — does this account hold an OWNER role (at least one owned
-    /// vehicle on the §7.0 list)? The tracking map's owner chip renders only when
-    /// it does. Derived by `RootView` from the SAME `ownedVehicles` partition
-    /// `RiderVehicleSet.resolve` reads — see `RiderOwnerModeChipGate`.
-    var holdsOwnerRole: Bool = false
+    /// MYR-397 item 2 / MYR-441 — the MYR-343 vehicle-set resolution this shell
+    /// was rendered from. The tracking map's owner chip is gated on it, so the
+    /// chip and the shell read the SAME fact rather than two derivations of it
+    /// (see `OwnerShellAccess`). Defaults to `.resolving`, i.e. no chip, which is
+    /// the safe answer for a preview or a caller that has not asked yet.
+    var vehicleSet: RiderVehicleSet = .resolving
     /// Flip this account to the owner shell. `nil` whenever no real signed-in
     /// account can persist the choice (SIM, static-token dev override), which is
     /// also the second half of the chip's gate: a control whose tap does nothing
@@ -193,7 +194,7 @@ struct SharedViewerScreen: View {
                     // surface had none of: no `MapHeader`, no nav (MYR-198 hides it
                     // past idle), no Settings route. Owner-role accounts only.
                     if RiderOwnerModeChipGate.showsChip(
-                        holdsOwnerRole: holdsOwnerRole,
+                        vehicleSet: vehicleSet,
                         canSwitchModes: onSwitchToOwnerMode != nil
                     ) {
                         RiderOwnerModeChip { onSwitchToOwnerMode?() }

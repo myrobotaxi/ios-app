@@ -16,17 +16,28 @@ public struct MRTSlider: View {
     private let range: ClosedRange<Double>
     private let tint: Color
     private let trackHeight: CGFloat
+    private let showsValue: Bool
 
+    /// - Parameter showsValue: whether the binding holds a value worth drawing.
+    ///   `false` (MYR-441) renders the bare track — **no tint fill and no thumb**
+    ///   — while leaving the control fully draggable, which is the honest render
+    ///   for a reading the car has not reported. It exists because the natural
+    ///   spelling for "unknown" on a `Double` slider is `0`, and 0 here is not a
+    ///   neutral rest position: a thumb pinned to the left edge over an empty
+    ///   track is exactly how this control draws a car that is MUTED. Defaults to
+    ///   `true`, so every existing caller is byte-identical.
     public init(
         value: Binding<Double>,
         in range: ClosedRange<Double> = 0...100,
         tint: Color = .mrtGold,
-        trackHeight: CGFloat = 6
+        trackHeight: CGFloat = 6,
+        showsValue: Bool = true
     ) {
         _value = value
         self.range = range
         self.tint = tint
         self.trackHeight = trackHeight
+        self.showsValue = showsValue
     }
 
     private var percent: Double {
@@ -45,14 +56,16 @@ public struct MRTSlider: View {
                 Capsule()
                     .fill(Color.mrtElevated)
                     .frame(height: trackHeight)
-                Capsule()
-                    .fill(tint)
-                    .frame(width: max(trackHeight, thumbX), height: trackHeight)
-                Circle()
-                    .fill(Color.mrtText)
-                    .frame(width: MRTMetrics.sliderThumbSize, height: MRTMetrics.sliderThumbSize)
-                    .shadow(color: .mrtSliderThumbShadow, radius: 5, y: 1)
-                    .offset(x: thumbX - MRTMetrics.sliderThumbSize / 2)
+                if showsValue {
+                    Capsule()
+                        .fill(tint)
+                        .frame(width: max(trackHeight, thumbX), height: trackHeight)
+                    Circle()
+                        .fill(Color.mrtText)
+                        .frame(width: MRTMetrics.sliderThumbSize, height: MRTMetrics.sliderThumbSize)
+                        .shadow(color: .mrtSliderThumbShadow, radius: 5, y: 1)
+                        .offset(x: thumbX - MRTMetrics.sliderThumbSize / 2)
+                }
             }
             .frame(height: geo.size.height)
             // 44pt minimum hit target around a visually thin track — expand

@@ -17,7 +17,8 @@ struct SharedSettingsScreen: View {
     var riderName: String = "Sam" // shared-screens.jsx:451 `tweaks.riderName` devtool; M1 has no tweaks panel.
     /// MYR-224 — the real signed-in identity on the LIVE path, else nil (SIM →
     /// the fixture "Sam Rivera"). When non-nil, the profile card shows real
-    /// name/email and the "Switch to Owner" row appears.
+    /// name/email — and it is one HALF of the "Switch to Owner" row's gate
+    /// (MYR-441 added the other, which is actually owning a car).
     var liveProfile: UserProfile? = nil
     /// MYR-184 — the rider's shared-vehicle catalog, the ONE source for the
     /// "Shared with me" list in BOTH modes.
@@ -36,7 +37,7 @@ struct SharedSettingsScreen: View {
     /// see `notificationsCard`.
     var pushPrefs: any PushPrefsService = SimulatedPushPrefsService()
     /// MYR-224 — flip to the owner shell. Only invoked from the switch row, which
-    /// renders only when `liveProfile != nil`.
+    /// renders only when `offersOwnerMode` (MYR-441).
     var onSwitchMode: () -> Void = {}
     let onAddCode: () -> Void
     let onSignOut: () -> Void
@@ -103,6 +104,40 @@ struct SharedSettingsScreen: View {
         )
     }
 
+    /// MYR-441 — the SAME resolution the shell switches on and the vehicle
+    /// section above defers to, read from the SAME catalog. Computed rather than
+    /// passed in so this page cannot be handed a stale answer, exactly as
+    /// `RootView.riderVehicleSet` is computed for the shell.
+    private var vehicleSet: RiderVehicleSet {
+        RiderVehicleSet.resolve(
+            hasLoaded: catalog.hasLoaded,
+            loadFailed: catalog.loadFailed,
+            grants: sharedList,
+            ownedVehicles: catalog.ownedVehicles
+        )
+    }
+
+    /// MYR-441 — whether "Switch to Owner" belongs on this page at all.
+    ///
+    /// It used to be `liveProfile != nil`, i.e. "is somebody signed in" — true of
+    /// every rider, which is how an external tester who had never linked a Tesla
+    /// walked into an empty owner shell. `liveProfile != nil` survives INSIDE the
+    /// gate as its `canSwitchModes` half (`switchViewMode` needs a user id to
+    /// persist against), so the simulated path still renders no row and every
+    /// DEBUG capture is byte-identical.
+    ///
+    /// Deliberately `internal` rather than `private`: a pure rule with good tests
+    /// and the wrong consumer is this repo's most-repeated regression
+    /// (`VehicleRideShare.display`, MYR-369), so the guard has to be able to ask
+    /// THIS SCREEN with a real catalog behind it rather than re-derive the answer
+    /// beside it. See `SharedSettingsOwnerModeGateTests`.
+    var offersOwnerMode: Bool {
+        OwnerShellAccess.offersOwnerMode(
+            vehicleSet: vehicleSet,
+            canSwitchModes: liveProfile != nil
+        )
+    }
+
     var body: some View {
         ZStack {
             Color.mrtBg.ignoresSafeArea()
@@ -127,7 +162,7 @@ struct SharedSettingsScreen: View {
                             // other state, including the whole simulated path.
                             PushDeniedNotice(state: pushAuthorization)
                         }
-                        if liveProfile != nil {
+                        if offersOwnerMode {
                             switchModeCard
                         }
                         // MYR-355 — appended at the END of the list, so Sign out
@@ -331,6 +366,10 @@ struct SharedSettingsScreen: View {
     //
     // Flips the rider shell to the owner shell. The shared `SettingsActionRow`
     // in its own card. Only present on the live signed-in path; absent in SIM.
+    //
+    // MYR-441 — and now only for an account that HAS an owner shell to flip to:
+    // one that owns a car, or one that owns nothing at all and is on its way to
+    // pairing its first Tesla. See `offersOwnerMode`.
     private var switchModeCard: some View {
         SettingsCard {
             SettingsActionRow(

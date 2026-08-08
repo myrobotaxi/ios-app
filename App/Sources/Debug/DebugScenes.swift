@@ -4124,7 +4124,7 @@ extension DebugScene {
         // owner is the case the relocation is designed around.
         let vehicle = Vehicle(
             id: base.id, name: base.name, model: base.model, colorName: base.colorName,
-            plate: base.plate, seatHeat: base.seatHeat, seatVent: base.seatVent,
+            plate: base.plate, seatHeat: base.seatHeat, seatClimate: base.seatClimate,
             activity: base.activity,
             // The wire's own position for §7.18, read by the relocated card.
             //
