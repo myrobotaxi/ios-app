@@ -118,7 +118,7 @@ final class LiveSharedVehicleCatalog: SharedVehicleCatalog {
     /// no service, network, or clock.
     static func grants(from summaries: [VehicleSummary]) -> [SharedVehicleGrant] {
         summaries.compactMap { summary in
-            guard summary.role == .viewer else { return nil }
+            guard VehicleRowPartition.isViewerRow(summary) else { return nil }
             // Never `summary.sharePermission` directly: absence on a viewer row
             // is the LOWEST tier by contract, not "unknown", and not full access.
             let wire = (summary.effectiveSharePermission ?? .live).rawValue
@@ -155,9 +155,33 @@ final class LiveSharedVehicleCatalog: SharedVehicleCatalog {
     /// Pure + static, for the same reason `grants(from:)` is.
     static func ownedVehicles(from summaries: [VehicleSummary]) -> [Vehicle] {
         summaries.compactMap { summary in
-            guard summary.role != .viewer else { return nil }
+            guard !VehicleRowPartition.isViewerRow(summary) else { return nil }
             return VehicleContractMapping.vehicle(summary: summary)
         }
+    }
+}
+
+// MARK: - MYR-455 — ONE predicate splits the §7.0 list, for BOTH shells
+
+/// Which half of `GET /api/vehicles` a row is in.
+///
+/// MYR-343 gave the RIDER shell this split and spelled it inline, twice, in the
+/// two folds above. MYR-455 gave the OWNER fleet the same question — *is this
+/// row one the account actually owns?* — and a second inline `role == .viewer`
+/// there would be a second source of truth for one wire fact, which is precisely
+/// how one account comes to get two different answers from two surfaces (the
+/// failure mode `OwnerShellAccess`'s own header is written against).
+///
+/// Trivial by design. It exists to have exactly one call site's worth of meaning
+/// in one place, so a future role value is ranked once rather than three times.
+enum VehicleRowPartition {
+    /// A `role: viewer` row — a redeemed share, not the account's own car.
+    ///
+    /// The negation is deliberately the OWNED side (see
+    /// `ownedVehicles(from:)`): anything not explicitly `viewer` — including
+    /// `.unrecognized` from a newer server — counts as owned, which fails OPEN.
+    static func isViewerRow(_ summary: VehicleSummary) -> Bool {
+        summary.role == .viewer
     }
 }
 

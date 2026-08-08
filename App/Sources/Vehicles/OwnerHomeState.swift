@@ -119,6 +119,11 @@ public final class OwnerHomeState {
     /// else `nil`. Design minimalism — surfaced quietly.
     public var statusMessage: String? { fleet.statusMessage }
 
+    /// MYR-455 — what the account's own §7.0 list says about its standing in the
+    /// owner shell. `RootView` watches this to re-ask the ownership question of a
+    /// view mode that was persisted before any list had been read.
+    var ownerShellStanding: OwnerShellStanding { fleet.ownerShellStanding }
+
     /// MYR-387 — owner Home's ONE render decision, resolved from the fleet's own
     /// four facts. Lives here rather than inline in `HomeScreen.body` because
     /// three situations told apart by three chained `if`s is exactly how the

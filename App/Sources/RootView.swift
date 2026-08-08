@@ -637,6 +637,51 @@ struct RootView: View {
         applyViewMode(next)
     }
 
+    // MARK: - MYR-455 — re-asking the ownership question of a STORED view mode
+
+    /// Demote an account that is sitting in the owner shell without owning
+    /// anything, once its own vehicle list has positively said so.
+    ///
+    /// **WHY A TRANSITION GUARD WAS NOT ENOUGH.** MYR-441 gated `switchViewMode`,
+    /// which is the only door that ASKS. `routeAfterAuth` does not ask — it reads
+    /// the persisted `ViewMode` and applies it — and `modeStore.clearMode` runs
+    /// only on sign-out, so a viewer who reached owner mode through any pre-fix
+    /// door (that ungated switch, or the first-run chooser, which is ungated by
+    /// design) boots straight back into the owner shell on every launch, for ever.
+    /// The gate shipped and the accounts it was written for never met it.
+    ///
+    /// **IT DEMOTES ON A POSITIVE ANSWER ONLY**, which is what keeps a real owner
+    /// from ever seeing this. `.resolving` and `.unavailable` take nothing away
+    /// (`OwnerShellAccess.revokesOwnerMode` is deliberately not the negation of
+    /// `offersOwnerMode` — see its header), so the owner shell is never blanked
+    /// by a list still in flight or a network blink. `.noVehicles` keeps the
+    /// shell too: that is a fresh owner pre-link, and Add-Tesla lives there.
+    ///
+    /// **THE STORED MODE IS REWRITTEN, not just the live one.** Demoting the
+    /// session alone would replay this on every launch — owner shell, list lands,
+    /// flip to rider — turning a one-time correction into a permanent flash.
+    /// Persisting `.rider` makes the next boot land on the rider shell directly,
+    /// so the correction happens at most once per account.
+    ///
+    /// The one honest cost, stated rather than hidden: on the FIRST launch after
+    /// this fix, an affected account does see the owner shell for as long as its
+    /// `GET /api/vehicles` takes to answer. Holding the route until the list
+    /// lands would avoid that, and would put every legitimate owner's cold launch
+    /// behind a network read to fix a state almost nobody is in — so the flash is
+    /// taken, once, on the wrong state, in exchange for never delaying the right
+    /// one.
+    @MainActor
+    private func revalidateOwnerModeIfNeeded(_ standing: OwnerShellStanding) {
+        let user = session.currentUser
+        guard OwnerShellAccess.demotesToRider(
+            isInOwnerShell: role == .owner,
+            standing: standing,
+            hasSignedInAccount: user != nil
+        ), let user else { return }
+        modeStore.setMode(.rider, forUserID: user.id)
+        applyViewMode(.rider)
+    }
+
     // MARK: - MYR-343 — the rider shell's vehicle set
 
     /// What the rider shell should present: the catalog's two partitions folded
@@ -1627,6 +1672,13 @@ struct RootView: View {
         // lands a real car on the map without a relaunch.
         .onChange(of: riderVehicleSet) { _, resolution in
             adoptRiderVehicle(resolution)
+        }
+        // MYR-455 — the owner shell re-asks the ownership question the STORED
+        // view mode never had to answer. Fires when the fleet's own §7.0 read
+        // lands (and on any later refetch), and demotes only on a positive
+        // grants-only answer — see `revalidateOwnerModeIfNeeded`.
+        .onChange(of: ownerHomeState.ownerShellStanding) { _, standing in
+            revalidateOwnerModeIfNeeded(standing)
         }
         // MYR-432 — a §6.2 close (4002, "permission revoked") funnels into the
         // release machinery that ALREADY EXISTS, rather than into a second one.
