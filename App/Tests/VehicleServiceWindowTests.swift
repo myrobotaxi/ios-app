@@ -186,7 +186,7 @@ final class VehicleServiceWindowTests: XCTestCase {
     /// pixel-identity guarantee for every simulated / drift-gate scene.
     func testPickerIsUnflooredWhenNoWindowIsKnown() {
         let days = RideRequestFixtures.scheduleDays
-        let times = RideRequestFixtures.scheduleTimes
+        let times = RideScheduleTimes.grid
 
         XCTAssertEqual(RideScheduleFloor.allowedDays(days, times: times, floor: nil, now: now), days)
         XCTAssertEqual(RideScheduleFloor.allowedTimes(on: "Today", times: times, floor: nil, now: now), times)
@@ -201,7 +201,7 @@ final class VehicleServiceWindowTests: XCTestCase {
     /// the boundary DAY must survive, or the rider loses same-day booking for a
     /// car that is back at lunchtime.
     func testFlooredPickerBlocksEarlySlotsButKeepsTheBoundaryDay() {
-        let times = RideRequestFixtures.scheduleTimes
+        let times = RideScheduleTimes.grid
         // Back today at 2:00 PM → floor 2:15 PM → the 2:30 PM chip is the first
         // bookable one, and 2:00 PM is not (it is inside the buffer).
         let end = date(DateComponents(year: 2026, month: 7, day: 29, hour: 14, minute: 0))
@@ -225,7 +225,7 @@ final class VehicleServiceWindowTests: XCTestCase {
     /// A floor after today's last slot removes "Today" entirely — but only after
     /// every one of its times has been checked, never on the first blocked one.
     func testADayIsOnlyDisabledWhenEveryOneOfItsTimesIsBlocked() {
-        let times = RideRequestFixtures.scheduleTimes
+        let times = RideScheduleTimes.grid
         // The picker's last slot is 10:30 PM; a floor past it leaves nothing today.
         let end = date(DateComponents(year: 2026, month: 7, day: 29, hour: 23, minute: 30))
         let floor = VehicleServiceWindow.earliestSelectable(serviceEstimatedEndAt: end)
@@ -244,7 +244,7 @@ final class VehicleServiceWindowTests: XCTestCase {
 
     /// The selection the picker opens on when the rider's pick is out of reach.
     func testFirstAllowedSlotScansDaysInPickerOrder() {
-        let times = RideRequestFixtures.scheduleTimes
+        let times = RideScheduleTimes.grid
         let end = date(DateComponents(year: 2026, month: 7, day: 29, hour: 23, minute: 30))
         let floor = VehicleServiceWindow.earliestSelectable(serviceEstimatedEndAt: end)
 
@@ -266,7 +266,7 @@ final class VehicleServiceWindowTests: XCTestCase {
     /// The floored slot the picker offers and the instant the create body carries
     /// are produced by the SAME resolver — this asserts they cannot diverge.
     func testAnAllowedSlotResolvesToAnInstantAtOrAfterTheFloor() {
-        let times = RideRequestFixtures.scheduleTimes
+        let times = RideScheduleTimes.grid
         let end = date(DateComponents(year: 2026, month: 7, day: 29, hour: 14, minute: 0))
         let floor = VehicleServiceWindow.earliestSelectable(serviceEstimatedEndAt: end)!
 

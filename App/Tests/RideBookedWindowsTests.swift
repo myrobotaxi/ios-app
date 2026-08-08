@@ -47,7 +47,7 @@ final class RideBookedWindowsTests: XCTestCase {
         date(DateComponents(year: 2026, month: 8, day: 1, hour: 6, minute: 0))
     }
 
-    private var times: [String] { RideRequestFixtures.scheduleTimes }
+    private var times: [String] { RideScheduleTimes.grid }
 
     /// The instant the picker itself resolves a chip pair to — asked of the
     /// SHIPPING encoder, never re-derived, so a window built around it is provably
@@ -94,10 +94,13 @@ final class RideBookedWindowsTests: XCTestCase {
     }
 
     // The same rule seen from the GRID, which is where a rider meets it. A noon
-    // reservation blocks 11:30 and 12:30 (strictly inside) and leaves 11:15 and
-    // 12:45 alone — except those are not chip times, so on the shipped 30-minute
-    // grid a noon window takes exactly three slots: 11:30, 12:00, 12:30.
-    func testANoonWindowTakesExactlyTheThreeSlotsStrictlyInsideIt() {
+    // reservation blocks everything strictly inside 11:15 … 12:45 and leaves the
+    // two EDGES alone — and MYR-464's fifteen-minute grid is what finally puts
+    // chips on those edges. On the old half-hour row 11:15 and 12:45 were not
+    // slots at all, so the exclusive-interval rule was asserted over a grid too
+    // coarse to contain a counter-example; now the boundary slots are real chips
+    // and are asserted BOOKABLE, which is the sharper form of the same claim.
+    func testANoonWindowTakesExactlyTheSlotsStrictlyInsideIt() {
         let now = saturdayMorning
         let noon = slot("Today", "12:00 PM", now: now)
         let windows = [window(around: noon)]
@@ -107,7 +110,15 @@ final class RideBookedWindowsTests: XCTestCase {
         )
         let blocked = times.filter { !allowed.contains($0) }
 
-        XCTAssertEqual(blocked, ["11:30 AM", "12:00 PM", "12:30 PM"])
+        XCTAssertEqual(
+            blocked,
+            ["11:30 AM", "11:45 AM", "12:00 PM", "12:15 PM", "12:30 PM"]
+        )
+        // The two open ENDS of the ±45min interval, now that the grid has chips
+        // on them. `<=` — the spelling a reader's hand reaches for — dims these
+        // two and refuses bookings the server would have taken.
+        XCTAssertTrue(allowed.contains("11:15 AM"), "exactly `start` is bookable")
+        XCTAssertTrue(allowed.contains("12:45 PM"), "exactly `end` is bookable")
         XCTAssertTrue(allowed.contains("11:00 AM"))
         XCTAssertTrue(allowed.contains("1:00 PM"))
     }
@@ -132,7 +143,14 @@ final class RideBookedWindowsTests: XCTestCase {
             windows: [window(around: noon, halfWidth: 10 * 60)], now: now, calendar: calendar
         )
 
-        XCTAssertEqual(times.filter { !wide.contains($0) }.count, 11, "±3h over a 30-min grid")
+        // ±3h is a six-hour interval, OPEN at both ends: 9 AM and 3 PM stay
+        // bookable and the 23 slots between them do not. The number moved with
+        // MYR-464's step and the RULE did not — which is the whole point of this
+        // test, since a client that had hard-coded 45 minutes would answer the
+        // same count on either grid.
+        XCTAssertEqual(times.filter { !wide.contains($0) }.count, 23, "±3h over a 15-min grid")
+        XCTAssertTrue(wide.contains("9:00 AM"), "exactly `start`")
+        XCTAssertTrue(wide.contains("3:00 PM"), "exactly `end`")
         XCTAssertEqual(times.filter { !narrow.contains($0) }, ["12:00 PM"], "±10min touches only the slot itself")
     }
 
@@ -259,9 +277,12 @@ final class RideBookedWindowsTests: XCTestCase {
         )
 
         // The floor alone would have answered 11:00 AM; the window alone would have
-        // answered 7:00 AM. Together the answer is the first slot past both.
+        // answered 7:00 AM. Together the answer is the first slot past both — which
+        // on MYR-464's fifteen-minute grid is 12:15, the window's own open END,
+        // rather than the 12:30 the coarser row happened to land on. Same rule,
+        // finer resolution, and a slot fifteen minutes earlier for the rider.
         XCTAssertEqual(first?.day, "Today")
-        XCTAssertEqual(first?.time, "12:30 PM")
+        XCTAssertEqual(first?.time, "12:15 PM")
     }
 
     // A day is out only when EVERY one of its times is out. A day holding one noon

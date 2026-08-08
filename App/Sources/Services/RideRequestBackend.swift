@@ -152,7 +152,7 @@ enum RideRequestContractMapping {
     // (MYR-266), MYR-313's accept-gate exemption — silently never applied.
     //
     // The app's `RideSchedule` is a pair of DISPLAY strings straight off the
-    // picker (`RideScheduleDays.days(now:)` × `RideRequestFixtures.scheduleTimes`):
+    // picker (`RideScheduleDays.days(now:)` × `RideScheduleTimes.grid`):
     // a day token and a 12-hour wall clock ("5:30 PM"). MYR-370 made the day
     // token carry its DATE ("Thu, Aug 6") instead of a bare weekday; the bare
     // weekdays below are the legacy shape, still resolved so a schedule

@@ -315,15 +315,15 @@ public enum RideRequestFixtures {
     /// the suites sweep this list to prove it does. It is no longer read by any
     /// production surface.
     public static let scheduleDays = ["Today", "Tomorrow", "Thu", "Fri", "Sat", "Sun", "Mon"]
-    public static let scheduleTimes: [String] = {
-        var out: [String] = []
-        for hour in 7...22 {
-            for minute in [0, 30] {
-                let meridiem = hour >= 12 ? "PM" : "AM"
-                let hour12 = hour % 12 == 0 ? 12 : hour % 12
-                out.append("\(hour12):\(minute == 0 ? "00" : "30") \(meridiem)")
-            }
-        }
-        return out
-    }()
+
+    // MYR-464 — `scheduleTimes` LIVED HERE AND IS NOW `RideScheduleTimes.grid`.
+    //
+    // It was never a fixture: the picker renders it on the LIVE path and
+    // `RideRequestContractMapping.scheduledFor` encodes the chosen slot into the
+    // create body. It sat in this file only because the prototype's row was
+    // transcribed here alongside the day list — and, like the day list before it
+    // (MYR-370), it stopped being a transcription the moment it became a rule.
+    // No legacy copy is kept: every slot the half-hour grid minted is still in
+    // the fifteen-minute one, so an older build's committed schedule selects,
+    // renders and encodes unchanged.
 }

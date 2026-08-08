@@ -1363,8 +1363,13 @@ struct RideRequestSearchContent: View {
             }
 
             RideEyebrowText(text: "Day", size: 10.5).padding(.bottom, 9)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 7) {
+            // MYR-464 — both chip rows scroll to the CARD's edge now rather than
+            // being cut 22pt short of it. The day row was clipped the same way
+            // the time row was (MYR-370's dated tokens — "Fri, Aug 7" — made
+            // seven of them far wider than the prototype's bare weekdays), so
+            // fixing one and not the other would leave two rows eight points
+            // apart disagreeing about where a row ends.
+            RideChipScroller {
                     ForEach(scheduleDays, id: \.token) { day in
                         // A day is only out when EVERY one of its times is out —
                         // the boundary day (car back at 2 PM) stays pickable. MYR-385
@@ -1373,7 +1378,7 @@ struct RideRequestSearchContent: View {
                         // reservation still has a perfectly bookable morning and
                         // evening and must stay lit.
                         let dayAllowed = !RideScheduleFloor.allowedTimes(
-                            on: day.token, times: RideRequestFixtures.scheduleTimes,
+                            on: day.token, times: RideScheduleTimes.grid,
                             floor: schedulingFloor, windows: scheduleBookedWindows
                         ).isEmpty
                         RideChip(title: day.token, selected: schedDay == day.token, unavailable: !dayAllowed) {
@@ -1389,7 +1394,6 @@ struct RideRequestSearchContent: View {
                             viewerState.ensureBookedWindowsCovered()
                         }
                     }
-                }
             }
             .padding(.bottom, 18)
 
@@ -1401,10 +1405,15 @@ struct RideRequestSearchContent: View {
             // So scroll it into view whenever it changes. Only ever a scroll
             // POSITION — with no floor the selection never moves on its own and
             // this settles on the same default slot the card has always opened on.
+            //
+            // MYR-464 — the grid is FIFTEEN minutes now (`RideScheduleTimes`), so
+            // this row is 64 chips rather than 32 and "7:45" exists. The centring
+            // below is what makes that free rather than a scroll the rider has to
+            // perform: the card still opens on the selected slot, in the middle
+            // of the viewport, with its neighbours either side.
             ScrollViewReader { proxy in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 7) {
-                        ForEach(RideRequestFixtures.scheduleTimes, id: \.self) { time in
+                RideChipScroller {
+                        ForEach(RideScheduleTimes.grid, id: \.self) { time in
                             // MYR-385 — the SAME predicate the day chips, the CTA
                             // gate and the reconciler read, so a dimmed chip and a
                             // refused CTA can never disagree about one slot.
@@ -1418,7 +1427,6 @@ struct RideRequestSearchContent: View {
                             ) { schedTime = time }
                             .id(time)
                         }
-                    }
                 }
                 .onAppear { proxy.scrollTo(schedTime, anchor: .center) }
                 .onChange(of: schedTime) { _, time in
@@ -1582,12 +1590,12 @@ struct RideRequestSearchContent: View {
             day: schedDay, time: schedTime, floor: floor, windows: windows
         ) else { return }
         if let first = RideScheduleFloor.allowedTimes(
-            on: schedDay, times: RideRequestFixtures.scheduleTimes, floor: floor, windows: windows
+            on: schedDay, times: RideScheduleTimes.grid, floor: floor, windows: windows
         ).first {
             schedTime = first
         } else if let slot = RideScheduleFloor.firstAllowedSlot(
             days: days.map(\.token),
-            times: RideRequestFixtures.scheduleTimes,
+            times: RideScheduleTimes.grid,
             floor: floor,
             windows: windows
         ) {

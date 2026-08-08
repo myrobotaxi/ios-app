@@ -134,7 +134,7 @@ final class ScheduledForEncodingTests: XCTestCase {
     func testEveryPickerDayTokenResolvesIntoTheFuture() {
         let now = instant(2026, 7, 27, 21, 0, zone: Self.losAngeles)
         for day in RideRequestFixtures.scheduleDays {
-            for time in [RideRequestFixtures.scheduleTimes.first!, RideRequestFixtures.scheduleTimes.last!] {
+            for time in [RideScheduleTimes.grid.first!, RideScheduleTimes.grid.last!] {
                 let resolved = resolve(day, time, now: now)
                 XCTAssertNotNil(resolved, "\(day) \(time) must resolve")
                 XCTAssertGreaterThan(resolved!, now, "\(day) \(time) must be in the future")

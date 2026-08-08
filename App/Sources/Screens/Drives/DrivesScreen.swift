@@ -18,6 +18,12 @@ struct DrivesScreen: View {
     /// figure: the prototype's fixture "42,184 mi" is simulated-only; live reads
     /// the car's real odometer. See `headerSubtitle`.
     var isLive: Bool = false
+    /// MYR-463 — the owner's OWN live ride, read-only, for the one question this
+    /// tab could not answer: where a reservation went when it stopped being
+    /// upcoming. Nothing is fetched for it and nothing is rendered from it unless
+    /// `OwnerUpcomingResolution.dueReservation` accepts it (a live RESERVATION,
+    /// for THIS car, not yet over). `nil` keeps the tab exactly as it was.
+    var ownerDispatch: RideRequestRecord? = nil
 
     private enum Tab: String { case history, upcoming }
     private enum SortKey: String, CaseIterable { case date, distance, duration }
@@ -474,11 +480,15 @@ struct DrivesScreen: View {
 
     // MARK: Upcoming (screens.jsx:696-710)
 
+    /// MYR-463 — the tab's whole render, resolved ONCE rather than from
+    /// `sortedUpcoming.isEmpty`. That one boolean had to stand in for four
+    /// situations (rows, in flight, unreadable, genuinely nothing booked) and so
+    /// answered three of them with the most definitive sentence it owns. See
+    /// `OwnerUpcomingPresentation`'s header.
     @ViewBuilder
     private var upcomingContent: some View {
-        if sortedUpcoming.isEmpty {
-            emptyUpcomingState
-        } else {
+        switch upcomingPresentation {
+        case .rows:
             ForEach(sortedUpcoming) { ride in
                 // MYR-378 — the row OPENS now. Its X keeps the prototype's
                 // one-tap decline; tapping the row itself opens the detail the
@@ -489,7 +499,26 @@ struct DrivesScreen: View {
                     onCancel: { confirmCancel = ride }
                 )
             }
+        case .loading:
+            UpcomingListSkeleton()
+        case .unavailable(let message):
+            statusRow(message)
+        case .dueNow(let reservation):
+            UpcomingDueNowRow(reservation: reservation) { ownerTab = "home" }
+        case .empty:
+            emptyUpcomingState
         }
+    }
+
+    private var upcomingPresentation: OwnerUpcomingPresentation {
+        OwnerUpcomingResolution.resolve(
+            phase: drivesState.upcomingPhase,
+            hasRows: !sortedUpcoming.isEmpty,
+            dueReservation: OwnerUpcomingResolution.dueReservation(
+                ownerDispatch: ownerDispatch,
+                vehicleID: homeState.selectedVehicle?.id
+            )
+        )
     }
 
     private var emptyUpcomingState: some View {
@@ -504,7 +533,14 @@ struct DrivesScreen: View {
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(Color.mrtTextSec)
                 .padding(.bottom, 4)
-            Text("Scheduled rides you accept will appear here.")
+            // MYR-463 — the old line was "Scheduled rides you accept will appear
+            // here", which is true of what ENTERS the list and silent about what
+            // LEAVES it. Read at the moment a reservation reached its pickup
+            // time, it says the opposite of what happened: the owner HAD accepted
+            // it, twenty-two seconds after it was created. The list holds a
+            // reservation from accept until its pickup time and not one moment
+            // longer, so that is what the line says now.
+            Text(Self.emptyUpcomingSubtitle)
                 .font(.system(size: 12.5))
                 .foregroundStyle(Color.mrtTextMuted)
                 .multilineTextAlignment(.center)
@@ -514,6 +550,10 @@ struct DrivesScreen: View {
         .padding(.horizontal, 32)
         .padding(.vertical, 48)
     }
+
+    /// Named so the copy is assertable rather than buried in an 800-line view.
+    static let emptyUpcomingSubtitle =
+        "Reservations you accept appear here until their pickup time."
 
     /// screens.jsx:609-614 `DAY_ORDER` + `toMin` — Today/Tomorrow/weekday
     /// order, then time-of-day within a day.
@@ -788,6 +828,72 @@ private struct UpcomingRow: View {
         .padding(.horizontal, MRTMetrics.pageGutter)
         .padding(.bottom, 11)
     }
+}
+
+// MARK: - UpcomingDueNowRow (MYR-463)
+
+/// The one thing Drives → Upcoming could not say: *this reservation stopped being
+/// upcoming because its moment came.*
+///
+/// It is deliberately an AFFORDANCE rather than a caption. The reservation is now
+/// the Vehicle tab's dispatch card — that is where the owner acts on it — so a
+/// sentence naming that tab without going there would be the dead end MYR-288 /
+/// MYR-344 exist to refuse. It reuses the LiveTripBanner's own route
+/// (`ownerTab = "home"`), which this screen already performs for a driving car.
+///
+/// Gold is legitimate here under the sacred-accent rule for the same reason
+/// `UpcomingRow` wears it: this row names a real, live ride and is a control.
+private struct UpcomingDueNowRow: View {
+    let reservation: OwnerDueReservation
+    let onOpen: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 13) {
+                Image(systemName: "car.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(Color.mrtGold)
+                    .frame(width: MRTMetrics.upcomingIconTileSize, height: MRTMetrics.upcomingIconTileSize)
+                    .background(Color.mrtUpcomingIconFill, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .strokeBorder(Color.mrtUpcomingIconBorder, lineWidth: MRTMetrics.hairline)
+                    )
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(UpcomingDueNowRow.title)
+                        .font(.system(size: 15, weight: .semibold))
+                        .tracking(-0.2)
+                        .foregroundStyle(Color.mrtGoldRowText)
+                        .lineLimit(1)
+                    (Text("\(reservation.phrase) ").foregroundStyle(Color.mrtGold).fontWeight(.semibold)
+                        + Text("\u{00B7} \(reservation.destination)").foregroundStyle(Color.mrtTextSec))
+                        .font(.system(size: 12.5))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.mrtGoldRowChevron)
+            }
+            .padding(14)
+            .background(goldRowGradient, in: RoundedRectangle(cornerRadius: MRTMetrics.cardRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: MRTMetrics.cardRadius, style: .continuous)
+                    .strokeBorder(Color.mrtGoldRowBorder, lineWidth: MRTMetrics.hairline)
+            )
+            .shadow(color: .black.opacity(0.28), radius: 10, y: 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens the Vehicle tab, where this ride is running")
+        .padding(.horizontal, MRTMetrics.pageGutter)
+        .padding(.top, 4)
+        .padding(.bottom, 11)
+    }
+
+    /// Named for the same reason the empty-state sub-line is: a copy promise no
+    /// test can read is a promise about a comment.
+    static let title = "This reservation is happening now"
 }
 
 /// Shared 122°-ish gold gradient used by both `DriveRow` and `UpcomingRow`

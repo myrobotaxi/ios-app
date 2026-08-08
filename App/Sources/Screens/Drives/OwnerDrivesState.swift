@@ -51,8 +51,17 @@ public final class OwnerDrivesState {
     /// MYR-376 — a decline is in flight for this ride id, so the row's X cannot be
     /// tapped twice into two declines.
     public private(set) var cancellingID: String?
-    /// True while the live list is being read for the first time on this vehicle.
-    public private(set) var isLoadingUpcoming = false
+    /// MYR-463 — how far the live read has got.
+    ///
+    /// Replaces `isLoadingUpcoming`, which was published from the day MYR-376
+    /// shipped and read by **nothing** (zero call sites), so the screen resolved
+    /// its whole render from an array that starts `[]` on the live path. See
+    /// `OwnerUpcomingPresentation`'s header for what that cost.
+    ///
+    /// `.loaded` from the first frame in SIM and in static-token dev, where no
+    /// reservation source is composed and the fixture array is the whole story —
+    /// which is what keeps every simulated capture byte-identical.
+    public private(set) var upcomingPhase: OwnerUpcomingLoadPhase
 
     /// MYR-376 — the live reservation seam, or `nil` in SIM / static-token dev,
     /// where the fixture list stands and the local mutations are the whole story.
@@ -68,6 +77,10 @@ public final class OwnerDrivesState {
     init(live: Bool = false, reservations: (any UpcomingReservationSource)? = nil) {
         upcoming = live ? [] : DriveFixtures.upcomingRides
         self.reservations = reservations
+        // MYR-463 — with no source there is nothing to wait for, so the tab is
+        // already settled and the fixture array is the answer. Only a live read
+        // can be in flight.
+        upcomingPhase = reservations == nil ? .loaded : .idle
     }
 
     /// Whether this state reads its reservations from the server. Drives the
@@ -106,15 +119,22 @@ public final class OwnerDrivesState {
         guard let reservations, let vehicleID else { return false }
         if !force, loadedVehicleID == vehicleID { return true }
         if loadedVehicleID != vehicleID { upcoming = [] }
-        isLoadingUpcoming = upcoming.isEmpty
-        defer { isLoadingUpcoming = false }
+        // MYR-463 — the phase moves only while there is nothing held. A re-read
+        // over a populated list must not blank it into a skeleton (a decline
+        // re-reads, and that would make one look like the tab falling over), so
+        // rows in hand keep the tab on `.loaded` throughout.
+        if upcoming.isEmpty { upcomingPhase = .loading }
         guard let rows = try? await reservations.upcomingReservations(vehicleID: vehicleID) else {
             // A read that did not answer is NOT evidence that nothing is booked
             // (MYR-326's rule). Leave whatever is held and try again on the next
-            // appearance rather than emptying the list.
+            // appearance rather than emptying the list — and, MYR-463, SAY so
+            // rather than falling through to the "nothing is booked" hero, which
+            // is a claim about the account this read did not support.
+            if upcoming.isEmpty { upcomingPhase = .failed(Self.unreadableMessage) }
             return false
         }
         loadedVehicleID = vehicleID
+        upcomingPhase = .loaded
         // MYR-381 — deduped by id for the same rendering reason
         // `RiderScheduledRideMapping.rides` is: `ForEach` draws one row per id, so
         // a duplicate across a cursor page boundary would be counted and not drawn.
@@ -162,6 +182,14 @@ public final class OwnerDrivesState {
     /// classified pair in `ReservationCancelCopy.owner`; it survives as the name a
     /// caller with nothing more specific to say can still reach for.
     public static let cancelFailureMessage = "Couldn\u{2019}t cancel that reservation"
+
+    /// MYR-463 — the one sentence for a reservation read that did not answer, in
+    /// the repo's own honest-degradation grammar ("Can't reach your vehicles
+    /// right now", "Can't find a route right now"). **"Right now" is
+    /// load-bearing** (MYR-395's rule): the next appearance re-reads, so this
+    /// must not read as a verdict. No retry button, for the same reason every
+    /// other surface in this class has none — a resume re-asks.
+    public static let unreadableMessage = "Can\u{2019}t reach your reservations right now"
 }
 
 // MARK: - Reservation → Upcoming row (MYR-376)

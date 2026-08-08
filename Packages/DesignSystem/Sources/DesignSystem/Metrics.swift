@@ -60,6 +60,13 @@ public enum MRTHomePeekQualifier: Sendable, Equatable, CaseIterable {
 public enum MRTMetrics {
     /// Horizontal page padding.
     public static let pageGutter: CGFloat = 24
+    /// MYR-464 — the ride-flow slide-up card's own content gutter
+    /// (`RideSlideUpCard`, ride-request.jsx:296). Named because a horizontally
+    /// scrolling row INSIDE that card has to bleed by exactly this much to reach
+    /// the card's true edges and then inset its content by exactly this much to
+    /// sit where it always did — two numbers that must be the same one, or the
+    /// row's resting position moves.
+    public static let rideSlideUpCardGutter: CGFloat = 22
     /// Vertical gap between stacked cards.
     public static let cardGap: CGFloat = 12
     /// Card corner radius in the Liquid Glass look (default).
