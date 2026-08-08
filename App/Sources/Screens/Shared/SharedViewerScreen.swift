@@ -685,6 +685,7 @@ struct SharedViewerScreen: View {
             navMinutesToArrival: viewerState.riderNavMinutesToArrival,
             ladder: trackingLadder,
             freshnessNote: trackingFreshnessNote,
+            truth: trackingTruth,
             showsCancel: RiderTrackingCancelVisibility.showsCancel(stage: trackingStage),
             isCancelling: cancellingRide,
             onCancel: { cancelActiveRide() }
@@ -1457,6 +1458,31 @@ struct SharedViewerScreen: View {
             vehicleName: trackingVehicleName,
             destinationName: rideRequestService.activeRequest?.input.destination.label
                 ?? RideRequestFixtures.recentPlaces[0].label
+        )
+    }
+
+    /// MYR-472 — the ride's clock, resolved ONCE for both sheet layers.
+    ///
+    /// `nil` on the simulated path, and that absence is the whole gate (see
+    /// `RiderTrackingTruth`): the sheet then takes the `trackProgress`
+    /// derivations it has always taken and every tracking capture is unchanged.
+    ///
+    /// The two inputs are already on this screen and cost nothing new: the anchor
+    /// is MYR-414's `enrouteObservedAt` off the record, and the remainder is the
+    /// SAME live fix the gold glyph is drawn at (`trackingMarkerCoordinate`'s raw
+    /// source) projected onto the SAME leg polyline the map strokes. Reading the
+    /// raw fix rather than MYR-460's interpolated one is deliberate and is that
+    /// issue's own rule: the tween is a rendering convenience, and an ETA that
+    /// counted down at 20Hz between fixes would be motion this app invented.
+    private var trackingTruth: RiderTrackingTruth? {
+        guard viewerState.resolvesTrackingMotion else { return nil }
+        let route = trackingLeg == .toPickup ? trackingLeg1Route : trackingLeg2Route
+        return RiderTrackingTruth(
+            pickupAnchor: rideRequestService.activeRequest?.enrouteObservedAt,
+            remaining: RiderLegRemaining.measure(
+                carPosition: viewerState.trackingVehicleCoordinate,
+                route: route
+            )
         )
     }
 

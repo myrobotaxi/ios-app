@@ -55,6 +55,13 @@ struct RideRequestTrackingContent: View {
     /// MYR-393 — the muted "Position from N min ago" qualifier, or `nil` when the
     /// freshest position we hold is current (and always `nil` in SIM).
     var freshnessNote: String? = nil
+    /// MYR-472 — what the LIVE path knows about this ride's clock: the anchored
+    /// pickup instant and the remainder MEASURED from the car's fix against the
+    /// leg's route. `nil` on the simulated path (and for every preview / fallback
+    /// call site), where every derivation below stays exactly what it was — see
+    /// `RiderTrackingTruth` for why this is an absence rather than an `isLive`
+    /// branch.
+    var truth: RiderTrackingTruth? = nil
     /// MYR-397 — is "Cancel ride" in this phase? Resolved through
     /// `RiderTrackingCancelVisibility` at the call site so the rule is pure.
     var showsCancel: Bool = false
@@ -83,23 +90,68 @@ struct RideRequestTrackingContent: View {
     private var tripMinutes: Int { destination.minutes }
     private var totalMinutes: Double { pickupLegMinutes + Double(tripMinutes) }
 
-    private var remainMinutes: Int { max(0, Int(((1 - progress) * totalMinutes).rounded())) }
-    private var toPickupMinutes: Int {
+    // MARK: MYR-472 — the ticker's derivations, and the measurement that outranks them
+    //
+    // Everything in this block used to be `(1 - trackProgress) × <a duration fixed
+    // at booking>`. On the live path `trackProgress` is seeded once and never
+    // advances, so all four numbers were constants re-rendered for the whole ride
+    // — the "10 min · 4.1 mi away" that never moved. They survive UNCHANGED as the
+    // simulated model (where the ticker really does drive a car) and are now the
+    // FALLBACK arm: whenever `truth` carries a measurement, that wins.
+
+    private var tickerRemainMinutes: Int { max(0, Int(((1 - progress) * totalMinutes).rounded())) }
+    private var tickerToPickupMinutes: Int {
         max(0, Int(((pickupCut - progress) / pickupCut * pickupLegMinutes).rounded()))
     }
 
     /// ride-request.jsx:565 `pickupMilesTotal = 2.2`.
     private static let pickupLegMiles = 2.2
 
-    private var pickupRemainMiles: Double {
+    private var tickerPickupRemainMiles: Double {
         max(0.1, (1 - min(progress, pickupCut) / pickupCut) * Self.pickupLegMiles)
     }
 
     private var rideProgress: Double { max(0, (progress - pickupCut) / max(0.0001, 1 - pickupCut)) }
-    private var dropRemainMiles: Double { max(0.1, (1 - rideProgress) * destination.miles) }
+    private var tickerDropRemainMiles: Double { max(0.1, (1 - rideProgress) * destination.miles) }
 
+    /// Minutes until DROP-OFF — the number the drop-off row's clock is set from,
+    /// and the hero's once the rider is aboard.
+    ///
+    /// The measurement covers the ACTIVE leg only, so pre-pickup it has to be
+    /// completed by the trip's own estimate: leg 2 has not begun, nothing about it
+    /// is observable yet, and `destination.minutes` is the honest estimate the
+    /// rider booked against. Reading the leg-1 remainder alone here would put the
+    /// drop-off clock a whole trip too early — this issue's defect with the sign
+    /// reversed.
+    private var remainMinutes: Int {
+        guard let measured = truth?.remaining?.minutes else { return tickerRemainMinutes }
+        return atPickup ? measured : measured + tripMinutes
+    }
+
+    /// Minutes until the car reaches the PICKUP — the leg-1 measurement on its own.
+    private var toPickupMinutes: Int { measuredOnLegOne?.minutes ?? tickerToPickupMinutes }
+    private var pickupRemainMiles: Double { measuredOnLegOne?.miles ?? tickerPickupRemainMiles }
+    private var dropRemainMiles: Double { measuredOnLegTwo?.miles ?? tickerDropRemainMiles }
+
+    /// The measurement, and WHICH leg it describes. `truth.remaining` is always
+    /// the leg the rider is currently on, so each reader has to name the leg it
+    /// wants rather than take whatever is there — a leg-1 remainder read as a
+    /// drop-off distance is a wrong number that would look perfectly plausible.
+    private var measuredOnLegOne: RiderLegRemaining? { atPickup ? nil : truth?.remaining }
+    private var measuredOnLegTwo: RiderLegRemaining? { atPickup ? truth?.remaining : nil }
+
+    /// The pickup stop's clock.
+    ///
+    /// Two different kinds of statement wear one row. **Before pickup it is a
+    /// FORECAST** and moving with the clock is correct — `now + <what is left of
+    /// leg 1>`, which on live is now a measured remainder rather than a ticker's.
+    /// **After pickup it is a FACT about the past**, and MYR-472's second defect
+    /// was rendering it as `fromNow(0)`: the wall clock, re-stamped every frame,
+    /// onto a boarding that happened once. It is the anchored instant now, and a
+    /// ride this process did not observe start has no anchor and says so with the
+    /// same calm dash an unknown ETA uses rather than inventing one.
     private var pickupClock: String {
-        RideRequestClock.fromNow(minutes: max(0, Int(((pickupCut - min(progress, pickupCut)) / pickupCut * pickupLegMinutes).rounded())))
+        RiderTrackingTruth.pickupClockText(truth, atPickup: atPickup, minutesToPickup: toPickupMinutes)
     }
 
     private var arriveClock: String { RideRequestClock.fromNow(minutes: remainMinutes) }
@@ -208,7 +260,7 @@ struct RideRequestTrackingContent: View {
     /// The peek's hero pair. Past pickup the numbers are the drop-off's and are
     /// always honest; before it they are the ladder's to allow — a pre-motion peek
     /// carries the waiting line and NO number, exactly as the full card does.
-    private var peekShowsHero: Bool { atPickup || ladder.showsPickupCountdown }
+    private var peekShowsHero: Bool { showsHeroPair }
 
     // MARK: Live header (ride-request.jsx:820-838)
 
@@ -273,7 +325,16 @@ struct RideRequestTrackingContent: View {
     /// The hero minutes/miles pair. In-ride numbers describe a trip the rider is
     /// on and are always shown; pre-pickup ones are a claim about a car they
     /// cannot see, and the ladder decides whether it is one we can make.
-    private var showsHeroPair: Bool { atPickup || ladder.showsPickupCountdown }
+    ///
+    /// MYR-472 adds the second condition, and it points the same way as the
+    /// first: in-ride the ladder allows a hero unconditionally (the rider is IN
+    /// the car — there is no question about whether it is moving), but on the live
+    /// path an unmeasurable remainder has nothing behind it, and a number with
+    /// nothing behind it is the whole of this issue. `RiderTrackingTruth.showsHero`
+    /// leaves the simulated answer alone.
+    private var showsHeroPair: Bool {
+        RiderTrackingTruth.showsHero(truth, otherwise: atPickup || ladder.showsPickupCountdown)
+    }
 
     /// MYR-395 — the hero's number and its unit, from the ONE duration grammar.
     ///
@@ -319,7 +380,7 @@ struct RideRequestTrackingContent: View {
                 place: destination.label,
                 clock: showsHeroPair ? arriveClock : RidePickupETADisplay.unknownClock,
                 filled: false,
-                note: atPickup ? "\(String(format: "%.1f", dropRemainMiles)) mi \u{00B7} \(RideDuration.text(minutes: remainMinutes))" : "\(String(format: "%.1f", destination.miles)) mi trip",
+                note: dropoffStopNote,
                 last: true
             )
         }
@@ -338,8 +399,26 @@ struct RideRequestTrackingContent: View {
     /// how it reads.
     private var pickupStopNote: String {
         if atPickup { return "Picked up" }
-        guard showsHeroPair else { return "Not started yet" }
+        // MYR-393's own arm, unchanged: the car has not demonstrably set off, so
+        // there is no approach to describe.
+        guard ladder.showsPickupCountdown else { return "Not started yet" }
+        // MYR-472 — the ladder says the car IS approaching and we cannot measure
+        // how far off it is (no fix, or no real leg-1 route yet). "Not started
+        // yet" would contradict the status line directly above it, and the ticker
+        // pair is the frozen "2.2 mi · 6 min" this issue is about.
+        guard showsHeroPair else { return RidePickupETADisplay.unknownNote }
         return "\(String(format: "%.1f", pickupRemainMiles)) mi \u{00B7} \(RideDuration.text(minutes: toPickupMinutes))"
+    }
+
+    /// The drop-off stop's trailing note. Pre-pickup it is a fact about the ROUTE
+    /// ("N mi trip") and is true whether or not the car has set off, so it stays
+    /// unconditional. In-ride it is the remaining pair, and MYR-472 withholds it
+    /// on exactly the same evidence the hero is withheld on — the two describe one
+    /// remainder and must never disagree about whether it is known.
+    private var dropoffStopNote: String {
+        guard atPickup else { return "\(String(format: "%.1f", destination.miles)) mi trip" }
+        guard showsHeroPair else { return RidePickupETADisplay.unknownNote }
+        return "\(String(format: "%.1f", dropRemainMiles)) mi \u{00B7} \(RideDuration.text(minutes: remainMinutes))"
     }
 
     private func stopRow(isDropoff: Bool, place: String, clock: String, filled: Bool, note: String, last: Bool) -> some View {

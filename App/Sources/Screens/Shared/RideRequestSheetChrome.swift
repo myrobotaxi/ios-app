@@ -483,6 +483,16 @@ enum RideRequestClock {
         formatter.string(from: Date().addingTimeInterval(TimeInterval(minutes) * 60))
     }
 
+    /// An ABSOLUTE instant in the same "5:30 PM" grammar (MYR-472).
+    ///
+    /// Every other helper here is relative to `Date()`, which is right for a
+    /// forecast and is exactly how the tracking sheet came to re-stamp "Picked up
+    /// 7:20 PM" onto the wall clock on every refresh. A moment that has already
+    /// happened is not `fromNow(0)`.
+    static func at(_ instant: Date) -> String {
+        formatter.string(from: instant)
+    }
+
     /// Adds `minutes` to a "5:30 PM"-style clock string, wrapping across
     /// midnight — ride-request.jsx `ReviewContent`'s `addToClock`.
     static func adding(_ minutes: Int, to clock: String) -> String {
