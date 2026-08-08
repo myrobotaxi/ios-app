@@ -89,6 +89,51 @@ public final class OwnerHomeState {
     /// lesson pointed at a drift gate.
     @ObservationIgnored let rideRouteStore = RideRouteStore(provider: AppleRideRouteProvider())
 
+    // MARK: MYR-457 — the DRIVING map's own road route
+
+    /// A SECOND store, for the car→destination route the owner's driving map falls
+    /// back to when Tesla has decoded no `RouteLine` (the external-beta *"TESLA
+    /// route line is no longer populating on the map for the current ride"*).
+    ///
+    /// **Its own instance rather than a third slot on the store above**, because
+    /// the two legs are already spoken for and both can be live at the same
+    /// moment: an owner can be driving one ride while an incoming card offers the
+    /// next. A shared slot would let one surface's route render under the other,
+    /// which is the failure `leg1Route(pickup:)`'s exact-pair guard exists to
+    /// prevent — and a third slot would mean touching a type four surfaces depend
+    /// on.
+    ///
+    /// It uses the **leg-1** slot deliberately: leg 1's semantics are "a route from
+    /// a MOVING car to a fixed point, refetched when the car deviates and retried
+    /// when the provider degrades", which is exactly this route. `pickup:` is the
+    /// navigation destination here.
+    @ObservationIgnored let drivingRouteStore = RideRouteStore(provider: AppleRideRouteProvider())
+
+    /// MYR-456 — the last route + progress the driving map really had.
+    ///
+    /// Lives beside the route cache on the owner-scoped observable for the reason
+    /// `RouteEtchLedger` lives beside the rider's (MYR-390): *a fact about the
+    /// JOURNEY cannot be remembered by whichever view happens to be mounted*, and
+    /// `HomeScreen` is destroyed by every trip to the Drives tab.
+    ///
+    /// Keyed on the DESTINATION, so a new journey never inherits the old one's
+    /// line. Deliberately not keyed on the route's own geometry, which is the very
+    /// thing that changes on the update this hold exists to survive.
+    @ObservationIgnored var drivingRouteHold: (destinationKey: String, resolution: OwnerDrivingRoute.Resolution)?
+
+    /// Record a resolution worth holding, or forget the hold when the journey ends
+    /// or changes. The ONE writer, so "when does a held route expire" is one rule
+    /// rather than a condition repeated at each call site.
+    func recordDrivingRoute(_ resolution: OwnerDrivingRoute.Resolution, destinationKey: String?) {
+        guard let destinationKey, resolution.drawsLine, resolution.source != .held else {
+            if destinationKey == nil || destinationKey != drivingRouteHold?.destinationKey {
+                drivingRouteHold = nil
+            }
+            return
+        }
+        drivingRouteHold = (destinationKey, resolution)
+    }
+
     /// M1 default: the fixture-backed simulated fleet (no network).
     public init() {
         self.fleet = SimulatedVehicleFleet()

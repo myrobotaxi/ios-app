@@ -172,7 +172,7 @@ final class VehicleContractMappingTests: XCTestCase {
         XCTAssertEqual(trip.destinationName, "Duarte's Tavern")
         XCTAssertEqual(trip.destinationCity, "Pescadero")   // city component of the address
         XCTAssertEqual(trip.originLabel, "Home")
-        XCTAssertEqual(trip.route.count, 2)
+        XCTAssertEqual(trip.route.count, 3)
         // GeoJSON [lon, lat] decoded to (lat, lon).
         XCTAssertEqual(trip.route.first?.latitude ?? 0, 37.7749, accuracy: 0.0001)
         XCTAssertEqual(trip.route.first?.longitude ?? 0, -122.4194, accuracy: 0.0001)
@@ -187,14 +187,37 @@ final class VehicleContractMappingTests: XCTestCase {
         XCTAssertEqual(loc.coordinate.longitude, -122.3937, accuracy: 0.0001)
     }
 
-    func testDrivingActivityFallsBackToOriginDestinationWhenNoRoute() {
+    /// **MYR-457 — THIS TEST USED TO ASSERT THE DEFECT**, and is inverted rather
+    /// than deleted so the change of law is visible in the diff.
+    ///
+    /// It read: *"current position + destination coordinate → a 2-point straight
+    /// route"*, and pinned exactly the geometry the external-beta owner
+    /// photographed running across blocks, a park and a highway. There is no
+    /// fallback route now: the two facts that pair was carrying (the car and the
+    /// destination) travel as their own fields, and the LINE is Tesla's or it is
+    /// nothing. `OwnerDrivingRoute` decides what the map draws in its place.
+    func testDrivingActivityInventsNoRouteWhenTeslaHasNotDecodedOne() {
         var state = Contracts.drivingState()
         state.navRouteCoordinates = nil // Tesla hasn't decoded a RouteLine yet
         guard case .driving(let trip) = VehicleContractMapping.activity(from: state) else {
             return XCTFail("expected driving activity")
         }
-        // current position + destination coordinate → a 2-point straight route.
-        XCTAssertEqual(trip.route.count, 2)
+        XCTAssertTrue(trip.route.isEmpty, "no RouteLine means no route — never a straight pair")
+        XCTAssertFalse(RideRoutePolyline.isReal(trip.route))
+        // The marker and the destination dot keep their facts.
+        XCTAssertNotNil(trip.carCoordinate)
+        XCTAssertNotNil(trip.destinationCoordinate)
+    }
+
+    /// A 2-point `RouteLine` off the wire is refused by the same rule — the shape
+    /// is what disqualifies it, not where it came from.
+    func testATwoPointWireRouteIsRefusedLikeAnyOtherStraightPair() {
+        var state = Contracts.drivingState()
+        state.navRouteCoordinates = [[-122.4194, 37.7749], [-122.3800, 37.2554]]
+        guard case .driving(let trip) = VehicleContractMapping.activity(from: state) else {
+            return XCTFail("expected driving activity")
+        }
+        XCTAssertTrue(trip.route.isEmpty)
     }
 
     func testParkedActivityLabelFallsBackWhenGeocodeMissing() {

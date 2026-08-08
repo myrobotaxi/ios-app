@@ -140,7 +140,13 @@ enum VehicleContractMapping {
             // owner just committed outranks the snapshot. The default is applied
             // once, at read time, by `VehicleRideShare.isEnabled` — one place, not
             // two, so the two can never drift into disagreeing about absence.
-            rideShareEnabled: state.rideShareEnabled
+            rideShareEnabled: state.rideShareEnabled,
+            // MYR-456/MYR-457 — the DISTANCE, carried through verbatim including
+            // its nil, so the screen can re-measure progress against the polyline
+            // it actually drew. Parked collapses it, for the same reason `progress`
+            // and `etaMinutes` collapse: a parked car has no trip to be part-way
+            // through.
+            tripDistanceRemainingMiles: driving ? state.tripDistanceRemaining : nil
         )
     }
 
@@ -221,12 +227,17 @@ enum VehicleContractMapping {
     /// from distance-remaining keeps that marker on the route near the real
     /// position without a projection. Returns 0 when navigation isn't active or
     /// the route/distance is unknown.
+    /// MYR-456 — the arithmetic is `OwnerDrivingRoute.measure` now, so the value
+    /// the SHEET reads and the value the MAP is drawn with cannot be two different
+    /// derivations of one journey. This one still measures against the WIRE route
+    /// only, and answers 0 where that route is absent; the screen re-resolves it
+    /// against the polyline actually rendered (which may be the app's own road
+    /// route) before either surface sees it.
     static func tripProgress(from state: VehicleState) -> Double {
-        guard let remaining = state.tripDistanceRemaining else { return 0 }
-        let route = routeCoordinates(from: state.navRouteCoordinates)
-        let total = VehicleRoute.totalDistanceMiles(along: route)
-        guard total > 0 else { return 0 }
-        return min(1, max(0, 1 - remaining / total))
+        OwnerDrivingRoute.measure(
+            remainingMiles: state.tripDistanceRemaining,
+            route: routeCoordinates(from: state.navRouteCoordinates)
+        ) ?? 0
     }
 
     // MARK: VehicleState → activity (hero + map geometry)
@@ -282,25 +293,35 @@ enum VehicleContractMapping {
         )
     }
 
+    /// MYR-457 — **the route is Tesla's or it is nothing, and the two facts the
+    /// map used to read off it now travel on their own.**
+    ///
+    /// This method used to answer a missing `navRouteCoordinates` with
+    /// `[currentPosition, destination]`, and `VehicleMapView` drew it ungated: the
+    /// external-beta straight gold diagonal across blocks, a park and a highway,
+    /// on the owner's primary live surface. The fallback was written so the
+    /// MARKER and the endpoint DOTS would have geometry to read — which is exactly
+    /// why it is retired rather than merely gated: those two consumers are served
+    /// by `carCoordinate` and `destinationCoordinate` instead, and the LINE gets
+    /// to be nothing when there is nothing.
+    ///
+    /// The 1-point `[currentPosition]` arm goes with it. A single point strokes no
+    /// line either way, but as `route` it made `route.first` and `route.last` both
+    /// answer "the car", which is how the destination dot came to be planted on
+    /// the vehicle.
+    ///
+    /// What replaces the fallback is not a blank map: `OwnerDrivingRoute.resolve`
+    /// falls to the app's own MKDirections road route, and then to the last route
+    /// this journey really had (MYR-456).
     static func drivingTrip(from state: VehicleState) -> DrivingTrip {
         let route = routeCoordinates(from: state.navRouteCoordinates)
-        let currentPosition = position(from: state)
-        // Prefer the wire nav route; fall back to a straight origin→destination
-        // pair when Tesla hasn't decoded a RouteLine yet, and finally to a
-        // single current-position point so the marker still has geometry.
-        let resolvedRoute: [CLLocationCoordinate2D]
-        if route.count > 1 {
-            resolvedRoute = route
-        } else if let dest = destinationCoordinate(from: state) {
-            resolvedRoute = [currentPosition, dest]
-        } else {
-            resolvedRoute = [currentPosition]
-        }
         return DrivingTrip(
             navigation: navigation(from: state),
             originLabel: nonEmpty(state.locationName) ?? "Start",
             originAddress: nonEmpty(state.locationAddress),
-            route: resolvedRoute
+            route: RideRoutePolyline.isReal(route) ? route : [],
+            carCoordinate: position(from: state),
+            destinationCoordinate: destinationCoordinate(from: state)
         )
     }
 

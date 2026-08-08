@@ -297,6 +297,27 @@ enum TrackingRouteMapContent {
         }
     }
 
+    /// MYR-458 — **whether this leg has a LINE to draw at all**, and the reason it
+    /// is `RideRoutePolyline.isReal` rather than `count > 1`.
+    ///
+    /// This was the ONE route surface in the app that never consulted MYR-293's
+    /// predicate. `SharedViewerScreen`'s `trackingLeg1Route` /
+    /// `trackingLeg2Route` fall back to an ENDPOINT PAIR while the provider
+    /// resolves — leg 1's pair is `[the car's live fix, the pickup]` — and a
+    /// `count > 1` gate drew it. That is the external-beta report verbatim:
+    /// *"After riding, there is straight line between the current location and
+    /// beginning dot."* It is not a one-frame artifact because nothing refetches
+    /// leg 1 once the ride is under way, so the segment stands for the whole trip
+    /// and its length grows as the car drives away from the pickup.
+    ///
+    /// The pairs are deliberately KEPT — MYR-293's rule is *PINS unconditionally,
+    /// the LINE only from `isReal`*, and both pins and the camera fit are derived
+    /// from this same geometry (`pickup(leg1Route:leg2Route:carCoordinate:)`). So
+    /// the endpoints still travel and only the stroke is withheld.
+    static func drawsLine(_ route: [CLLocationCoordinate2D]) -> Bool {
+        RideRoutePolyline.isReal(route)
+    }
+
     /// One route leg, rendered per its `active` phase (MYR-234) — the single
     /// active/inactive code path both legs flow through, so the ACTIVE-leg accent
     /// follows the `leg` phase input wherever it points.
@@ -309,7 +330,7 @@ enum TrackingRouteMapContent {
     ///     remaining trip is visibly dimmed against the live leg.
     @MapContentBuilder
     static func routeLeg(_ route: [CLLocationCoordinate2D], active: Bool, legProgress: Double) -> some MapContent {
-        if route.count > 1 {
+        if drawsLine(route) {
             if active {
                 // Whole leg at full strength — ahead segment included.
                 // MYR-293 named this alpha (`MRTRouteStroke.aheadOpacity`) so the

@@ -107,6 +107,33 @@ final class RiderLiveVehicleLocator {
     /// to fill the gap. What changed is that it now KEEPS UP.
     var coordinate: CLLocationCoordinate2D? { RiderVehicleProjection.coordinate(from: state) }
 
+    /// MYR-459 — **fires on every folded live frame for the watched vehicle.**
+    ///
+    /// The route cache's deviation-driven refetch (`RideRouteGeometry
+    /// .shouldRefetch`, consulted by `RideRouteStore.ensureLeg1`) is correct, is
+    /// covered by its own tests, and until this hook existed **had no live
+    /// consumer**: its only caller is `SharedViewerScreen.reconcileTrackingRoutes()`,
+    /// whose triggers are entering the tracking phase and
+    /// `onChange(of: activeRequest?.trackProgress)` — and on the LIVE path
+    /// `trackProgress` is written ONLY at status transitions (`accepted` →
+    /// `enroute` → `completed`). There is no live ticker. So a car that deviated
+    /// mid-approach never re-asked, the leg-1 polyline stayed exactly as it was
+    /// fetched at accept time, and the marker — which IS the live fix — walked
+    /// away from it. That is the external-beta report: *"the car isn't fully
+    /// aligning with the route"*, with the gap widening over 60s.
+    ///
+    /// This is the repo's own recurring shape (`VehicleRideShare.display`,
+    /// MYR-387's defect 2, MYR-402's *"a doc comment describing a call's effect is
+    /// not evidence the call has it"*): **a pure rule with good tests and the
+    /// wrong consumer.** The comment above that `onChange` even promises "no
+    /// per-fix network" — describing a per-fix reconciliation that never happened.
+    ///
+    /// It is a plain callback rather than an Observation read because the consumer
+    /// (`SharedViewerState`) must ACT on a frame, and `SharedViewerScreen.body` is
+    /// at the type-checker's budget (MYR-422), so the trigger cannot be one more
+    /// `.onChange` on that view.
+    @ObservationIgnored var onLiveFrame: (@MainActor () -> Void)?
+
     @ObservationIgnored private let rest: RestClient
     @ObservationIgnored private let socket: TelemetrySocket
     @ObservationIgnored private var loadTask: Task<Void, Never>?
@@ -174,6 +201,12 @@ final class RiderLiveVehicleLocator {
             // (model, VIN, software, seat capability) that only a snapshot carries.
             liveState: LiveVehicleState(vehicleId: next, socket: socket, seedsStateFromDeltas: true)
         )
+        // MYR-459 — every folded frame (snapshot AND delta) rings the bell. The
+        // hook is free on this path: `onStateChanged` had exactly one consumer in
+        // the app and it is the OWNER's command executor (`LiveVehicleFleet`).
+        source.liveState.onStateChanged = { [weak self] _, _ in
+            self?.onLiveFrame?()
+        }
         telemetrySource = source
         // `start()` opens the socket (idempotent) and fetches the cold snapshot.
         // Only while the map is actually on screen: adoption can land from the

@@ -468,6 +468,78 @@ public final class SharedViewerState {
     /// programmatic tracking-camera write flows through it.
     @ObservationIgnored let trackingCamera = TrackingCameraController()
 
+    // MARK: MYR-459 — the deviation refetch's missing LIVE trigger
+
+    /// What the tracking surface currently wants routed, published here so a frame
+    /// arriving off the socket can re-ask for it.
+    ///
+    /// The endpoints live on `SharedViewerScreen` (they come off the ride record),
+    /// but the TRIGGER cannot: a live fix arrives with no view event behind it, and
+    /// `SharedViewerScreen.body` is at the type-checker's budget (MYR-422), so this
+    /// cannot be one more `.onChange`. The screen therefore publishes what it wants
+    /// routed through its existing `reconcileTrackingRoutes()`, and the frame does
+    /// the asking.
+    struct TrackingRouteContext {
+        var pickup: CLLocationCoordinate2D
+        var destination: CLLocationCoordinate2D
+        /// Leg 1 is fetched only while heading to pickup (MYR-393: no origin, no
+        /// leg-1 fetch), so a car already carrying the rider re-asks for nothing.
+        var fetchesLeg1: Bool
+    }
+
+    @ObservationIgnored private(set) var trackingRouteContext: TrackingRouteContext?
+
+    /// A ~11m-resolution key for the watched car's fix.
+    ///
+    /// `HomeScreen.dispatchedCarPositionKey`'s rule verbatim, and for its reason: a
+    /// device streams ~1Hz, so keying on the raw coordinate would re-ask on every
+    /// frame. The store's own guards would absorb it — this keeps the ASK at human
+    /// cadence, and the store then decides whether the car has actually DEVIATED
+    /// far enough to be worth a throttle-budgeted MKDirections call.
+    @ObservationIgnored private var lastReconciledFixKey: String?
+
+    /// How many times a live FRAME has re-asked the route cache.
+    ///
+    /// A counter rather than a flag, and published for the reason
+    /// `RiderLiveVehicleLocator.accessRevocations` is: the whole defect is that
+    /// nothing downstream of a frame ever ran, and "the store no-oped" is
+    /// indistinguishable from "the store was never asked" at every other
+    /// observation point. `RideRouteStore` takes its provider at construction and
+    /// `SharedViewerState` builds its own, so a test cannot count MKDirections
+    /// calls — it can count the ASKS, which is the half this issue is about.
+    @ObservationIgnored private(set) var trackingRouteLiveReasks = 0
+
+    static func trackingFixKey(_ coordinate: CLLocationCoordinate2D?) -> String? {
+        coordinate.map { String(format: "%.4f,%.4f", $0.latitude, $0.longitude) }
+    }
+
+    /// Publish (or clear) what the tracking surface wants routed. Clearing also
+    /// forgets the fix key, so re-entering tracking always re-asks once.
+    func setTrackingRouteContext(_ context: TrackingRouteContext?) {
+        trackingRouteContext = context
+        if context == nil { lastReconciledFixKey = nil }
+    }
+
+    /// MYR-459 — re-ask the route cache because the CAR MOVED.
+    ///
+    /// Called from every folded live frame (`RiderLiveVehicleLocator.onLiveFrame`).
+    /// Cheap by construction: quantized here, and `ensureLeg1` is a no-op unless
+    /// the car has genuinely deviated past `MRTMetrics
+    /// .rideRouteDeviationThresholdMeters` or a 2-point fallback's retry cooldown
+    /// has elapsed.
+    func reconcileTrackingRoutesForLiveFix() {
+        guard sheetPhase == .tracking,
+              let context = trackingRouteContext,
+              context.fetchesLeg1,
+              let fix = trackingVehicleCoordinate,
+              let key = Self.trackingFixKey(fix),
+              key != lastReconciledFixKey
+        else { return }
+        lastReconciledFixKey = key
+        trackingRouteLiveReasks += 1
+        rideRouteStore.ensureLeg1(carPosition: fix, pickup: context.pickup)
+    }
+
     public func startTelemetry() {
         telemetryStarted = true
         // MYR-336 — the fixture ticker runs in SIM ONLY. On the live path the
@@ -643,6 +715,13 @@ public final class SharedViewerState {
     /// its one consequence.
     private func armTrackingLiveWatch() {
         trackingLiveWatch.hasLiveFix = { [weak self] in self?.trackingVehicleCoordinate != nil }
+        // MYR-459 — bound in the SAME place, for the same reason the watch's two
+        // seams are: this state asks the locator one question and hands the answer
+        // its one consequence. Only the LIVE branch has frames to be triggered by;
+        // a simulated tracking scene never rings it, so every capture is unchanged.
+        liveVehicleLocator?.onLiveFrame = { [weak self] in
+            self?.reconcileTrackingRoutesForLiveFix()
+        }
         trackingLiveWatch.onGraceElapsed = { [weak self] in
             // Only the LIVE branch recovers. A simulated tracking scene has no
             // socket to re-establish and must stay byte-identical.

@@ -141,6 +141,16 @@ struct VehicleMapView: View {
     /// no region at all rather than inventing a city.
     var lastKnownCenter: CLLocationCoordinate2D? = nil
 
+    /// MYR-456/MYR-457 — the polyline this map should DRAW for a driving car,
+    /// resolved by `OwnerDrivingRoute` (Tesla's own route → the app's MKDirections
+    /// road route → the route this journey last really had → nothing).
+    ///
+    /// `nil` means "no caller opinion, use the trip's own geometry", which is what
+    /// every preview and the rider's opted-out call site pass. The owner's Home
+    /// screen always supplies one, because the decision needs the fetched route
+    /// and the hold, and neither of those is a fact a map view should own.
+    var drivingLine: [CLLocationCoordinate2D]? = nil
+
     // MYR-222 — token accounting for the legacy (non-pin-drop) writers,
     // replacing the wall-clock `programmaticCameraUntil` window. The window
     // was only sound when programmatic writes were RARE: with a live device
@@ -167,12 +177,35 @@ struct VehicleMapView: View {
     // one clean re-seat if (and only if) seating was interrupted.
     @Environment(\.scenePhase) private var scenePhase
 
+    /// The line this map draws for a driving car — the caller's resolution when it
+    /// has one, else the trip's own wire geometry.
+    private func drivingRoute(_ trip: DrivingTrip) -> [CLLocationCoordinate2D] {
+        drivingLine ?? trip.route
+    }
+
     private var vehiclePosition: VehicleRoute.Position {
         switch vehicle.activity {
         case .driving(let trip):
-            VehicleRoute.position(along: trip.route, progress: snapshot.progress)
+            let line = drivingRoute(trip)
+            // MYR-457 — interpolate along the drawn route when there IS one, and
+            // otherwise use the car's own fix.
+            //
+            // Before this the fix reached here only by being smuggled in as
+            // `route[0]` of an invented `[currentPosition, destination]` pair, so
+            // removing that pair (the straight-line defect) would have taken the
+            // marker with it. `position(along:)` answers `(0, 0)` for empty
+            // geometry, which `drawsVehicleMarker` reads as the contract's §2.3
+            // no-fix sentinel — the car would simply have vanished from the
+            // owner's own map on exactly the frames this issue is about.
+            if line.count > 1 {
+                return VehicleRoute.position(along: line, progress: snapshot.progress)
+            }
+            return VehicleRoute.Position(
+                coordinate: trip.carCoordinate ?? VehicleRoute.position(along: line, progress: 0).coordinate,
+                headingDegrees: 0
+            )
         case .parked(let loc):
-            VehicleRoute.Position(coordinate: loc.coordinate, headingDegrees: 0)
+            return VehicleRoute.Position(coordinate: loc.coordinate, headingDegrees: 0)
         }
     }
 
@@ -523,28 +556,46 @@ struct VehicleMapView: View {
         switch vehicle.activity {
         case .driving(let trip):
             if showRoute {
-                let travelled = VehicleRoute.travelledCoordinates(along: trip.route, progress: snapshot.progress)
-                // MYR-293 (client: "Route poly line feels hard to see") — the
-                // full path is stroked at the LIVE route alpha, not `RouteLine`'s
-                // illustration 0.30. At trip start progress ≈ 0, so before this
-                // the entire route on the owner's own map was the dim wash while
-                // the rider watching the same car saw it at 0.85.
-                MapPolyline(coordinates: trip.route)
-                    .stroke(Color.mrtGold.opacity(MRTRouteStroke.aheadOpacity), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
-                // Glow underlay beneath the travelled segment (RouteLine.swift
-                // doc: "draw a third, wider underlay polyline").
-                MapPolyline(coordinates: travelled)
-                    .stroke(Color.mrtGoldGlowSoft, style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round))
-                // Travelled portion, bright (RouteLine.swift: alpha 0.95).
-                MapPolyline(coordinates: travelled)
-                    .stroke(Color.mrtGold.opacity(MRTRouteStroke.travelledOpacity), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                // MYR-457 — the LINE is whatever `OwnerDrivingRoute` resolved, and
+                // it is drawn only when it is a line. The `count > 1` here is a
+                // shape check, not the predicate: realness was decided by
+                // `RideRoutePolyline.isReal` on the way in, which is what retired
+                // the invented `[currentPosition, destination]` segment this map
+                // used to stroke across blocks, a park and a highway.
+                let line = drivingRoute(trip)
+                if line.count > 1 {
+                    let travelled = VehicleRoute.travelledCoordinates(along: line, progress: snapshot.progress)
+                    // MYR-293 (client: "Route poly line feels hard to see") — the
+                    // full path is stroked at the LIVE route alpha, not `RouteLine`'s
+                    // illustration 0.30. At trip start progress ≈ 0, so before this
+                    // the entire route on the owner's own map was the dim wash while
+                    // the rider watching the same car saw it at 0.85.
+                    MapPolyline(coordinates: line)
+                        .stroke(Color.mrtGold.opacity(MRTRouteStroke.aheadOpacity), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                    // Glow underlay beneath the travelled segment (RouteLine.swift
+                    // doc: "draw a third, wider underlay polyline").
+                    MapPolyline(coordinates: travelled)
+                        .stroke(Color.mrtGoldGlowSoft, style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round))
+                    // Travelled portion, bright (RouteLine.swift: alpha 0.95).
+                    MapPolyline(coordinates: travelled)
+                        .stroke(Color.mrtGold.opacity(MRTRouteStroke.travelledOpacity), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
 
-                if let origin = trip.route.first {
-                    Annotation("Origin", coordinate: origin) {
-                        MRTEndpointDot(color: .mrtDriving, size: 10)
+                    // The ORIGIN dot describes the drawn path, so it exists only
+                    // when a path does.
+                    if let origin = line.first {
+                        Annotation("Origin", coordinate: origin) {
+                            MRTEndpointDot(color: .mrtDriving, size: 10)
+                        }
                     }
                 }
-                if let destination = trip.route.last {
+                // MYR-293/MYR-395's rule, which this surface was breaking in both
+                // directions: **pins unconditionally, the line only from
+                // `isReal`.** The destination comes off the navigation group — a
+                // place the car told us it is going, and a fact whether or not we
+                // can draw the way there. Read off `route.last` (as it was), with
+                // no real route it was planted at the end of the invented segment,
+                // and with the 1-point degenerate arm it sat ON the car.
+                if let destination = trip.destinationCoordinate ?? drivingRoute(trip).last {
                     Annotation("Destination", coordinate: destination) {
                         MRTEndpointDot(color: .mrtGold, size: 11)
                     }
