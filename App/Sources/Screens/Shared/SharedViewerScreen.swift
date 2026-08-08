@@ -944,7 +944,7 @@ struct SharedViewerScreen: View {
                 // MYR-393 — the freshest position we hold, or NO marker. See
                 // `trackingCarPosition` / `trackingMarkerCoordinate`.
                 carCoordinate: trackingMarkerCoordinate,
-                carHeading: trackingCarPosition.headingDegrees,
+                carHeading: trackingMarkerHeading,
                 legProgress: trackingLegProgress,
                 // MYR-397 — CAPPED, per MYR-338. This used to be the sheet's own
                 // SETTLED height, i.e. its live geometry: so
@@ -1375,6 +1375,35 @@ struct SharedViewerScreen: View {
         }
     }
 
+    /// MYR-460 — **which way the gold glyph points.**
+    ///
+    /// The tester's second sentence: *"car heading not changing direction with
+    /// tesla telemetry car heading."* MYR-393 moved the marker's POSITION off the
+    /// `trackProgress` interpolation and onto the live fix and deliberately left
+    /// the rotation behind, on the reasoning that the route tangent "is exactly
+    /// as good" and swapping it would move every simulated capture. It is not
+    /// exactly as good, and the difference is the whole report: the tangent is a
+    /// bearing along a polyline the car may have left, advanced by a clock the
+    /// accept started — so a car stopped at a light, queuing, reversing, or on a
+    /// road MKDirections did not pick renders pointing wherever the LINE goes.
+    /// The compass bearing is what the car says about itself.
+    ///
+    /// Resolved off the SAME `RiderCarMarker` decision the coordinate is, so the
+    /// two halves of one glyph cannot disagree about which world they are in.
+    /// The simulated arm keeps the tangent verbatim, which is what leaves the
+    /// rotation of every fixture capture untouched.
+    private var trackingMarkerHeading: Double {
+        switch trackingCarMarker {
+        case .simulated, .withheld:
+            return trackingCarPosition.headingDegrees
+        case .live:
+            // `.live` implies `hasFix`, so the projection answers; the fallback
+            // is written rather than force-unwrapped for the same reason
+            // `trackingMarkerCoordinate`'s is.
+            return viewerState.trackingVehicleHeading ?? trackingCarPosition.headingDegrees
+        }
+    }
+
     private var isTrackingPhase: Bool { viewerState.sheetPhase == .tracking }
 
     // MARK: MYR-393 — the honest ladder, the truthful marker, and the cancel
@@ -1564,7 +1593,7 @@ struct SharedViewerScreen: View {
                 // map does (MYR-327's whole point), so it withholds the glyph on
                 // exactly the same evidence.
                 carCoordinate: trackingMarkerCoordinate,
-                carHeading: trackingCarPosition.headingDegrees,
+                carHeading: trackingMarkerHeading,
                 legProgress: trackingLegProgress,
                 showsUserLocation: viewerState.userLocation.showsUserLocationDot
             )

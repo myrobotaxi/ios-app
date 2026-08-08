@@ -629,6 +629,13 @@ public final class SharedViewerState {
         RiderVehicleProjection.coordinate(from: trackingVehicleState)
     }
 
+    /// MYR-460 — the car's own compass heading, through the SAME projection and
+    /// the SAME `(0,0)`-is-no-fix gate the coordinate takes, so the glyph's
+    /// position and its rotation can never come from different evidence.
+    var trackingVehicleHeading: Double? {
+        RiderVehicleProjection.heading(from: trackingVehicleState)
+    }
+
     // MARK: MYR-449 — the tracking surface's honest live state
 
     /// The clock behind "Waiting for live location…" → "Live location unavailable
