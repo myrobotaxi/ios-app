@@ -16,6 +16,15 @@ import Foundation
 // `NSUserActivity`, no screens. The impure half — receiving the activity and
 // applying the route — is `InviteLinkBridge` + `RootView`.
 //
+// MYR-453 — THERE ARE TWO CHANNELS NOW, AND ONLY ONE ROUTING MATRIX. A code can
+// arrive as the `https://myrobotaxi.app/join/{CODE}` universal link or as the
+// `myrobotaxi://join/{CODE}` app link, because iOS will not fire the former from
+// a WKWebView-backed in-app browser and a tester's Telegram tap therefore reached
+// the app with nothing to fill the cells. The difference lives ENTIRELY in
+// `code(from:)`'s two envelope arms: both resolve to six sanitised characters and
+// everything downstream — the route, the hold, the drain, the auto-submit — cannot
+// tell them apart, which is the point. See `code(fromAppLink:)`.
+//
 // TWO RULES SHAPE ALL OF IT:
 //
 //   1. AN UNRECOGNISED LINK IS NOT AN ERROR. The AASA will claim every path
@@ -48,6 +57,18 @@ enum InviteLink {
 
     /// The single path component the AASA claims (`components: /join/*`).
     static let pathComponent = "join"
+
+    /// The app's own URL scheme — the SECOND channel a code can arrive on, and
+    /// the reason MYR-453 exists (see ``code(fromAppLink:)``). Declared in
+    /// `App/MyRoboTaxi-Info.plist` under `CFBundleURLTypes` — the additive plist,
+    /// not `project.yml`, because `CFBundleURLTypes` has no `INFOPLIST_KEY_*`
+    /// spelling. `InviteLinkSchemeTests` reads that plist and pins the two
+    /// against each other: a scheme the app does not claim is a link iOS will
+    /// not open, and nothing about that failure reaches this code.
+    ///
+    /// It was ALREADY registered, for the Tesla OAuth callbacks (§7.11/§7.12),
+    /// which is why this issue adds no plist entry — only a listener.
+    static let appScheme = "myrobotaxi"
 
     /// §7.5.1 mints exactly six characters.
     static let codeLength = 6
@@ -162,8 +183,20 @@ enum InviteLink {
                 || CharacterSet.lowercaseLetters.contains(scalar))
     }
 
-    /// Pull a well-formed invite code out of an incoming universal link, or
-    /// `nil` if this URL is not one of ours.
+    /// Pull a well-formed invite code out of an incoming link, or `nil` if this
+    /// URL is not one of ours.
+    ///
+    /// TWO ENVELOPES, STATED SEPARATELY (MYR-453): the `https://` universal link
+    /// and the `myrobotaxi://` app link. They are two functions rather than one
+    /// widened check on purpose — an edit that loosens the app-link rule must not
+    /// be able to loosen the https rule, which is the one that can be aimed at a
+    /// claimed domain. Everything past this point sees only six characters and
+    /// cannot tell which door they came through.
+    static func code(from url: URL) -> String? {
+        code(fromUniversalLink: url) ?? code(fromAppLink: url)
+    }
+
+    /// The UNIVERSAL-LINK envelope (MYR-346). Unchanged by MYR-453.
     ///
     /// Strict about the ENVELOPE, forgiving about the CODE:
     ///
@@ -191,7 +224,7 @@ enum InviteLink {
     /// a link is held to the same bar, so a truncated or padded link can never
     /// spend one of the rider's 10-attempts-per-minute (§7.5.5) on a code the
     /// client could see was wrong.
-    static func code(from url: URL) -> String? {
+    private static func code(fromUniversalLink url: URL) -> String? {
         guard url.scheme?.lowercased() == "https" else { return nil }
         guard url.host()?.lowercased() == host else { return nil }
 
@@ -201,6 +234,60 @@ enum InviteLink {
         guard parts.count == 2, parts[0].lowercased() == pathComponent else { return nil }
 
         return sanitize(parts[1])
+    }
+
+    /// The APP-LINK envelope — `myrobotaxi://join/{CODE}` (MYR-453).
+    ///
+    /// **WHY A SECOND CHANNEL EXISTS AT ALL.** A universal link is the ONLY way
+    /// a code could reach this app, and iOS declines to fire one from a
+    /// WKWebView-backed in-app browser — which is what Telegram, and most
+    /// messaging apps, open an `https://` link in by default. The tester who
+    /// filed MYR-453 tapped an invite from Telegram: the link resolved to the web
+    /// page instead of the app, and by the time she reached the app there was no
+    /// activity, no URL, and therefore no code. A custom scheme is the standard
+    /// escape hatch precisely because it is NOT http(s): an in-app browser cannot
+    /// load it itself, so it hands it to the system, which opens us.
+    ///
+    /// **IT GRANTS NOTHING THE UNIVERSAL LINK DID NOT.** The two carry the same
+    /// payload — six characters — and this parser applies the identical
+    /// ``sanitize`` and the identical length bar, so the same auto-submit rule
+    /// holds. The code is already a bearer credential that travels in the clear
+    /// (see ``url(code:from:)``), redemption still requires a signed-in account
+    /// POSTing to §7.5.5, and MYR-368's `?k=` signature is verified by the WEB
+    /// SHELL and has never been read by this app on either channel. So a scheme
+    /// link is exactly as privileged as the https link it stands in for — no
+    /// more, which is the whole bar this had to clear.
+    ///
+    /// **TWO SPELLINGS, ONE SHAPE.** `URL(string:)` parses
+    /// `myrobotaxi://join/ABCDEF` as host `join` + path `/ABCDEF`, and
+    /// `myrobotaxi:///join/ABCDEF` as an empty host + path `/join/ABCDEF`. Those
+    /// are the same link written two ways and both are accepted, by normalising
+    /// the authority and the path into ONE component list that must be exactly
+    /// `["join", CODE]`. Everything else is refused — `myrobotaxi://myrobotaxi
+    /// .app/join/ABCDEF` included, since a three-component form is a shape
+    /// nobody was told to write. ``appURL(code:)`` is the canonical string the
+    /// web page should emit, so there is one spelling to hand over and one to
+    /// pin in a test.
+    ///
+    /// The QUERY is ignored here for the same reason it is on the https arm.
+    private static func code(fromAppLink url: URL) -> String? {
+        guard url.scheme?.lowercased() == appScheme else { return nil }
+
+        var parts: [String] = []
+        if let authority = url.host(), !authority.isEmpty { parts.append(authority) }
+        parts.append(contentsOf: url.pathComponents.filter { $0 != "/" })
+
+        guard parts.count == 2, parts[0].lowercased() == pathComponent else { return nil }
+
+        return sanitize(parts[1])
+    }
+
+    /// The canonical app-link string for a code — what the web join page's
+    /// "Open in the app" button should point at (MYR-453). Composed here rather
+    /// than typed on the web side so the shape this parser accepts and the shape
+    /// that gets published are one fact.
+    static func appURL(code: String) -> String {
+        "\(appScheme)://\(pathComponent)/\(code)"
     }
 
     /// Upper-case, keep only `[A-Z0-9]`, and require exactly ``codeLength``.
