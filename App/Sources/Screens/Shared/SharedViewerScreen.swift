@@ -407,7 +407,7 @@ struct SharedViewerScreen: View {
                 // it — `finish()` empties the rider's slot and
                 // `releaseRouteIfSlotEmpty` resets the store — so nothing outlives
                 // the ride.
-                if newPhase != .summary { viewerState.rideRouteStore.reset() }
+                if newPhase != .summary { viewerState.resetRideRoutes() }
             }
             // MYR-422 — arriving at the summary: resolve the hero's route ladder.
             if newPhase == .summary { reconcileSummaryRoute() }
@@ -926,6 +926,9 @@ struct SharedViewerScreen: View {
                 leg: trackingLeg,
                 leg1Route: trackingLeg1Route,
                 leg2Route: trackingLeg2Route,
+                // MYR-482 — the car → drop-off line for a rider aboard (empty on
+                // every simulated scene, which keeps drawing leg 2 as before).
+                inRideRoute: trackingInRideRoute,
                 // MYR-393 — the freshest position we hold, or NO marker. See
                 // `trackingCarPosition` / `trackingMarkerCoordinate`.
                 carCoordinate: trackingMarkerCoordinate,
@@ -943,10 +946,21 @@ struct SharedViewerScreen: View {
                 cameraPosition: $cameraPosition,
                 isFollowing: $isFollowing,
                 controller: viewerState.trackingCamera,
-                showsUserLocation: viewerState.userLocation.showsUserLocationDot,
+                showsUserLocation: showsRiderOwnDot,
                 // MYR-327 — tap anywhere on the map to open the expanded viewer.
                 onExpand: { showsExpandedRoute = true }
             )
+            // MYR-482 — remember the in-ride route this journey really had, so a
+            // frame that arrives mid nav-group update has something to hold. On the
+            // MAP rather than on `body` because a hold is a fact about the route,
+            // and because `SharedViewerScreen.body` is at the type-checker's budget
+            // (MYR-422) — the same placement `HomeScreen` gives the owner's hold.
+            .onChange(of: trackingInRideHoldKey, initial: true) { _, _ in
+                viewerState.recordTrackingRoute(
+                    trackingInRideResolution,
+                    destinationKey: trackingLeg == .inRide ? trackingDestinationKey : nil
+                )
+            }
         case .summary:
             // Summary is a full-screen takeover (its own hero-map layout), not a
             // peek above a bottom sheet — no inset (MYR-216 d4).
@@ -1306,13 +1320,90 @@ struct SharedViewerScreen: View {
     /// dot — the external-beta report — while the pickup pin and the leg fit,
     /// which are derived from this same geometry, are untouched. MYR-293's rule:
     /// pins unconditionally, the line only from `isReal`.
+    ///
+    /// MYR-482 — **and it is retired the moment the rider is aboard**, through
+    /// `TrackingRouteMapContent.drawnLeg1` so the inline map, the expanded viewer
+    /// and the camera fit all read one rule. See that function for the defect.
     private var trackingLeg1Route: [CLLocationCoordinate2D] {
+        TrackingRouteMapContent.drawnLeg1(rawTrackingLeg1Route, leg: trackingLeg)
+    }
+
+    private var rawTrackingLeg1Route: [CLLocationCoordinate2D] {
         if viewerState.rideRouteStore.leg1.count > 1 { return viewerState.rideRouteStore.leg1 }
         guard let trackingCarOrigin else { return [] }
         return [trackingCarOrigin, trackingPickup]
     }
     private var trackingLeg2Route: [CLLocationCoordinate2D] {
         viewerState.rideRouteStore.leg2.count > 1 ? viewerState.rideRouteStore.leg2 : [trackingPickup, trackingDestination]
+    }
+
+    // MARK: MYR-482 — the in-ride route: the car, right now, to the drop-off
+
+    /// Stable identity for the journey the in-ride hold is about
+    /// (`HomeScreen.drivingDestinationKey`'s rule verbatim).
+    private var trackingDestinationKey: String {
+        String(format: "%.6f,%.6f", trackingDestination.latitude, trackingDestination.longitude)
+    }
+
+    /// What the in-ride leg strokes, resolved by the SAME ladder the owner's
+    /// driving map uses (`OwnerDrivingRoute.resolve`): Tesla's own route → the
+    /// app's MKDirections road route → the last route this journey really had →
+    /// nothing. Reused rather than re-derived, so MYR-293's `isReal` gate, the
+    /// MYR-456 hold and the "never a fabricated segment" rule are one implementation
+    /// for both roles.
+    ///
+    /// `navigationActive: true` because the journey here is the RIDE, not the car's
+    /// nav session — a rider is aboard and going somewhere whether or not the
+    /// screen in the dash agrees. `remainingMiles: nil` / `reportedProgress: 0`
+    /// because this surface measures progress from the ride's own
+    /// `trackingLegProgress` and never from this ladder.
+    ///
+    /// **Live-path only**, so every simulated tracking scene resolves `.none` and
+    /// keeps drawing `trackingLeg2Route` exactly as before: the sim has no wire
+    /// route, and `resolvesTrackingMotion` is what gates the fetch.
+    private var trackingInRideResolution: OwnerDrivingRoute.Resolution {
+        guard trackingLeg == .inRide, viewerState.resolvesTrackingMotion else { return .none }
+        return OwnerDrivingRoute.resolve(
+            navigationActive: true,
+            wireRoute: viewerState.trackingWireRoute,
+            fetchedRoute: viewerState.trackingFetchedDestinationRoute(destination: trackingDestination),
+            remainingMiles: nil,
+            reportedProgress: 0,
+            held: viewerState.trackingRouteHold?.destinationKey == trackingDestinationKey
+                ? viewerState.trackingRouteHold?.resolution
+                : nil
+        )
+    }
+
+    private var trackingInRideRoute: [CLLocationCoordinate2D] { trackingInRideResolution.line }
+
+    /// A change key for the hold observer — `HomeScreen.drivingHoldKey`'s rule, so a
+    /// refetched route with the same vertex count still records.
+    private var trackingInRideHoldKey: String {
+        let resolution = trackingInRideResolution
+        let first = resolution.line.first
+        let last = resolution.line.last
+        return [
+            trackingDestinationKey,
+            "\(resolution.source)",
+            "\(resolution.line.count)",
+            first.map { String(format: "%.5f,%.5f", $0.latitude, $0.longitude) } ?? "-",
+            last.map { String(format: "%.5f,%.5f", $0.latitude, $0.longitude) } ?? "-",
+        ].joined(separator: "|")
+    }
+
+    /// MYR-483 — **the rider's own blue dot goes away once they are in the car.**
+    ///
+    /// External-beta product feedback, build `202608081012`: *"Why is my location
+    /// and when I'm in the car I don't need to see of my location"* — the dot was
+    /// peeking out from directly under the gold car capsule, two markers fighting
+    /// over one point. During the PICKUP phases it answers the rider's main
+    /// question ("where am I relative to the kerb?") and stays.
+    private var showsRiderOwnDot: Bool {
+        RiderOwnLocationDot.shows(
+            authorized: viewerState.userLocation.showsUserLocationDot,
+            leg: trackingLeg
+        )
     }
 
     /// Progress WITHIN the current leg (0…1) from the whole-trip `trackProgress`.
@@ -1590,6 +1681,8 @@ struct SharedViewerScreen: View {
             // Fit the WHOLE trip (both legs), not just the active one: the point
             // of expanding is to see the trip, and the leg fit is what the inline
             // map already gives.
+            // MYR-482 — `trackingLeg1Route` is empty in-ride (the approach leg is
+            // retired), so aboard this fits the trip that is still ahead.
             fitCoordinates: trackingLeg1Route + trackingLeg2Route,
             // Honest: while a leg is still the straight 2-point endpoint fallback,
             // MKDirections has not produced road geometry yet — say so instead of
@@ -1601,6 +1694,7 @@ struct SharedViewerScreen: View {
                 leg: trackingLeg,
                 leg1Route: trackingLeg1Route,
                 leg2Route: trackingLeg2Route,
+                inRideRoute: trackingInRideRoute,
                 pickupCoordinate: TrackingRouteMapContent.pickup(
                     leg1Route: trackingLeg1Route,
                     leg2Route: trackingLeg2Route,
@@ -1613,7 +1707,9 @@ struct SharedViewerScreen: View {
                 carCoordinate: trackingMarkerCoordinate,
                 carHeading: trackingMarkerHeading,
                 legProgress: trackingLegProgress,
-                showsUserLocation: viewerState.userLocation.showsUserLocationDot
+                // MYR-483 — the same rule the inline map takes; the expanded viewer
+                // draws what the inline map draws (MYR-327's whole point).
+                showsUserLocation: showsRiderOwnDot
             )
             .annotationTitles(.hidden)
         }
@@ -1740,8 +1836,18 @@ struct SharedViewerScreen: View {
 
     /// Whether either leg is still the straight `[from, to]` fallback — i.e. the
     /// real road polyline has not landed for it yet.
+    ///
+    /// MYR-482 — aboard, leg 1 is retired and the question is only about the line
+    /// in front of the rider: a resolved car → drop-off route (or, failing that, a
+    /// real leg 2) means there is nothing left to find. Keeping the leg-1 clause
+    /// here would have left "Finding route…" up for the whole of every trip the
+    /// moment that leg stopped being drawn.
     private var trackingRouteIsResolving: Bool {
-        viewerState.rideRouteStore.leg1.count <= 2 || viewerState.rideRouteStore.leg2.count <= 2
+        guard trackingLeg == .inRide else {
+            return viewerState.rideRouteStore.leg1.count <= 2 || viewerState.rideRouteStore.leg2.count <= 2
+        }
+        return !TrackingRouteMapContent.drawsLine(trackingInRideRoute)
+            && !TrackingRouteMapContent.drawsLine(trackingLeg2Route)
     }
 
     /// Reconcile the route cache for the active ride — leg 2 always (drawn dimmed
@@ -1762,12 +1868,23 @@ struct SharedViewerScreen: View {
         viewerState.setTrackingRouteContext(.init(
             pickup: trackingPickup,
             destination: trackingDestination,
-            fetchesLeg1: trackingLeg == .toPickup
+            fetchesLeg1: trackingLeg == .toPickup,
+            // MYR-482 — aboard, the route that has to keep up is car → drop-off.
+            // Live only: the simulated path has no fix to route FROM, and seeding
+            // this on it would spend MKDirections calls that move no capture.
+            fetchesCarToDestination: trackingLeg == .inRide && viewerState.resolvesTrackingMotion
         ))
         // MYR-393 — no origin, no leg-1 fetch. Asking MKDirections for a route from
         // a coordinate we invented is how a fabrication acquires real road geometry.
         if trackingLeg == .toPickup, let trackingCarOrigin {
             viewerState.rideRouteStore.ensureLeg1(carPosition: trackingCarOrigin, pickup: trackingPickup)
+        }
+        // MYR-482 — and seed the in-ride route on ENTRY rather than waiting for the
+        // next frame, through the same one gate the frame trigger takes (so a car
+        // whose own nav route is real still costs no call).
+        if trackingLeg == .inRide, viewerState.resolvesTrackingMotion,
+           let fix = viewerState.trackingVehicleCoordinate {
+            viewerState.ensureCarToDestinationRoute(fix: fix, destination: trackingDestination)
         }
     }
 
@@ -1819,7 +1936,7 @@ struct SharedViewerScreen: View {
     /// is the ONLY signal a cancelled ride gives this screen.
     private func releaseRouteIfSlotEmpty(_ previousID: String?, _ id: String?) {
         guard id == nil else { return }
-        viewerState.rideRouteStore.reset()
+        viewerState.resetRideRoutes()
         // MYR-422 — and the drive-join verdicts with it. They are keyed by ride id,
         // so a stale one could not be MIS-read by the next ride; this is the same
         // hygiene the route cache gets, and it is where "the summary's lifetime"
@@ -1853,7 +1970,7 @@ struct SharedViewerScreen: View {
         // whether the ride exists. (`.completed` keeps its route until the summary
         // is dismissed — that map is ABOUT the ride that just happened — so only
         // the refusal clears here; the slot-release path below covers the rest.)
-        if status == .declined { viewerState.rideRouteStore.reset() }
+        if status == .declined { viewerState.resetRideRoutes() }
         if let phase = Self.reconciledPhase(
             status: status,
             isDormantReservation: RideReservation.isDormant(request),

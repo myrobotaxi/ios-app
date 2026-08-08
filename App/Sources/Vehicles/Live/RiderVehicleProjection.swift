@@ -83,6 +83,33 @@ enum RiderVehicleProjection {
         return Double(state.heading)
     }
 
+    /// The car's OWN navigation polyline (`navRouteCoordinates`), or `[]` when the
+    /// wire carries none that is real geometry.
+    ///
+    /// MYR-482 — the external-beta report *"no route line to the destination for the
+    /// whole trip"*, on a car whose dash was actively navigating. Nothing on the
+    /// rider's tracking surface has ever read Tesla's own route: the map draws
+    /// `RideRouteStore.leg2`, which is an MKDirections **pickup → destination**
+    /// preview fetched once at accept time. This is the missing hop, and it is the
+    /// exact twin of MYR-460's heading hop — the field has been on the wire and
+    /// folded by the merger since contracts shipped, it already reaches the rider
+    /// through `activity` (`VehicleContractMapping.drivingTrip`), and only the
+    /// tracking map never asked for it.
+    ///
+    /// **`RideRoutePolyline.isReal` is applied HERE, once** (MYR-293): a 2-point
+    /// "route" is a claim about a path and not a path, so it is refused at the
+    /// source rather than by each consumer. `[]` is what makes the caller's next
+    /// rung reachable.
+    ///
+    /// Deliberately NOT gated on `hasFix`: the nav group and the gps group are
+    /// different atomic groups, and a route Tesla decoded is geometry whether or
+    /// not this particular frame also carried a position.
+    static func navRoute(from state: VehicleState?) -> [CLLocationCoordinate2D] {
+        guard let state else { return [] }
+        let route = VehicleContractMapping.routeCoordinates(from: state.navRouteCoordinates)
+        return RideRoutePolyline.isReal(route) ? route : []
+    }
+
     /// Fold ONLY position + status from a live snapshot onto the catalog row.
     ///
     /// Every other field of `vehicle` is carried through verbatim — see this

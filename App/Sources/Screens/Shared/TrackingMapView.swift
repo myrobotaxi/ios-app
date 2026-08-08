@@ -25,8 +25,16 @@ struct TrackingMapView: View {
     let leg: TrackingLeg
     /// Car → pickup road polyline (leg 1). May be `[car, pickup]` fallback.
     let leg1Route: [CLLocationCoordinate2D]
-    /// Pickup → destination road polyline (leg 2).
+    /// Pickup → destination road polyline (leg 2). Still the geometry the pins and
+    /// the camera fit are derived from in BOTH legs — see `inRideRoute`.
     let leg2Route: [CLLocationCoordinate2D]
+    /// MYR-482 — **the line the rider aboard actually needs: the car, right now, to
+    /// the drop-off.** Tesla's own nav route when the wire has one, else the app's
+    /// MKDirections road route, else the last one this journey really had
+    /// (`OwnerDrivingRoute.resolve`). Empty leaves `leg2Route` as the in-ride
+    /// stroke, which is the pre-MYR-482 rendering and what every simulated scene
+    /// still gets.
+    var inRideRoute: [CLLocationCoordinate2D] = []
     /// MYR-393 — the freshest position we hold for the car, or `nil` when we hold
     /// none. `nil` draws NO vehicle glyph: the route, both pins and the camera are
     /// unaffected, because a camera is context and a gold pin is a claim that the
@@ -255,6 +263,7 @@ struct TrackingMapView: View {
             leg: leg,
             leg1Route: leg1Route,
             leg2Route: leg2Route,
+            inRideRoute: inRideRoute,
             pickupCoordinate: pickupCoordinate,
             destinationCoordinate: destinationCoordinate,
             carCoordinate: displayCarCoordinate,
@@ -295,11 +304,50 @@ enum TrackingRouteMapContent {
         leg2Route.last
     }
 
+    /// MYR-482 — **the approach leg is HISTORY the moment the rider is aboard**,
+    /// and this is the rule that retires it.
+    ///
+    /// External beta, build `202608081012`: an L-shaped gold fragment sat by the
+    /// pickup pin for the whole trip. `TrackingRouteMapContent.content` draws BOTH
+    /// legs in every phase — the inactive one dimmed (MYR-234) — and nothing ever
+    /// cleared the car → pickup polyline on the flip to `.inRide`:
+    /// `reconcileTrackingRoutes` stops FETCHING leg 1 there, which is not the same
+    /// thing as stopping DRAWING it, and `RideRouteStore.leg1` keeps its geometry
+    /// until the ride's slot empties. MYR-234's "the other leg dimmed" was written
+    /// about leg 2 during leg 1 — the REST of the trip, which is a fact about the
+    /// journey ahead. The reverse is a route the car has already driven.
+    ///
+    /// Stated as a function rather than as an `if` inside the builder so the screen
+    /// can apply the SAME rule to the camera fit and the expanded viewer, and so a
+    /// test can name it.
+    static func drawnLeg1(_ route: [CLLocationCoordinate2D], leg: TrackingLeg) -> [CLLocationCoordinate2D] {
+        leg.isLeg1Active ? route : []
+    }
+
+    /// MYR-482 — the polyline the ACTIVE leg strokes.
+    ///
+    /// Leg 1 is unchanged. In-ride, a resolved car → drop-off route (wire, fetched
+    /// or held) REPLACES the pickup → drop-off preview: the rider is aboard, so the
+    /// part of that preview behind the car is not their trip any more, and on a car
+    /// that took a different road it never was. Empty falls back to `leg2Route`,
+    /// which is exactly the pre-MYR-482 rendering — so a simulated scene, which has
+    /// no live car and no wire route, is byte-identical.
+    static func activeRoute(
+        leg: TrackingLeg,
+        leg1Route: [CLLocationCoordinate2D],
+        leg2Route: [CLLocationCoordinate2D],
+        inRideRoute: [CLLocationCoordinate2D]
+    ) -> [CLLocationCoordinate2D] {
+        if leg.isLeg1Active { return leg1Route }
+        return inRideRoute.isEmpty ? leg2Route : inRideRoute
+    }
+
     @MapContentBuilder
     static func content(
         leg: TrackingLeg,
         leg1Route: [CLLocationCoordinate2D],
         leg2Route: [CLLocationCoordinate2D],
+        inRideRoute: [CLLocationCoordinate2D] = [],
         pickupCoordinate: CLLocationCoordinate2D,
         destinationCoordinate: CLLocationCoordinate2D?,
         carCoordinate: CLLocationCoordinate2D?,
@@ -318,12 +366,21 @@ enum TrackingRouteMapContent {
         // `leg` phase input, so MYR-231's `in_ride` status flips it in one line.
         // The inactive leg is always drawn first so the active leg + its glow sit
         // on top.
+        //
+        // MYR-482 — and once the rider is ABOARD there is no "other leg" to dim:
+        // `drawnLeg1` retires the approach polyline, and the active stroke becomes
+        // the car → drop-off route whenever one has resolved.
         if leg.isLeg1Active {
             routeLeg(leg2Route, active: false, legProgress: legProgress)
             routeLeg(leg1Route, active: true, legProgress: legProgress)
         } else {
-            routeLeg(leg1Route, active: false, legProgress: legProgress)
-            routeLeg(leg2Route, active: true, legProgress: legProgress)
+            routeLeg(drawnLeg1(leg1Route, leg: leg), active: false, legProgress: legProgress)
+            // The travelled/ahead split is measured along the polyline being
+            // stroked. A car → drop-off route STARTS at the car, so none of it is
+            // behind them: glowing `legProgress` of it would light a stretch of road
+            // this ride has not driven.
+            let active = activeRoute(leg: leg, leg1Route: leg1Route, leg2Route: leg2Route, inRideRoute: inRideRoute)
+            routeLeg(active, active: true, legProgress: inRideRoute.isEmpty ? legProgress : 0)
         }
 
         // Endpoints — slim Tesla-style pickup (donut lollipop) + destination
