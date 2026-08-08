@@ -56,6 +56,11 @@ struct SettingsScreen: View {
     /// `PushDeniedNotice` under the toggles and nothing else; `.notDetermined`
     /// (the default, and what the simulated path always reports) renders nothing.
     var pushAuthorization: PushAuthorizationState = .notDetermined
+    /// MYR-479 — whether the SYSTEM allows this app a Live Activity, published by
+    /// `RideActivityCoordinator` and refreshed on every launch and foreground.
+    /// Drives `LiveActivityDeniedNotice` and nothing else; `.unknown` (the default,
+    /// and what the simulated path reports for ever) renders nothing.
+    var liveActivityAuthorization: LiveActivityAuthorizationState = .unknown
     /// MYR-349 — the account's real per-category push preferences (rest-api.md
     /// §7.19). This REPLACES the `@State private var toggles = NotificationToggles()`
     /// struct these rows used to move: it persisted nowhere and gated nothing, so
@@ -258,6 +263,11 @@ struct SettingsScreen: View {
                                 // pixel-identical) in every other state, including
                                 // the whole simulated path.
                                 PushDeniedNotice(state: pushAuthorization)
+                                // MYR-479 — the OTHER system switch this feature depends
+                                // on, and the one nothing in the app has ever mentioned.
+                                // `.unknown` on the simulated path, so it renders nothing
+                                // in any capture.
+                                LiveActivityDeniedNotice(state: liveActivityAuthorization)
                             }
                             if liveProfile != nil {
                                 switchModeCard

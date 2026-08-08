@@ -110,6 +110,46 @@ final class RideActivityCoordinator {
     /// a dismissal survives the process it happened in.
     private var dismissedRideIDs: Set<String> = []
 
+    /// **CARDS THIS APP TOOK DOWN ITSELF** (MYR-479), so the finality set cannot be
+    /// fed by them.
+    ///
+    /// `ActivityState.dismissed` does NOT mean "the rider swiped": Apple's own
+    /// wording is that the Activity is no longer visible *"because a person **or the
+    /// system** removed it"*, and every `.immediate` end this coordinator issues —
+    /// the §7.21 409 arm, `performEnd`, `reap` — asks the system to remove it. The
+    /// LIFECYCLE STREAM is safe (each of those cancels `stateTask` before it ends
+    /// anything, so a self-end is never observed as a swipe), but the RESTORE LIST
+    /// carries no provenance at all: `reconcile` reads a `.dismissed` row and cannot
+    /// tell the rider's decision from our own teardown. Folding that into
+    /// `dismissedRideIDs` bars the ride from ever getting a card again — which is
+    /// precisely what would defeat this issue's revival arm for the ride it was
+    /// written for, the one the client ended on a `409 reservation_expired`.
+    ///
+    /// It is IN-MEMORY and scoped to this process, and that is a deliberate limit
+    /// rather than an oversight — see the PR's "what I could not close" note. It is
+    /// also behaviour-neutral if the platform never reports a self-end as
+    /// `.dismissed`: the set is then simply never consulted.
+    ///
+    /// **A ride leaves the set the moment a fresh card is started or adopted for
+    /// it**, so the shield only ever covers the window between our teardown and the
+    /// next card. Without that, a rider who swiped the REVIVED card would find their
+    /// swipe stopped surviving a relaunch.
+    private var endedByAppRideIDs: Set<String> = []
+
+    /// **WHETHER THE SYSTEM WILL ALLOW A LIVE ACTIVITY AT ALL** (MYR-479).
+    ///
+    /// `ActivityAuthorizationInfo().areActivitiesEnabled` has been readable through
+    /// the presenter since MYR-172 and was surfaced NOWHERE: a rider with Live
+    /// Activities switched off got a silent `false` out of `presenter.start`, an
+    /// unchanged `.idle` phase, and no way — in the app, in a log, or in Settings —
+    /// to find out why the ride never reached their lock screen. MYR-461's whole
+    /// triage turned on a rider's permission state that "has not been verified".
+    ///
+    /// Published as observable state and refreshed on every launch and foreground,
+    /// which is exactly when a rider comes back from iOS Settings. `.unknown` on the
+    /// simulated path, where the system is never asked and nothing must render.
+    private(set) var authorization: LiveActivityAuthorizationState = .unknown
+
     private var stateTask: Task<Void, Never>?
 
     /// Whether ActivityKit's asynchronous restore has been waited out in this
@@ -458,6 +498,10 @@ final class RideActivityCoordinator {
         // there is nothing left for it to name.
         identities.clear()
         identity = .unmapped
+        // MYR-479 — both of these are statements about THIS ACCOUNT's rides, and
+        // nothing on the lock screen survives a sign-out for them to describe.
+        dismissedRideIDs = []
+        endedByAppRideIDs = []
     }
 
     // MARK: - Launch and foreground (MYR-405)
@@ -480,6 +524,11 @@ final class RideActivityCoordinator {
     func handleLaunchOrForeground(_ ride: @escaping @MainActor () -> RideActivityAccountRide) async {
         guard isLive else { return }
 
+        // MYR-479 — read the system's answer where the rider can have just changed
+        // it. A launch and a foreground are the two moments they may have come back
+        // from iOS Settings, and this is the only thing in the app that ever asks.
+        authorization = presenter.areActivitiesEnabled ? .enabled : .disabled
+
         let settled = await settledInputs(ride)
         // MYR-416 — THE COMPARISON THAT COULD NOT MATCH. `resolve()` names the
         // RECORD's id, which after a relaunch is the server's, while the restored
@@ -491,7 +540,7 @@ final class RideActivityCoordinator {
             liveRide: settled.ride.resolve(),
             identity: identity
         )
-        dismissedRideIDs.formUnion(plan.dismissed)
+        recordDismissals(plan.dismissed)
 
         // ADOPT FIRST, THEN REAP — the order is load-bearing when the duplicate
         // shares its ride id with the survivor. `endActivity` is keyed on the ride
@@ -510,9 +559,76 @@ final class RideActivityCoordinator {
             await reap(rideID: rideID, isDuplicateOfAdopted: plan.isDuplicateOfAdopted(rideID))
         }
 
+        // ⚠️ **AND THIRD, REVIVE — MYR-479.** Adopt and reap are both about cards
+        // that EXIST; this is the arm for a live ride that has NONE. Only the app can
+        // close that gap: APNs can update or end an Activity and cannot create one,
+        // so a rider whose card was ended on the pre-#381 `409 reservation_expired`,
+        // or whose card the system removed while the app was away, has no route back
+        // that does not start here.
+        //
+        // It runs AFTER the reap on purpose. The reap is what clears a `phase` still
+        // naming a card that has just come down, and a revival that ran first would
+        // start a card the reap then took away.
+        if case .start(let rideID) = RideActivityStateMachine.revival(
+            snapshots: settled.snapshots,
+            account: settled.ride,
+            dismissedRideIDs: dismissedRideIDs,
+            identity: identity
+        ), let record = settled.ride.record {
+            await revive(rideID: rideID, record: record)
+        }
+
         // Adopting sets `phase`, so the state machine's next answer is an `.update`
         // to the card the rider can actually see rather than a `.start` beside it.
         await handleRideChange(settled.ride.record)
+    }
+
+    /// Put a card back on the lock screen for a ride that is live and has none.
+    ///
+    /// **THE STAND-DOWN IS THE HALF THAT COULD NOT BE DONE ANYWHERE ELSE.**
+    /// `standDownIfTheSystemEndedTheHeldCard` refuses to act on ABSENCE — "a ride the
+    /// restore list does not mention at all leaves everything exactly where it is" —
+    /// which is correct in general, because the restore list is empty for the first
+    /// moments of a process and believing it is MYR-405's duplicate-banner defect.
+    /// Here, and only here, the restore budget has already been spent
+    /// (`settledInputs`), so an absence IS evidence: whatever `phase` names, the
+    /// system is not showing it. Nothing is ENDED and **no §7.21 DELETE is issued** —
+    /// there is no card to end, and the row is about to be re-registered under the
+    /// server id by the start below.
+    private func revive(rideID: String, record: RideRequestRecord) async {
+        if phase.rideID != nil { standDown() }
+        logRevival("live ride=\(rideID) has no Activity on screen — starting a fresh one")
+        await performStart(
+            rideID: rideID,
+            state: RideActivityStateMachine.contentState(
+                for: record,
+                vehicleName: vehicleName(),
+                previous: nil
+            ),
+            record: record
+        )
+    }
+
+    /// **THE ONE DOOR INTO THE FINALITY SET** (MYR-479).
+    ///
+    /// A funnel rather than two `formUnion`s, for MYR-389's reason inverted: a rule
+    /// about what may ENTER a set is only as complete as the list of writers was on
+    /// the day it was written, and this set has two writers that read a list nobody
+    /// stamped with provenance. See `endedByAppRideIDs`.
+    private func recordDismissals(_ rideIDs: [String]) {
+        for rideID in rideIDs where !identity.anyIdentity(of: rideID, isIn: endedByAppRideIDs) {
+            dismissedRideIDs.insert(rideID)
+        }
+    }
+
+    /// Remember that the card for this ride came down because THIS APP took it down.
+    private func noteEndedByApp(_ rideID: String) {
+        endedByAppRideIDs.formUnion(identity.identities(of: rideID))
+    }
+
+    /// A fresh card exists for this ride, so our own teardown is history.
+    private func forgetEndedByApp(_ rideID: String) {
+        endedByAppRideIDs.subtract(identity.identities(of: rideID))
     }
 
     /// Wait for BOTH asynchronous facts to settle, inside one bounded budget.
@@ -637,7 +753,7 @@ final class RideActivityCoordinator {
             liveRide: .live(rideID: rideID),
             identity: identity
         )
-        dismissedRideIDs.formUnion(plan.dismissed)
+        recordDismissals(plan.dismissed)
         // MYR-416 — the swipe was recorded under the CARD's id and `rideID` here is
         // the record's, which a relaunch makes the server's. Asked through the
         // mapping, a dismissal survives the process it happened in exactly as
@@ -670,6 +786,9 @@ final class RideActivityCoordinator {
         guard started else { return }
 
         phase = .live(rideID: rideID, state: state)
+        // MYR-479 — a fresh card exists, so our own previous teardown of this ride
+        // stops shielding it: a swipe on THIS card is the rider's and must survive.
+        forgetEndedByApp(rideID)
         observe(rideID: rideID)
     }
 
@@ -693,6 +812,9 @@ final class RideActivityCoordinator {
     private func adoptRestored(rideID: String, state: RideActivityAttributes.ContentState) -> Bool {
         guard presenter.adopt(rideID: rideID) else { return false }
         phase = .live(rideID: rideID, state: presenter.deliveredContentState(rideID: rideID) ?? state)
+        // MYR-479 — see `performStart`: a card we are driving again is not a card we
+        // took down.
+        forgetEndedByApp(rideID)
         registered = nil
         // MYR-425 — a completion stamp belongs to the ride it was taken for. Carrying
         // one onto an adopted card would measure a NEW ride's backstop from an old
@@ -742,6 +864,10 @@ final class RideActivityCoordinator {
         await presenter.endActivity(rideID: rideID, dismissal: .immediate)
         guard !isDuplicateOfAdopted else { return }
 
+        // MYR-479 — WE took this card down. A `.dismissed` row the restore list
+        // hands back for it later is our own teardown, not the rider's decision.
+        noteEndedByApp(rideID)
+
         // MYR-415 — resolved BEFORE the teardown clears it, because the row to
         // delete is keyed by the id we REGISTERED under, not by the Activity's.
         let deleteID = registrationIDToRelease(forActivity: rideID)
@@ -768,6 +894,10 @@ final class RideActivityCoordinator {
         dismissal: RideActivityDismissal
     ) async {
         let deleteID = registrationIDToRelease(forActivity: rideID)
+
+        // MYR-479 — including the §7.21 409 arm, which reaches this method and is
+        // the exact teardown this issue exists to recover from.
+        noteEndedByApp(rideID)
 
         backstopTask?.cancel()
         backstopTask = nil
@@ -1016,6 +1146,19 @@ final class RideActivityCoordinator {
         }
         #if DEBUG
         print("[MRT liveactivity] activity-token \(message)")
+        #endif
+    }
+
+    /// **MYR-479 — A REVIVAL HAS TO BE VISIBLE IN THE CENSUS.** MYR-415's lesson is
+    /// that a silent Live Activity failure costs days, and a card appearing from
+    /// nowhere is exactly the kind of event a `log stream` on this category should
+    /// explain: the MYR-405 probe already streams `liveactivity`, so one predicate
+    /// now shows the restore, the adoption, the reap, the revival and the
+    /// registration together.
+    private func logRevival(_ message: String) {
+        log.notice("activity-revival \(message, privacy: .public)")
+        #if DEBUG
+        print("[MRT liveactivity] activity-revival \(message)")
         #endif
     }
 }

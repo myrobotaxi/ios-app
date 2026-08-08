@@ -32,6 +32,11 @@ struct SharedSettingsScreen: View {
     var catalog: any SharedVehicleCatalog = SimulatedSharedVehicleCatalog()
     /// MYR-186 — see `SettingsScreen.pushAuthorization`.
     var pushAuthorization: PushAuthorizationState = .notDetermined
+    /// MYR-479 — whether the SYSTEM allows this app a Live Activity, published by
+    /// `RideActivityCoordinator` and refreshed on every launch and foreground.
+    /// Drives `LiveActivityDeniedNotice` and nothing else; `.unknown` (the default,
+    /// and what the simulated path reports for ever) renders nothing.
+    var liveActivityAuthorization: LiveActivityAuthorizationState = .unknown
     /// MYR-349 — see `SettingsScreen.pushPrefs`. The rider's card is ONE row over
     /// the ONE `ride_lifecycle` category (MYR-354 merged the prototype's pair);
     /// see `notificationsCard`.
@@ -161,6 +166,11 @@ struct SharedSettingsScreen: View {
                             // was DENIED; absent (and pixel-identical) in every
                             // other state, including the whole simulated path.
                             PushDeniedNotice(state: pushAuthorization)
+                            // MYR-479 — the OTHER system switch this feature depends
+                            // on, and the one nothing in the app has ever mentioned.
+                            // `.unknown` on the simulated path, so it renders nothing
+                            // in any capture.
+                            LiveActivityDeniedNotice(state: liveActivityAuthorization)
                         }
                         if offersOwnerMode {
                             switchModeCard

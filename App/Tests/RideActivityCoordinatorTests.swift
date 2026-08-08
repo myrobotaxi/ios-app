@@ -1331,6 +1331,308 @@ final class RideActivityCoordinatorTests: XCTestCase {
         XCTAssertNil(presenter.startedAttributes.first?.vehicle)
     }
 
+    // MARK: - MYR-479: a live ride with NO card gets one back
+
+    /// **THE FLAGSHIP.** The card left the lock screen while the app was not running
+    /// — the system removed it, or a previous process ended it on the pre-#381
+    /// `409 reservation_expired`. No lifecycle event can reach a process that is not
+    /// alive and the restore list simply stops mentioning it, so
+    /// `standDownIfTheSystemEndedTheHeldCard` (which refuses to act on ABSENCE) never
+    /// fires and `phase` names a card that is not there for the rest of the ride.
+    ///
+    /// Before this arm the app would spend the rest of the trip writing `.update`s
+    /// into nothing, and **no push could fix it**: APNs can update or end an Activity
+    /// and cannot create one.
+    func testAForegroundREVIVESTheCardTheSystemRemovedWhileTheAppWasAway() async throws {
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+
+        await coordinator.handleRideChange(makeRecord(status: .enroute))
+        presenter.emit(token: Data([0xa1]))
+        await settle()
+        XCTAssertEqual(presenter.startCount, 1)
+
+        // Gone, with nothing telling this process about it.
+        presenter.restored = []
+
+        await coordinator.handleLaunchOrForeground(account(makeRecord(status: .enroute)))
+        presenter.emit(token: Data([0xb2]))
+        await settle()
+
+        XCTAssertEqual(presenter.startCount, 2, "the app is the only thing that can put a card back")
+        XCTAssertEqual(coordinator.phase.rideID, "ride-1")
+        XCTAssertEqual(
+            endpoint.registrations.map(\.rideID),
+            ["ride-1", "ride-1"],
+            """
+            And the revived card RE-REGISTERS. A fresh Activity carries a fresh push \
+            token, so a revival that skipped the registration would put a card on the \
+            lock screen the server can never speak to — MYR-415's own failure with a \
+            picture in front of it.
+            """
+        )
+        XCTAssertTrue(endpoint.ends.isEmpty, "nothing was ended, so nothing is released")
+    }
+
+    /// A COLD LAUNCH into a live ride with an empty lock screen. This one was already
+    /// reachable before MYR-479 — `handleLaunchOrForeground` ends by calling
+    /// `handleRideChange`, which over a `.idle` phase answers `.start` — and it is
+    /// asserted here so the revival arm is measured to AGREE with it rather than to
+    /// double it.
+    func testALaunchIntoALiveRideWithNoCardStartsExactlyONE() async throws {
+        let (coordinator, presenter, _) = makeCoordinator()
+
+        await coordinator.handleLaunchOrForeground(account(makeRecord(status: .arrived)))
+        await settle()
+
+        XCTAssertEqual(presenter.startCount, 1)
+        XCTAssertEqual(coordinator.phase.rideID, "ride-1")
+    }
+
+    /// **THE 409 THIS ISSUE IS NAMED FOR, END TO END.** The registration is refused
+    /// with a `409`, the client obeys §7.21 and ends the card — and the platform then
+    /// reports OUR OWN teardown back to us as `.dismissed`, because
+    /// `ActivityState.dismissed` means "a person **or the system** removed it".
+    ///
+    /// Without `endedByAppRideIDs` the next reconcile folds that row into the MYR-405
+    /// finality set and the ride can never hold a card again: the revival arm would
+    /// be defeated by the very teardown it exists to undo.
+    func testACardTHISAPPEndedIsNotMistakenForTheRidersSwipe() async throws {
+        let (coordinator, presenter, endpoint) = makeCoordinator()
+        presenter.reportsAppEndsAsDismissed = true
+        endpoint.registrationResult = .failure(
+            RestError.http(status: 409, code: nil, message: nil, subCode: nil)
+        )
+
+        await coordinator.handleRideChange(makeRecord(status: .enroute))
+        presenter.emit(token: Data([0xaa]))
+        await settle()
+        XCTAssertEqual(presenter.startCount, 1)
+        XCTAssertEqual(coordinator.phase, .idle, "the 409 took the card down")
+
+        // The server half is fixed (telemetry #381) and the ride is still live.
+        endpoint.registrationResult = .success(
+            LiveActivityRegistrationResponse(registered: true, sandbox: true)
+        )
+        await coordinator.handleLaunchOrForeground(account(makeRecord(status: .enroute)))
+        presenter.emit(token: Data([0xbb]))
+        await settle()
+
+        XCTAssertEqual(presenter.startCount, 2)
+        XCTAssertEqual(coordinator.phase.rideID, "ride-1")
+        XCTAssertEqual(endpoint.registrations.map(\.rideID), ["ride-1"])
+    }
+
+    /// **THE RIDER'S SWIPE IS STILL FINAL, AND THE REVIVAL ARM MUST NOT BE A BACK
+    /// DOOR AROUND IT.** MYR-405 semantic 5 is a client decision; a card that came
+    /// back would be indistinguishable, from the rider's side, from a swipe that did
+    /// nothing.
+    func testTheREVIVALArmDoesNotOverruleARidersSwipe() async throws {
+        let (coordinator, presenter, _) = makeCoordinator()
+
+        await coordinator.handleRideChange(makeRecord(status: .accepted))
+        await settle()
+        presenter.emit(lifecycle: .dismissed)
+        await settle()
+        XCTAssertEqual(coordinator.phase, .idle)
+
+        // Exactly the shape the revival arm fires on: a live ride, an empty lock
+        // screen — and the ONE reason it must not.
+        presenter.restored = []
+        await coordinator.handleLaunchOrForeground(account(makeRecord(status: .accepted)))
+        await settle()
+
+        XCTAssertEqual(presenter.startCount, 1)
+    }
+
+    /// **THE LEG-TRANSITION DECISION, WRITTEN DOWN AS A TEST: A LEG FLIP DOES NOT
+    /// RE-EARN A CARD.**
+    ///
+    /// MYR-405 semantic 5 is stated about the RIDE — *"the app must never resurrect a
+    /// dismissed Activity for the same ride"* — and it is a CLIENT decision, not an
+    /// implementation detail this issue may re-open. `arrived → enroute` is the
+    /// sharpest case for the other reading (MYR-411 makes it the boarding boundary,
+    /// and the card's headline genuinely changes grammar across it), and it is still
+    /// no: a swipe is the only channel a rider has for "not on my lock screen", and a
+    /// card that returns once per ride reads as the swipe having failed. The in-app
+    /// tracking sheet carries the ride exactly as it does for a rider who never
+    /// enabled Live Activities.
+    ///
+    /// The case MYR-479 actually had to rescue is not a swipe at all — see
+    /// `testACardTHISAPPEndedIsNotMistakenForTheRidersSwipe`. Fixing the CONFLATION
+    /// is what made weakening this rule unnecessary.
+    func testALegTransitionDoesNotReEarnACardAfterASwipe() async throws {
+        let (coordinator, presenter, _) = makeCoordinator()
+
+        await coordinator.handleRideChange(makeRecord(status: .arrived))
+        await settle()
+        presenter.emit(lifecycle: .dismissed)
+        await settle()
+
+        presenter.restored = []
+        // The pickup leg becomes the trip leg — a different headline, a different
+        // subline, a different rail, and the same rider's same decision.
+        await coordinator.handleRideChange(makeRecord(status: .enroute))
+        await coordinator.handleLaunchOrForeground(account(makeRecord(status: .enroute)))
+        await settle()
+
+        XCTAssertEqual(presenter.startCount, 1)
+        XCTAssertEqual(coordinator.phase, .idle)
+    }
+
+    /// A COMPLETED ride whose card has come down must not get a new one. The reaper's
+    /// own liveness answer says `.live` for a completed ride on purpose (MYR-425), so
+    /// this is the arm that would have put a fresh "You've arrived" on the lock screen
+    /// minutes after the ride ended.
+    func testACompletedRideIsNeverREVIVED() async throws {
+        let (coordinator, presenter, _) = makeCoordinator()
+
+        var record = makeRecord(status: .completed)
+        record.completedAt = Date()
+        presenter.restored = []
+
+        await coordinator.handleLaunchOrForeground(account(record))
+        await settle()
+
+        XCTAssertEqual(presenter.startCount, 0)
+    }
+
+    /// The dormancy gate is the SAME predicate the start path uses, not a second
+    /// reading of it: a reservation accepted for Saturday holds no card today.
+    func testADormantReservationIsNotREVIVED() async throws {
+        let (coordinator, presenter, _) = makeCoordinator()
+
+        var record = makeRecord(status: .accepted)
+        record.input.schedule = RideSchedule(day: "Saturday", time: "2:00 PM")
+        record.scheduledFor = Date().addingTimeInterval(48 * 60 * 60)
+        presenter.restored = []
+
+        await coordinator.handleLaunchOrForeground(account(record))
+        await settle()
+
+        XCTAssertEqual(presenter.startCount, 0)
+    }
+
+    /// A card that IS on screen is adoption's business. The revival arm must never
+    /// double it — MYR-405's whole defect, re-entered by a new door.
+    func testTheRevivalArmNeverStartsBesideACardThatIsAlreadyThere() async throws {
+        let (coordinator, presenter, _) = makeCoordinator()
+        presenter.restored = [snapshot("ride-1")]
+
+        await coordinator.handleLaunchOrForeground(account(makeRecord(status: .enroute)))
+        await settle()
+
+        XCTAssertEqual(presenter.startCount, 0)
+        XCTAssertEqual(presenter.adopted, ["ride-1"])
+    }
+
+    /// **THE ARM IS NOT A GATE, AND TWO OF ITS OWN REFUSALS ARE MEASURED NOT TO BE
+    /// ONE.** `RideActivityStateMachine.revival` declines for an `.ended` card still
+    /// on screen and for an `.unresolved` ride pipeline — swept in
+    /// `RideActivityRevivalTests` — and in BOTH cases `handleLaunchOrForeground`
+    /// still finishes by calling `handleRideChange`, which is a pre-MYR-479 path with
+    /// its own answer and is deliberately untouched here. So a card can still appear
+    /// in those two situations, for a reason that has nothing to do with this arm.
+    ///
+    /// Asserted rather than left implicit, because the tempting reading of a new
+    /// "should we start?" function is that it is the only one — and a later change
+    /// made on that reading would be wrong about this file.
+    func testTheOLDStartPathStillRunsWhereTheArmDeclines() async throws {
+        let (endedCard, endedPresenter, _) = makeCoordinator()
+        endedPresenter.restored = [snapshot("ride-1", .ended)]
+        await endedCard.handleLaunchOrForeground(account(makeRecord(status: .enroute)))
+        await settle()
+        XCTAssertEqual(endedPresenter.startCount, 1)
+        XCTAssertTrue(endedPresenter.adopted.isEmpty, "an `.ended` card is never adopted")
+
+        let (unresolved, unresolvedPresenter, _) = makeCoordinator()
+        unresolvedPresenter.restored = []
+        await unresolved.handleLaunchOrForeground(
+            account(makeRecord(status: .enroute), resolved: false)
+        )
+        await settle()
+        XCTAssertEqual(
+            unresolvedPresenter.startCount,
+            1,
+            "a record in hand is a record in hand — `isResolved` gates the REAPER"
+        )
+    }
+
+    /// **THE REVIVED CARD REGISTERS UNDER THE SERVER RIDE ID** (MYR-415/416). The
+    /// record this device SUBMITTED carries a local draft UUID; the row §7.21 keys is
+    /// the server's, and a revival that posted the draft id would be the same silent
+    /// 404 that left `go_live_activities` empty for three days.
+    func testTheREVIVEDCardRegistersUnderTheSERVERRideID() async throws {
+        let (coordinator, presenter, endpoint) = makeCoordinator(
+            serverRideID: { "server-ride-1" },
+            identities: InMemoryRideActivityRideIDs(["local-draft": "server-ride-1"])
+        )
+        presenter.restored = []
+
+        await coordinator.handleLaunchOrForeground(account(makeRecord(id: "local-draft", status: .enroute)))
+        presenter.emit(token: Data([0xc3]))
+        await settle()
+
+        XCTAssertEqual(presenter.startCount, 1)
+        XCTAssertEqual(endpoint.registrations.map(\.rideID), ["server-ride-1"])
+    }
+
+    /// A swipe recorded under the CARD's id still bars a revival asked about the
+    /// RECORD's id (MYR-416's mapping, consulted by the new arm too).
+    func testASwipeSurvivesTheIDSplitThroughTheRevivalArmToo() async throws {
+        let (coordinator, presenter, _) = makeCoordinator(
+            serverRideID: { "server-ride-1" },
+            identities: InMemoryRideActivityRideIDs(["local-draft": "server-ride-1"])
+        )
+        presenter.restored = [snapshot("local-draft", .dismissed)]
+
+        // The relaunched process rebuilds the record from the wire, so it names the
+        // SERVER id while the swipe was recorded under the draft one.
+        await coordinator.handleLaunchOrForeground(account(makeRecord(id: "server-ride-1", status: .enroute)))
+        await settle()
+
+        XCTAssertEqual(presenter.startCount, 0)
+    }
+
+    func testSIMULATEDModeRevivesNothingAndAsksTheSystemNothing() async throws {
+        let presenter = StubRideActivityPresenter()
+        let coordinator = RideActivityCoordinator(
+            presenter: presenter,
+            endpoint: nil,
+            isLive: false,
+            identities: InMemoryRideActivityRideIDs(),
+            sleep: { _ in }
+        )
+
+        await coordinator.handleLaunchOrForeground(account(makeRecord(status: .enroute)))
+        await settle()
+
+        XCTAssertEqual(presenter.startCount, 0)
+        XCTAssertEqual(
+            coordinator.authorization,
+            .unknown,
+            "the simulated path never asks ActivityKit anything, so no Settings notice can render"
+        )
+    }
+
+    // MARK: - MYR-479: the authorization state is finally readable
+
+    func testTheLiveActivityAuthorizationIsPublishedOnEveryLaunchOrForeground() async throws {
+        let (coordinator, presenter, _) = makeCoordinator()
+        XCTAssertEqual(coordinator.authorization, .unknown, "before the first pass, nothing is claimed")
+
+        presenter.areActivitiesEnabled = false
+        await coordinator.handleLaunchOrForeground(account(nil))
+        await settle()
+        XCTAssertEqual(coordinator.authorization, .disabled)
+
+        // The rider goes to iOS Settings and comes back — the foreground is the only
+        // moment the app can notice, and it is the one this reads on.
+        presenter.areActivitiesEnabled = true
+        await coordinator.handleLaunchOrForeground(account(nil))
+        await settle()
+        XCTAssertEqual(coordinator.authorization, .enabled)
+    }
+
     /// The account as the app can state it, for the launch/foreground entry point.
     private func account(
         _ record: RideRequestRecord?,
@@ -1407,6 +1709,15 @@ final class StubRideActivityPresenter: RideActivityPresenting {
     /// What `Activity.activities` answers RIGHT NOW.
     var restored: [RideActivitySnapshot] = []
 
+    /// **MYR-479 — REPORT AN APP-ENDED CARD AS `.dismissed`, WHICH IS WHAT THE
+    /// PLATFORM DOES.** Apple's `ActivityState.dismissed` is "no longer visible
+    /// because a person **or the system** removed it", so an `.immediate` end this
+    /// app asked for lands in the restore list under the same case a rider's swipe
+    /// does, with no provenance attached. Off by default so every pre-MYR-479 test is
+    /// byte-identical; on, it is the only way to exercise the conflation that would
+    /// otherwise bar a revival for ever.
+    var reportsAppEndsAsDismissed = false
+
     /// A SCRIPT of successive answers, which is how the async restore is
     /// reproduced: the real list is empty for the first reads of a process and
     /// fills in afterwards, and a coordinator that believes the first read is the
@@ -1464,6 +1775,14 @@ final class StubRideActivityPresenter: RideActivityPresenting {
         // be expressed at all.
         var keepOne = heldRideID == rideID
         if !keepOne { deliveredStates[rideID] = nil }
+        if reportsAppEndsAsDismissed {
+            restored = restored.map {
+                guard $0.rideID == rideID else { return $0 }
+                defer { keepOne = false }
+                return keepOne ? $0 : RideActivitySnapshot(rideID: $0.rideID, lifecycle: .dismissed)
+            }
+            return
+        }
         restored = restored.filter {
             guard $0.rideID == rideID else { return true }
             defer { keepOne = false }
@@ -1539,8 +1858,17 @@ final class StubRideActivityPresenter: RideActivityPresenting {
         // touch. `.immediate` takes it off the list.
         switch dismissal {
         case .immediate:
-            restored.removeAll { $0.rideID == heldRideID }
             if let heldRideID { deliveredStates[heldRideID] = nil }
+            if reportsAppEndsAsDismissed {
+                // MYR-479 — see `reportsAppEndsAsDismissed`.
+                restored = restored.map {
+                    $0.rideID == heldRideID
+                        ? RideActivitySnapshot(rideID: $0.rideID, lifecycle: .dismissed)
+                        : $0
+                }
+                break
+            }
+            restored.removeAll { $0.rideID == heldRideID }
         case .linger:
             if let heldRideID { deliveredStates[heldRideID] = state }
             restored = restored.map {
