@@ -82,6 +82,13 @@ final class LiveVehicleFleet: VehicleFleet {
 
     private var started = false
     private var hasLoaded = false
+    /// MYR-455 — what this account's own §7.0 list says about its standing in the
+    /// owner shell, so a mode chosen (or persisted) before the list answered can
+    /// be re-asked once it has. Resolved from the RAW list in `applyLoaded`,
+    /// BEFORE the viewer rows are filtered out — after the filter the two
+    /// partitions are no longer distinguishable, and "zero owned rows" would look
+    /// identical for a grants-only viewer and a brand-new owner.
+    private(set) var ownerShellStanding: OwnerShellStanding = .resolving
     private var activeIndex = 0
     private var loadTask: Task<Void, Never>?
     /// MYR-432 — the observer on the socket's access-revocation stream. Lives for
@@ -464,8 +471,54 @@ final class LiveVehicleFleet: VehicleFleet {
         }
     }
 
-    private func applyLoaded(_ items: [VehicleSummary]) {
+    /// MYR-455 — THE OWNER FLEET ADOPTED THE VIEWER HALF OF ITS OWN LIST.
+    ///
+    /// `GET /api/vehicles` returns ONE list carrying BOTH partitions — the
+    /// account's own cars and every share it has redeemed (§7.0 is deliberately
+    /// NOT narrowed by role; `role` is the only discriminator). MYR-343 split
+    /// them for the RIDER shell and this fleet never did, so **every viewer grant
+    /// was adopted as if owned**: it appeared in the `MapHeader` switcher, it
+    /// could be the selected vehicle, and it rendered the full owner sheet —
+    /// Lock / Climate / Trunk / Charge — over somebody else's car.
+    ///
+    /// That is the external-beta screenshot this issue was filed on, and it is
+    /// also why MYR-441 called the result "a shell of EMPTY control tiles" and
+    /// was wrong about it: the tiles are not empty, because the shared row
+    /// carries a real name, a real charge level and a real position, and the
+    /// §7.1 snapshot is readable under the MYR-435 viewer mask. What the mask
+    /// withholds is exactly the CONTROL state, so the tiles render live-looking
+    /// furniture around four permanently "Syncing" values.
+    ///
+    /// **Nothing could actuate** — §7.9 is owner-only at the routing layer and
+    /// answers `403 vehicle_not_owned`, as do the plate, refresh, service-window
+    /// and ride-share writes (rest-api.md §7.5.0: *"Sharing never grants
+    /// writes"*). So this was never an authorization defect. It was a UI that
+    /// claimed a relationship to a car the account does not have, which on a
+    /// product whose whole premise is lending someone your Tesla is its own kind
+    /// of serious.
+    ///
+    /// Filtering here rather than at the twelve read sites is what makes it hold:
+    /// the four parallel arrays below are built from `items`, so a viewer row
+    /// that never enters `items` can never acquire a telemetry source, a command
+    /// executor (whose every call would 403), or a drives feed (owner-only since
+    /// MYR-369 — a selected viewer row made the Drives tab render "This account
+    /// can't access telemetry"). It also stops the Share tab offering to re-share
+    /// a car the account only views, which §7.5.1 refuses.
+    ///
+    /// The RIDER side is untouched and must be: a viewer rides a shared car by
+    /// definition, and it reaches that car through `LiveSharedVehicleCatalog` and
+    /// `RiderLiveVehicleLocator`, which hold their own independent reads of this
+    /// same endpoint.
+    private func applyLoaded(_ rows: [VehicleSummary]) {
         hasLoaded = true
+
+        let items = rows.filter { !VehicleRowPartition.isViewerRow($0) }
+        ownerShellStanding = OwnerShellStanding.resolve(
+            hasLoaded: true,
+            loadFailed: false,
+            ownedCount: items.count,
+            grantCount: rows.count - items.count
+        )
 
         // MYR-315 — a REPEAT load (the foreground refetch) of an unchanged fleet
         // must adopt the new row values WITHOUT rebuilding the live objects below.
@@ -604,6 +657,11 @@ final class LiveVehicleFleet: VehicleFleet {
         hasLoaded = false
         clearColdLoadTimeout()
         loadStatusMessage = Self.message(for: error)
+        // MYR-455 — a read that did not ANSWER is not evidence about ownership in
+        // either direction (MYR-326's rule, pointed at a view mode). `.unavailable`
+        // revokes nothing, so a network blink can never demote a real owner out of
+        // their own shell.
+        ownerShellStanding = .unavailable
     }
 
     /// Subtle, non-dramatic copy for the graceful state. The auth (401) case is

@@ -54,7 +54,112 @@ import Foundation
 // Pure + static so the whole matrix is assertable with no catalog, no view and no
 // clock (`OwnerShellAccessTests`).
 
+// MARK: - MYR-455 — the STORED mode had to be re-asked, and the question is not
+// the same one.
+//
+// **THE DEFECT MYR-441 LEFT OPEN.** That issue gated exactly one transition —
+// an account already in the rider shell asking to leave it — and said so in as
+// many words above. What it could not gate is a mode ALREADY PERSISTED:
+// `RootView.routeAfterAuth` reads the stored `ViewMode` and hands it straight to
+// `applyViewMode`, so a viewer who reached owner mode by ANY pre-fix door boots
+// back into it on every launch, for ever. `modeStore.clearMode` runs on sign-out
+// alone, so the gate arriving in a later build does not reach a choice already
+// written to disk. **A guard on the transition is not a guard on the state.**
+//
+// **⚠️ THE REVOCATION RULE IS NOT `!offersOwnerMode`, AND THAT IS THE WHOLE
+// SUBTLETY.** Both are claims, and each must be conservative in its OWN
+// direction:
+//
+//   • OFFERING is a claim that an owner shell exists for you, so `.resolving`
+//     and `.unavailable` offer NOTHING (MYR-386: never render an end state
+//     before the fetch that would justify it).
+//   • REVOKING is a claim that it does NOT, and the same two arms must therefore
+//     TAKE NOTHING AWAY. Spelling this `!offersOwnerMode` would demote every
+//     genuine owner during the resolving window of every cold launch — a flash
+//     from the owner shell to the rider shell and back, which is MYR-343's
+//     defect re-entered from the far side by the very code meant to be honest.
+//
+// So exactly ONE arm revokes: an account the list POSITIVELY reported as holding
+// shared grants and nothing of its own. `.empty` keeps the shell (MYR-441's
+// fresh-owner-pre-link reasoning, unchanged — Add-Tesla lives there).
+//
+// The two rules are asserted AGAINST EACH OTHER in `OwnerShellAccessTests`
+// rather than derived from each other, so the one account shape where both are
+// defined can never disagree.
+
+/// What the account's own `GET /api/vehicles` list says about its standing in
+/// the OWNER shell. The same §7.0 split `SharedVehicleCatalog` publishes to the
+/// rider side (`role == .viewer` vs not), read from the owner's side of the
+/// seam — one wire fact, two readers, and `OwnerShellStandingTests` pins that
+/// they partition identically.
+enum OwnerShellStanding: Equatable, Sendable {
+    /// No answer yet. Claims nothing in either direction.
+    case resolving
+    /// The read failed. NOT evidence of anything (MYR-326: loading ≠
+    /// unavailable, and neither is evidence of absence).
+    case unavailable
+    /// At least one owned row — a genuine owner.
+    case owns
+    /// The list ANSWERED: zero owned rows, at least one viewer grant. The only
+    /// configuration this issue removes.
+    case grantsOnly
+    /// The list answered and was empty. A fresh owner who has not linked a Tesla
+    /// yet — the owner shell is where Add-Tesla lives.
+    case noVehicles
+
+    /// Resolve from the two partition SIZES of the account's §7.0 list.
+    ///
+    /// Counts rather than rows, so this stays pure Foundation and the whole
+    /// matrix is assertable with no catalog, no wire type and no view — the same
+    /// property `offersOwnerMode` is written for. The partition itself is
+    /// `VehicleRowPartition.isViewerRow`, the ONE predicate the rider catalog
+    /// already splits on, so the two sides of the app cannot disagree about which
+    /// half a row is in.
+    ///
+    /// **Any row that is not explicitly `viewer` counts as owned**, verbatim
+    /// `LiveSharedVehicleCatalog.ownedVehicles(from:)`'s reasoning: a role this
+    /// build cannot rank is far likelier to be a new ownership-shaped role than a
+    /// share, and guessing that way fails OPEN — the account keeps the shell it
+    /// chose, and every capability is server-enforced regardless.
+    static func resolve(hasLoaded: Bool, loadFailed: Bool, ownedCount: Int, grantCount: Int) -> OwnerShellStanding {
+        guard hasLoaded else { return loadFailed ? .unavailable : .resolving }
+        if ownedCount > 0 { return .owns }
+        return grantCount > 0 ? .grantsOnly : .noVehicles
+    }
+}
+
 enum OwnerShellAccess {
+
+    /// Must this account be TAKEN OUT of the owner shell it is currently in?
+    ///
+    /// The counterpart to `offersOwnerMode`, and deliberately NOT its negation —
+    /// see the note above. True for exactly one standing.
+    static func revokesOwnerMode(standing: OwnerShellStanding) -> Bool {
+        standing == .grantsOnly
+    }
+
+    /// The WHOLE boot-revalidation decision, as one pure function.
+    ///
+    /// `RootView.revalidateOwnerModeIfNeeded` is a two-line call into this plus
+    /// the two writes it authorizes, so every arm of the decision is assertable
+    /// with no view, no store and no session — including the two guards that are
+    /// easiest to get wrong by reading:
+    ///
+    ///   • **Only from the owner shell.** A rider is not in the shell this
+    ///     revokes, and demoting them would be a no-op that still rewrites their
+    ///     stored mode on every list read.
+    ///   • **Only with a real account.** The demotion PERSISTS `.rider`, and
+    ///     `modeStore` is keyed by user id — there is nothing to write against on
+    ///     the SIM / static-token path, which is also what keeps every simulated
+    ///     and DEBUG scene byte-identical.
+    static func demotesToRider(
+        isInOwnerShell: Bool,
+        standing: OwnerShellStanding,
+        hasSignedInAccount: Bool
+    ) -> Bool {
+        guard isInOwnerShell, hasSignedInAccount else { return false }
+        return revokesOwnerMode(standing: standing)
+    }
 
     /// May this account be OFFERED the owner shell?
     ///

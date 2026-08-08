@@ -29,14 +29,33 @@ final class AccessRevocationFunnelTests: XCTestCase {
 
     // MARK: Wire fixtures
 
-    private nonisolated static func row(_ id: String, _ name: String) -> VehicleSummary {
+    /// MYR-455 — the role is a PARAMETER now, defaulted to `.viewer` so every
+    /// rider-side test in this file is unchanged.
+    ///
+    /// It had to become one because the owner-fleet test below was seeding
+    /// VIEWER rows and asserting the owner fleet adopted them — which is
+    /// precisely the conflation MYR-455 removes (`GET /api/vehicles` carries both
+    /// partitions, and the owner shell must take only its own half). The test's
+    /// subject is "a revocation re-reads §7.0", which is about the owner's own
+    /// cars; using shares to stand in for them was incidental, and the fix
+    /// surfaced it.
+    private nonisolated static func row(
+        _ id: String,
+        _ name: String,
+        role: VehicleSummary.Role = .viewer
+    ) -> VehicleSummary {
         VehicleSummary(
             vehicleId: id, name: name, model: "Model Y", year: 2026,
             color: "Quicksilver", vinLast4: "3795", status: .parked,
             chargeLevel: 71, estimatedRange: 244,
-            lastUpdated: "2026-08-02T22:40:00.000Z", role: .viewer,
-            sharePermission: .rides
+            lastUpdated: "2026-08-02T22:40:00.000Z", role: role,
+            sharePermission: role == .viewer ? .rides : nil
         )
+    }
+
+    /// The owner half of the same list — an account's own car.
+    private nonisolated static func ownedRow(_ id: String, _ name: String) -> VehicleSummary {
+        row(id, name, role: .owner)
     }
 
     private nonisolated static func snapshot(_ id: String) -> VehicleState {
@@ -198,7 +217,7 @@ final class AccessRevocationFunnelTests: XCTestCase {
     func testTheOwnerFleetReReadsItsListOnARevocation() async throws {
         let http = RoutedHTTP([
             .init("/snapshot", body: Self.snapshotBody("veh-a")),
-            .init("/vehicles", body: Contracts.listResponse([Self.row("veh-a", "Lunar"), Self.row("veh-b", "Comet")])),
+            .init("/vehicles", body: Contracts.listResponse([Self.ownedRow("veh-a", "Lunar"), Self.ownedRow("veh-b", "Comet")])),
         ])
         let channels = AuthenticatingChannelFactory()
         let fleet = LiveVehicleFleet(config: .init(
@@ -211,7 +230,7 @@ final class AccessRevocationFunnelTests: XCTestCase {
         await eventually { fleet.vehicles.count == 2 }
         let listReadsBefore = await http.callCount(suffix: "/vehicles")
 
-        await http.setBody(suffix: "/vehicles", body: Contracts.listResponse([Self.row("veh-b", "Comet")]))
+        await http.setBody(suffix: "/vehicles", body: Contracts.listResponse([Self.ownedRow("veh-b", "Comet")]))
         await eventually { (fleet.telemetry(at: 0) as? LiveVehicleTelemetrySource)?.connectionState == .connected }
         guard let live = channels.madeChannels().last else { return XCTFail("no channel") }
         await live.closeWith(code: TelemetryCloseCode.permissionRevoked)

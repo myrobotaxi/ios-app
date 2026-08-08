@@ -35,6 +35,16 @@ protocol VehicleFleet: AnyObject, Observable {
     /// Design minimalism: surfaced quietly, never as an error dialog.
     var statusMessage: String? { get }
 
+    /// MYR-455 — what the account's own `GET /api/vehicles` list says about its
+    /// standing in the OWNER shell: does it actually own anything?
+    ///
+    /// The owner shell is reachable with a mode PERSISTED before any list was
+    /// read (`RootView.routeAfterAuth`), so the shell has to be able to re-ask
+    /// once the list answers. Published by the fleet because the fleet is the
+    /// thing that already made that read — the rider-side catalog does not load
+    /// at all while the owner shell is on screen.
+    var ownerShellStanding: OwnerShellStanding { get }
+
     /// MYR-387 — whether the ACTIVE vehicle has a real telemetry snapshot in
     /// hand, as opposed to `VehicleContractMapping.placeholderActivity`'s
     /// "Locating…" at `(0, 0)`.
@@ -103,6 +113,14 @@ protocol VehicleFleet: AnyObject, Observable {
 }
 
 extension VehicleFleet {
+    /// MYR-455 — default `.owns`: the simulated fleet and every DEBUG capture
+    /// fleet hold fixture rows that are the account's own cars by construction,
+    /// and none of them has a §7.0 list with a `role` column to partition. So
+    /// they can never revoke owner mode, every simulated + DEBUG scene is
+    /// byte-identical by construction, and only `LiveVehicleFleet` — the one
+    /// fleet that reads a real list — overrides.
+    var ownerShellStanding: OwnerShellStanding { .owns }
+
     /// MYR-387 — default `true`: the simulated fleet and every DEBUG capture
     /// fleet hold their data from the first frame, so "is there a real snapshot"
     /// is definitionally yes for them. Only `LiveVehicleFleet` can answer no, and

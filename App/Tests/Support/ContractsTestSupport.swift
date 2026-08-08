@@ -112,7 +112,14 @@ enum Contracts {
         vinLast4: String = "9417",
         status: VehicleSummary.Status = .parked,
         chargeLevel: Int = 82,
-        licensePlate: String? = nil
+        licensePlate: String? = nil,
+        // MYR-455 — the §7.0 list carries BOTH partitions and `role` is the only
+        // discriminator. Defaulted to `.owner` so every pre-MYR-455 caller is
+        // byte-identical; a viewer row is now expressible, which it was not
+        // before, and that absence is part of why the owner fleet went two years
+        // adopting shares as if they were the account's own cars.
+        role: VehicleSummary.Role = .owner,
+        sharePermission: SharePermission? = nil
     ) -> VehicleSummary {
         VehicleSummary(
             vehicleId: vehicleId,
@@ -125,8 +132,9 @@ enum Contracts {
             chargeLevel: chargeLevel,
             estimatedRange: 210,
             lastUpdated: "2026-07-08T15:48:00Z",
-            role: .owner,
-            licensePlate: licensePlate
+            role: role,
+            licensePlate: licensePlate,
+            sharePermission: sharePermission
         )
     }
 
