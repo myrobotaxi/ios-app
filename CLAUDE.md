@@ -1533,6 +1533,119 @@ the client make of this payload" and cannot answer "does the client ever ASK AGA
 — a fixed stub makes a re-read indistinguishable from a cached value, so a test
 built on one passes on the broken build.
 
+**ONE REST READ WAS THE GATE ON THE WHOLE LIVE SURFACE, AND THE FRAMES WERE
+BEING THROWN AWAY** (MYR-449, client defect, external beta, build
+`202608030843`) — *"riders were not able to see the live telemetry data from the
+vehicle for the ride share flow and it instead was showing like apple maps route
+after ride was accepted by tesla."*
+
+**PROD CLEARED THE SERVER FIRST, WHICH IS WHAT MADE THIS FINDABLE.** Every
+external-tester ride since 08-03 ran on one car that was `connected`, virtual-key
+paired and streaming continuously, and viewer-role `mask_applied` events land on
+the viewer BROADCAST path *inside* every ride window (James 08-06 00:05:34 →
+00:17:48; Aarthi 08-05 00:44:50, 00:48:50). Both riders held accepted
+`allow_rides` shares. MYR-435's mask was cleared too — it retains latitude,
+longitude, heading, speed and the whole nav group. **The car streamed, the grant
+was valid, the frames were delivered, and the sheet drew a route with no car on
+it.**
+
+- **THE CAUSE IS ONE `guard` DOING A SECOND JOB NOBODY CHOSE FOR IT.**
+  `LiveVehicleState.apply(.update:)` opened `guard let current = state else
+  { return }`, on CG-SM-4's perfectly good rule that a snapshot precedes the
+  updates it baselines. What that `return` ALSO did was make the cold REST
+  `/snapshot` a **single point of failure for the entire live surface**: with no
+  snapshot in hand, a healthy socket delivering a good frame every few seconds
+  produced *nothing at all*, for the life of the session, with no throw, no error
+  frame and no log.
+- **AND THE VIEWER'S SNAPSHOT IS THE ONE THAT CAN LEGITIMATELY NEVER LAND** —
+  three ways, all already documented in this file: a `403` latches
+  `snapshotAccessDenied` per vehicle for good (MYR-432), the MYR-319 ladder is
+  bounded and then stops, and **MYR-440's own note records a viewer snapshot that
+  "retried silently forever" while the map sat on "Locating…"**. Downstream that
+  is `state == nil` → `RiderVehicleProjection.hasFix` false → `RiderCarMarker
+  .withheld` → no glyph, and `trackingLeg1Route == []` → one MKDirections leg-2
+  polyline and two pins. **That picture IS an Apple-Maps route preview.**
+- **MYR-440 IS WHY THIS WAS STILL OPEN.** That fix shipped 08-02 and was in the
+  tester build; it removed one CAUSE of a missing snapshot and never touched the
+  AMPLIFIER that turns any missing snapshot into a permanently dead live surface.
+  **A fix to one input of a single point of failure leaves the single point of
+  failure.**
+- **THE FIX IS THAT A FRAME MAY ESTABLISH STATE, NOT ONLY REFRESH ONE.**
+  `LiveVehicleState(seedsStateFromDeltas:)` folds a delta onto
+  `VehicleStateBaseline.forDeltaSeed`, **every value of which is the schema's own
+  "nothing reported" value** — including the `(0, 0)` NO-FIX SENTINEL, so a
+  baseline that never receives a GPS delta still draws no marker and the seeding
+  can only ever publish what the car itself sent. `snapshotReadIssuedAt` stays
+  `nil`, which is the public signal that no snapshot stands behind those values,
+  and the snapshot-only fields stay absent because the merger declines to fold
+  them (MYR-298's tripwire) — so a seeded state cannot claim identity or freshness
+  it has not got.
+- **IT DEFAULTS TO `false`, SO THE OWNER PATH IS BYTE-IDENTICAL BY
+  CONSTRUCTION.** The rider asks this state exactly one question — *where is the
+  car right now* — which a delta answers on its own; the owner's sheet renders
+  IDENTITY off it (model, VIN, software, seat capability) and MYR-387's
+  `OwnerHomePresentation` gates its content branch on
+  `hasLiveSnapshotForActiveVehicle`. **Disclosed gap, not a fix withheld**: the
+  owner drops frames the same way, and the owner's equivalent recovery is
+  MYR-387's standalone snapshot fallback.
+- **THE HONEST HALF: WITHHOLDING THE MARKER SAID NOTHING.** MYR-393's rule (the
+  marker is the freshest position we hold, or it is not drawn) is right and is
+  unchanged — but silence made a tracking sheet with no data **pixel-identical to
+  a route preview**, and of two readings a rider takes the flattering one.
+  `RiderTrackingLiveReport` is the ladder: `.live` (no words — the glyph is the
+  statement), `.stale` (MYR-393's "Position from 4 min ago", delegated VERBATIM to
+  `RiderCarFreshnessNote` so one fact keeps one grammar), `.waiting` ("Waiting for
+  live location from {car}…"), and past a 30s grace `.unavailable` ("Live location
+  unavailable right now — {car} may be asleep"). **"Right now" is load-bearing**
+  (MYR-395's rule): the socket and the ladder are both still trying underneath.
+  It names a likely cause because **a car that is asleep reports nothing and that
+  is not an app failure** — and a rider given no reason assumes the worse one.
+- **THE ESCALATION IS A CLOCK, AND IT HAD TO BE `@Observable` RATHER THAN A
+  `TimelineView`.** It renders on a surface where, by definition, nothing is
+  arriving to trigger a re-render — and `SharedViewerScreen.body` is at the
+  type-checker's budget (MYR-422), so the re-render has to come from Observation
+  rather than from new view structure. `RiderTrackingLiveWatch` is armed by
+  `sheetPhase`'s `didSet` — the ONE funnel, because `.tracking` is reached from an
+  accept, a cold-launch adoption and a push tap, and an exit-side arm is only as
+  complete as the exit list was on the day it was written (MYR-389, inverted).
+- **THE CLIENT STOPS WAITING ON A SOCKET THAT SAYS NOTHING.** Two server hazards
+  found in the same investigation produce *exactly* the reported symptom with the
+  socket up, `auth_ok` received, no error frame and no close: a transient
+  `ResolveRole` failure at handshake leaves no role entry, so `mask.For` returns
+  the DENY-ALL zero mask and every frame is suppressed for the life of the
+  connection (the 60s `AccessRevalidator` reasons about vehicle ids only, never
+  roles, so it never closes the session); and the handshake access set only ever
+  NARROWS, so a grant redeemed after the socket opened is refused with
+  `vehicle_not_owned` while the connection deliberately stays open — no reconnect
+  trigger. From the client both are indistinguishable from a parked car, so
+  `RiderLiveVehicleLocator.recoverDarkStream()` re-takes the subscription and
+  recycles the connection, which re-runs the handshake and therefore re-resolves
+  BOTH the role and the access set. **BOUNDED at two attempts per watched
+  vehicle**: the honest end state for a car that really is asleep is the sheet
+  SAYING so, and an unbounded version is MYR-432's "~1–2 requests per second,
+  forever" wearing a fix's clothes. *(Both server hazards are `internal/ws` and
+  belong in their own PR — recorded here, not fixed here.)*
+- **A SIMULATED CAPTURE COULD NOT HAVE CAUGHT THIS AND STILL CANNOT.** Every
+  simulated and DEBUG scene supplies a snapshot, so the drop was unreachable from
+  the whole drift gate — this is the repo's "cold scenes passing while real paths
+  fail" lesson on the surface it costs most. The guards are
+  `RiderLiveTrackingEngagementTests` (the REAL composition — production locator →
+  `TelemetrySocket` over an authenticating channel → `LiveVehicleState` →
+  `LiveVehicleTelemetrySource` → the shipping `RiderCarMarker` /
+  `RiderTrackingLiveReport`, with the wire injected, **the snapshot REFUSED `403`
+  exactly as the server refuses it**, and viewer-shaped frames pushed down the
+  channel) plus `DeltaSeededStateTests` in the Kit. `AuthenticatingWebSocketChannel
+  .emit` exists for this: every use of that channel before MYR-449 was "the socket
+  is healthy and the car says nothing", and this issue's question is the opposite
+  one. **Both proven to be real guards by restoring the defect on the branch** —
+  the two engagement tests fail with `withheld` where `live(stale: false)` is
+  expected, i.e. the client's own frame, while the owner-path test stays green.
+- **The simulated path is untouched by construction and measured to be**:
+  `RiderTrackingLiveReport.resolve` returns `.simulated` before any clock or fix
+  is consulted (the same short-circuit MYR-393 takes), so the note is `nil` on
+  every fixture scene — swept in the tests, and confirmed on-simulator with
+  `trackingLeg1` rendering exactly its pre-MYR-449 sheet.
+
 **Never present over a live first responder** (MYR-353) — TestFlight, Jul 30:
 *"When I tap on schedule it pops up behind the keyboard. Needs to be fixed."*
 `RideSlideUpCard` is an in-hierarchy overlay, bottom-flush and

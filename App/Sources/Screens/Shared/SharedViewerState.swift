@@ -156,7 +156,18 @@ public final class SharedViewerState {
     let bookedWindows: RideBookedWindowsStore
 
     /// MYR-191 extension point — see `RiderSheetPhase`.
-    public var sheetPhase: RiderSheetPhase = .idle
+    public var sheetPhase: RiderSheetPhase = .idle {
+        didSet {
+            // MYR-449 — the ONE funnel that arms the tracking surface's honest-state
+            // clock. On the phase rather than at a call site, because `.tracking` is
+            // reached from an accept, from a cold-launch adoption and from a push
+            // tap, and an exit-side arm would be as complete as the exit list was on
+            // the day it was written (MYR-389's lesson, stated the other way round).
+            // `arm` is idempotent, so the repeated writes a SwiftUI body performs
+            // cannot restart the grace.
+            if sheetPhase == .tracking { armTrackingLiveWatch() } else { trackingLiveWatch.disarm() }
+        }
+    }
 
     // MARK: MYR-171 — in-progress request draft
     //
@@ -616,6 +627,29 @@ public final class SharedViewerState {
     /// `(0,0)`-is-no-fix gate the rider map already applies.
     var trackingVehicleCoordinate: CLLocationCoordinate2D? {
         RiderVehicleProjection.coordinate(from: trackingVehicleState)
+    }
+
+    // MARK: MYR-449 — the tracking surface's honest live state
+
+    /// The clock behind "Waiting for live location…" → "Live location unavailable
+    /// right now", and the trigger for the dark-stream recovery. Armed by
+    /// `sheetPhase`'s `didSet`, above.
+    let trackingLiveWatch = RiderTrackingLiveWatch()
+
+    /// Arm the watch and bind its two seams. Bound HERE rather than at
+    /// construction because `liveVehicleLocator` is a `let` on this type and the
+    /// watch must hold no opinion about where telemetry comes from — it asks this
+    /// state the one question it needs ("do we have a fix?") and hands the answer
+    /// its one consequence.
+    private func armTrackingLiveWatch() {
+        trackingLiveWatch.hasLiveFix = { [weak self] in self?.trackingVehicleCoordinate != nil }
+        trackingLiveWatch.onGraceElapsed = { [weak self] in
+            // Only the LIVE branch recovers. A simulated tracking scene has no
+            // socket to re-establish and must stay byte-identical.
+            guard let self, self.isLiveLocation else { return }
+            self.liveVehicleLocator?.recoverDarkStream()
+        }
+        trackingLiveWatch.arm()
     }
 
     /// How current that position is: the read time and whether the car is
