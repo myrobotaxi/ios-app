@@ -1646,6 +1646,139 @@ it.**
   every fixture scene — swept in the tests, and confirmed on-simulator with
   `trackingLeg1` rendering exactly its pre-MYR-449 sheet.
 
+**THE CAMERA FRAMED THE TRIP AND THE CAR DROVE OFF THE EDGE OF IT** (MYR-460,
+client-directed + external beta, build `202608030843`) — scene modifier
+`MRT_FOLLOW_PROBE=1`. Two testers, one surface, and the tracking scenes
+**CHANGE ON PURPOSE**.
+
+> *"camera not following car, and car heading not changing direction with tesla
+> telemetry car heading"* (Aarthi, rider, 08-05)
+>
+> *"Need map camera that follows the car on the route so that it's just like the
+> TESLA navigation system … or we can move around the system, but after a few
+> seconds it will snap right back to the camera of the car"* (Thomas, 08-05)
+
+Her screenshot is the diagnosis: the map framed on the destination pin with the
+route running off the left edge and **the car not in the viewport at all**.
+
+- **NOTHING WAS BROKEN. MYR-177's CAMERA WAS ANSWERING A DIFFERENT QUESTION.**
+  The leg fit frames the whole active leg and re-fits only when the car nears the
+  edge of it — correct, and it is a statement about the TRIP. On a 10-mile leg
+  that is a camera zoomed out far enough that the car is a speck, and the
+  anti-loop margin (`trackingRefitMarginFraction`) then guarantees it will not
+  move until the car is nearly out of frame. **A camera that is deliberately
+  reluctant to move is the right design for "here is your trip" and the wrong one
+  for "where is my car".** So this is not a regression and there was no bug to
+  find in the fit; the frame was.
+- **THE OWNER HAS TWO FRAMES NOW, AND WHICH ONE IT HOLDS IS A FACT ABOUT THE CAR
+  RATHER THAN A MODE ANYBODY PICKS.** `.follow` centres the car at street level
+  (`trackingFollowSpanDelta`, 0.0075° of VISIBLE band — `insetRegion` grows the
+  written span so that much survives the sheet) and is the RESTING frame of a
+  ride. `.legFit` is MYR-177's framing, kept for exactly one situation: **we hold
+  no position for the car** (MYR-393/MYR-449's no-fix case — a camera cannot
+  follow what it cannot locate, and framing the leg is the honest thing to show
+  instead). The first fix promotes to `.follow` and the promotion is ONE-WAY: a
+  car that goes quiet keeps its last followed frame rather than zooming back out,
+  which is MYR-393's rule applied to the camera.
+- **MYR-222'S LAW IS RESTATED PER FRAME, NOT RELAXED.** A follow camera writing
+  once per fix is not the loop that issue is about — the loop is a write that
+  provokes a settle that provokes a write. Every write still registers its
+  expected settle in the `CameraSettleLedger`, and the gate is that the car must
+  have MOVED (`trackingFollowMinMoveFraction`, 0.5% of the span ≈ 4m) since the
+  last written centre, so a PARKED car whose GPS jitters by a metre writes
+  nothing at any fix rate. **The probe verdict is the whole signature**: 18
+  writes in 18.6s = **0.97 writes/s** armed, **0 writes across the 12.1s** between
+  the gesture and the re-arm, 0 settles ever classified as user's during follow.
+- **THE SNAP-BACK IS THE KNOB THAT RECONCILES THIS ISSUE WITH MYR-222/MYR-338**,
+  which were the OPPOSITE complaint. `trackingFollowIdleRearm` (8s) is measured
+  from the LAST gesture, not the first — `gestureToken` bumps on **every**
+  gesture including ones that land while the rider is already in control, and the
+  view's `.task(id:)` cancels and restarts the countdown on each. ⚠️ The natural
+  spelling puts the early return above the token bump (`guard phase ==
+  .following`), which starts the countdown at the rider's FIRST touch and fires
+  it in the middle of their third pan — this issue's fix re-entering this issue's
+  own bug. The re-arm goes through `isFollowing`, i.e. the SAME path the recenter
+  button takes, so the two ways back cannot become two behaviours.
+- **THE HEADING WAS A ONE-HOP PLUMBING GAP, AND THE HOP WAS A DELIBERATE
+  DECISION.** `VehicleState.heading` has been on the wire since contracts shipped
+  and `VehicleStateMerger` has always folded it; it died at
+  `RiderVehicleProjection`, which folds `activity` alone (MYR-336's narrow rule),
+  so the glyph rotated to `VehicleRoute.position(...).headingDegrees` — a bearing
+  along a polyline, advanced by `trackProgress`, i.e. a clock the accept started.
+  MYR-393 moved the marker's POSITION off that clock and left the ROTATION on it,
+  reasoning the tangent "is exactly as good". It is not: a car stopped at a
+  light, queuing, reversing or on a road MKDirections did not pick points
+  wherever the LINE goes. `RiderVehicleProjection.heading` is the missing hop,
+  **gated on `hasFix` exactly as the coordinate is** — the contract's gps group
+  is atomic, and an ungated heading would render `VehicleStateBaseline
+  .forDeltaSeed`'s zero as a confident due-north on a car that has said nothing.
+  Position and rotation now come from one piece of evidence or neither.
+  `HeadingMath`'s shortest-arc rule (MYR-177) was already correct and already
+  tested, and needed no change.
+- **THE MARKER INTERPOLATES BETWEEN FIXES, AND IT IS RENDERING ONLY.**
+  `TrackingMarkerInterpolation` is a pure function of two fixes and a clock;
+  `TrackingMarkerMotion` ticks it at 20Hz and STOPS when the tween lands, so a
+  parked car costs nothing. Three rules worth keeping: the measured interval is
+  **clamped to 3s**, so a car that went quiet for 40 seconds does not spend 40
+  seconds gliding to where it already is; a tween interrupted by an early fix
+  restarts from the DRAWN position, not the previous fix, or the glyph snaps
+  backwards before going on; and **Reduce Motion jumps to the raw fix**, because
+  the tween is movement this app invented. ⚠️ **The interpolated coordinate
+  reaches exactly one thing — the annotation's position.** `carKey`, `fitCoords`,
+  `engage()` and the follow camera's own centre all read the RAW fix (MYR-237/
+  MYR-389, and MYR-393 from the other side). A camera keyed on a tweened
+  coordinate would also write at the tween's rate rather than the car's, which
+  would turn the probe's 1Hz signature into a 20Hz one.
+- **`simctl location` CANNOT PROBE THIS CAMERA**, and a probe run that way would
+  report a clean trace on a completely broken follow camera. MYR-222's probe
+  drives the DEVICE's GPS, which is right for the idle/pin-drop cameras because
+  they follow the phone; this camera follows the CAR, off the telemetry socket.
+  `MRT_FOLLOW_PROBE=1` streams a moving, TURNING car into
+  `debugTrackingVehicleState` (MYR-393's own hook) at ~1Hz and seeds nothing
+  else, so the projection, the marker resolution, the tween and every camera
+  write are shipping code. The heading SWEEPS through 360° on purpose — a
+  constant bearing would let a broken rotation pass by standing still at the
+  right angle.
+- **THE OWNER'S DRIVING MAP IS OUT OF SCOPE AND THAT IS A DELIBERATE CALL.** It
+  is `VehicleMapView` + `OwnerMapCamera`, which share the settle ledger and the
+  trace with this surface and share no camera owner, no view and no marker; and
+  MYR-338 is the CLIENT-APPROVED fix that made that camera stop moving (*"The map
+  moves up with the bottom sheet. Map should stay fixed."*). Giving it a follow
+  camera in the same PR would be re-opening a settled client decision from the
+  other direction. The owner's marker heading is a separate, smaller gap:
+  `VehicleTelemetrySnapshot` carries no heading at all, so `vehiclePosition`
+  hands `VehicleMarker` the route tangent when driving and a hardcoded 0 when
+  parked. **Both are recorded here and not fixed here.**
+- **⚠️ TWO MEASUREMENT TRAPS ON THIS SURFACE, BOTH OF WHICH FAIL SILENTLY.**
+  `isHittable` is uniformly **false** for every control on the tracking map —
+  measured: all three tab-bar buttons, the expand chip and the recenter button,
+  under the full-bleed map chrome — so a UI test written on it passes on a build
+  where the pan never landed. And `exists` is uniformly **true**, because
+  `FloatingMapButtonControl` hides itself with `opacity` + `allowsHitTesting`
+  and never leaves the tree. `.accessibilityHidden(hidden)` was tried as the fix
+  and **measured not to remove it either**, so it was NOT kept — the
+  `.contentMargins` lesson (a modifier that compiles, reads correctly and does
+  nothing) rather than a second one. The signal that does flip is the control's
+  own `scaleEffect`, which XCUITest reports as a real frame: **39.6 × 39.6 hidden
+  vs 44 × 44 offered**.
+- **The tracking capture scenes CHANGE, on purpose** — `trackingLeg1`,
+  `trackingLeg2`, `trackingArriving` and friends now open at street level on the
+  car instead of on the whole leg, because that is the client's ask and the
+  simulated path has a car position like any other. Nothing else moves: the sheet,
+  the route treatment, the pins and every non-tracking scene are untouched, and
+  `MRT_FOLLOW_PROBE` is off for every capture.
+
+```sh
+SIMCTL_CHILD_MRT_SCENE=trackingLeg2 SIMCTL_CHILD_MRT_FOLLOW_PROBE=1 \
+  xcrun simctl launch <udid> app.myrobotaxi.ios
+xcrun simctl spawn <udid> log stream --level=info \
+  --predicate 'subsystem == "app.myrobotaxi.ios" AND category == "camera"'
+# healthy: ONE `WRITE tracking frame=follow … animated=false` seating, then one
+# write + one matching `classified=programmatic (token)` settle per fix; ZERO
+# writes between `follow off` and `follow re-arm`; writes resume after it.
+# The GESTURE half needs a real finger — `TrackingFollowCameraUITests`.
+```
+
 **Never present over a live first responder** (MYR-353) — TestFlight, Jul 30:
 *"When I tap on schedule it pops up behind the keyboard. Needs to be fixed."*
 `RideSlideUpCard` is an in-hierarchy overlay, bottom-flush and
@@ -3982,3 +4115,13 @@ gesture logs `follow off`, then zero. Repeating write/settle pairs per fix =
 the MYR-222 loop class. Probe idle the same way with `-MRT_SCENE idle`.
 `simctl location clear` when done (leftover streams corrupt the static
 drift-gate scenes).
+
+**⚠️ THIS PROBE CANNOT REACH THE RIDER'S TRACKING CAMERA** (MYR-460). It streams
+the DEVICE's GPS, which is exactly right for the idle and pin-drop cameras
+because those follow the phone — but the tracking camera follows the CAR, off
+the telemetry socket, so a streamed device fix moves the blue dot and leaves it
+with nothing to react to. Probed this way a totally broken follow camera returns
+a clean zero-write trace. Use `MRT_FOLLOW_PROBE=1` for that surface (see "THE
+CAMERA FRAMED THE TRIP AND THE CAR DROVE OFF THE EDGE OF IT" above), and note
+that the GESTURE half of either probe needs a real finger — `simctl` cannot pan
+a map, so it comes from XCUITest.

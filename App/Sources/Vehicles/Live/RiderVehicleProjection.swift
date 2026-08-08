@@ -58,6 +58,31 @@ enum RiderVehicleProjection {
         return VehicleContractMapping.position(from: state)
     }
 
+    /// The watched vehicle's live COMPASS HEADING (degrees clockwise from north),
+    /// or `nil` when there is no fix to have a heading at.
+    ///
+    /// MYR-460 — the external-beta report *"car heading not changing direction
+    /// with tesla telemetry car heading"*. The field has been on the wire since
+    /// contracts shipped `VehicleState` and the merger has always folded it
+    /// (`VehicleStateMerger`, `case "heading"`), but it died HERE: this
+    /// projection folds `activity` alone, `Vehicle`/`VehicleActivity` have no
+    /// heading, and so the tracking glyph rotated to a bearing derived from
+    /// `trackProgress` along the polyline instead. On the live path that is the
+    /// MYR-393 defect in the rotational axis — the same clock-driven guess,
+    /// pointing the car down a road it may not be on.
+    ///
+    /// **Gated on `hasFix` for the same reason the coordinate is.** §2.3's
+    /// `(0, 0)` sentinel means the car reported no position, and the contract
+    /// groups `{latitude, longitude, heading}` as ATOMIC — heading is present iff
+    /// the coordinates are. A heading returned without a fix would be
+    /// `VehicleStateBaseline.forDeltaSeed`'s zero (MYR-449), i.e. "due north" as
+    /// a rendering of "the car has said nothing", which is exactly the false
+    /// confidence `hasFix` exists to refuse.
+    static func heading(from state: VehicleState?) -> Double? {
+        guard let state, hasFix(state) else { return nil }
+        return Double(state.heading)
+    }
+
     /// Fold ONLY position + status from a live snapshot onto the catalog row.
     ///
     /// Every other field of `vehicle` is carried through verbatim — see this

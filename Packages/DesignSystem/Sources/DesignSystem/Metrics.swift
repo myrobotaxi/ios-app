@@ -567,13 +567,47 @@ public enum MRTMetrics {
     /// (top notch + bottom sheet insets), so it only needs a modest margin.
     public static let trackingLegFitPadding: Double = 1.28
 
-    /// Re-fit trigger margin as a fraction of the fitted region's span: the
-    /// leg-fit camera re-frames only once the car crosses into the outer
-    /// `trackingRefitMarginFraction` band of the region it last framed (i.e. is
-    /// about to leave view), NOT on every fix. This is the anti-feedback-loop
-    /// knob (MYR-222): a car sitting well inside the frame produces ZERO camera
-    /// writes at any fix rate.
-    public static let trackingRefitMarginFraction: Double = 0.14
+    // (MYR-177's `trackingRefitMarginFraction` is DELETED by MYR-460. It was the
+    // margin band a leg fit re-framed on when the car neared the edge; the leg
+    // fit is now held only when there IS no car position, so the band described
+    // a state that can no longer occur. Its replacement as the anti-loop knob is
+    // `trackingFollowMinMoveFraction` below.)
+
+    // MARK: - Follow camera (MYR-460)
+    //
+    // The client's ask, verbatim: *"map camera that follows the car on the route
+    // so that it's just like the TESLA navigation system … or we can move around
+    // the system, but after a few seconds it will snap right back to the camera
+    // of the car."* The leg fit above answers "where is this trip"; these answer
+    // "where is the car right now", which is a different question and is the one
+    // a rider watching a ride is asking.
+
+    /// Latitude span (degrees) the follow camera holds in the UNOBSTRUCTED band
+    /// above the tracking sheet — street level, ~830m of visible height, which is
+    /// the scale a turn is legible at. It is the VISIBLE span, not the written
+    /// one: `VehicleRoute.insetRegion` grows it so this much survives the sheet.
+    public static let trackingFollowSpanDelta: Double = 0.0075
+
+    /// How far the car must move from the last written follow centre before the
+    /// camera writes again, as a fraction of the follow span (~4m at the span
+    /// above). A parked car's GPS jitters by a metre or two every fix and a
+    /// camera that answered each of those would be MYR-222's loop at walking
+    /// pace. Real motion clears it on the first fix.
+    public static let trackingFollowMinMoveFraction: Double = 0.005
+
+    /// Seconds of NO gesture before a dethroned follow camera re-arms itself —
+    /// the client's *"after a few seconds it will snap right back"*. This is the
+    /// knob that reconciles this issue with MYR-222/MYR-338, which were the
+    /// opposite complaint: it is measured from the LAST gesture, so a rider who
+    /// is still panning is never yanked, and the camera only returns to a map
+    /// nobody has touched for the whole window.
+    public static let trackingFollowIdleRearm: TimeInterval = 8
+
+    /// Duration of one follow camera write. Matched to the ~1Hz fix cadence and
+    /// LINEAR on purpose: an eased write would stall between fixes and read as
+    /// stutter, where a linear write of the inter-fix duration hands off to the
+    /// next one at constant speed and the map appears to glide.
+    public static let trackingFollowWriteDuration: TimeInterval = 0.9
 
     /// Material-deviation threshold (meters) for the cached ride route: the leg
     /// route is refetched from the provider only when the car strays farther

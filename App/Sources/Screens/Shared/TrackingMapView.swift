@@ -51,6 +51,10 @@ struct TrackingMapView: View {
 
     @State private var viewHeight: CGFloat = 0
     @State private var liveCameraRegion = LiveCameraRegionBox()
+    /// MYR-460 — the glyph's SMOOTH position between two ~1Hz fixes. Rendering
+    /// only: `carCoordinate` (the raw fix) is what the camera, the fit and the
+    /// change key all read, and this never reaches any of them.
+    @State private var markerMotion = TrackingMarkerMotion()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
 
@@ -83,6 +87,18 @@ struct TrackingMapView: View {
             guard let carCoordinate else { return [pickupCoordinate] }
             return [carCoordinate, pickupCoordinate]
         }
+    }
+
+    /// Where the glyph is DRAWN this frame — the interpolated position while a
+    /// tween is running, the raw fix otherwise.
+    ///
+    /// MYR-393's withheld rule is kept STRUCTURAL rather than delegated: with no
+    /// raw fix this is `nil` whatever the interpolator happens to be holding, so
+    /// a tween can never outlive the position that justified it and leave a
+    /// glyph gliding over a car we have stopped hearing from.
+    private var displayCarCoordinate: CLLocationCoordinate2D? {
+        guard carCoordinate != nil else { return nil }
+        return markerMotion.rendered ?? carCoordinate
     }
 
     private var carKey: String {
@@ -124,13 +140,22 @@ struct TrackingMapView: View {
             .simultaneousGesture(TapGesture().onEnded { onExpand?() })
             .onAppear {
                 viewHeight = geo.size.height
+                markerMotion.reduceMotion = reduceMotion
+                markerMotion.ingest(carCoordinate)
                 engage()
             }
+            .onDisappear { markerMotion.stop() }
+            .onChange(of: reduceMotion) { _, newValue in markerMotion.reduceMotion = newValue }
             .onChange(of: geo.size.height) { _, newValue in
                 viewHeight = newValue
                 engage()
             }
-            .onChange(of: carKey) { _, _ in engage() }
+            .onChange(of: carKey) { _, _ in
+                // ONE funnel for a new fix: the glyph starts its tween and the
+                // camera decides whether to write, both from the RAW coordinate.
+                markerMotion.ingest(carCoordinate)
+                engage()
+            }
             .onChange(of: routeKey) { _, _ in
                 guard viewHeight > 0, !fitCoords.isEmpty,
                       let write = controller.reframe(leg: leg, fitCoords: fitCoords, bottomInset: bottomInset, viewHeight: viewHeight, topInset: MRTMetrics.trackingFitTopInset) else { return }
@@ -140,7 +165,23 @@ struct TrackingMapView: View {
             .onChange(of: bottomInset) { _, _ in engage() }
             .onChange(of: isFollowing) { _, following in
                 guard following, viewHeight > 0 else { return }
-                applyWrite(controller.recenter(leg: leg, fitCoords: fitCoords, bottomInset: bottomInset, viewHeight: viewHeight, topInset: MRTMetrics.trackingFitTopInset))
+                applyWrite(controller.recenter(leg: leg, carPosition: carCoordinate, fitCoords: fitCoords, bottomInset: bottomInset, viewHeight: viewHeight, topInset: MRTMetrics.trackingFitTopInset))
+            }
+            // MYR-460 — the client's *"after a few seconds it will snap right
+            // back to the camera of the car"*. Keyed on `gestureToken`, which
+            // bumps on EVERY gesture, so `.task(id:)` cancels the countdown and
+            // starts a fresh one each time the rider touches the map: the window
+            // is measured from the LAST gesture and a rider still panning is
+            // never yanked. Re-arming through `isFollowing` rather than through
+            // the controller directly is deliberate — the recenter BUTTON and
+            // the idle window must re-engage by exactly the same path, or the
+            // two ways back become two behaviours.
+            .task(id: controller.gestureToken) {
+                guard controller.gestureToken > 0, controller.phase == .userControlled else { return }
+                try? await Task.sleep(nanoseconds: UInt64(MRTMetrics.trackingFollowIdleRearm * 1_000_000_000))
+                guard !Task.isCancelled, controller.phase == .userControlled else { return }
+                mrtCameraTrace("follow re-arm tracking after \(MRTMetrics.trackingFollowIdleRearm)s idle → follow on")
+                isFollowing = true
             }
             .onChange(of: scenePhase) { _, phase in
                 switch phase {
@@ -162,26 +203,40 @@ struct TrackingMapView: View {
         let coords = fitCoords
         guard !coords.isEmpty else { return }
         if controller.phase == .inactive {
-            applyWrite(controller.enter(leg: leg, fitCoords: coords, bottomInset: bottomInset, viewHeight: viewHeight, topInset: MRTMetrics.trackingFitTopInset))
-        } else if let carCoordinate,
-                  let write = controller.update(leg: leg, carPosition: carCoordinate, fitCoords: coords, bottomInset: bottomInset, viewHeight: viewHeight, topInset: MRTMetrics.trackingFitTopInset) {
+            applyWrite(controller.enter(leg: leg, carPosition: carCoordinate, fitCoords: coords, bottomInset: bottomInset, viewHeight: viewHeight, topInset: MRTMetrics.trackingFitTopInset))
+        } else if let write = controller.update(leg: leg, carPosition: carCoordinate, fitCoords: coords, bottomInset: bottomInset, viewHeight: viewHeight, topInset: MRTMetrics.trackingFitTopInset) {
             applyWrite(write)
         }
     }
 
     private func applyWrite(_ write: TrackingCameraController.Write) {
-        mrtCameraTrace("WRITE tracking leg=\(leg) center=\(write.region.center.latitude),\(write.region.center.longitude) span=\(write.region.span.latitudeDelta) animated=\(write.animated)")
+        mrtCameraTrace("WRITE tracking frame=\(write.frame) leg=\(leg) center=\(write.region.center.latitude),\(write.region.center.longitude) span=\(write.region.span.latitudeDelta) animated=\(write.animated)")
         if write.animated, !reduceMotion {
-            withAnimation(.easeInOut(duration: 0.5)) { cameraPosition = .region(write.region) }
+            // A follow write is LINEAR over roughly the fix interval, so
+            // consecutive writes hand off at constant speed and the map glides
+            // under a stationary-looking car. An eased curve would decelerate
+            // into every single fix, which at 1Hz is a visible pulse.
+            let animation: Animation = write.frame == .follow
+                ? .linear(duration: MRTMetrics.trackingFollowWriteDuration)
+                : .easeInOut(duration: 0.5)
+            withAnimation(animation) { cameraPosition = .region(write.region) }
         } else {
             cameraPosition = .region(write.region)
         }
     }
 
     private func handleUserGesture() {
-        guard controller.phase == .following else { return }
-        mrtCameraTrace("gesture user pan/zoom during tracking → follow off")
+        // ⚠️ THE CONTROLLER IS TOLD ABOUT EVERY GESTURE, INCLUDING ONE THAT
+        // LANDS WHILE THE RIDER IS ALREADY IN CONTROL. The early return this
+        // guard used to make was correct when a dethrone was permanent; with
+        // MYR-460's idle re-arm it would mean the countdown starts at the
+        // rider's FIRST touch and fires in the middle of their third pan. The
+        // token bump is what pushes the deadline out, so it has to happen
+        // before the phase is consulted.
+        let wasFollowing = controller.phase == .following
         controller.userGestureBegan()
+        guard wasFollowing else { return }
+        mrtCameraTrace("gesture user pan/zoom during tracking → follow off (re-arms in \(MRTMetrics.trackingFollowIdleRearm)s idle)")
         isFollowing = false
         // Kill any in-flight programmatic glide so it can't slide back over the
         // user's drag (MYR-222) — pin the camera at its current visual region.
@@ -202,7 +257,7 @@ struct TrackingMapView: View {
             leg2Route: leg2Route,
             pickupCoordinate: pickupCoordinate,
             destinationCoordinate: destinationCoordinate,
-            carCoordinate: carCoordinate,
+            carCoordinate: displayCarCoordinate,
             carHeading: carHeading,
             legProgress: legProgress,
             showsUserLocation: showsUserLocation

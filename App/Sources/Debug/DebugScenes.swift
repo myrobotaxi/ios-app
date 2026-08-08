@@ -1498,6 +1498,47 @@ enum DebugScene: String, CaseIterable {
         return false
     }
 
+    /// MYR-460 probe modifier, orthogonal to the scene: `MRT_FOLLOW_PROBE=1`
+    /// (env or `-MRT_FOLLOW_PROBE 1` arg) STREAMS A MOVING CAR into the rider's
+    /// tracking surface at ~1Hz, with a turning compass heading.
+    ///
+    /// ⚠️ **`simctl location` CANNOT PROBE THIS CAMERA, AND THAT IS THE WHOLE
+    /// REASON THIS HOOK EXISTS.** MYR-222's mandatory streaming-fix probe drives
+    /// the DEVICE's GPS, which is exactly right for the idle and pin-drop
+    /// cameras, because those follow the phone. The tracking camera follows the
+    /// CAR — `SharedViewerState.trackingVehicleCoordinate`, off the watched
+    /// vehicle's telemetry socket — so a streamed device fix moves the blue dot
+    /// and leaves this camera with nothing to react to. A probe run that way
+    /// would report a clean zero-write trace on a totally broken follow camera,
+    /// which is the "cold scenes passing while real paths fail" lesson pointed at
+    /// a probe rather than at a capture.
+    ///
+    /// It seeds the INPUT ONLY, at the one seam a live socket writes to
+    /// (`debugTrackingVehicleState`, MYR-393's own hook). Everything downstream
+    /// is shipping code and is what the probe is there to observe: the
+    /// `RiderVehicleProjection` fix + heading gates, `RiderCarMarker.resolve`,
+    /// `TrackingMapView`'s raw-coordinate change key, `TrackingMarkerMotion`'s
+    /// tween and every write `TrackingCameraController` decides to make. The
+    /// speed and the turn are real ones — ~13 m/s round a bend — so the trace
+    /// shows the follow camera answering a car that is genuinely driving rather
+    /// than a teleporting stub.
+    ///
+    /// Unset — which it is for every scene and every capture — nothing reads it
+    /// and the tracking scenes are byte-identical.
+    ///
+    /// ```sh
+    /// SIMCTL_CHILD_MRT_SCENE=trackingLeg2 SIMCTL_CHILD_MRT_FOLLOW_PROBE=1 \
+    ///   xcrun simctl launch <udid> app.myrobotaxi.ios
+    /// xcrun simctl spawn <udid> log stream --level=info \
+    ///   --predicate 'subsystem == "app.myrobotaxi.ios" AND category == "camera"'
+    /// ```
+    static var followProbe: Bool {
+        if ProcessInfo.processInfo.environment["MRT_FOLLOW_PROBE"] == "1" { return true }
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-MRT_FOLLOW_PROBE"), i + 1 < args.count { return args[i + 1] == "1" }
+        return false
+    }
+
     /// MYR-346 — simulate an INCOMING universal link, orthogonal to the scene.
     ///
     /// `MRT_JOIN_LINK` (or `-MRT_JOIN_LINK <value>`) takes either a full URL
@@ -2768,6 +2809,66 @@ enum DebugScene: String, CaseIterable {
     /// relative to `now` for the reason `sampleServiceEnd` is: a literal drifts and
     /// the scene would photograph a different age every week.
     @MainActor
+    /// MYR-460 — drive the moving-car probe at the socket's own ~1Hz cadence.
+    ///
+    /// Writes to the ONE seam a live telemetry frame writes to and nothing else,
+    /// so the probe measures the shipping projection, marker, tween and camera
+    /// rather than a parallel path built to be measured.
+    static func startFollowProbe(on viewer: SharedViewerState) {
+        viewer.debugResolvesLiveMotion = true
+        viewer.debugTrackingIsStreaming = true
+        viewer.debugTrackingVehicleState = movingTrackingState(step: 0)
+        Task { @MainActor [weak viewer] in
+            for step in 1...600 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let viewer else { return }
+                viewer.debugTrackingVehicleState = movingTrackingState(step: step)
+            }
+        }
+    }
+
+    /// MYR-460 — one frame of the moving-car probe: a car driving north-east at
+    /// ~13 m/s and turning through a bend, `step` fixes into the run.
+    ///
+    /// The heading TURNS (a constant bearing would let a broken rotation pass by
+    /// standing still at the right angle) and the position advances along that
+    /// same bearing, so the trace can be read for agreement between the two —
+    /// the tester reported them disagreeing.
+    static func movingTrackingState(step: Int) -> VehicleState {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        // Sweep the bearing through 360° across the run so the wrap is crossed.
+        let bearing = Double((step * 9) % 360)
+        // ~13 m/s per 1s step, integrated along the swept bearing from the start.
+        var lat = 37.7871, lon = -122.3971
+        for i in 0..<step {
+            let b = Double((i * 9) % 360) * .pi / 180
+            lat += (13.0 * cos(b)) / 111_320.0
+            lon += (13.0 * sin(b)) / (111_320.0 * cos(lat * .pi / 180))
+        }
+        return VehicleState(
+            vehicleId: "debug-following",
+            name: "Lunar",
+            model: "Model Y",
+            year: 2026,
+            color: "Quicksilver",
+            status: .driving,
+            speed: 29,
+            heading: Int(bearing.rounded()),
+            latitude: lat,
+            longitude: lon,
+            locationName: "En route",
+            locationAddress: "",
+            chargeLevel: 68,
+            estimatedRange: 240,
+            interiorTemp: 71,
+            exteriorTemp: 88,
+            odometerMiles: 12_480,
+            fsdMilesSinceReset: 0,
+            lastUpdated: formatter.string(from: Date())
+        )
+    }
+
     static func parkedTrackingState(readAgo: TimeInterval) -> VehicleState {
         let read = Date().addingTimeInterval(-readAgo)
         let formatter = ISO8601DateFormatter()
@@ -3545,6 +3646,9 @@ enum DebugScene: String, CaseIterable {
             viewer.draftPickup = DebugScene.samplePickup
             viewer.draftDestination = DebugScene.sampleDestination
             viewer.sheetPhase = .tracking
+            // MYR-460 — orthogonal, and OFF for every capture, so these scenes
+            // are byte-identical unless the probe is explicitly asked for.
+            if DebugScene.followProbe { DebugScene.startFollowProbe(on: viewer) }
         case .trackingWaitingToStart, .trackingStalePosition:
             // MYR-393 — the same leg-1 seed, plus the two live-shaped inputs the
             // honest ladder needs: the live branch forced on, and a `VehicleState`
