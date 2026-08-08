@@ -211,6 +211,14 @@ public enum VehicleCommandNotice: Sendable, Equatable {
     // change ride sharing" would have no idea that riders had already been told
     // their rides are off.
     case reservationNotDeclined
+    // MYR-466 — the Auto climate command was APPLIED (200) and the car did not
+    // change mode. Its own case rather than a share of `.rejected`, because the
+    // two are opposite facts about the same tap: a rejection means the car said
+    // no, and this means the car said yes and then carried on as it was. Telling
+    // an owner "The car didn't accept that" about a command it demonstrably
+    // accepted sends them looking for a refusal that never happened. See
+    // `ClimateAutoConfirmation` for why this state exists at all.
+    case autoNotAdopted
 
     public var message: String {
         switch self {
@@ -277,6 +285,12 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         // suggest a retry — flipping again re-reads a now-shorter list and is the
         // obvious next move without being told.
         case .reservationNotDeclined: "Couldn\u{2019}t decline a ride \u{2014} still sharing"
+        // MYR-466 — states the OUTCOME the owner is looking at (the segment has
+        // just moved back to Cool or Heat beside this line) and names the car as
+        // the thing that did not move, because nothing about the app or the
+        // network failed. No apology and no retry hint: tapping Auto again sends
+        // the same command to a car that already applied it.
+        case .autoNotAdopted: "The car stayed on manual climate"
         }
     }
 
@@ -322,6 +336,13 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         // the RESTING position rather than the failed attempt, which is the useful
         // half here: the full sentence on the row says the rest.
         case .reservationNotDeclined: "Still on"
+        // MYR-466 — the climate TILE is the on/off control and this notice is
+        // about the MODE segment beside it, but the two share the `.climate` key
+        // (both are HVAC start/stop), so the token is measured with the rest and
+        // must fit. "Manual" is the resting state the segment has just returned
+        // to, which is the useful half at tile width; the full sentence is on the
+        // notice row underneath.
+        case .autoNotAdopted: "Manual"
         }
     }
 
@@ -342,10 +363,13 @@ public enum VehicleCommandNotice: Sendable, Equatable {
         // MYR-360 — and the same for a decline that did not land: the row is the
         // tap target, and flipping again re-reads a now-shorter list. Nothing about
         // it is a broken Tesla connection either.
+        // MYR-466 — and the same for an Auto that did not take: the Tesla link is
+        // demonstrably fine (the command was applied), so a "Reconnect" pill would
+        // send the owner to re-authorize an account that is working.
         case .waking, .asleep, .pairKey, .cooldown, .rejected, .failed,
              .invalidPlate, .plateNotSaved,
              .serviceWindowPast, .serviceWindowNotSaved,
-             .rideShareNotSaved, .reservationNotDeclined: nil
+             .rideShareNotSaved, .reservationNotDeclined, .autoNotAdopted: nil
         }
     }
 

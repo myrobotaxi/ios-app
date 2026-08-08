@@ -82,6 +82,10 @@ final class VehicleControlTileCaptionTests: XCTestCase {
     private static let allNotices: [VehicleCommandNotice] = [
         .waking, .asleep, .pairKey, .relink, .relinkCharging, .cooldown,
         .rejected(nil), .rejected(.vehicleInService), .failed,
+        // MYR-466 — raised on the `.climate` key, so it lands on the climate TILE
+        // as well as on the full-width row, and is held to the 4-column budget
+        // with the rest of the tile vocabulary.
+        .autoNotAdopted,
     ]
     private static var noticeSubs: [String] { allNotices.map(\.tileText) }
     /// The three notices that can only ever land on a full-width DETAILS ROW —

@@ -227,5 +227,8 @@ final class VehicleCommandNoticeTests: XCTestCase {
         .rideShareNotSaved,
         // MYR-360 — a decline in the pause flow that did not land.
         .reservationNotDeclined,
+        // MYR-466 — an Auto command the car applied and did not adopt. It shares
+        // the `.climate` key, so it genuinely reaches a tile.
+        .autoNotAdopted,
     ]
 }

@@ -199,15 +199,25 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// for the boolean toggles.
     private var seatSettleHold: [VehicleControlKey: (mode: VehicleSeatClimateMode, level: Int, until: Date)] = [:]
 
-    /// Climate-mode settle-window guard (MYR-274), the Auto/Cool/Heat-segment
-    /// analogue of `settleHold`. Tapping Auto commands `auto_conditioning_start`;
-    /// after it acks we optimistically show `.auto` and record it here with a
-    /// deadline. `reconcileClimateMode` then ignores a DISAGREEING streamed mode
-    /// (a stale `Override` the car keeps reporting for a second or two, or the
-    /// mode simply absent) until the car confirms `On`/Auto or the window lapses —
-    /// so a stale frame can't immediately flip the segment back off Auto, exactly
-    /// as MYR-272 fixed for the boolean toggles.
-    private var climateModeSettleHold: (want: VehicleClimateMode, until: Date)?
+    /// The Auto command's outstanding CONFIRMATION (MYR-274 window, MYR-466
+    /// verdict). Tapping Auto commands `auto_conditioning_start`; after it acks we
+    /// optimistically show `.auto` and record the deadline here.
+    /// `reconcileClimateMode` then ignores a DISAGREEING streamed mode (a stale
+    /// `Override` the car keeps reporting for a second or two) until the car
+    /// confirms `On`/Auto or the window lapses — as MYR-272 fixed for the boolean
+    /// toggles.
+    ///
+    /// MYR-466 — what changed is the LAPSED arm. It used to drop the hold and
+    /// silently adopt the car's mode, which is how a tap on Auto became a segment
+    /// that flipped back to Cool with nothing said. It is now a
+    /// `ClimateAutoVerdict.notAdopted`: the car's mode is still adopted (it is the
+    /// truth) and the owner is told why the segment moved.
+    private var climateAutoPending: ClimateAutoConfirmation.Pending?
+
+    /// MYR-467 — what the media truth rule remembers between frames: the last
+    /// position sample, the last wire status, and whether the position has
+    /// recently contradicted a `Paused`. See `MediaPlaybackTruth`.
+    private var mediaMemory: MediaPlaybackMemory = .empty
 
     init(
         vehicleID: String,
@@ -330,14 +340,27 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             // Still the notice we armed for? A newer failure (or a new command)
             // bumps the generation and owns the surface from then on.
             guard let self, self.noticeGeneration[key] == generation else { return }
-            self.clearNotice(key)
+            self.clearNotice(key, force: true)
         }
     }
 
     /// Drop `key`'s settled notice. A no-op while a command is in flight — that
     /// notice belongs to the running attempt (`.waking`) and is cleared by it.
-    private func clearNotice(_ key: VehicleControlKey) {
-        guard let state = uiStates[key], state.notice != nil, !state.isPending else { return }
+    ///
+    /// MYR-466 — `force` is the bounded-display expiry's own door, and one notice
+    /// needs it. `.autoNotAdopted` is the first notice in this catalog that is
+    /// RAISED BY a reconcile rather than by a failed round trip, so MYR-301's
+    /// clear path 2 ("the car just told us where the control really is, which
+    /// answers the notice") is pointed at the very frame that earned it. Left
+    /// unguarded it is wiped within a second by the NEXT frame — through the
+    /// `.climate` key's climate-on arm, which reconciles ahead of the mode and
+    /// clears the shared key — and the owner is back to a segment that moved with
+    /// no explanation. It is left to its 6s window and to the next command on the
+    /// key (`beginPending` replaces the state outright), which are the two
+    /// lifetimes MYR-301 gives every settled notice.
+    private func clearNotice(_ key: VehicleControlKey, force: Bool = false) {
+        guard let state = uiStates[key], let notice = state.notice, !state.isPending else { return }
+        if !force, notice == .autoNotAdopted { return }
         noticeGeneration[key] = (noticeGeneration[key] ?? 0) + 1
         uiStates[key] = VehicleControlUIState(isPending: false, notice: nil)
     }
@@ -433,7 +456,26 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
         // command nothing. The optimistic post-ack value is protected by the same
         // settle window the boolean toggles use, so a stale frame can't flicker the
         // icon back mid-command (MYR-272 discipline).
-        if let playing = state.mediaPlaybackStatus.flatMap(Self.mediaPlaying(from:)) {
+        //
+        // MYR-467 — the status is no longer read straight off the wire. The
+        // external-beta report was a transport row asserting PAUSED while the
+        // track position advanced ten seconds underneath it, because
+        // `mediaPlaybackStatus` and `mediaNowPlayingElapsedMs` are independent
+        // Tesla emissions and a delta carrying only the position folds the old
+        // status forward verbatim. `MediaPlaybackTruth` enforces the invariant
+        // the issue asked for — a position that advances is not a paused car —
+        // and owns the memory that keeps the correction from flickering on the
+        // frames that carry no media news. It never fabricates a session: an
+        // absent / `Unknown` status still un-knows the field below, exactly as
+        // MYR-314 requires.
+        let mediaVerdict = MediaPlaybackTruth.resolve(
+            wire: state.mediaPlaybackStatus,
+            track: MediaTrackIdentity(state: state),
+            positionMs: state.mediaNowPlayingElapsedMs,
+            memory: mediaMemory
+        )
+        mediaMemory = mediaVerdict.memory
+        if let playing = mediaVerdict.playing {
             reconcileControlled(.mediaPlaying, key: .media, wire: playing) { self.controls.mediaPlaying = $0 }
         } else {
             knownFields.remove(.mediaPlaying)
@@ -703,20 +745,44 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// command is in flight the frame is left for the ack; after the ack a settle
     /// window holds the optimistic Auto against a stale `Override` frame until the
     /// car confirms `On`/Auto or the deadline lapses (then the car's reality wins).
+    ///
+    /// MYR-466 — the lapsed arm SPEAKS now. See `ClimateAutoConfirmation` for the
+    /// whole triage; the short version is that `auto_conditioning_start` is a
+    /// power command rather than a mode command, so on a car already running in
+    /// manual it returns `200 applied` and changes nothing — and this method,
+    /// doing exactly what it was written to do, then moved the segment back to
+    /// Cool with no explanation. The car's mode is still adopted; the silence is
+    /// what is fixed.
     private func reconcileClimateMode(autoMode: VehicleState.HvacAutoMode?, acEnabled: Bool?) {
         guard let mode = Self.climateMode(autoMode: autoMode, acEnabled: acEnabled) else { return }
         if uiState(for: .climate).isPending { return } // Auto command still in flight
-        if let hold = climateModeSettleHold {
-            if mode == hold.want {
-                climateModeSettleHold = nil // the car confirmed the commanded mode
-            } else if Date() < hold.until {
+        var notAdopted = false
+        if let pending = climateAutoPending {
+            switch ClimateAutoConfirmation.verdict(reported: mode, pending: pending) {
+            case .confirmed:
+                climateAutoPending = nil // the car adopted Auto
+            case .awaiting:
                 return // settling — ignore a stale frame that disagrees with the command
-            } else {
-                climateModeSettleHold = nil // timed out — accept the car's reported reality
+            case .notAdopted:
+                climateAutoPending = nil
+                notAdopted = true
             }
         }
         controls.climateMode = mode
         knownFields.insert(.climateMode)
+        if notAdopted {
+            // The notice REPLACES the clear below rather than following it: this
+            // frame is the evidence the command did not land, so answering it with
+            // MYR-301's "the car told us where the control really is, so the
+            // notice is spent" would delete the sentence in the same statement
+            // that earned it.
+            settle(.climate, notice: .autoNotAdopted)
+            return
+        }
+        // Every LATER frame is prevented from clearing it inside `clearNotice`
+        // itself rather than here — the `.climate` key's climate-on arm reconciles
+        // ahead of this one and would otherwise wipe the sentence on the next
+        // frame. See that method's MYR-466 note.
         clearNotice(.climate) // MYR-301 clear path 2 — see `reconcileField`
     }
 
@@ -750,12 +816,14 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     /// Map the media playback enum onto the play/pause boolean. `Unknown` and any
     /// unrecognized value return nil so the control stays honestly unknown (MYR-251)
     /// rather than asserting a fabricated play/pause.
+    ///
+    /// MYR-467 — this is the CAR'S OWN reading and it now lives beside the rule
+    /// that may overrule it (`MediaPlaybackTruth.playing(from:)`), which this
+    /// delegates to so the two can never drift. `reconcile` no longer calls it
+    /// directly: it asks the truth rule, which consults this and then checks the
+    /// answer against the track position.
     static func mediaPlaying(from status: VehicleState.MediaPlaybackStatus) -> Bool? {
-        switch status {
-        case .playing: return true
-        case .paused, .stopped: return false
-        case .unknown, .unrecognized: return nil
-        }
+        MediaPlaybackTruth.playing(from: status)
     }
 
     // Every keyed control now maps to a real §7.9 command (charge port joined the
@@ -994,6 +1062,13 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
     ///     `auto_conditioning_start`, returning the car to auto climate, then
     ///     optimistically shows `.auto` on ack with a settle-window hold so a stale
     ///     `Override`/absent frame can't immediately flip it back (MYR-272 discipline).
+    ///     **MYR-466 — and it is a REQUEST, not a result.** `auto_conditioning_start`
+    ///     is Tesla's HVAC POWER command; there is no Fleet command for the auto
+    ///     MODE, so a car already running in manual applies it, answers 200, and
+    ///     stays in manual. The optimistic Auto is therefore held pending a
+    ///     confirmation the car may never give, and a window that lapses on a
+    ///     disagreeing frame surfaces `.autoNotAdopted` instead of springing the
+    ///     segment back in silence. See `ClimateAutoConfirmation`.
     ///   • **Cool/Heat** are HONEST DISPLAY-ONLY: Tesla's API has no command to force
     ///     a manual cool/heat mode, so a tap sends NOTHING and mutates NOTHING — the
     ///     segment merely REFLECTS the mode the car reports (`reconcileClimateMode`).
@@ -1005,7 +1080,9 @@ final class LiveVehicleCommandExecutor: VehicleCommandExecutor {
             guard let self else { return }
             self.controls.climateMode = .auto
             self.knownFields.insert(.climateMode)
-            self.climateModeSettleHold = (want: .auto, until: Date().addingTimeInterval(self.settleWindow))
+            self.climateAutoPending = ClimateAutoConfirmation.Pending(
+                deadline: Date().addingTimeInterval(self.settleWindow)
+            )
             // `auto_conditioning_start` physically turns the HVAC ON, so move the
             // climate on/off tile in lockstep — optimistically on + held against a
             // stale `isClimateOn=false` frame — instead of lagging a telemetry frame.

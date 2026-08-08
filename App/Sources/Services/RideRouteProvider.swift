@@ -416,6 +416,55 @@ enum RideRouteGeometry {
         lengthMeters(polyline) / 1609.344
     }
 
+    /// Meters left along `polyline` from `point`'s nearest place ON it to its end
+    /// (MYR-472).
+    ///
+    /// The car is projected onto the route rather than matched to a vertex: a
+    /// vertex is wherever MKDirections happened to put one, so a car half a block
+    /// past the last one would report the whole block as still ahead of it. The
+    /// remainder is the unconsumed part of the segment the car sits on, plus every
+    /// segment after it.
+    ///
+    /// **This measures a POSITION against a LINE and nothing else.** It does not
+    /// know whether the point is anywhere near the route — a car three miles off
+    /// it still projects somewhere — so the caller decides whether the projection
+    /// is credible (`RiderLegRemaining.offRouteToleranceMeters`) and whether the
+    /// polyline is real road geometry at all (`RideRoutePolyline.isReal`). A
+    /// length is a length; the same division of labour `lengthMeters` documents.
+    ///
+    /// `nil` for a polyline that is not a line (fewer than two vertices), because
+    /// "how much of it is left" has no answer there.
+    static func remainingMeters(from point: CLLocationCoordinate2D, along polyline: [CLLocationCoordinate2D]) -> Double? {
+        guard polyline.count > 1 else { return nil }
+        let p = MKMapPoint(point)
+        var bestIndex = 0
+        var bestT: Double = 0
+        var bestDistance = Double.infinity
+        for i in 0..<(polyline.count - 1) {
+            let pa = MKMapPoint(polyline[i]), pb = MKMapPoint(polyline[i + 1])
+            let dx = pb.x - pa.x, dy = pb.y - pa.y
+            let lenSq = dx * dx + dy * dy
+            var t: Double = 0
+            if lenSq > 0 {
+                t = min(1, max(0, ((p.x - pa.x) * dx + (p.y - pa.y) * dy) / lenSq))
+            }
+            let proj = MKMapPoint(x: pa.x + t * dx, y: pa.y + t * dy)
+            let d = proj.distance(to: p)
+            if d < bestDistance {
+                bestDistance = d
+                bestIndex = i
+                bestT = t
+            }
+        }
+        var remaining = MKMapPoint(polyline[bestIndex]).distance(to: MKMapPoint(polyline[bestIndex + 1])) * (1 - bestT)
+        if bestIndex + 1 < polyline.count - 1 {
+            for i in (bestIndex + 1)..<(polyline.count - 1) {
+                remaining += MKMapPoint(polyline[i]).distance(to: MKMapPoint(polyline[i + 1]))
+            }
+        }
+        return remaining
+    }
+
     /// Whether the leg-1 route (car → pickup) must be refetched: the car has
     /// strayed farther than `thresholdMeters` from the cached polyline (took a
     /// different road). Distance-from-polyline, never a timer (MYR-177).
