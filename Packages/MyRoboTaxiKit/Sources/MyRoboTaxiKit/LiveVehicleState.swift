@@ -87,13 +87,45 @@ public final class LiveVehicleState {
     /// stale value on every frame.
     public var onStateChanged: (@MainActor (VehicleState, _ snapshotReadIssuedAt: Date) -> Void)?
 
+    /// MYR-449 — may a live `vehicle_update` ESTABLISH the state, rather than only
+    /// refresh one a cold snapshot already established?
+    ///
+    /// **THE ORDERING GUARANTEE WAS DOING A SECOND JOB NOBODY CHOSE FOR IT.**
+    /// `apply(.update:)` opened `guard let current = state else { return }`, on
+    /// CG-SM-4's perfectly good rule that a snapshot precedes the updates it
+    /// baselines. What that `return` also did — silently, for every consumer —
+    /// was make the cold REST `/snapshot` a SINGLE POINT OF FAILURE for the whole
+    /// live surface: with no snapshot in hand, a healthy socket delivering a
+    /// perfectly good frame every few seconds produced *nothing at all*, for the
+    /// life of the session, with no error, no log and no state to show for it.
+    ///
+    /// That is MYR-449. On the RIDER's side the snapshot is genuinely refusable
+    /// and genuinely skippable — a `403` latches `snapshotAccessDenied` per
+    /// vehicle for good (MYR-432), the MYR-319 ladder is bounded and then stops,
+    /// and MYR-440 records a viewer snapshot that "retried silently forever" while
+    /// the map sat on "Locating…". Any one of those left the tracking sheet with
+    /// no car marker and no motion over a car the server was streaming: the static
+    /// route and two pins the external testers reported as "an Apple Maps route".
+    ///
+    /// **DEFAULTS TO `false`, so the OWNER path is byte-identical by
+    /// construction.** The owner's sheet renders IDENTITY off this state (model,
+    /// VIN, software, seat capability) and MYR-387's `OwnerHomePresentation` gates
+    /// its whole content branch on `hasLiveSnapshotForActiveVehicle`; seeding
+    /// there would put a nameless car behind surfaces written to assume a snapshot
+    /// stands behind them. The rider's surfaces ask this state exactly one
+    /// question — *where is the car right now* — which is the question a delta can
+    /// answer on its own. The owner half is a disclosed gap, not a fix withheld:
+    /// the owner's equivalent recovery is MYR-387's standalone snapshot fallback.
+    private let seedsStateFromDeltas: Bool
+
     private let socket: TelemetrySocket
     private var eventTask: Task<Void, Never>?
     private var connectionTask: Task<Void, Never>?
 
-    public init(vehicleId: String, socket: TelemetrySocket) {
+    public init(vehicleId: String, socket: TelemetrySocket, seedsStateFromDeltas: Bool = false) {
         self.vehicleId = vehicleId
         self.socket = socket
+        self.seedsStateFromDeltas = seedsStateFromDeltas
     }
 
     /// Begin observing this vehicle: mirrors the connection state, subscribes on
@@ -144,7 +176,15 @@ public final class LiveVehicleState {
             snapshotReadIssuedAt = readIssuedAt
             onStateChanged?(snapshot, readIssuedAt)
         case .update(let payload):
-            guard let current = state else { return } // ordering: snapshot precedes updates
+            // MYR-449 — the ordering guarantee (CG-SM-4: a snapshot precedes the
+            // updates it baselines) is preserved whenever a snapshot is COMING.
+            // What changed is what happens when one never does: a bridge that
+            // seeds folds this frame onto `VehicleStateBaseline`, whose every
+            // field is the schema's own "nothing reported" value — including the
+            // `(0, 0)` no-fix sentinel — so the seed can only ever publish what
+            // the car itself sent. `snapshotReadIssuedAt` stays `nil`, which is
+            // the public signal that no snapshot stands behind these values.
+            guard let current = state ?? seededBaseline() else { return }
             let merged = VehicleStateMerger.apply(fields: payload.fields, to: current).state
             state = merged
             // MYR-351 — the delta's own fields are current, but its SNAPSHOT-ONLY
@@ -174,5 +214,13 @@ public final class LiveVehicleState {
             stop()
             onAccessRevoked?()
         }
+    }
+
+    /// MYR-449 — the fold target for a delta that arrived before any snapshot, or
+    /// `nil` on a bridge that does not seed (every owner consumer), which restores
+    /// the pre-MYR-449 `return` exactly.
+    private func seededBaseline() -> VehicleState? {
+        guard seedsStateFromDeltas else { return nil }
+        return VehicleStateBaseline.forDeltaSeed(vehicleId: vehicleId)
     }
 }

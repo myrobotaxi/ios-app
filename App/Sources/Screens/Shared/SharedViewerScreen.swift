@@ -1460,10 +1460,35 @@ struct SharedViewerScreen: View {
         )
     }
 
+    /// MYR-449 — the tracking surface's honest live state, resolved for this frame.
+    ///
+    /// Reads `trackingLiveWatch.tick` THROUGH `openedAt`'s observation: the watch
+    /// is `@Observable` and both properties are read here, so a tick re-runs this
+    /// body — which is the only thing that can move the escalation on a surface
+    /// where, by definition, no telemetry is arriving to move it.
+    private var trackingLiveState: RiderTrackingLiveState {
+        _ = viewerState.trackingLiveWatch.tick
+        return RiderTrackingLiveReport.resolve(
+            marker: trackingCarMarker,
+            openedAt: viewerState.trackingLiveWatch.openedAt,
+            now: Date()
+        )
+    }
+
+    /// The muted line under the status word.
+    ///
+    /// MYR-449 widened this from MYR-393's position-age qualifier to the WHOLE
+    /// honest ladder, because withholding the car marker (MYR-393, correct) left
+    /// a rider unable to tell a tracking surface with no data from an Apple-Maps
+    /// route preview — two situations, one picture, and the flattering reading is
+    /// the one that gets taken. The stale arm still delegates to
+    /// `RiderCarFreshnessNote` verbatim, so nothing about MYR-393's sentence moved.
     private var trackingFreshnessNote: String? {
-        RiderCarFreshnessNote.text(
+        RiderTrackingLiveReport.note(
+            state: trackingLiveState,
             marker: trackingCarMarker,
             lastUpdated: viewerState.trackingPositionRead.lastUpdated,
+            vehicleName: trackingVehicleName,
             now: Date()
         )
     }

@@ -264,6 +264,41 @@ actor AuthenticatingWebSocketChannel: WebSocketChannel {
 
     func sentFrames() -> [String] { sent }
 
+    /// MYR-449 — push a SERVER frame down this channel.
+    ///
+    /// Every use of this channel before now was "the socket is healthy and the car
+    /// says nothing" (MYR-319's asleep car). MYR-449's question is the opposite one
+    /// and could not be asked without this: *the car is streaming and the server IS
+    /// delivering viewer frames — does the rider's surface render them?* Prod
+    /// answered the first half for the external-beta rides (viewer-role
+    /// `mask_applied` inside every ride window); this is how the second half is
+    /// driven without a backend.
+    func emit(_ text: String) async {
+        guard !closed else { return }
+        enqueue(text)
+    }
+
+    /// A `vehicle_update` carrying the VIEWER-shaped field set — position, heading,
+    /// speed, status, `lastUpdated`. Deliberately NOT a full state: MYR-435 narrows
+    /// the shared-viewer mask to exactly this kind of frame, so a fixture carrying
+    /// owner fields would prove something no rider is ever sent.
+    static func viewerGPSFrame(
+        vehicleId: String,
+        latitude: Double,
+        longitude: Double,
+        speed: Int = 27,
+        heading: Int = 212,
+        status: String = "driving",
+        lastUpdated: String = "2026-08-06T00:11:44Z"
+    ) -> String {
+        """
+        {"type":"vehicle_update","payload":{"vehicleId":"\(vehicleId)","fields":{\
+        "latitude":\(latitude),"longitude":\(longitude),"heading":\(heading),\
+        "speed":\(speed),"status":"\(status)","lastUpdated":"\(lastUpdated)"},\
+        "timestamp":"\(lastUpdated)"}}
+        """
+    }
+
     func closeCode() -> Int? { reportedCloseCode }
 
     /// MYR-432 — close the way a SERVER does, with a code. The code is set BEFORE

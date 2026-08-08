@@ -157,7 +157,22 @@ final class RiderLiveVehicleLocator {
             return
         }
         let source = LiveVehicleTelemetrySource(
-            liveState: LiveVehicleState(vehicleId: next, socket: socket)
+            // MYR-449 — THE RIDER'S BRIDGE SEEDS FROM DELTAS, and this one argument
+            // is the fix for "live tracking never engages". Until it existed, a
+            // `vehicle_update` for a vehicle whose cold `/snapshot` had not landed
+            // was discarded by `LiveVehicleState`, so the rider's whole live
+            // surface hung on one REST read the VIEWER path can legitimately never
+            // complete — a `403` latches `snapshotAccessDenied` for good (MYR-432),
+            // the MYR-319 ladder is bounded, and MYR-440 recorded a viewer snapshot
+            // retrying silently forever. The car streamed, the server delivered
+            // viewer frames throughout every external-beta ride, and the tracking
+            // sheet drew a route with no car on it.
+            //
+            // Safe here and NOT on the owner path for a reason that is about what
+            // each side ASKS this state: the rider asks only where the car is, which
+            // a delta answers on its own, while the owner's sheet renders identity
+            // (model, VIN, software, seat capability) that only a snapshot carries.
+            liveState: LiveVehicleState(vehicleId: next, socket: socket, seedsStateFromDeltas: true)
         )
         telemetrySource = source
         // `start()` opens the socket (idempotent) and fetches the cold snapshot.
@@ -280,8 +295,71 @@ final class RiderLiveVehicleLocator {
         }
     }
 
+    /// MYR-449 — RE-ESTABLISH A STREAM THAT HAS GONE QUIET WITHOUT SAYING SO.
+    ///
+    /// **THE CLIENT CANNOT TELL A PARKED CAR FROM A DARK SOCKET, AND TWO REAL
+    /// SERVER HAZARDS PRODUCE EXACTLY THE SECOND** (telemetry investigation on
+    /// this issue, both in `internal/ws`):
+    ///
+    ///   • A transient `ResolveRole` failure at handshake is logged and skipped,
+    ///     leaving no role entry. `roleFor` then answers `Role("")`, `mask.For`
+    ///     returns the DENY-ALL zero mask, and **every** frame for that vehicle is
+    ///     silently suppressed for the life of the connection. The 60s
+    ///     `AccessRevalidator` reasons about vehicle ids only, never roles, so it
+    ///     never closes the session. One momentary DB blip buys a permanently dark
+    ///     socket, with `auth_ok` received, no error frame and no close.
+    ///   • The handshake access set is written once and only ever NARROWS, so a
+    ///     grant redeemed after the socket opened (or inside the 5-minute vehicle
+    ///     cache TTL) is never picked up; an explicit `subscribe` is refused while
+    ///     the connection deliberately stays open, so the SDK gets no reconnect
+    ///     trigger either.
+    ///
+    /// From here both look identical to a car that is simply asleep, and the
+    /// pre-MYR-449 client waited on all three for ever — the MYR-389/MYR-402
+    /// "works after a force-quit" signature, on the surface a rider stares at
+    /// hardest. So after the grace this stops waiting: drop the subscription and
+    /// re-take it, which re-runs the handshake and therefore re-resolves BOTH the
+    /// role and the access set.
+    ///
+    /// **BOUNDED, and that bound is the point.** `maxDarkStreamRecoveries` attempts
+    /// per watched vehicle, because the honest end state for a car that is really
+    /// asleep is the sheet SAYING so (`RiderTrackingLiveState.unavailable`), not a
+    /// client reconnecting at it for the rest of the ride. A reconnect loop is the
+    /// MYR-432 "~1–2 requests per second, forever" defect wearing a fix's clothes.
+    static let maxDarkStreamRecoveries = 2
+
+    @ObservationIgnored private var darkStreamRecoveries = 0
+
+    /// How many times this locator has re-established a dark stream. Published for
+    /// the tests — a recovery that cannot be counted cannot be shown to be bounded.
+    private(set) var darkStreamRecoveryCount = 0
+
+    func recoverDarkStream() {
+        guard started, let vehicleID = watchedVehicleID else { return }
+        guard darkStreamRecoveries < Self.maxDarkStreamRecoveries else { return }
+        darkStreamRecoveries += 1
+        darkStreamRecoveryCount += 1
+        // Through `watch(vehicleID:)` in both directions rather than a bespoke
+        // teardown: it is the ONE place that owns the source's lifecycle, and a
+        // second copy of that sequence is a second place to leak a subscription.
+        // The `nil` hop is what makes the re-take non-idempotent — `watch` guards
+        // on an unchanged id precisely so a re-adopt costs nothing.
+        watch(vehicleID: nil)
+        watch(vehicleID: vehicleID)
+        // The subscribe alone reaches a socket that is already up, and a dark
+        // socket IS already up — so the connection itself has to be recycled for
+        // the handshake to re-run. `connect()` after a `disconnect()` is the same
+        // pair `handleBackground`/`handleForeground` perform.
+        let socket = self.socket
+        Task {
+            await socket.disconnect()
+            await socket.connect()
+        }
+    }
+
     func stop() {
         started = false
+        darkStreamRecoveries = 0
         loadTask?.cancel()
         loadTask = nil
         accessTask?.cancel()
