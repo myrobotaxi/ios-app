@@ -2,19 +2,192 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- MYR-247 — Apple privacy manifest (required for App Store submission).
-	     The app does no cross-app tracking and declares only the required-reason
-	     APIs it actually calls. UserDefaults is the sole required-reason API in
-	     use (App/Sources: AccountStorage, AuthSession, RootView) — it stores this
-	     app's own session/account state and is never shared, so reason CA92.1
-	     (access info from the same app) applies. No file-timestamp, system-boot,
-	     disk-space, or active-keyboard APIs are used. -->
+	<!-- MYR-247 / MYR-434 — Apple privacy manifest (required for App Store submission).
+	     XcodeGen picks this up as a RESOURCE purely from its position in `App/Sources`
+	     (there is no `project.yml` entry for it) and copies it to the app bundle ROOT,
+	     which is where Apple looks. The widget extension has its OWN manifest at
+	     `Widgets/Sources/PrivacyInfo.xcprivacy` — a manifest is bundle-scoped, so this
+	     file does NOT describe the `.appex`. See that file for why its declaration is
+	     empty and what that emptiness means.
+
+	     MYR-434 — every type below is DERIVED FROM A CALL SITE, not from a template.
+	     `PrivacyManifestTests` pins this list against a constant, so a new collecting
+	     code path fails a test instead of silently reintroducing the drift that made
+	     this array empty in the first place. The rule that keeps this file true:
+	     COLLECTION IS TRANSMISSION. Anything that only ever lives in `UserDefaults`
+	     is not collected and is not declared.
+
+	     Everything is `Linked` = true and `Tracking` = false, for one structural
+	     reason each. Linked: there is no anonymous mode — every REST call carries the
+	     account's bearer token, so nothing reaches us detached from an identity.
+	     Tracking: there are no third-party dependencies at all (`project.yml` pins one
+	     remote package, our own `contracts`; `MyRoboTaxiKit` and `DesignSystem` add
+	     zero), no `AdSupport`/`AppTrackingTransparency`/`ASIdentifierManager` anywhere,
+	     no advertising identifier, and no data is shared with a data broker. That is
+	     also why `NSPrivacyTrackingDomains` is empty.
+
+	     Type-by-type, with the field that actually crosses the wire:
+
+	       Name / Email — `AppleSignInRequest.fullName` / `.email` on
+	         `POST /api/auth/apple` (`AuthSession.signIn` reads them off the
+	         `ASAuthorizationAppleIDCredential`; Apple only supplies them on the FIRST
+	         authorization, but a first authorization is still a collection).
+
+	       Precise location — `RidePlace.lat`/`.lng` on `POST /api/ride-requests`.
+	         The rider's device fix becomes the `pickup` coordinate
+	         (`LiveUserLocation` → `SharedViewerState.pinDropCoordinate` →
+	         `LiveRideRequestService.createBody`). PRECISE, not coarse: 100 m
+	         `desiredAccuracy` is far finer than Apple's ~3 sq km coarse threshold, and
+	         the app never requests reduced accuracy. This one string also covers the
+	         vehicle's coordinates that `/privacy` discloses — see the note below.
+
+	       User ID — the Apple account identifier (`sub`) inside the identity token,
+	         which is how the server recognises a returning signer-in.
+
+	       Device ID — the APNs `deviceToken` on `PUT /api/push/devices` and the
+	         ActivityKit `activityToken` on
+	         `POST /api/ride-requests/{id}/activity-token`. Device-level identifiers
+	         stored against the account; both are deleted on sign-out / ride end.
+
+	       Other user content — free text the user types that we store: the share
+	         invite `label` (`CreateShareInviteRequest`), the vehicle `plate`
+	         (`PUT /api/tesla/vehicles/{id}/plate`), and the `label`/`address` on
+	         `pickup`/`dropoff`.
+
+	       Other data types — vehicle telemetry: VIN, charge, cabin, media, service
+	         state and drive history. Declared even though THIS BINARY only ever
+	         RECEIVES it (REST snapshot + telemetry WebSocket; no outbound frame
+	         carries a coordinate, and `LastKnownVehiclePositionStore` is a local cache
+	         only). It is collected FROM TESLA BY OUR SERVER in connection with the
+	         app and linked to the account, `/privacy` says so at length, and the
+	         nutrition label has to agree with `/privacy`. Under-declaring is the bug
+	         MYR-434 exists to fix, so the tie goes to declaring.
+
+	     DELIBERATELY NOT DECLARED — phone number and other-people's contact info.
+	     MYR-382 removed the "booked for someone else" passenger UI. The wire fields
+	     `RideRequestCreateRequest.passengerName`/`.passengerPhone` still EXIST, but
+	     `SharedViewerState.draftPassenger` has no writer anywhere in `App/Sources`
+	     (only `App/Tests`), so on a shipping build both are always nil and the
+	     optional encoder omits the keys entirely — a user cannot enter a phone number
+	     at all. `/privacy` states the same thing in prose ("there is no way to book on
+	     someone else's behalf"). If anyone ever re-adds a writer to `draftPassenger`,
+	     THIS declaration is what has to change first. A third party's NAME can still
+	     be typed into the share invite `label`, and that is covered by
+	     `…OtherUserContent` above rather than by a contact-info type.
+
+	     Also absent, verified by grep across `App`, `Widgets` and `Packages`: health,
+	     fitness, contacts, photos, camera, microphone, purchases, browsing history,
+	     search history (destination search runs through `MKLocalSearchCompleter`, so
+	     those terms go to Apple and never to us), sensitive info, analytics and
+	     product-interaction data.
+
+	     REQUIRED-REASON APIs — `UserDefaults` is still the only category this app
+	     calls, so CA92.1 (access info from the same app) remains the whole story: it
+	     holds this app's own session, mode choice, recent destinations, push
+	     registration, Live Activity ride ids, dispatch pointer, last-known vehicle
+	     position and first-run demo flag, and none of it is shared with another app or
+	     developer. There is no App Group. The call sites are far broader than the
+	     three this comment used to name — `AccountStorage`, `AuthSession`, `RootView`,
+	     `Places/RecentDestinations`, `Push/PushRegistrationStore`,
+	     `Push/PushRegistrationCoordinator`, `LiveActivity/RideActivityRideIdentity`,
+	     `LiveActivity/RideActivityCoordinator`, `Services/OwnerDispatchPointer`,
+	     `Services/LiveRideRequestService`, `Vehicles/LastKnownVehiclePosition`,
+	     `Screens/Demo/FirstRunDemo`, `Screens/Shared/SharedViewerState` — which is why
+	     the list is described by category here instead of enumerated and left to rot.
+	     Still ZERO use of the other three categories: no file-timestamp API
+	     (`FileManager` appears in no Swift file in the repo), no system-boot-time API,
+	     no disk-space API, no active-keyboard API. -->
 	<key>NSPrivacyTracking</key>
 	<false/>
 	<key>NSPrivacyTrackingDomains</key>
 	<array/>
 	<key>NSPrivacyCollectedDataTypes</key>
-	<array/>
+	<array>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeName</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeEmailAddress</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypePreciseLocation</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeUserID</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeDeviceID</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeOtherUserContent</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeOtherDataTypes</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSPrivacyAccessedAPITypes</key>
 	<array>
 		<dict>
