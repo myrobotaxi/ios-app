@@ -333,7 +333,9 @@ public final class SharedViewerState {
         colorName: "",
         plate: "",
         seatHeat: false,
-        seatVent: false,
+        // MYR-441 — a placeholder knows nothing about the car's seats, and
+        // `false` here was a claim rather than a default.
+        seatClimate: .unknown,
         activity: unknownActivity
     )
 

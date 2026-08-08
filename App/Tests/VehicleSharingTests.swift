@@ -1774,7 +1774,7 @@ final class ShareViewerControlTests: XCTestCase {
         func row(_ flag: Bool?) async -> VehicleRideShareRow? {
             let vehicle = Vehicle(
                 id: base.id, name: base.name, model: base.model, colorName: base.colorName,
-                plate: base.plate, seatHeat: base.seatHeat, seatVent: base.seatVent,
+                plate: base.plate, seatHeat: base.seatHeat, seatClimate: base.seatClimate,
                 activity: base.activity, rideShareEnabled: flag
             )
             let service = makeService(ScriptedShareEndpoint(), vehicles: [vehicle])

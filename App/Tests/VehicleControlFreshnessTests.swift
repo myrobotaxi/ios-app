@@ -133,39 +133,44 @@ final class VehicleControlFreshnessTests: XCTestCase {
 final class SeatClimatePresentationTests: XCTestCase {
 
     func testSupportsCoolWhenVent() {
-        XCTAssertTrue(SeatClimatePresentation.supportsCool(seatVent: true, driverMode: .heat, passengerMode: .heat))
+        XCTAssertTrue(SeatClimatePresentation.supportsCool(
+            capability: .ventilated, driverMode: .heat, passengerMode: .heat))
     }
 
     // MARK: MYR-299 — capability from cooler-field PRESENCE, not runtime state
 
     /// The capability matrix. A car without ventilated seats never emits Tesla
-    /// protos 237/238, so presence (non-nil, INCLUDING 0) is the capability and
-    /// nil/nil is an honest "no cooled seats".
-    func testHasVentilatedSeatsFromCoolerFieldPresence() {
-        let cases: [(left: Int?, right: Int?, vent: Bool?, want: Bool, why: String)] = [
-            (nil, nil, nil, false,
-             "no cooler fields, no vent flag → the car never emitted 237/238; honest heat-only"),
-            (0, nil, nil, true,
+    /// protos 237/238, so presence (non-nil, INCLUDING 0) is a positive detection.
+    ///
+    /// **MYR-441 changed exactly the nil/nil/nil-shaped rows** — see
+    /// `testAbsenceIsUnknownRatherThanAConfidentNo`. Presence still detects; what
+    /// absence no longer does is DENY.
+    func testCapabilityFromCoolerFieldPresence() {
+        let cases: [(left: Int?, right: Int?, vent: Bool?, want: SeatClimateCapability, why: String)] = [
+            (nil, nil, nil, .unknown,
+             "no cooler fields, no vent flag → the car has said NOTHING about its seats (MYR-441)"),
+            (0, nil, nil, .ventilated,
              "a ZERO driver cooler is present-but-off — the whole point of MYR-299; must offer Cool"),
-            (nil, 0, nil, true,
+            (nil, 0, nil, .ventilated,
              "presence on either side is enough"),
-            (0, 0, nil, true,
+            (0, 0, nil, .ventilated,
              "both seats off on a vented car — the client's exact case, previously locked out of Cool"),
-            (2, 0, nil, true,
+            (2, 0, nil, .ventilated,
              "actively cooling driver, passenger off"),
-            (3, 3, nil, true,
+            (3, 3, nil, .ventilated,
              "both cooling"),
-            (nil, nil, true, true,
+            (nil, nil, true, .ventilated,
              "no cooler fields yet, but the car says ventilation is ON — belt-and-braces OR-signal"),
-            (nil, nil, false, false,
-             "vent OFF is a runtime reading, NOT proof the hardware is absent — but on its own it is no evidence either, so stay honest"),
-            (0, 0, false, true,
+            (nil, nil, false, .unknown,
+             "vent OFF is a runtime reading, NOT proof the hardware is absent, and on its own it is no evidence either way"),
+            (0, 0, false, .ventilated,
              "presence wins over the runtime vent flag: this is the shipped bug, a vented car reporting vent=off"),
         ]
 
         for c in cases {
             XCTAssertEqual(
-                SeatClimatePresentation.hasVentilatedSeats(
+                SeatClimatePresentation.capability(
+                    seatCoolingCapable: nil,
                     seatCoolerLeft: c.left, seatCoolerRight: c.right, seatVentEnabled: c.vent
                 ),
                 c.want,
@@ -180,38 +185,40 @@ final class SeatClimatePresentationTests: XCTestCase {
     /// The FULL precedence matrix: capability (true/false/nil) × cooler-field
     /// presence × the runtime vent flag. The spec field decides whenever it is
     /// present, in BOTH directions; only its absence falls back to MYR-299.
-    func testHasVentilatedSeatsPrefersTheSpecFieldOverTheHeuristic() {
-        let cases: [(capable: Bool?, left: Int?, right: Int?, vent: Bool?, want: Bool, why: String)] = [
+    func testCapabilityPrefersTheSpecFieldOverTheHeuristic() {
+        let cases: [(capable: Bool?, left: Int?, right: Int?, vent: Bool?, want: SeatClimateCapability, why: String)] = [
             // capable == true — authoritative yes, whatever telemetry says.
-            (true, nil, nil, nil, true,
+            (true, nil, nil, nil, .ventilated,
              "the spec says the car HAS cooled seats before any cooler telemetry has ever arrived"),
-            (true, nil, nil, false, true,
+            (true, nil, nil, false, .ventilated,
              "the runtime vent flag being off is not a contradiction of the spec"),
-            (true, 0, 0, false, true, "spec and heuristic agree"),
+            (true, 0, 0, false, .ventilated, "spec and heuristic agree"),
 
             // capable == false — authoritative NO. The schema forbids offering the
             // control at all, even greyed out: it would imply hardware that is not
-            // there. This OUTRANKS every heuristic signal.
-            (false, nil, nil, nil, false, "a heat-only car, plainly"),
-            (false, 0, 0, nil, false,
+            // there. This OUTRANKS every heuristic signal. MYR-441 leaves this arm
+            // exactly as it was: an explicit false is the ONE thing that may deny.
+            (false, nil, nil, nil, .heatOnly, "a heat-only car, plainly"),
+            (false, 0, 0, nil, .heatOnly,
              "cooler read-backs present at 0 would make the heuristic fire — the spec overrules it"),
-            (false, 2, 3, nil, false,
+            (false, 2, 3, nil, .heatOnly,
              "even non-zero cooler read-backs lose to an explicit spec false (a firmware quirk, not hardware)"),
-            (false, nil, nil, true, false,
+            (false, nil, nil, true, .heatOnly,
              "and the runtime vent flag cannot conjure hardware the spec says is absent"),
 
             // capable == nil — absent: a pre-MYR-308 server, or one that has not
             // finished a vehicle-config read. The schema REQUIRES the fallback
             // (hiding the control outright would re-break the client's car).
-            (nil, nil, nil, nil, false, "nothing known at all → honest heat-only"),
-            (nil, 0, 0, false, true,
+            (nil, nil, nil, nil, .unknown,
+             "nothing known at all → UNKNOWN, which is what the schema's own wording demands (MYR-441)"),
+            (nil, 0, 0, false, .ventilated,
              "the MYR-299 client car: presence wins while the spec is unknown"),
-            (nil, nil, nil, true, true,
+            (nil, nil, nil, true, .ventilated,
              "vent-on alone still qualifies while the spec is unknown, per MYR-299's OR-signal"),
         ]
         for c in cases {
             XCTAssertEqual(
-                SeatClimatePresentation.hasVentilatedSeats(
+                SeatClimatePresentation.capability(
                     seatCoolingCapable: c.capable,
                     seatCoolerLeft: c.left, seatCoolerRight: c.right, seatVentEnabled: c.vent
                 ),
@@ -225,37 +232,87 @@ final class SeatClimatePresentationTests: XCTestCase {
     /// End-to-end: a spec-declared heat-only car keeps the honest "SEAT HEATING"
     /// label and is offered NO Heat↔Cool toggle — even though its cooler read-backs
     /// are present and the old presence rule would have offered one.
+    ///
+    /// **This is the byte-identity guard for `ownerVehicleSeatsHeatOnly`**: MYR-441
+    /// must not have moved the one car the server authoritatively describes.
     func testSpecHeatOnlyCarGetsNoToggleEvenWhenTheHeuristicWouldFire() {
-        let capable = SeatClimatePresentation.hasVentilatedSeats(
+        let capability = SeatClimatePresentation.capability(
             seatCoolingCapable: false, seatCoolerLeft: 0, seatCoolerRight: 0, seatVentEnabled: false
         )
-        XCTAssertFalse(capable)
-        XCTAssertFalse(
-            SeatClimatePresentation.supportsCool(seatVent: capable, driverMode: .heat, passengerMode: .heat)
+        XCTAssertEqual(capability, .heatOnly)
+        let supportsCool = SeatClimatePresentation.supportsCool(
+            capability: capability, driverMode: .heat, passengerMode: .heat)
+        XCTAssertFalse(supportsCool)
+        XCTAssertEqual(
+            SeatClimatePresentation.sectionLabel(capability: capability, supportsCool: supportsCool),
+            "SEAT HEATING",
+            "an AUTHORITATIVE no is still allowed to say so — that arm is untouched by MYR-441"
         )
-        XCTAssertEqual(SeatClimatePresentation.sectionLabel(supportsCool: capable), "SEAT HEATING")
     }
 
     /// The mirror: `true` offers the toggle before the car has ever actuated a
     /// cooler, which is the whole point of having a spec field.
     func testSpecCapableCarOffersCoolWithNoCoolerTelemetryYet() {
-        let capable = SeatClimatePresentation.hasVentilatedSeats(
+        let capability = SeatClimatePresentation.capability(
             seatCoolingCapable: true, seatCoolerLeft: nil, seatCoolerRight: nil, seatVentEnabled: nil
         )
-        XCTAssertTrue(capable)
-        XCTAssertTrue(
-            SeatClimatePresentation.supportsCool(seatVent: capable, driverMode: .heat, passengerMode: .heat)
+        XCTAssertEqual(capability, .ventilated)
+        let supportsCool = SeatClimatePresentation.supportsCool(
+            capability: capability, driverMode: .heat, passengerMode: .heat)
+        XCTAssertTrue(supportsCool)
+        XCTAssertEqual(
+            SeatClimatePresentation.sectionLabel(capability: capability, supportsCool: supportsCool),
+            "SEAT CLIMATE"
         )
-        XCTAssertEqual(SeatClimatePresentation.sectionLabel(supportsCool: capable), "SEAT CLIMATE")
     }
 
-    /// Tolerant absence: before the first snapshot every input is nil, and the
-    /// section must stay honestly heat-only rather than guessing either way.
-    func testHasVentilatedSeatsIsFalseBeforeAnySnapshot() {
-        XCTAssertFalse(
-            SeatClimatePresentation.hasVentilatedSeats(
-                seatCoolerLeft: nil, seatCoolerRight: nil, seatVentEnabled: nil
-            )
+    // MARK: MYR-441 — absence is UNKNOWN, and unknown is not a no
+
+    /// The defect this issue closes on this surface. Before it, every input being
+    /// `nil` — no snapshot yet, a pre-MYR-308 server, or a response whose seat
+    /// fields were withheld — produced `false`, i.e. the SAME value as a car the
+    /// contract authoritatively describes as heat-only. The section then asserted
+    /// "SEAT HEATING" about a car nobody had read.
+    ///
+    /// The contract's own words on `seatCoolingCapable` are the acceptance
+    /// criterion: absence *"does NOT mean 'no seat cooling'"*.
+    func testAbsenceIsUnknownRatherThanAConfidentNo() {
+        let capability = SeatClimatePresentation.capability(
+            seatCoolingCapable: nil, seatCoolerLeft: nil, seatCoolerRight: nil, seatVentEnabled: nil
+        )
+        XCTAssertEqual(capability, .unknown, "no snapshot is not evidence of no hardware")
+        XCTAssertNotEqual(capability, .heatOnly, "and it must never collapse onto the authoritative no")
+    }
+
+    /// What `.unknown` RENDERS: the neutral region name, and still no toggle.
+    ///
+    /// Both halves matter and they pull in opposite directions. The toggle stays
+    /// absent because offering seat cooling on a car that may not have it is the
+    /// schema's own prohibition; the LABEL stops denying because "SEAT HEATING" is
+    /// a sentence about the hardware. That separation is the whole fix — the
+    /// header had been carrying the value.
+    func testUnknownCapabilityRendersTheNeutralLabelAndNoToggle() {
+        let supportsCool = SeatClimatePresentation.supportsCool(
+            capability: .unknown, driverMode: .heat, passengerMode: .heat)
+        XCTAssertFalse(supportsCool, "a control the car may not have must not be offered")
+
+        let label = SeatClimatePresentation.sectionLabel(
+            capability: .unknown, supportsCool: supportsCool)
+        XCTAssertEqual(label, "SEATS")
+        XCTAssertNotEqual(label, "SEAT HEATING", "the denial is exactly what MYR-441 removes")
+    }
+
+    /// A seat ACTIVELY reading cool still wins, even with the capability unknown —
+    /// MYR-280's safety net is unchanged, and it is the one route by which an
+    /// `.unknown` car reaches "SEAT CLIMATE" and a working toggle.
+    func testAnActivelyCoolingSeatStillOverridesAnUnknownCapability() {
+        let supportsCool = SeatClimatePresentation.supportsCool(
+            capability: .unknown, driverMode: .cool, passengerMode: .heat)
+        XCTAssertTrue(supportsCool)
+        XCTAssertEqual(
+            SeatClimatePresentation.sectionLabel(capability: .unknown, supportsCool: supportsCool),
+            "SEAT CLIMATE",
+            "a snowflake must never sit under a label that denies cooling"
         )
     }
 
@@ -264,47 +321,46 @@ final class SeatClimatePresentationTests: XCTestCase {
     /// combination that failed for the client — `supportsCool` used to see
     /// `seatVent: false` (the runtime flag) and neither mode `.cool`.
     func testVentedCarWithBothSeatsOffOffersCool() {
-        let capable = SeatClimatePresentation.hasVentilatedSeats(
-            seatCoolerLeft: 0, seatCoolerRight: 0, seatVentEnabled: false
+        let capability = SeatClimatePresentation.capability(
+            seatCoolingCapable: nil, seatCoolerLeft: 0, seatCoolerRight: 0, seatVentEnabled: false
         )
+        let supportsCool = SeatClimatePresentation.supportsCool(
+            capability: capability, driverMode: .heat, passengerMode: .heat)
         XCTAssertTrue(
-            SeatClimatePresentation.supportsCool(
-                seatVent: capable, driverMode: .heat, passengerMode: .heat
-            ),
+            supportsCool,
             "a car that emits seat-cooler telemetry HAS cooled seats even with both off"
         )
-        XCTAssertEqual(SeatClimatePresentation.sectionLabel(supportsCool: capable), "SEAT CLIMATE")
-    }
-
-    /// The contrast half: a genuinely heat-only car is unaffected — it never emits
-    /// 237/238, so it keeps the honest "SEAT HEATING" label and no toggle.
-    func testHeatOnlyCarStillGetsNoToggleUnderTheNewPredicate() {
-        let capable = SeatClimatePresentation.hasVentilatedSeats(
-            seatCoolerLeft: nil, seatCoolerRight: nil, seatVentEnabled: nil
+        XCTAssertEqual(
+            SeatClimatePresentation.sectionLabel(capability: capability, supportsCool: supportsCool),
+            "SEAT CLIMATE"
         )
-        XCTAssertFalse(
-            SeatClimatePresentation.supportsCool(
-                seatVent: capable, driverMode: .heat, passengerMode: .heat
-            )
-        )
-        XCTAssertEqual(SeatClimatePresentation.sectionLabel(supportsCool: capable), "SEAT HEATING")
     }
 
     func testSupportsCoolWhenASeatReadsCoolEvenWithoutVentFlag() {
         // The client's incoherence: a seat streaming a cool state on a car whose
         // vent flag is false must STILL offer the toggle (and read "SEAT CLIMATE"),
         // never a snowflake stranded under "SEAT HEATING".
-        XCTAssertTrue(SeatClimatePresentation.supportsCool(seatVent: false, driverMode: .cool, passengerMode: .heat))
-        XCTAssertTrue(SeatClimatePresentation.supportsCool(seatVent: false, driverMode: .heat, passengerMode: .cool))
+        XCTAssertTrue(SeatClimatePresentation.supportsCool(
+            capability: .heatOnly, driverMode: .cool, passengerMode: .heat))
+        XCTAssertTrue(SeatClimatePresentation.supportsCool(
+            capability: .heatOnly, driverMode: .heat, passengerMode: .cool))
     }
 
     func testHeatOnlyCarDoesNotSupportCool() {
-        XCTAssertFalse(SeatClimatePresentation.supportsCool(seatVent: false, driverMode: .heat, passengerMode: .heat))
+        XCTAssertFalse(SeatClimatePresentation.supportsCool(
+            capability: .heatOnly, driverMode: .heat, passengerMode: .heat))
     }
 
     func testSectionLabelIsHonest() {
-        XCTAssertEqual(SeatClimatePresentation.sectionLabel(supportsCool: true), "SEAT CLIMATE")
-        XCTAssertEqual(SeatClimatePresentation.sectionLabel(supportsCool: false), "SEAT HEATING")
+        XCTAssertEqual(
+            SeatClimatePresentation.sectionLabel(capability: .ventilated, supportsCool: true),
+            "SEAT CLIMATE")
+        XCTAssertEqual(
+            SeatClimatePresentation.sectionLabel(capability: .heatOnly, supportsCool: false),
+            "SEAT HEATING")
+        XCTAssertEqual(
+            SeatClimatePresentation.sectionLabel(capability: .unknown, supportsCool: false),
+            "SEATS")
     }
 
     func testIconIsSingleMetaphorPerMode() {

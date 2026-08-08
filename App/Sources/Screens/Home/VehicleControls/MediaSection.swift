@@ -66,6 +66,14 @@ struct MediaSection: View {
         Binding(get: { controls.scrubPercent }, set: { executor.setScrubPercent($0) })
     }
 
+    /// MYR-441 — the getter still answers `0` for an unknown volume, and that is
+    /// now safe because nothing DRAWS it: the row passes `showsValue: false`, so
+    /// `MRTSlider` renders the bare track with no fill and no thumb. Before this,
+    /// the 0 reached the thumb and pinned it to the left edge over an empty track,
+    /// which is precisely how this control draws a car that is MUTED — a confident
+    /// reading of a value the car had never reported. The binding keeps a real
+    /// `Double` because the drag must still work: setting the volume is also what
+    /// CONFIRMS the field (MYR-251) and returns the slider to its known rendering.
     private var volumeBinding: Binding<Double> {
         Binding(
             get: { volumeKnown ? controls.volume : 0 },
@@ -145,10 +153,24 @@ struct MediaSection: View {
 
                 HStack(spacing: 12) {
                     Image(systemName: "speaker.wave.2.fill").font(.system(size: 15)).foregroundStyle(Color.mrtTextSec)
-                    MRTSlider(value: volumeBinding, trackHeight: 4)
+                    MRTSlider(value: volumeBinding, trackHeight: 4, showsValue: volumeKnown)
+                    // MYR-441 — the honest-unknown mark, and the ONLY thing this
+                    // row gains. It appears solely on the unknown branch, so a
+                    // known volume is byte-identical to before; the row carried no
+                    // text at all, so a bare track with nothing beside it said
+                    // nothing about WHY it was empty. This is the fan row's own
+                    // grammar one card up ("— / 10"), and `ClimateTemperatureText
+                    // .dash` is the app's ONE unknown glyph rather than a second
+                    // literal (it is asserted equal to `BatteryReadout.dash`).
+                    if let volumeText = VehicleControlReadout.volumeText(known: volumeKnown) {
+                        Text(volumeText)
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.mrtText)
+                    }
                 }
                 // Unknown volume (live path, uncommanded) shows a neutral slider at
-                // rest, dimmed — no asserted level (MYR-251).
+                // rest, dimmed — no asserted level (MYR-251/441).
                 .opacity(volumeKnown ? 1 : 0.5)
                 .padding(.top, 16)
             }

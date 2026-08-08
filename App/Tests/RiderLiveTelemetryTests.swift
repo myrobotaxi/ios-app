@@ -383,7 +383,7 @@ final class RiderLiveTelemetryTests: XCTestCase {
         XCTAssertNil(projected.vin, "a VIN must never reach the rider from telemetry")
         XCTAssertNil(projected.softwareVersion)
         XCTAssertNil(projected.fsdVersion)
-        XCTAssertEqual(projected.seatVent, row.seatVent)
+        XCTAssertEqual(projected.seatClimate, row.seatClimate)
         XCTAssertEqual(projected.seatHeat, row.seatHeat)
     }
 

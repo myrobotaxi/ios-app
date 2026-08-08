@@ -9,6 +9,26 @@ import Foundation
 //
 // Everything here is pure; the views (`ClimateSection.SeatRow`) read it and add no
 // styling of their own beyond the existing tokens.
+
+/// MYR-441 — whether this Tesla HAS ventilated (cooled) seats, in the three
+/// answers the wire can actually support.
+///
+/// This replaces a non-optional `Bool` (`Vehicle.seatVent`) that had no way to say
+/// "nobody has asked yet", so every unread car was filed as heat-only and the
+/// section asserted a **no** it had no evidence for. Making the third state
+/// representable is the fix; the label and the toggle merely read it.
+public enum SeatClimateCapability: Equatable, Sendable {
+    /// The car has cooled seats — the REST spec field says so, or a seat-cooler
+    /// read-back is present (MYR-299/308).
+    case ventilated
+    /// The car does NOT have cooled seats, on the contract's own authority
+    /// (`seatCoolingCapable == false`). The one arm that may deny cooling.
+    case heatOnly
+    /// Not established. No snapshot yet, a server predating MYR-308, or a
+    /// response whose seat fields were withheld. **Never rendered as a no.**
+    case unknown
+}
+
 enum SeatClimatePresentation {
     // Unmistakable, single-metaphor icons: a flame is heat, a snowflake is cool.
     // The old "sun.max.fill" for heat read as brightness, not warmth ("some sun
@@ -42,9 +62,6 @@ enum SeatClimatePresentation {
     /// whatever the cooler fields are doing. `false` is NOT proof of absence, so
     /// only `true` contributes.
     ///
-    /// Tolerant of absence throughout: before the first snapshot every input is
-    /// `nil` and the section stays honestly heat-only until the car says otherwise.
-    ///
     /// MYR-308 — contracts 0.16.0 finally carries the REAL capability:
     /// `seatCoolingCapable`, read by the server from Tesla's REST
     /// `vehicle_data.vehicle_config.has_seat_cooling`. It OUTRANKS the heuristic in
@@ -63,14 +80,50 @@ enum SeatClimatePresentation {
     ///     vehicle-config read yet. The schema requires the fall-back to the MYR-299
     ///     telemetry-presence heuristic — NOT hiding the control outright, which
     ///     would re-break the client's ventilated car on every pre-0.16.0 server.
-    static func hasVentilatedSeats(
-        seatCoolingCapable: Bool? = nil,
+    ///
+    /// **MYR-441 — THIS RETURNED A NON-OPTIONAL `Bool` AND SO HAD NOWHERE TO PUT
+    /// "NOBODY HAS ASKED".** Its own doc conceded the gap ("before the first
+    /// snapshot every input is `nil` and the section stays honestly heat-only"),
+    /// and the contract contradicts it in as many words: an absent
+    /// `seatCoolingCapable` *"does NOT mean 'no seat cooling'"*. The function is
+    /// **deleted rather than kept as a wrapper** — a `Bool` spelling of this
+    /// question that still compiles is exactly the foot-gun MYR-369 removed
+    /// `SharePermission.rank` for, and every call site had to be visited anyway.
+    ///
+    /// **THE POSITIVE HEURISTIC IS A DETECTOR, NOT A DECISION.** MYR-299's rule is
+    /// that the PRESENCE of a seat-cooler read-back — including `0` — proves the
+    /// hardware exists. Presence is evidence; ABSENCE is not its negation, because
+    /// a car that has not been read at all, a server predating MYR-308, and a
+    /// response whose cabin group was withheld all look exactly like a car with no
+    /// vents. Folding those into `false` is what made the section assert "this
+    /// Tesla cannot cool its seats" about cars nobody had asked.
+    ///
+    /// **THE POSITIVE HEURISTIC IS A DETECTOR, NOT A DECISION.** MYR-299's rule is
+    /// that the PRESENCE of a seat-cooler read-back — including `0` — proves the
+    /// hardware exists. Presence is evidence; ABSENCE is not its negation, because
+    /// a car that has not been read at all, a server predating MYR-308, and a
+    /// response whose cabin group was withheld all look exactly like a car with no
+    /// vents. Folding those into `false` is what made the section assert "this
+    /// Tesla cannot cool its seats" about cars nobody had asked.
+    ///
+    /// So only `seatCoolingCapable` can say **no**, which is precisely the field
+    /// the contract makes authoritative in both directions (MYR-308: an explicit
+    /// `false` outranks the heuristic even when cooler read-backs are somehow
+    /// present, per the schema's *"MUST NOT offer seat-cooling controls"*).
+    /// Everything else is either a positive detection or an honest `.unknown`.
+    static func capability(
+        seatCoolingCapable: Bool?,
         seatCoolerLeft: Int?,
         seatCoolerRight: Int?,
         seatVentEnabled: Bool?
-    ) -> Bool {
-        if let seatCoolingCapable { return seatCoolingCapable }
-        return seatCoolerLeft != nil || seatCoolerRight != nil || seatVentEnabled == true
+    ) -> SeatClimateCapability {
+        // The REST spec field, authoritative both ways (MYR-308).
+        if let seatCoolingCapable { return seatCoolingCapable ? .ventilated : .heatOnly }
+        // MYR-299's presence heuristic, as a positive detector only.
+        if seatCoolerLeft != nil || seatCoolerRight != nil || seatVentEnabled == true {
+            return .ventilated
+        }
+        return .unknown
     }
 
     /// Whether the seat section should offer the Heat/Cool toggle and read as
@@ -92,12 +145,18 @@ enum SeatClimatePresentation {
     /// signals ever did contradict each other, a seat visibly cooling under a
     /// "SEAT HEATING" label with no way to switch it back is the exact incoherence
     /// MYR-280 was filed for — the live reading wins over the spec sheet there.
+    ///
+    /// MYR-441 — the parameter is the three-state capability now. `.unknown` does
+    /// NOT support cool: offering a Heat↔Cool toggle on a car that may not have
+    /// the hardware is the schema's own prohibition pointed the other way, and it
+    /// would put a control on screen whose command the car would refuse. What
+    /// changes for `.unknown` is only the LABEL — see `sectionLabel`.
     static func supportsCool(
-        seatVent: Bool,
+        capability: SeatClimateCapability,
         driverMode: VehicleSeatClimateMode,
         passengerMode: VehicleSeatClimateMode
     ) -> Bool {
-        seatVent || driverMode == .cool || passengerMode == .cool
+        capability == .ventilated || driverMode == .cool || passengerMode == .cool
     }
 
     /// MYR-319 — whether the seat block (label, per-seat rows, Heat↔Cool toggle)
@@ -129,8 +188,29 @@ enum SeatClimatePresentation {
         !climateOnKnown || climateOn
     }
 
-    static func sectionLabel(supportsCool: Bool) -> String {
-        supportsCool ? "SEAT CLIMATE" : "SEAT HEATING"
+    /// MYR-441 — three labels, because the header was carrying the VALUE.
+    ///
+    /// "SEAT CLIMATE" and "SEAT HEATING" are not two names for one region; the
+    /// second is a **claim about the car** ("this Tesla only heats"), and it was
+    /// being made about every car whose seat-cooling capability had never been
+    /// read. There is no glyph to swap here — the header IS the reading — so the
+    /// honest-unknown render is the region's NEUTRAL name, `"SEATS"`, which
+    /// asserts nothing in either direction. The trailing "Heat & ventilation"
+    /// caption and the Heat↔Cool toggle stay absent, so nothing claims cooling
+    /// either. This is the repo's `"—"` grammar with the label and the value
+    /// finally separated: the row is never omitted, only the assertion is.
+    ///
+    /// Live-path-only, and it has no prototype counterpart for the same reason the
+    /// MYR-315 freshness stamp does not: a simulated snapshot knows every field,
+    /// so `.unknown` is unreachable in SIM and no drift-gate scene grows it.
+    ///
+    /// Both existing labels are byte-identical for the inputs that produced them
+    /// before — a capable car still reads "SEAT CLIMATE", and a car the server
+    /// authoritatively says is heat-only (`seatCoolingCapable: false`, the
+    /// `ownerVehicleSeatsHeatOnly` scene) still reads "SEAT HEATING".
+    static func sectionLabel(capability: SeatClimateCapability, supportsCool: Bool) -> String {
+        if supportsCool { return "SEAT CLIMATE" }
+        return capability == .heatOnly ? "SEAT HEATING" : "SEATS"
     }
 
     /// The unmistakable per-seat state caption. Known → "Heating" / "Cooling" /

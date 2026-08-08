@@ -71,7 +71,7 @@ enum RiderVehicleProjection {
             colorName: vehicle.colorName,
             plate: vehicle.plate,
             seatHeat: vehicle.seatHeat,
-            seatVent: vehicle.seatVent,
+            seatClimate: vehicle.seatClimate,
             // THE ONE FIELD THE STREAM MAY WRITE.
             activity: VehicleContractMapping.activity(from: state),
             vin: vehicle.vin,

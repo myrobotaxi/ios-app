@@ -46,7 +46,7 @@ final class IncomingRequestLiveIdentityTests: XCTestCase {
             colorName: "Quicksilver",
             plate: "",
             seatHeat: false,
-            seatVent: false,
+            seatClimate: .unknown,
             activity: .parked(ParkedLocation(
                 label: "Home",
                 coordinate: pickup,

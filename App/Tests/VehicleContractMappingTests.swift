@@ -224,87 +224,96 @@ final class VehicleContractMappingTests: XCTestCase {
     }
 
     func testVehicleRowSeatVentReflectsLiveState() {
-        // MYR-252 — the seat Heat/Cool affordance follows the car's real read-back;
-        // absent (no snapshot) stays heating-only. MYR-299 keeps `seatVentEnabled`
-        // as an OR-signal, so this case is unchanged.
+        // MYR-252 — the seat Heat/Cool affordance follows the car's real read-back.
+        // MYR-299 keeps `seatVentEnabled` as an OR-signal, so the positive case is
+        // unchanged; MYR-441 makes "no snapshot" `.unknown` rather than a confident
+        // heat-only, which is the whole point of this issue's second half.
         var venting = Contracts.parkedState()
         venting.seatVentEnabled = true
-        XCTAssertTrue(VehicleContractMapping.vehicle(summary: Contracts.summary(), state: venting).seatVent)
-        XCTAssertFalse(VehicleContractMapping.vehicle(summary: Contracts.summary()).seatVent)
+        XCTAssertEqual(
+            VehicleContractMapping.vehicle(summary: Contracts.summary(), state: venting).seatClimate,
+            .ventilated)
+        XCTAssertEqual(
+            VehicleContractMapping.vehicle(summary: Contracts.summary()).seatClimate,
+            .unknown)
     }
 
     // MARK: MYR-299 — seat-cool capability from cooler-field presence
 
-    /// `Vehicle.seatVent` is the ventilated-seat CAPABILITY, derived from the
+    /// `Vehicle.seatClimate` is the ventilated-seat CAPABILITY, derived from the
     /// PRESENCE of `seatCoolerLeft`/`seatCoolerRight` on the snapshot. This is the
     /// mapping-layer half of the client's fix: a car that emits seat-cooler
     /// telemetry HAS cooled seats even when both read `0`.
     func testVehicleRowSeatVentIsDerivedFromCoolerFieldPresence() {
-        func seatVent(left: Int?, right: Int?, vent: Bool?) -> Bool {
+        func seatClimate(left: Int?, right: Int?, vent: Bool?) -> SeatClimateCapability {
             var state = Contracts.parkedState()
             state.seatCoolerLeft = left
             state.seatCoolerRight = right
             state.seatVentEnabled = vent
-            return VehicleContractMapping.vehicle(summary: Contracts.summary(), state: state).seatVent
+            return VehicleContractMapping.vehicle(summary: Contracts.summary(), state: state).seatClimate
         }
 
-        XCTAssertTrue(seatVent(left: 0, right: 0, vent: nil),
+        XCTAssertEqual(seatClimate(left: 0, right: 0, vent: nil), .ventilated,
             "both coolers present-but-off — the client's car; must be treated as vented")
-        XCTAssertTrue(seatVent(left: 0, right: 0, vent: false),
+        XCTAssertEqual(seatClimate(left: 0, right: 0, vent: false), .ventilated,
             "presence beats the runtime vent flag — exactly the shipped bug")
-        XCTAssertTrue(seatVent(left: 2, right: nil, vent: nil),
+        XCTAssertEqual(seatClimate(left: 2, right: nil, vent: nil), .ventilated,
             "one cooler reporting is enough")
-        XCTAssertTrue(seatVent(left: nil, right: 0, vent: nil),
+        XCTAssertEqual(seatClimate(left: nil, right: 0, vent: nil), .ventilated,
             "presence on the passenger side alone is enough")
-        XCTAssertFalse(seatVent(left: nil, right: nil, vent: nil),
-            "a heat-only car never emits protos 237/238 → honest heating-only UI")
-        XCTAssertFalse(seatVent(left: nil, right: nil, vent: false),
-            "vent=false with no cooler fields is not evidence of vented seats")
-        XCTAssertTrue(seatVent(left: nil, right: nil, vent: true),
+        XCTAssertEqual(seatClimate(left: nil, right: nil, vent: nil), .unknown,
+            "MYR-441 — no cooler fields is the car saying NOTHING, not saying no")
+        XCTAssertEqual(seatClimate(left: nil, right: nil, vent: false), .unknown,
+            "vent=false with no cooler fields is not evidence either way")
+        XCTAssertEqual(seatClimate(left: nil, right: nil, vent: true), .ventilated,
             "an explicit vent=true still qualifies (belt-and-braces OR-signal)")
     }
 
-    /// Tolerant absence: before the first snapshot there is no state at all, so the
-    /// row must read heat-only rather than guessing a capability.
-    func testVehicleRowSeatVentIsFalseBeforeFirstSnapshot() {
-        XCTAssertFalse(VehicleContractMapping.vehicle(summary: Contracts.summary()).seatVent)
+    /// MYR-441 — before the first snapshot there is no state at all, so the row
+    /// must read UNKNOWN. It used to read the same value a spec-declared heat-only
+    /// car reads, which is how the owner sheet came to deny seat cooling on cars
+    /// nobody had asked about.
+    func testVehicleRowSeatVentIsUnknownBeforeFirstSnapshot() {
+        XCTAssertEqual(
+            VehicleContractMapping.vehicle(summary: Contracts.summary()).seatClimate,
+            .unknown)
     }
 
     // MARK: MYR-308 — the REST seat SPEC threads through the mapping
 
-    /// The mapping-layer half of MYR-308: `Vehicle.seatVent` now prefers the
+    /// The mapping-layer half of MYR-308: `Vehicle.seatClimate` now prefers the
     /// contracts-0.16.0 `seatCoolingCapable`, and only falls back to the MYR-299
     /// presence heuristic when the field is absent. Asserted through the SHIPPING
     /// mapping, because that is what every surface reads.
     func testVehicleRowSeatVentPrefersTheSpecFieldOverThePresenceHeuristic() {
-        func seatVent(capable: Bool?, left: Int?, right: Int?, vent: Bool? = nil) -> Bool {
+        func seatClimate(capable: Bool?, left: Int?, right: Int?, vent: Bool? = nil) -> SeatClimateCapability {
             var state = Contracts.parkedState()
             state.seatCoolingCapable = capable
             state.seatCoolerLeft = left
             state.seatCoolerRight = right
             state.seatVentEnabled = vent
-            return VehicleContractMapping.vehicle(summary: Contracts.summary(), state: state).seatVent
+            return VehicleContractMapping.vehicle(summary: Contracts.summary(), state: state).seatClimate
         }
 
-        XCTAssertFalse(
-            seatVent(capable: false, left: 0, right: 0),
+        XCTAssertEqual(
+            seatClimate(capable: false, left: 0, right: 0), .heatOnly,
             "an explicit spec false hides the Heat/Cool affordance even though the presence heuristic would fire"
         )
-        XCTAssertFalse(
-            seatVent(capable: false, left: 3, right: 3, vent: true),
+        XCTAssertEqual(
+            seatClimate(capable: false, left: 3, right: 3, vent: true), .heatOnly,
             "the spec outranks every telemetry signal — the car has no cooled seats"
         )
-        XCTAssertTrue(
-            seatVent(capable: true, left: nil, right: nil),
+        XCTAssertEqual(
+            seatClimate(capable: true, left: nil, right: nil), .ventilated,
             "the spec says capable before any cooler telemetry has arrived"
         )
-        XCTAssertTrue(
-            seatVent(capable: nil, left: 0, right: 0, vent: false),
+        XCTAssertEqual(
+            seatClimate(capable: nil, left: 0, right: 0, vent: false), .ventilated,
             "absent spec (pre-0.16.0 server) → the MYR-299 heuristic still carries the client's car"
         )
-        XCTAssertFalse(
-            seatVent(capable: nil, left: nil, right: nil),
-            "absent spec and no telemetry → honest heat-only"
+        XCTAssertEqual(
+            seatClimate(capable: nil, left: nil, right: nil), .unknown,
+            "MYR-441 — absent spec AND no telemetry is unknown; only the spec may say no"
         )
     }
 

@@ -53,7 +53,7 @@ final class ShareTabRideShareRelocationTests: XCTestCase {
         let base = VehicleFixtures.vehicles[0]
         return Vehicle(
             id: base.id, name: base.name, model: base.model, colorName: base.colorName,
-            plate: base.plate, seatHeat: base.seatHeat, seatVent: base.seatVent,
+            plate: base.plate, seatHeat: base.seatHeat, seatClimate: base.seatClimate,
             activity: base.activity,
             rideShareEnabled: storedEnabled,
             isInService: inService

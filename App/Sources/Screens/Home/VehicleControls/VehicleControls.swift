@@ -114,7 +114,7 @@ struct VehicleControls: View {
 
             ClimateSection(
                 controls: controls,
-                seatVent: vehicle.seatVent,
+                seatClimate: vehicle.seatClimate,
                 executor: executor,
                 cabinTemp: cabinTemp,
                 extTemp: extTemp,

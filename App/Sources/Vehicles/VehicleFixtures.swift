@@ -39,7 +39,11 @@ public struct Vehicle: Identifiable, Equatable, Sendable {
     public let colorName: String
     public let plate: String
     public let seatHeat: Bool
-    public let seatVent: Bool
+    /// MYR-441 — the ventilated-seat CAPABILITY, in three states. This was a
+    /// non-optional `Bool`, so an unread car and a genuinely heat-only car were
+    /// the same value and the seat section asserted "no cooled seats" about
+    /// both. See `SeatClimateCapability`.
+    public let seatClimate: SeatClimateCapability
     public let activity: VehicleActivity
     /// Full 17-char VIN. Now on the `VehicleState` snapshot (owner-masked,
     /// telemetry PR #325 / contracts v0.13.0 — MYR-279), mapped onto the live
@@ -104,7 +108,7 @@ public struct Vehicle: Identifiable, Equatable, Sendable {
         colorName: String,
         plate: String,
         seatHeat: Bool,
-        seatVent: Bool,
+        seatClimate: SeatClimateCapability,
         activity: VehicleActivity,
         vin: String? = nil,
         softwareVersion: String? = nil,
@@ -119,7 +123,7 @@ public struct Vehicle: Identifiable, Equatable, Sendable {
         self.colorName = colorName
         self.plate = plate
         self.seatHeat = seatHeat
-        self.seatVent = seatVent
+        self.seatClimate = seatClimate
         self.activity = activity
         self.vin = vin
         self.softwareVersion = softwareVersion
@@ -312,7 +316,7 @@ public enum VehicleFixtures {
             colorName: "Mercury Silver",
             plate: "RBO-2046",
             seatHeat: true,
-            seatVent: true,
+            seatClimate: .ventilated,
             activity: .driving(cybercabTrip),
             // vehicle-controls.jsx:398-425 fixture detail stats — carried on the
             // fixture so the SIMULATED sheet renders the exact VIN/Software/tires
@@ -328,7 +332,7 @@ public enum VehicleFixtures {
             colorName: "Pearl White",
             plate: "CTX-9417",
             seatHeat: true,
-            seatVent: false,
+            seatClimate: .heatOnly,
             activity: .parked(dailyParkedLocation),
             vin: "7SAYGDEE9PA142184",
             softwareVersion: "2026.14.3",
