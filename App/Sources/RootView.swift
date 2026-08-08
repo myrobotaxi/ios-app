@@ -1432,6 +1432,11 @@ struct RootView: View {
                         // MYR-186 — drives the "notifications are off" notice
                         // under the toggles. `.notDetermined` in SIM → nothing.
                         pushAuthorization: pushCoordinator.authorizationState,
+                        // MYR-479 — the Live Activities switch, which is a SEPARATE
+                        // iOS setting from notifications and had no surface at all.
+                        // Refreshed by the coordinator on every launch/foreground;
+                        // `.unknown` in SIM, so no DEBUG capture changes.
+                        liveActivityAuthorization: rideActivityCoordinator.authorization,
                         // MYR-349 — the toggles themselves. `LivePushPrefsService`
                         // against §7.19 on the live path; the simulated service
                         // (the prototype's own positions, zero network) otherwise,
@@ -1493,6 +1498,11 @@ struct RootView: View {
                         catalog: sharedVehicleCatalog,
                         // MYR-186 — see the owner Settings call above.
                         pushAuthorization: pushCoordinator.authorizationState,
+                        // MYR-479 — the Live Activities switch, which is a SEPARATE
+                        // iOS setting from notifications and had no surface at all.
+                        // Refreshed by the coordinator on every launch/foreground;
+                        // `.unknown` in SIM, so no DEBUG capture changes.
+                        liveActivityAuthorization: rideActivityCoordinator.authorization,
                         // MYR-349 — see the owner Settings call above. BOTH rider
                         // rows read the one `rideLifecycle` category.
                         pushPrefs: pushPrefsService,

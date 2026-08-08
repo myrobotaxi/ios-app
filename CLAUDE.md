@@ -3898,6 +3898,119 @@ post-MYR-415 only in the sense that the replacement card registers correctly.
   exists every claim in this section is a claim about code and about a unit suite,
   not about a picture.
 
+**A CARD THAT IS GONE CAN ONLY COME BACK FROM THE APP** (MYR-479, the iOS half of
+MYR-461; server half merged in telemetry PR #381). MYR-405 gave the launch/foreground
+pass two arms — ADOPT the card already on screen for this ride, REAP every card that
+is not this account's live ride — and **both are about Activities that exist**.
+Neither had anything to say about a live ride with NO Activity at all, which is the
+state a rider is left in three ordinary ways:
+
+- **The client ended the card itself on a `409 reservation_expired`.** §7.21's
+  409-means-end-now is right for a ride that really is terminal, and until #381 the
+  server raised it for rides merely PAST their reserved time while `accepted`,
+  `arrived` or `enroute`. The client obeyed.
+- **This process's memory outlived the card.**
+  `standDownIfTheSystemEndedTheHeldCard` acts only when the restore list still
+  MENTIONS the ride ("absence is deliberately not evidence" — correct mid-restore),
+  so a card removed while the app was away leaves `phase` naming it for ever and
+  `action` answers `.update` into nothing for the rest of the trip.
+- **Live Activities were switched off and back on**, or the concurrent-Activity limit
+  refused the original request (`performStart` treats a refusal as ordinary and
+  leaves nothing to retry it).
+
+**NO PUSH CAN FIX ANY OF THEM.** APNs can update or end an Activity; it cannot create
+one. The app is the only actor with `Activity.request`.
+
+- **`RideActivityStateMachine.revival` is the third arm**, pure and swept in
+  `RideActivityRevivalTests`, consumed by `handleLaunchOrForeground` AFTER the reap
+  (the reap is what clears a `phase` naming a card that just came down). It answers
+  `.start` only for a live ride with nothing of ours on screen, and it refuses on
+  four counts: a terminal ride, a dormant reservation, an `.unresolved` pipeline, and
+  the MYR-405 finality set.
+- **`mayStartActivity` was EXTRACTED from `startState` so there is one eligibility
+  rule.** `RideActivityAccountRide.resolve()` answers `.live` for a COMPLETED ride on
+  purpose (MYR-425 — it is still the ride the lingering arrival card is about), so an
+  arm keyed on the reconciler's own liveness would put a fresh "You've arrived" on
+  the lock screen minutes after a ride ended.
+- **⚠️ THE LAUNCH CASE ALREADY WORKED, AND THE ARM IS NOT CREDITED WITH IT.** A cold
+  launch into a live ride with an empty restore list already started a card, because
+  `handleLaunchOrForeground` ends by calling `handleRideChange` and a `.idle` phase
+  answers `.start`. What the arm ADDS is the FOREGROUND case — a `phase` that is not
+  idle, which no existing path could recover from — plus the rule stated where it can
+  be asserted. **It is also not a gate**: that older start path still runs after it
+  and has its own answer, which is measured
+  (`testTheOLDStartPathStillRunsWhereTheArmDeclines`) rather than assumed.
+- **A settled ABSENCE is evidence, and only here.** `revive` stands the phase down
+  without ending anything and **without a §7.21 DELETE** — there is no card to end,
+  and the row is about to be re-registered. That is legitimate only because
+  `settledInputs` has already spent the restore budget; the same reasoning inside
+  `standDownIfTheSystemEndedTheHeldCard`, which runs on every tick, would be MYR-405's
+  duplicate-banner defect.
+- **THE REVIVED CARD REGISTERS UNDER THE SERVER RIDE ID** (MYR-415/416): the card is
+  stamped with the RECORD's id, which after a relaunch is the server's, and the POST
+  goes through the same `flushPendingRegistration` every other card uses.
+
+**⚠️ `ActivityState.dismissed` DOES NOT MEAN "THE RIDER SWIPED".** Apple's own wording
+is *"no longer visible because a person **or the system** removed it"*, and every
+`.immediate` end this coordinator issues asks the system to remove it. The LIFECYCLE
+STREAM is safe (the 409 arm, `performEnd` and `reap` all cancel `stateTask` before
+ending anything, so a self-end is never observed as a swipe) — but the RESTORE LIST
+carries **no provenance at all**, so `reconcile` hands back a `.dismissed` row that
+is indistinguishable from a rider's decision. Folding that into `dismissedRideIDs`
+bars the ride from ever holding a card again, **which is precisely the ride this
+issue exists to rescue**. `RideActivityCoordinator.endedByAppRideIDs` records what we
+took down; `recordDismissals` is the ONE door into the finality set and filters it.
+A ride leaves the set the moment a fresh card is started or adopted, so the shield
+only covers the window between our teardown and the next card — without that, a swipe
+on the REVIVED card would stop surviving a relaunch.
+
+**THE LEG-TRANSITION DECISION: A LEG FLIP DOES NOT RE-EARN A CARD.** MYR-405
+semantic 5 is stated about the RIDE — *"the app must never resurrect a dismissed
+Activity for the same ride"* — and it is a CLIENT decision, not an implementation
+detail this issue may re-open; MYR-405's own regression test already drives
+`accepted → enroute` and asserts the swipe holds. `arrived → enroute` is the sharpest
+case for the other reading (MYR-411 makes it the boarding boundary and the card's
+headline genuinely changes grammar across it) and it is still no: a swipe is the only
+channel a rider has for "not on my lock screen", and a card that returns once per ride
+is indistinguishable, from their side, from a swipe that did nothing. **The case this
+issue had to rescue was never a swipe** — fixing the CONFLATION above is what made
+weakening the rule unnecessary. The decision is structural rather than remembered:
+`revival` takes no leg and no status-transition input, so there is no parameter a
+later edit can thread an exception through.
+
+**THE AUTHORIZATION STATE IS FINALLY READABLE.**
+`ActivityAuthorizationInfo().areActivitiesEnabled` had exactly one consumer since
+MYR-172 — `SystemRideActivityPresenter.start`, which returns `false` and says
+nothing — so a rider with Live Activities switched off got a silent refusal and
+neither they nor anyone triaging could find out. MYR-461's own instruction was that
+the rider's *"LA permission state has not been verified and should be"*, and there was
+nothing in the app that could verify it. `RideActivityCoordinator.authorization`
+publishes it (refreshed on every launch and foreground — the moments a rider comes
+back from iOS Settings) and `LiveActivityDeniedNotice` renders it in the
+`SettingsSectionNotices` slot on BOTH Settings pages, in `PushDeniedNotice`'s exact
+grammar. **`.unknown` is a third case rather than a `false`**: the simulated path
+never asks ActivityKit anything, so it reports `.unknown` for ever and no DEBUG
+capture can grow the line (measured: the notice is 0pt tall in `.unknown` and
+`.enabled`).
+
+**Found and NOT fixed here.** (1) An `.ended` card for the live ride still on screen
+makes `revival` decline — and the older `handleRideChange` start path then starts a
+card beside it anyway. Pre-existing, narrow (it needs a `.linger` end for a ride that
+is still live) and out of scope, but it is the duplicate-banner shape and belongs in
+its own issue. (2) `endedByAppRideIDs` is IN-MEMORY, so a card a PREVIOUS process
+ended is still readable as a dismissal for as long as ActivityKit lists it; the
+persisted version would follow `UserDefaultsRideActivityRideIDs` exactly. Both are
+recorded rather than closed.
+
+**None of this is photographed, and that is stated rather than glossed.** The
+lock-screen card has no headless capture route at all (`simctl` has no lock command),
+the island never expands while the app is frontmost — so one-device self-ride testing
+is blind to the revived card by design — and the revival's own trigger is a card
+LEAVING the system, which nothing in this repo can synthesize. Every claim here is a
+claim about code, a unit suite and the `liveactivity` log census
+(`activity-revival …`, on the same category and predicate the MYR-405 probe already
+streams), never about a picture.
+
 **Invite links have an address** (MYR-346) — an invite is shared as
 `https://myrobotaxi.app/join/{CODE}`, a branded web page whose OG card renders in
 the thread and which, on a phone that has the app, opens it straight to the

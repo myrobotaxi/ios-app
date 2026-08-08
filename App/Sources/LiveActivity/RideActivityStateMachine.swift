@@ -534,6 +534,19 @@ enum RideActivityStateMachine {
         vehicleName: String,
         now: Date = Date()
     ) -> RideActivityAttributes.ContentState? {
+        guard mayStartActivity(for: record, now: now) else { return nil }
+        return contentState(for: record, vehicleName: vehicleName, previous: nil)
+    }
+
+    /// **MAY THIS RIDE OPEN A FRESH ACTIVITY RIGHT NOW?** — the eligibility half of
+    /// `startState`, extracted by MYR-479 so the launch/foreground REVIVAL arm asks
+    /// the identical question rather than a second reading of it.
+    ///
+    /// It is a real hazard rather than tidiness: `RideActivityAccountRide.resolve()`
+    /// answers `.live` for a COMPLETED ride on purpose (MYR-425), so a revival arm
+    /// keyed on the reconciler's own liveness would start an arrival card for a ride
+    /// that finished — the exact thing the `.completed` case below refuses.
+    static func mayStartActivity(for record: RideRequestRecord, now: Date = Date()) -> Bool {
         // A DORMANT reservation is not a live ride, even once the owner has
         // accepted it. MYR-313 lets a reservation be accepted days ahead, so an
         // Activity started at accept time would sit on the lock screen until
@@ -553,7 +566,7 @@ enum RideActivityStateMachine {
         // agree, or the rider gets a lock screen about a ride the app itself is not
         // tracking — and both now read the same `RideReservation` predicate rather
         // than each spelling the rule out.
-        guard RideReservation.isLiveRide(record, now: now) else { return nil }
+        guard RideReservation.isLiveRide(record, now: now) else { return false }
 
         switch record.status {
         case .pending:
@@ -584,20 +597,23 @@ enum RideActivityStateMachine {
             // INSTANT request does — which is exactly the client's "instant rides
             // start at request", enforced by the predicate both pipelines already
             // share rather than by a second reading of `scheduledFor`.
-            return contentState(for: record, vehicleName: vehicleName, previous: nil)
+            return true
 
         case .accepted, .arrived, .enroute:
             // `arrived`/`enroute` start too, not just `accepted`. The app adopts a
             // rider's already-open ride on cold launch (MYR-230), so a rider who
             // force-quit mid-ride and reopened the app would otherwise get no
             // Activity for the rest of the trip.
-            return contentState(for: record, vehicleName: vehicleName, previous: nil)
+            //
+            // MYR-479 — these two are also exactly the statuses the revival arm is
+            // named for: a ride observed at `arrived`/`enroute` with no card at all.
+            return true
 
         case .completed, .declined:
             // Already over. Starting an Activity in order to immediately end it
             // would put a card on the lock screen announcing something that
             // finished before it appeared.
-            return nil
+            return false
         }
     }
 
