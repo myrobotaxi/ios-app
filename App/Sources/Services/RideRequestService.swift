@@ -522,9 +522,36 @@ public struct RideVehicleUnavailableFailure: Identifiable, Equatable, Sendable {
     /// service, offline, or already carrying a ride — is untouched.
     public let isTimeConflict: Bool
 
-    public init(id: UUID = UUID(), isTimeConflict: Bool = false) {
+    /// MYR-478 — the refusal was the create path's `403 vehicle_not_owned`: the
+    /// rider's OWN ride capability has been withdrawn (§7.5.7 `allowRides:
+    /// false`), or their grant was suspended, between the list read and the send.
+    ///
+    /// **Carried here for MYR-385's reason, verbatim.** It is not a decline, not a
+    /// dead session and not a ride that exists — the same four facts every other
+    /// arm of this type shares — so it takes the SAME `onChange` and the SAME
+    /// handler, and only the sentence and the exit branch. A third failure type
+    /// would have meant a third observer on a view body that is already at the
+    /// type-checker's budget (MYR-422), and a third chance for the three to drift.
+    ///
+    /// The one thing it does NOT share with the other two is the way out: a car
+    /// that is busy or double-booked can be SCHEDULED, and a grant that no longer
+    /// carries rides cannot — §7.8's gate is on the create, so a scheduled create
+    /// meets the identical 403. That is MYR-342's `paused` reasoning ("a longer
+    /// walk to the same refusal") applied to the grant instead of the car, and it
+    /// is why this arm returns the rider to idle rather than to Review.
+    ///
+    /// Defaults to `false`; `isTimeConflict` and this are mutually exclusive by
+    /// construction (one is a 409, the other a 403).
+    public let isRideCapabilityWithdrawn: Bool
+
+    public init(
+        id: UUID = UUID(),
+        isTimeConflict: Bool = false,
+        isRideCapabilityWithdrawn: Bool = false
+    ) {
         self.id = id
         self.isTimeConflict = isTimeConflict
+        self.isRideCapabilityWithdrawn = isRideCapabilityWithdrawn
     }
 }
 

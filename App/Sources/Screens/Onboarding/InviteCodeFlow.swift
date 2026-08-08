@@ -78,11 +78,17 @@ struct InviteCodeFlow: View {
     /// The joined host, built from the redeem response. `nil` until the code is
     /// accepted — there is no host to name before then.
     @State private var joined: RedeemedShare?
-    /// A refusal that is NOT "wrong code": the rate limit, "you already have
-    /// access", or an unreachable server. Rendered as a quiet line under the
-    /// cells, because the shake alone would say "wrong code" — which would be
-    /// false, and would send the rider off to ask for a new one.
-    @State private var refusal: ShareRedemptionFailure?
+    /// The last refusal, whatever it was.
+    ///
+    /// MYR-465 — this used to hold only the refusals that are NOT "wrong code"
+    /// (the rate limit, "you already have access", an unreachable server); the
+    /// two that ARE about the code were answered with a shake and this set back
+    /// to `nil`, so an expired code produced no words at all and, under Reduce
+    /// Motion, no response of any kind. It now holds EVERY refusal — the shake is
+    /// an addition to the words for the two that earn one, never a substitute.
+    /// See `InviteCodeRefusal` for the whole rule and for what the server can and
+    /// cannot tell apart.
+    @State private var refusal: InviteCodeRefusalNotice?
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
@@ -167,20 +173,42 @@ struct InviteCodeFlow: View {
                 .padding(.top, 26)
             }
 
-            // MYR-184 — the refusals that are NOT "wrong code". The shake +
-            // clear is the right affordance for a code that does not grant
-            // anything; it is the WRONG one for a rate limit (nothing is wrong
-            // with the code, and retyping it burns another of the 10/minute) and
-            // for "you already have access" (they are already in). Those keep the
-            // entry intact and say what happened, once, quietly.
+            // MYR-465 — EVERY refusal is said out loud, inline, directly under
+            // the cells the rider is looking at. Not a toast (the client's own
+            // requirement, and a transient pill over a screen whose whole content
+            // is six boxes is the easiest thing on it to miss), and not a shake
+            // alone: MYR-184 answered `400`/`404` with the shake and set this
+            // state back to `nil`, which is the silence James reported.
+            //
+            // TWO LINES, because they answer different questions — what happened,
+            // and what to do about it. **No red and no error glyph**: two of the
+            // five refusals are not errors at all (the rate limit and "you already
+            // have access" are both "nothing is wrong, wait / you're in"), and the
+            // app's standing grammar for an honest degradation is calm copy rather
+            // than alarm styling. What makes it read as a state change is the
+            // full-strength headline against the secondary body text above it —
+            // plus, for the two that are about the code, the shake and the cells
+            // emptying underneath.
+            //
+            // It costs no reserved band: the slot sits above a greedy
+            // `Spacer(minLength: 0)`, so a notice appearing eats slack rather than
+            // moving the cells or the button below it.
             if let refusal, phase == .entry {
-                Text(refusal.riderMessage)
-                    .font(.system(size: 13.5, weight: .medium))
-                    .foregroundStyle(Color.mrtTextSec)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 280)
-                    .padding(.top, 26)
-                    .transition(.opacity)
+                VStack(spacing: 5) {
+                    Text(refusal.headline)
+                        .font(.system(size: 13.5, weight: .medium))
+                        .foregroundStyle(Color.mrtText)
+                    Text(refusal.guidance)
+                        .font(.system(size: 12.5))
+                        .lineSpacing(12.5 * 0.35)
+                        .foregroundStyle(Color.mrtTextSec)
+                }
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 280)
+                .padding(.top, 26)
+                .transition(.opacity)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("mrt.invite.refusal")
             } else if let pasteNotice, phase == .entry {
                 // MYR-344 — the same quiet treatment, for the same reason: a
                 // pasteboard holding a phone number is not a rejected code, so it
@@ -369,6 +397,17 @@ struct InviteCodeFlow: View {
                 // paste routes cannot sanitize differently than typing does.
                 let cleaned = InviteCodeEntry.sanitize(newValue)
                 if cleaned != newValue { code = cleaned }
+                // MYR-465 — a refusal is about the code that was submitted, so it
+                // stands down the moment the rider starts typing a different one.
+                // Gated on a NON-EMPTY value deliberately: the failure branch
+                // itself writes `code = ""` for the two refusals that clear the
+                // entry, and SwiftUI delivers that change on the next update —
+                // after `refusal` has been set — so an ungated clear here would
+                // wipe the notice it was just given.
+                if !cleaned.isEmpty {
+                    refusal = nil
+                    pasteNotice = nil
+                }
                 if InviteCodeEntry.isComplete(cleaned) { submit(cleaned) }
             }
     }
@@ -416,15 +455,25 @@ struct InviteCodeFlow: View {
                 // onto the same catalog; `.unavailable` is the honest default for
                 // "we could not ask", never a verdict on the code.
                 let failure = (error as? ShareRedemptionFailure) ?? .unavailable
+                let notice = InviteCodeRefusal.notice(for: failure)
                 phase = .entry
-                if failure.clearsEntry {
-                    // The prototype's `mrtShake` — finally reachable.
+                if notice.shakes {
+                    // The prototype's `mrtShake`, plus the cells emptying. Both
+                    // are claims that the CODE is wrong, so both are gated on the
+                    // notice rather than raised beside it.
                     shakes += 1
                     code = ""
-                    refusal = nil
-                } else {
-                    refusal = failure
                 }
+                // MYR-465 — UNCONDITIONAL, and the whole fix. The assignment this
+                // replaced was `refusal = nil` on exactly the branch above, which
+                // is why the most common refusal on this screen had no words.
+                //
+                // Assigned AFTER `code = ""` on purpose: that write feeds the
+                // hidden field's `onChange`, which clears a stale refusal when the
+                // rider types. It ignores an emptying (see there), so the order is
+                // belt-and-braces rather than load-bearing — but the reverse order
+                // would make it load-bearing, which is worth not doing.
+                refusal = notice
                 fieldFocused = true
             }
         }
