@@ -1308,11 +1308,19 @@ struct SharedViewerScreen: View {
         }
     }
 
-    /// The two leg polylines, falling back to a straight segment until the
-    /// provider resolves (so the map always has geometry to draw + fit).
+    /// The two legs' geometry: the resolved road route when the provider has
+    /// answered, else the bare ENDPOINT PAIR.
+    ///
     /// MYR-393 — with no honest origin there is NO leg-1 geometry, not a straight
-    /// line from a place the car is not. Empty draws nothing (`routeLeg` needs
-    /// `count > 1`) and frames on the pickup alone.
+    /// line from a place the car is not. Empty frames on the pickup alone.
+    ///
+    /// MYR-458 — **the pair is for the PINS and the CAMERA FIT, and is no longer
+    /// drawn.** `TrackingRouteMapContent.routeLeg` gates the stroke on
+    /// `RideRoutePolyline.isReal`, so leg 1's `[live fix, pickup]` pair stops
+    /// rendering as a straight gold segment from the moving car back to the pickup
+    /// dot — the external-beta report — while the pickup pin and the leg fit,
+    /// which are derived from this same geometry, are untouched. MYR-293's rule:
+    /// pins unconditionally, the line only from `isReal`.
     private var trackingLeg1Route: [CLLocationCoordinate2D] {
         if viewerState.rideRouteStore.leg1.count > 1 { return viewerState.rideRouteStore.leg1 }
         guard let trackingCarOrigin else { return [] }
@@ -1701,8 +1709,22 @@ struct SharedViewerScreen: View {
     /// in leg 1, solid in leg 2), leg 1 only while heading to pickup. Cheap: the
     /// store issues network work only when the pair/car-origin actually changed.
     private func reconcileTrackingRoutes() {
-        guard isTrackingPhase else { return }
+        guard isTrackingPhase else {
+            viewerState.setTrackingRouteContext(nil)
+            return
+        }
         viewerState.rideRouteStore.ensureLeg2(pickup: trackingPickup, destination: trackingDestination)
+        // MYR-459 — publish WHAT this surface wants routed, so a live frame can
+        // re-ask for it when the car deviates. This method's own triggers are the
+        // tracking-phase entry and `onChange(of: trackProgress)`, and on the live
+        // path `trackProgress` moves only at status transitions — so before this,
+        // the store's deviation refetch had no live consumer at all. See
+        // `SharedViewerState.TrackingRouteContext`.
+        viewerState.setTrackingRouteContext(.init(
+            pickup: trackingPickup,
+            destination: trackingDestination,
+            fetchesLeg1: trackingLeg == .toPickup
+        ))
         // MYR-393 — no origin, no leg-1 fetch. Asking MKDirections for a route from
         // a coordinate we invented is how a fabrication acquires real road geometry.
         if trackingLeg == .toPickup, let trackingCarOrigin {

@@ -51,7 +51,11 @@ enum Contracts {
             tripDistanceRemaining: tripDistanceRemaining,
             // GeoJSON [lon, lat] pairs — a 10-mi hop so distance-remaining maps
             // to a meaningful progress fraction.
-            navRouteCoordinates: [[-122.4194, 37.7749], [-122.3800, 37.2554]],
+            // MYR-457 — a REAL Tesla `RouteLine` is a polyline, and this fixture used
+            // to be two points: exactly the shape `RideRoutePolyline.isReal` refuses.
+            // The middle point is collinear with the other two, so every distance and
+            // progress assertion built on this fixture is unchanged.
+            navRouteCoordinates: [[-122.4194, 37.7749], [-122.3997, 37.51515], [-122.3800, 37.2554]],
             lastUpdated: "2026-07-08T17:30:00Z"
         )
     }

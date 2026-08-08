@@ -152,6 +152,20 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
     /// `nil` on the simulated path, where it renders nothing at all — the toggle
     /// row is live-only — so M1 and every drift-gate scene are unchanged.
     public var rideShareEnabled: Bool?
+    /// MYR-456/MYR-457 — the wire's `tripDistanceRemaining`, in miles.
+    ///
+    /// `progress` above is a FRACTION, and a fraction is only meaningful against
+    /// the polyline it was measured on. The owner's map may draw the app's own
+    /// road route when Tesla has decoded no `RouteLine`, so the screen has to be
+    /// able to re-measure against what it actually rendered — which needs the
+    /// distance, not the ratio derived from a route that was not used.
+    ///
+    /// **`nil` is not `0` here.** `nil` means this frame carried no distance (an
+    /// ordinary state mid-update: the nav group's members arrive apart inside the
+    /// server's 500ms accumulation window), and rendering that as 0 is the whole
+    /// of MYR-456's vanishing progress bar. `nil` on the simulated path, whose
+    /// `progress` is the ticker's own and needs no re-derivation.
+    public var tripDistanceRemainingMiles: Double?
 
     public init(
         status: VehicleTelemetryStatus,
@@ -168,8 +182,10 @@ public struct VehicleTelemetrySnapshot: Sendable, Equatable {
         nowPlaying: VehicleNowPlaying? = nil,
         serviceEstimatedEndAt: Date? = nil,
         chargingState: VehicleChargingState = .idle,
-        rideShareEnabled: Bool? = nil
+        rideShareEnabled: Bool? = nil,
+        tripDistanceRemainingMiles: Double? = nil
     ) {
+        self.tripDistanceRemainingMiles = tripDistanceRemainingMiles
         self.status = status
         self.progress = progress
         self.speedMPH = speedMPH

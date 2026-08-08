@@ -183,6 +183,113 @@ struct HomeScreen: View {
                 destination: request.input.destination.coordinate
             )
         }
+        reconcileDrivingRoute()
+    }
+
+    // MARK: - MYR-456 / MYR-457 — the driving map's route
+
+    /// The selected car's trip, when it is driving.
+    private var drivingTrip: DrivingTrip? {
+        guard case .driving(let trip)? = homeState.selectedVehicle?.activity else { return nil }
+        return trip
+    }
+
+    /// The navigation destination, and the car's fix — but only when each is a
+    /// FACT. `(0, 0)` is the contract's no-fix sentinel (§2.3), so a car that has
+    /// not reported a position must not have a route fetched FROM the Gulf of
+    /// Guinea — MYR-387's rule, which cost that issue a black map.
+    private var drivingDestination: CLLocationCoordinate2D? { drivingTrip?.destinationCoordinate }
+
+    private var drivingCarFix: CLLocationCoordinate2D? {
+        guard let coordinate = drivingTrip?.carCoordinate,
+              OwnerMapCamera.drawsVehicleMarker(vehicle: coordinate) else { return nil }
+        return coordinate
+    }
+
+    /// A ~11m-resolution key for the DRIVING car's own fix — `dispatchedCarPositionKey`'s
+    /// rule, for the same reason: a device streams ~1Hz and the ask must stay at
+    /// human cadence. It is a separate key because it is a separate car-position
+    /// question: that one is about the dispatched ride's approach, this one is
+    /// about the trip the owner is watching.
+    private var drivingCarFixKey: String? {
+        drivingCarFix.map { String(format: "%.4f,%.4f", $0.latitude, $0.longitude) }
+    }
+
+    /// Stable identity for the journey the hold is about.
+    private var drivingDestinationKey: String? {
+        drivingDestination.map { String(format: "%.6f,%.6f", $0.latitude, $0.longitude) }
+    }
+
+    /// The app's own road route for this car → this destination, or empty.
+    private var drivingFetchedRoute: [CLLocationCoordinate2D] {
+        guard let destination = drivingDestination else { return [] }
+        return homeState.drivingRouteStore.leg1Route(pickup: destination) ?? []
+    }
+
+    /// MYR-457 — fetch a road route when Tesla has not given us one.
+    ///
+    /// Asked only when it is needed and answerable: the car is driving, navigating
+    /// to a known destination, has a real fix, and its own `RouteLine` is not real
+    /// geometry. So a healthy trip — which is nearly every trip — spends **no**
+    /// MKDirections call at all, and the store's deviation + cooldown guards bound
+    /// the rest. The store's leg-1 slot is used because its semantics ARE this
+    /// route: a moving car to a fixed point (see `OwnerHomeState.drivingRouteStore`).
+    private func reconcileDrivingRoute() {
+        guard let trip = drivingTrip, trip.navigation.isActive,
+              !RideRoutePolyline.isReal(trip.route),
+              let destination = drivingDestination,
+              let car = drivingCarFix
+        else { return }
+        homeState.drivingRouteStore.ensureLeg1(carPosition: car, pickup: destination)
+    }
+
+    /// What the map draws and what the hero measures, resolved together so they
+    /// cannot disagree about one journey.
+    private func drivingRouteResolution(trip: DrivingTrip, snapshot: VehicleTelemetrySnapshot) -> OwnerDrivingRoute.Resolution {
+        OwnerDrivingRoute.resolve(
+            navigationActive: trip.navigation.isActive,
+            wireRoute: trip.route,
+            fetchedRoute: drivingFetchedRoute,
+            remainingMiles: snapshot.tripDistanceRemainingMiles,
+            reportedProgress: snapshot.progress,
+            held: homeState.drivingRouteHold?.destinationKey == drivingDestinationKey
+                ? homeState.drivingRouteHold?.resolution
+                : nil
+        )
+    }
+
+    /// MYR-456 — the hero's progress, re-measured against the polyline the map is
+    /// actually drawing.
+    ///
+    /// A DRIVING car only: a parked snapshot's progress is 0 by construction and
+    /// there is no journey to be part-way through. Static and pure so it is
+    /// testable directly — the bar's visibility is decided by
+    /// `DrivingHeroElement.resolve(…, progress:)`, and this is the value it gets.
+    static func snapshot(
+        _ snapshot: VehicleTelemetrySnapshot,
+        measuredAgainst resolution: OwnerDrivingRoute.Resolution?,
+        activity: VehicleActivity
+    ) -> VehicleTelemetrySnapshot {
+        guard let resolution, case .driving = activity else { return snapshot }
+        var resolved = snapshot
+        resolved.progress = resolution.progress
+        return resolved
+    }
+
+    /// A change key for the hold, so recording it is an `onChange` rather than a
+    /// write from inside `body`. Quantized progress (whole percent) keeps a ~1Hz
+    /// stream from re-recording on every frame.
+    private func drivingHoldKey(_ resolution: OwnerDrivingRoute.Resolution) -> String {
+        let first = resolution.line.first
+        let last = resolution.line.last
+        return [
+            drivingDestinationKey ?? "-",
+            "\(resolution.source)",
+            "\(resolution.line.count)",
+            first.map { String(format: "%.5f,%.5f", $0.latitude, $0.longitude) } ?? "-",
+            last.map { String(format: "%.5f,%.5f", $0.latitude, $0.longitude) } ?? "-",
+            "\((resolution.progress * 100).rounded())",
+        ].joined(separator: "|")
     }
 
     /// MYR-265 — the active DISPATCHED ride this owner is tracking (accepted →
@@ -472,7 +579,18 @@ struct HomeScreen: View {
 
     @ViewBuilder
     private func vehicleContent(vehicle: Vehicle, telemetry: any VehicleTelemetrySource) -> some View {
-        let snapshot = telemetry.snapshot
+        // MYR-456/MYR-457 — resolve the driving route ONCE, here, and hand the same
+        // answer to the map and to the sheet.
+        //
+        // The progress the hero renders and the polyline the map strokes were two
+        // independent readings of one journey (`tripProgress` measured against the
+        // WIRE route; the map drew whatever `drivingTrip` had assembled), which is
+        // how one frame could carry a route and no bar. They are one value now, and
+        // the bar's `progress > 0` gate — which is correct and stays — is finally
+        // being asked about the route in front of the owner.
+        let rawSnapshot = telemetry.snapshot
+        let resolution = drivingTrip.map { drivingRouteResolution(trip: $0, snapshot: rawSnapshot) }
+        let snapshot = Self.snapshot(rawSnapshot, measuredAgainst: resolution, activity: vehicle.activity)
         // screens.jsx:400 — driving always uses the 280pt peek; parked uses the
         // 'floating' style's 210pt (the only `parkedStyle` this app ships).
         //
@@ -503,10 +621,31 @@ struct HomeScreen: View {
             // MYR-387 — the fallback the camera uses instead of Null Island when
             // this car has no fix. `nil` on the simulated fleet and until this
             // device has seen the car once.
-            lastKnownCenter: homeState.selectedLastKnownPosition
+            lastKnownCenter: homeState.selectedLastKnownPosition,
+            // MYR-456/MYR-457 — the resolved driving polyline. `nil` for a parked
+            // car, where the map has no line question to answer.
+            drivingLine: resolution?.line
         )
         .id(vehicle.id) // fresh camera state per vehicle on switch
         .ignoresSafeArea()
+        // MYR-456 — remember the route this journey really had, so the next frame
+        // to arrive mid-update has something to hold. On the MAP rather than on
+        // `body` because a hold is a fact about the route, and because a screen's
+        // top-level expression is not the place to grow modifiers (MYR-422's
+        // type-checker budget, on the rider's equivalent view).
+        .onChange(of: resolution.map(drivingHoldKey), initial: true) { _, _ in
+            guard let resolution else {
+                homeState.recordDrivingRoute(.none, destinationKey: nil)
+                return
+            }
+            homeState.recordDrivingRoute(resolution, destinationKey: drivingDestinationKey)
+        }
+        // MYR-457 — and re-ask for the road route as the car moves, so a fetched
+        // fallback follows the trip instead of standing where it was first needed.
+        // Quantized, and the store still decides whether the car has DEVIATED
+        // enough to be worth a call.
+        .onChange(of: drivingCarFixKey, initial: true) { _, _ in reconcileDrivingRoute() }
+        .onChange(of: drivingDestinationKey) { _, _ in reconcileDrivingRoute() }
 
         MapHeader(vehicles: homeState.vehicles, selectedIndex: $homeState.selectedVehicleIndex)
 

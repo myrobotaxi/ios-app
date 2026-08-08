@@ -243,16 +243,40 @@ public struct DrivingTrip: Equatable, Sendable {
     /// Bay", screens.jsx:22-25). Simulated only — never routed over network.
     public let route: [CLLocationCoordinate2D]
 
+    /// MYR-457 — the car's own fix, carried as a FACT rather than smuggled in as
+    /// `route[0]`.
+    ///
+    /// `drivingTrip` used to answer a missing `navRouteCoordinates` with
+    /// `[currentPosition, destination]` so that the marker and the endpoint dots
+    /// would still have something to read. That made the map's most load-bearing
+    /// claim — the gold line — a side effect of wanting a marker position. The two
+    /// questions are separate now: where the car IS, and what path we can honestly
+    /// draw. `nil` on the simulated path, where the fixture route is the truth.
+    public let carCoordinate: CLLocationCoordinate2D?
+
+    /// MYR-457 — the navigation destination's own coordinate.
+    ///
+    /// A destination we were told is a fact and gets its dot unconditionally
+    /// (MYR-293/MYR-395: *pins unconditionally, the LINE only from `isReal`*).
+    /// Reading it off `route.last` — as the map did — meant that with no real
+    /// route the "destination" dot was planted wherever the invented segment
+    /// happened to end.
+    public let destinationCoordinate: CLLocationCoordinate2D?
+
     public init(
         navigation: DrivingNavigation,
         originLabel: String,
         originAddress: String?,
-        route: [CLLocationCoordinate2D]
+        route: [CLLocationCoordinate2D],
+        carCoordinate: CLLocationCoordinate2D? = nil,
+        destinationCoordinate: CLLocationCoordinate2D? = nil
     ) {
         self.navigation = navigation
         self.originLabel = originLabel
         self.originAddress = originAddress
         self.route = route
+        self.carCoordinate = carCoordinate
+        self.destinationCoordinate = destinationCoordinate
     }
 
     /// screens.jsx:440 `destName` — `nil` when there is no active navigation, or
@@ -271,6 +295,23 @@ public struct DrivingTrip: Equatable, Sendable {
             && zip(lhs.route, rhs.route).allSatisfy {
                 $0.latitude == $1.latitude && $0.longitude == $1.longitude
             }
+            // MYR-457 — the two new facts are part of the value, and that matters
+            // rather than being tidiness: the marker is drawn from `carCoordinate`
+            // whenever there is no real route, so a `==` that ignored it would
+            // freeze the car on screen for the whole of exactly the situation
+            // these fields were added for.
+            && sameCoordinate(lhs.carCoordinate, rhs.carCoordinate)
+            && sameCoordinate(lhs.destinationCoordinate, rhs.destinationCoordinate)
+    }
+
+    private static func sameCoordinate(
+        _ lhs: CLLocationCoordinate2D?, _ rhs: CLLocationCoordinate2D?
+    ) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil): return true
+        case let (l?, r?): return l.latitude == r.latitude && l.longitude == r.longitude
+        default: return false
+        }
     }
 }
 
