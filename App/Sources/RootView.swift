@@ -737,6 +737,52 @@ struct RootView: View {
         }
     }
 
+    /// MYR-478 — RE-READ the §7.0 list the rider's ride capability is derived
+    /// from, and re-adopt over whatever lands.
+    ///
+    /// **The withdrawal of `allowRides` reaches this device by NO channel.** §7.5.7
+    /// busts the server's own cached access set and stops there; the socket
+    /// teardown is deliberately limited to SUSPENSION, because `allowRides` has no
+    /// WebSocket effect — the contract's own note says so and records the client
+    /// half as tracked separately. So the grantee keeps rendering "Location +
+    /// rides" and keeps being offered the booking flow until it independently
+    /// re-reads, which is exactly what the external-beta pair reported from both
+    /// sides (MYR-451).
+    ///
+    /// It is the SAME two statements the shell's existing catalog refreshes already
+    /// ran, lifted to one place rather than copied out twice more — the tier is
+    /// re-derived by `adoptRiderVehicle` off `RiderVehicleSet`, which carries it,
+    /// so nothing new decides what the capability is. (The rider-shell-entry
+    /// `.task` below keeps its inline `await` form on purpose: inside a `.task`
+    /// the read is cancelled when the shell goes away, which a detached `Task`
+    /// would not be.)
+    ///
+    /// Cheap and safe to over-call: `LiveSharedVehicleCatalog.load()` cancels any
+    /// read already in flight, a FAILED read changes nothing and leaves the
+    /// last-known grants standing (MYR-326), and `adopt` is idempotent by vehicle
+    /// id, so a refresh that finds no change does not restart the telemetry source
+    /// or jump the map. **No-op in sim**: `SimulatedSharedVehicleCatalog.load()`
+    /// answers from memory and its grants carry no tier, so every simulated and
+    /// DEBUG capture is byte-identical.
+    ///
+    /// ⚠️ **KNOWN COST, STATED RATHER THAN HIDDEN.** On a foreground this now makes
+    /// the rider shell's SECOND `GET /api/vehicles`: `RiderLiveVehicleLocator
+    /// .handleForeground` already re-reads the same list for MYR-402's availability
+    /// gate. They are two readers of one endpoint because they want different
+    /// fields — the locator wants `hasActiveRide` folded into a `FleetMember`,
+    /// which carries no `sharePermission` at all, and the catalog wants the grant
+    /// tier. Widening `FleetMember` to carry a capability would put an access tier
+    /// on a type whose job is the Review row and would touch every fixture that
+    /// builds one, so the duplicate read is the smaller thing to accept here.
+    /// Collapsing the rider shell onto ONE §7.0 reader is worth doing on its own.
+    @MainActor
+    private func refreshRiderVehicleSet() {
+        Task {
+            await sharedVehicleCatalog.load()
+            adoptRiderVehicle(riderVehicleSet)
+        }
+    }
+
     /// Clear the account's persisted view mode on sign-out — the choice is
     /// session-scoped (MYR-224 mode semantics: it does NOT survive sign-out, so
     /// the next sign-in re-presents the chooser). Read the id BEFORE `signOut`
@@ -1713,10 +1759,24 @@ struct RootView: View {
         // revoke instead of on the next foreground.
         .onChange(of: sharedViewerState.riderAccessRevocationTick) { _, _ in
             sharedViewerState.refreshRideEndGateInputs()
-            Task {
-                await sharedVehicleCatalog.load()
-                adoptRiderVehicle(riderVehicleSet)
-            }
+            refreshRiderVehicleSet()
+        }
+        // MYR-478 — RIDE-FLOW ENTRY, the second of the two capability funnels.
+        //
+        // A rider reaching for "Where to?" (or a Home/Work chip) is about to
+        // compose a request against a capability this device last read when it
+        // entered the shell, so the list is re-read here and the CTA degrades to
+        // the existing `riderWatchOnly` notice if the owner has withdrawn Rides
+        // since.
+        //
+        // It does NOT gate the tap: the read is in flight behind a sheet that is
+        // already opening, because making an interaction wait on a network answer
+        // is how a tap comes to feel broken. A withdrawal that lands mid-flow is
+        // caught instead by the create-path `403`, which routes through
+        // `SharedViewerScreen.handleVehicleUnavailable` and bumps this same tick
+        // — one funnel, three doors, rather than a second refresh path.
+        .onChange(of: sharedViewerState.rideCapabilityRefreshTick) { _, _ in
+            refreshRiderVehicleSet()
         }
         // MYR-184 — load the rider's shared vehicles when the rider shell is on
         // screen. No-op in sim; idempotent, so the tab churn costs nothing.
@@ -1860,13 +1920,20 @@ struct RootView: View {
                 // MYR-343 — a rider whose vehicle list never answered is sitting on
                 // the honest "can't reach" line with nothing in flight behind it.
                 // Recovery is the low-friction one MYR-326 settled on (a resume
-                // re-asks), not a retry button. No-op in sim, and skipped entirely
-                // once a list has landed, so a healthy session costs nothing.
-                if screen == .sharedHome, sharedVehicleCatalog.loadFailed, !sharedVehicleCatalog.hasLoaded {
-                    Task {
-                        await sharedVehicleCatalog.load()
-                        adoptRiderVehicle(riderVehicleSet)
-                    }
+                // re-asks), not a retry button. No-op in sim.
+                //
+                // MYR-478 — AND IT IS UNCONDITIONAL NOW, which is the first of the
+                // two capability funnels. The guard used to be `loadFailed &&
+                // !hasLoaded`, i.e. it recovered a list that had NEVER answered
+                // and refreshed nothing that had — so on a healthy session the
+                // rider's share tier was whatever the shell read on entry, for the
+                // life of the process. An owner turning Rides off therefore
+                // reached the rider only after they left and re-entered the shell
+                // or force-quit, which is MYR-402's signature on the neighbouring
+                // read. Still scoped to the rider shell, still one request, and
+                // still a no-op in sim.
+                if screen == .sharedHome {
+                    refreshRiderVehicleSet()
                 }
             case .background:
                 ownerHomeState.handleBackground()

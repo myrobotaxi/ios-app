@@ -1846,6 +1846,7 @@ public final class SharedViewerState {
     /// into search from idle, and it opens on nothing: a rider reaching for the
     /// search field is starting a trip, never resuming one they walked away from.
     public func enterSearchFromIdle() {
+        noteRideFlowEntry()
         discardDraftTrip()
         sheetPhase = .search
     }
@@ -1855,8 +1856,54 @@ public final class SharedViewerState {
     /// and nothing else may ride along, or a stale schedule/passenger from an
     /// abandoned trip would silently become part of a brand-new one.
     public func selectDestinationFromIdle(_ place: RidePlace) {
+        noteRideFlowEntry()
         discardDraftTrip()
         selectDestination(place)
+    }
+
+    // MARK: MYR-478 — ride capability is re-derived, not remembered
+    //
+    // An owner withdrawing a grantee's Rides toggle (§7.5.7 `allowRides: false`)
+    // sends the rider's device NOTHING. The server busts its own cached access set
+    // and the WebSocket teardown is deliberately SUSPENSION-only, because
+    // `allowRides` has no socket effect at all — so the only way this client can
+    // learn is to re-read the §7.0 list, which already carries the derived
+    // `sharePermission` the tier is folded from.
+    //
+    // Before this, the catalog behind that tier was read once per rider-shell
+    // entry and on nothing else: a foreground re-read existed but was gated on
+    // `loadFailed && !hasLoaded`, i.e. it recovered a list that had NEVER
+    // answered and never refreshed one that had. A healthy session therefore held
+    // its first answer for the life of the process — MYR-402's "a cold launch was
+    // the only refresh in the app", on the neighbouring read.
+    //
+    // This tick is the RIDE-FLOW-ENTRY half of the funnel (the shell observes it
+    // and re-reads); `scenePhase` covers the FOREGROUND half. Same shape as
+    // `riderAccessRevocationTick` — a counter the shell watches — rather than a
+    // closure, so this object still knows nothing about the catalog and the
+    // simulated path is untouched by construction (nothing observes it there
+    // either, and `SimulatedSharedVehicleCatalog` publishes no tier).
+
+    /// Bumped whenever this object has established that the rider's ride
+    /// capability is worth re-reading. The shell observes it and performs the
+    /// §7.0 read; nothing here knows the catalog exists.
+    public private(set) var rideCapabilityRefreshTick = 0
+
+    /// Door one — the rider entered the ride flow from idle. Both idle entry
+    /// points call it, so a third added later has to walk past this line
+    /// (MYR-389's entry-invariant lesson, applied to the read rather than the
+    /// reset).
+    private func noteRideFlowEntry() {
+        rideCapabilityRefreshTick &+= 1
+    }
+
+    /// Door two — a create was refused `403 vehicle_not_owned`, which is the one
+    /// moment the cached tier is KNOWN to be wrong: the server has just refused a
+    /// ride on it. Same funnel as door one rather than a second read path, for
+    /// MYR-385's reason (`handleVehicleUnavailable` re-reads §7.22 on exactly the
+    /// same logic).
+    public func noteRideCapabilityRefused() {
+        rideCapabilityRefreshTick &+= 1
     }
 
     /// MYR-233 — leave Review for the SCHEDULING flow because the vehicle can't

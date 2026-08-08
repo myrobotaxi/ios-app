@@ -1316,6 +1316,22 @@ enum DebugScene: String, CaseIterable {
     /// sample code on appear (headless tooling cannot type six characters).
     case riderInviteRateLimited
 
+    /// MYR-465 — the invite-code screen refusing on the **404**: the status
+    /// §7.5.5 answers for an unknown, EXPIRED, already-consumed or revoked code,
+    /// with an identical body for all four (deliberate anti-enumeration — see
+    /// `InviteCodeRefusal`). It is the external-beta report's own frame, and
+    /// before this issue it had no capture route at all: `riderInviteRateLimited`
+    /// captures the arm that KEPT its entry and its line, and the arm that
+    /// cleared the entry was the one whose words were suppressed, so a screenshot
+    /// of the defect was a screenshot of the resting screen.
+    ///
+    /// Its pair is `riderInviteEntry` — the same screen with nothing submitted —
+    /// so the two are a clean before/after of exactly the refusal state.
+    /// Auto-submits the sample code on appear (headless tooling cannot type six
+    /// characters). **Capture at t≈2s**: the deliberate ~1.3s "Verifying code…"
+    /// beat runs first.
+    case riderInviteExpired
+
     /// MYR-184 (MYR-228 fix (b)) — the invite success screen built from a REAL
     /// `RedeemShareInviteResponse`. It used to hardcode `InviteHostFixture`:
     /// "Alex's Model Y · Roommate · 2025 Tesla Model Y", a person and a car that
@@ -1646,7 +1662,8 @@ enum DebugScene: String, CaseIterable {
         case .modeChooser: return .modeChooser
         // MYR-184 — the invite-code screen is its own top-level `AppScreen`, not a
         // rider tab, so it needs an explicit arm.
-        case .riderInviteRateLimited, .riderInviteJoined, .riderInviteEntry: return .inviteCode
+        case .riderInviteRateLimited, .riderInviteExpired, .riderInviteJoined,
+             .riderInviteEntry: return .inviteCode
         // MYR-428 — the two first-run walkthroughs. These are the ONLY scenes that
         // route to a tutorial case; every other scene boots past it, and
         // `RootView.makeFirstRunDemoStore()` hands any scene an in-memory record
@@ -3736,7 +3753,8 @@ enum DebugScene: String, CaseIterable {
              .ownerShareLoading, .ownerShareUnreachable,
              .riderSharedEmpty, .riderWatchOnly,
              .riderOwnerSelfRide, .riderVehiclesResolving, .riderVehiclesUnreachable,
-             .riderInviteRateLimited, .riderInviteJoined, .riderInviteEntry:
+             .riderInviteRateLimited, .riderInviteExpired, .riderInviteJoined,
+             .riderInviteEntry:
             break // chooser / settings / sharing / rider live-map / owner scenes don't drive the viewer sheet
         }
     }
@@ -4303,6 +4321,13 @@ extension DebugScene {
             endpoint.viewerRows = [Self.shareViewerRow(id: "shared-1", name: "Alex\u{2019}s Model 3", permission: "live")]
         case .riderInviteRateLimited:
             endpoint.redeemFailureStatus = 429
+        case .riderInviteExpired:
+            // MYR-465 — the §7.5.5 404. Injects the WIRE and lets the shipping
+            // `LiveSharedVehicleCatalog.redeem` fold it through
+            // `RestError.shareRedemptionFailure`, so what the capture shows came
+            // from the production mapping and the production
+            // `InviteCodeRefusal`, not from a hand-set message.
+            endpoint.redeemFailureStatus = 404
         case .riderInviteJoined:
             // A MULTI-VEHICLE invite, so the success card's "+1 more vehicle"
             // line — real information the fixture host never had — is in frame.
@@ -4358,7 +4383,7 @@ extension DebugScene {
     /// so this is the same stand-in-for-a-tap precedent as `initialRefreshPhase`
     /// and `opensServiceWindowEditor`.
     var autoSubmitsInviteCode: Bool {
-        self == .riderInviteRateLimited || self == .riderInviteJoined
+        self == .riderInviteRateLimited || self == .riderInviteExpired || self == .riderInviteJoined
     }
 
     /// MYR-340 — whether the Share tab should open the SYSTEM SHARE SHEET on

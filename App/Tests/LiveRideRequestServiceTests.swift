@@ -396,6 +396,118 @@ final class LiveRideRequestServiceTests: XCTestCase {
         XCTAssertEqual(listCount, 0, "definitive, not indeterminate — no reconcile GET")
     }
 
+    // MARK: MYR-478 — `403 vehicle_not_owned` on create is not a decline either
+
+    /// THE CLIENT'S FRAME (external beta, build `202608030843`, MYR-451): an owner
+    /// turned a grantee's Rides toggle off; the grantee's app never heard about it
+    /// (§7.5.7 busts the SERVER's cache and the socket teardown is deliberately
+    /// suspension-only), kept offering the booking flow, and his third attempt sat
+    /// on "Sending request 3s" with nothing to read afterwards.
+    ///
+    /// The create was refused `403 vehicle_not_owned`, whose code is not
+    /// auth-shaped — so it fell past MYR-220's session split into the DEFINITIVE
+    /// branch and became `.declined`: *"Alex can't take this ride right now"*,
+    /// about an owner who never saw the request. Exactly the class of lie MYR-233
+    /// removed for a busy car, on a different refusal.
+    ///
+    /// It takes the vehicle-unavailable ROUTE (clear the stuck pending, raise the
+    /// shared failure, no reconcile, no retry) carrying its own discriminator, so
+    /// `SharedViewerScreen` can say the honest sentence and exit somewhere the
+    /// rider is not offered the same refusal again.
+    func testRideCapabilityWithdrawn403ClearsPendingAndIsNotADecline() async {
+        let api = StubRideAPI(
+            created: Self.wireRide(id: "srv-cap", status: .requested),
+            createError: RestError.http(
+                status: 403,
+                code: .unrecognized("vehicle_not_owned"),
+                message: "vehicle not accessible",
+                subCode: nil
+            )
+        )
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+
+        service.submit(Self.liveInput())
+        XCTAssertEqual(service.activeRequest?.status, .pending)
+        service.confirmSend()
+        await eventually { await api.createCount == 1 }
+
+        await eventually { service.vehicleUnavailableFailure != nil }
+        XCTAssertEqual(service.vehicleUnavailableFailure?.isRideCapabilityWithdrawn, true,
+                       "the screen has to be able to tell this refusal from a busy car")
+        XCTAssertEqual(service.vehicleUnavailableFailure?.isTimeConflict, false,
+                       "a 403 is not the 409 time-conflict arm")
+        XCTAssertNil(service.activeRequest, "no frozen Sending…/Waiting… card — the reported symptom")
+        XCTAssertNotEqual(service.activeRequest?.status, .declined,
+                          "nobody declined: the owner never saw this request")
+        XCTAssertNil(service.sessionFailure, "the session is fine — only this rider's grant changed")
+        let listCount = await api.rideListCount
+        XCTAssertEqual(listCount, 0, "definitive, not indeterminate — no reconcile GET")
+    }
+
+    /// NO RETRY, for the same reason the 409 arm has none: the identical POST
+    /// would 403 again, and so would a SCHEDULED one (§7.8 gates the create
+    /// itself), which is why the screen offers no way forward at all.
+    func testRideCapabilityWithdrawn403FiresExactlyOneCreate() async {
+        let api = StubRideAPI(
+            created: Self.wireRide(id: "srv-cap2", status: .requested),
+            createError: RestError.http(
+                status: 403, code: .unrecognized("vehicle_not_owned"), message: "nope", subCode: nil
+            )
+        )
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+        service.submit(Self.liveInput())
+        service.confirmSend()
+        await eventually { service.vehicleUnavailableFailure != nil }
+        try? await Task.sleep(for: .milliseconds(200))
+        let created = await api.createCount
+        XCTAssertEqual(created, 1, "one refused POST, never a second")
+    }
+
+    /// THE THREE 403s STAY THREE THINGS. The predicate is on the CODE, not the
+    /// status, so MYR-220's dead session and a wrong-role `permission_denied`
+    /// keep the branches they had — and the second of those is the pre-MYR-478
+    /// behaviour of this very test file (`…DropsOptimisticPendingIntoDeclined`),
+    /// asserted here from the other side so a widening of the new predicate
+    /// cannot pass unnoticed.
+    func testTheOtherTwo403sKeepTheirOwnBranches() async {
+        let session = StubRideAPI(
+            created: Self.wireRide(id: "srv-403a", status: .requested),
+            createError: RestError.http(status: 403, code: .authFailed, message: "reauth", subCode: nil)
+        )
+        let sessionService = LiveRideRequestService(api: session, socket: StubRideSocket(), autoStart: false)
+        sessionService.submit(Self.liveInput())
+        sessionService.confirmSend()
+        await eventually { sessionService.sessionFailure != nil }
+        XCTAssertNil(sessionService.vehicleUnavailableFailure, "a dead session is not a capability withdrawal")
+
+        let denied = StubRideAPI(
+            created: Self.wireRide(id: "srv-403b", status: .requested),
+            createError: RestError.http(status: 403, code: .permissionDenied, message: "forbidden", subCode: nil)
+        )
+        let deniedService = LiveRideRequestService(api: denied, socket: StubRideSocket(), autoStart: false)
+        deniedService.submit(Self.liveInput())
+        deniedService.confirmSend()
+        await eventually { deniedService.activeRequest?.status == .declined }
+        XCTAssertNil(deniedService.vehicleUnavailableFailure,
+                     "a wrong-role 403 is unchanged by MYR-478")
+    }
+
+    /// And the 409 arm is byte-for-byte what it was: `isRideCapabilityWithdrawn`
+    /// defaults to `false`, so MYR-233's and MYR-385's routing never sees it.
+    func testTheBusyCarArmIsUnchanged() async {
+        let api = StubRideAPI(
+            created: Self.wireRide(id: "srv-veh478", status: .requested),
+            createError: RestError.http(
+                status: 409, code: .unrecognized("vehicle_unavailable"), message: "busy", subCode: nil
+            )
+        )
+        let service = LiveRideRequestService(api: api, socket: StubRideSocket(), autoStart: false)
+        service.submit(Self.liveInput())
+        service.confirmSend()
+        await eventually { service.vehicleUnavailableFailure != nil }
+        XCTAssertEqual(service.vehicleUnavailableFailure?.isRideCapabilityWithdrawn, false)
+    }
+
     /// No retry loop (acceptance criterion 3): the refusal fires exactly ONE
     /// create POST and never re-POSTs — an identical request would 409 again.
     func testVehicleUnavailable409NeverRetriesTheCreate() async {

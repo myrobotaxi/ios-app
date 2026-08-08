@@ -82,6 +82,13 @@ struct SharedViewerScreen: View {
     /// the schedule picker OPEN and re-floored, so the correction is the very next
     /// thing they touch.
     @State private var showScheduleWindowToast = false
+    /// MYR-478 — the create was refused `403 vehicle_not_owned`: this rider may no
+    /// longer request this car. Its own flag for the reason the two above have
+    /// theirs (`mrtSuccessToast` binds one message per presentation, and three
+    /// notices that can never be up at once are cheaper than one whose text is
+    /// state). Raised by `handleVehicleUnavailable()`, which lands the rider back
+    /// on the idle map with the capability re-read in flight.
+    @State private var showRideCapabilityToast = false
     /// MYR-397 — the tracking sheet's PEEK detent, measured by the sheet. The
     /// recenter + expand controls are laid out against THIS (the lowest detent) and
     /// then translated by the engine as the sheet grows, so they ride its edge
@@ -476,46 +483,23 @@ struct SharedViewerScreen: View {
         .onChange(of: rideRequestService.activeRequest?.status) { _, _ in
             syncRiderOwnsActiveRide()
         }
-        .mrtSuccessToast(
-            isPresented: $showVehicleUnavailableToast,
-            // Honest and specific: name the real reason (the car, not the owner)
-            // and the way forward. Muted tone — this is not an error the rider
-            // caused, and not a refusal.
-            message: "That car just became unavailable. Your trip’s saved — try scheduling it.",
-            systemImage: "calendar",
-            tint: .mrtTextMuted
-        )
-        .mrtSuccessToast(
-            isPresented: $showTimeConflictToast,
-            // MYR-385 — the r15 sentence. Names WHAT is taken (the time, not the
-            // car), does not claim the car "became unavailable" (it did not), and
-            // does not tell somebody who was already scheduling to try scheduling.
-            // Deliberately does not say WHOSE ride it is: the picker's own caption
-            // has `own`/`pending` and the room to word it properly, and a toast
-            // that guessed would be asserting something this failure does not
-            // carry. Muted — nothing failed, a time is spoken for.
-            message: "That time is already taken on this car. Your trip’s saved — pick another slot.",
-            systemImage: "calendar",
-            tint: .mrtTextMuted
-        )
-        .mrtSuccessToast(
-            isPresented: $showScheduleWindowToast,
-            // Honest and specific about WHAT is wrong (the time, not the rider,
-            // not the owner) without quoting the server's sentence — the picker
-            // itself now shows which slots are reachable, which is more useful
-            // than a number in a toast. Muted: nothing failed, a time moved.
-            message: "That pickup is before the car is back from service. Pick a later time.",
-            systemImage: "calendar",
-            tint: .mrtTextMuted
-        )
-        .mrtSuccessToast(
-            isPresented: $showSessionErrorToast,
-            // Calm, non-alarming copy (design minimalism — cf. the "can't reach"
-            // fleet placeholder): the trip is preserved and retryable once the
-            // session is back. No "declined", no vehicle/owner name.
-            message: "Couldn’t reach your session. Your trip’s saved — try again.",
-            systemImage: "arrow.clockwise",
-            tint: .mrtTextMuted
+        // MYR-478 — the five create-refusal notices are applied as ONE modifier.
+        //
+        // Not tidying: `SharedViewerScreen.body` is AT the type-checker's budget
+        // (MYR-422 recorded that one more `.onChange` on it fails the build
+        // outright), and a fifth chained `.mrtSuccessToast` did exactly that —
+        // measured, on this branch, before this extraction. Collapsing the chain
+        // to a single application buys the room the fifth notice needs and leaves
+        // four fewer links in the body's inference chain than before. Every
+        // message, glyph and tint is moved VERBATIM; see `RideRefusalNotices`.
+        .modifier(
+            RideRefusalNotices(
+                vehicleUnavailable: $showVehicleUnavailableToast,
+                timeConflict: $showTimeConflictToast,
+                rideCapability: $showRideCapabilityToast,
+                scheduleWindow: $showScheduleWindowToast,
+                sessionError: $showSessionErrorToast
+            )
         )
         // MYR-397 — a cancel the server REFUSED, with the ride still standing. The
         // sentence is `ReservationCancelCopy.riderActiveRide`'s, classified from
@@ -1959,8 +1943,33 @@ struct SharedViewerScreen: View {
     // already been made to wait on, and it means that if they go back to the
     // picker the offending slot is dimmed rather than offered a second time,
     // which is the r15 report happening twice in a row.
+    //
+    // MYR-478 — THREE SENTENCES NOW, and the third one exits somewhere else.
+    // `403 vehicle_not_owned` on the create means the RIDER's own capability was
+    // withdrawn (§7.5.7 `allowRides: false`) or their grant suspended, so:
+    //
+    //  • Returning them to Review would be a dead end. MYR-233's route exists
+    //    because a busy car can still be SCHEDULED; §7.8 gates the create itself,
+    //    so a scheduled create meets the identical 403 — MYR-342's "a longer walk
+    //    to the same refusal" reasoning, applied to the grant rather than the car.
+    //    They go back to IDLE, with the draft discarded through the shipping
+    //    `resetDraftToIdle()`: "your trip's saved" would be an offer this account
+    //    cannot take up.
+    //  • It RE-READS the capability, through `SharedViewerState
+    //    .noteRideCapabilityRefused()` — the same tick the ride-flow-entry funnel
+    //    bumps, so there is one refresh path and not two. This is the one moment
+    //    the cached tier is KNOWN to be wrong (the server just refused on it),
+    //    which is exactly MYR-385's reason for re-reading §7.22 here, and it is
+    //    what turns the idle sheet the rider lands on into the honest
+    //    `riderWatchOnly` notice instead of the gold "Where to?" that just failed.
     private func handleVehicleUnavailable(_ failure: RideVehicleUnavailableFailure) {
         viewerState.showDeclinedNotice = false
+        if failure.isRideCapabilityWithdrawn {
+            viewerState.noteRideCapabilityRefused()
+            viewerState.resetDraftToIdle()
+            showRideCapabilityToast = true
+            return
+        }
         if viewerState.draftPickup != nil, viewerState.draftDestination != nil {
             viewerState.sheetPhase = .review
         } else {
@@ -2615,4 +2624,95 @@ private struct PendingPulseIcon: View {
     )
     .mrtSurfaceLook(.flat)
     .preferredColorScheme(.dark)
+}
+
+// MARK: - MYR-478 — the create-refusal notices, as one modifier
+
+/// The five muted pills a refused ride create can raise, applied together.
+///
+/// **This exists for a compile-time reason, and the reason is worth keeping.**
+/// `SharedViewerScreen.body` sits at the Swift type-checker's budget — MYR-422
+/// records that adding one more `.onChange` to it fails the build ("unable to
+/// type-check this expression in reasonable time"), and MYR-478's fifth notice
+/// reproduced that failure exactly. Five chained modifier applications inside the
+/// body are five more links in one inference chain; one application of a modifier
+/// that chains them internally is one.
+///
+/// Every string, glyph and tint below is the one its own issue chose, moved
+/// verbatim. They are grouped rather than merged deliberately: `mrtSuccessToast`
+/// binds one message per presentation, and five notices that can never be up at
+/// once stay cheaper than one whose text is state (MYR-385's own reasoning for
+/// splitting the first two).
+private struct RideRefusalNotices: ViewModifier {
+    @Binding var vehicleUnavailable: Bool
+    @Binding var timeConflict: Bool
+    @Binding var rideCapability: Bool
+    @Binding var scheduleWindow: Bool
+    @Binding var sessionError: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .mrtSuccessToast(
+                isPresented: $vehicleUnavailable,
+                // MYR-233 — honest and specific: name the real reason (the car,
+                // not the owner) and the way forward. Muted tone: this is not an
+                // error the rider caused, and not a refusal.
+                message: "That car just became unavailable. Your trip\u{2019}s saved \u{2014} try scheduling it.",
+                systemImage: "calendar",
+                tint: .mrtTextMuted
+            )
+            .mrtSuccessToast(
+                isPresented: $timeConflict,
+                // MYR-385 — the r15 sentence. Names WHAT is taken (the time, not
+                // the car), does not claim the car "became unavailable" (it did
+                // not), and does not tell somebody who was already scheduling to
+                // try scheduling. Deliberately does not say WHOSE ride it is: the
+                // picker's own caption has `own`/`pending` and the room to word it
+                // properly, and a toast that guessed would be asserting something
+                // this failure does not carry. Muted — nothing failed, a time is
+                // spoken for.
+                message: "That time is already taken on this car. Your trip\u{2019}s saved \u{2014} pick another slot.",
+                systemImage: "calendar",
+                tint: .mrtTextMuted
+            )
+            .mrtSuccessToast(
+                isPresented: $rideCapability,
+                // MYR-478 — the create-path `403 vehicle_not_owned`. Names the CAR
+                // and the capability, never the owner and never the rider: "the
+                // owner turned your rides off" is a sentence this client cannot
+                // prove (a suspended grant produces the identical 403) and reads
+                // as an accusation either way. **"Right now" is load-bearing**, the
+                // repo's standing hedge for a degradation something is still
+                // watching — the owner can switch it back on and the shell
+                // re-reads on every foreground. **No way forward is offered
+                // because there is none**: §7.8 gates the create itself, so a
+                // scheduled create meets the same refusal (MYR-342's reasoning for
+                // giving a paused car no "Schedule instead"). Muted — nothing
+                // failed and nobody refused this rider.
+                message: "Riding isn\u{2019}t available for this car right now.",
+                systemImage: "eye",
+                tint: .mrtTextMuted
+            )
+            .mrtSuccessToast(
+                isPresented: $scheduleWindow,
+                // MYR-316 — honest and specific about WHAT is wrong (the time, not
+                // the rider, not the owner) without quoting the server's sentence:
+                // the picker itself now shows which slots are reachable, which is
+                // more useful than a number in a toast. Muted: nothing failed, a
+                // time moved.
+                message: "That pickup is before the car is back from service. Pick a later time.",
+                systemImage: "calendar",
+                tint: .mrtTextMuted
+            )
+            .mrtSuccessToast(
+                isPresented: $sessionError,
+                // MYR-220 — calm, non-alarming copy (design minimalism, cf. the
+                // "can't reach" fleet placeholder): the trip is preserved and
+                // retryable once the session is back. No "declined", no
+                // vehicle/owner name.
+                message: "Couldn\u{2019}t reach your session. Your trip\u{2019}s saved \u{2014} try again.",
+                systemImage: "arrow.clockwise",
+                tint: .mrtTextMuted
+            )
+    }
 }

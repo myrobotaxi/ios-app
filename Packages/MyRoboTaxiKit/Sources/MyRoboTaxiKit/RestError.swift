@@ -63,6 +63,36 @@ public enum RestError: Error, Sendable {
         return status == 409 && code?.rawValue == "vehicle_unavailable"
     }
 
+    /// MYR-478 — `403 vehicle_not_owned`: this account may not act on this
+    /// vehicle. On the §7.8 CREATE path that has exactly one meaning beyond "not
+    /// yours" — the contract's own words are *"visible-but-not-accessible, and any
+    /// viewer whose grant lacks the ride capability → `403 vehicle_not_owned`"*.
+    /// So a rider who can SEE the car on their map and is refused here is a
+    /// grantee whose owner has turned Rides off (§7.5.7 `allowRides: false`), or
+    /// whose grant was suspended between the list read and the send.
+    ///
+    /// It is emphatically NOT an owner decline and NOT a dead session, which are
+    /// the two things the create path used to fold it into: a bare 403 with a
+    /// non-auth code fell straight through to the definitive branch and became
+    /// `.declined` — "Alex can't take this ride right now" — which is a claim
+    /// about a person who never saw the request. Same class of lie MYR-233
+    /// removed for a busy car.
+    ///
+    /// Matches the typed code's RAW WIRE VALUE, never the human `message`
+    /// (FR-7.1), exactly as ``isVehicleUnavailable`` does and for the same
+    /// forward-compat reason: the value survives a later contracts build
+    /// promoting `.unrecognized("vehicle_not_owned")` to a real case.
+    ///
+    /// **Deliberately NOT status-only.** A 403 carrying `auth_failed` /
+    /// `auth_timeout` is a dead session (MYR-220) and must keep taking
+    /// ``isAuthFailure``'s branch; a 403 carrying `permission_denied` is a
+    /// wrong-role action, which on §7.8 means an owner trying to cancel — not a
+    /// capability the rider can be told about.
+    public var isVehicleNotOwned: Bool {
+        guard case .http(let status, let code, _, _) = self else { return false }
+        return status == 403 && code?.rawValue == "vehicle_not_owned"
+    }
+
     /// MYR-383/385 — the `409 vehicle_unavailable` refusal whose `subCode` is
     /// `time_conflict`: the car is not unavailable at all, the TIME is already
     /// spoken for (rest-api.md §7.8's per-vehicle window gate).

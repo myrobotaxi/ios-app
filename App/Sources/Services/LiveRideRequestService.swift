@@ -529,6 +529,14 @@ final class LiveRideRequestService: RideRequestService {
                     // rider's notice can name the time conflict instead of asserting
                     // the car became unavailable. Routing is identical either way.
                     self.failCreateVehicleUnavailable(timeConflict: Self.isTimeConflict(error))
+                } else if Self.isRideCapabilityWithdrawn(error) {
+                    // MYR-478 — the create-path `403 vehicle_not_owned`. Same
+                    // clear-the-pending, raise-a-notice shape as the arm above,
+                    // and for the same reason: no ride exists and nobody declined.
+                    // MUST be caught before the definitive branch, which would
+                    // drop it into `.declined` and tell the rider the owner
+                    // refused a request the owner never saw.
+                    self.failCreateRideCapabilityWithdrawn()
                 } else if Self.isScheduleWindowRefusal(error, input: input) {
                     self.failCreateScheduleWindow()
                 } else if Self.isSessionFailure(error) {
@@ -589,6 +597,19 @@ final class LiveRideRequestService: RideRequestService {
         (error as? RestError)?.isTimeConflict == true
     }
 
+    /// MYR-478: True when the failure is the create path's typed `403
+    /// vehicle_not_owned` — the rider's own ride capability was withdrawn (or
+    /// their grant suspended) between the list read and the send.
+    ///
+    /// A 403 is a 4xx, so like the three splits above it MUST be classified before
+    /// `isDefinitiveCreateFailure`; and it is checked on the CODE rather than the
+    /// status so the auth-shaped 403 MYR-220 split out keeps its own branch.
+    /// Branches on the Kit's typed helper (`RestError.isVehicleNotOwned`), never
+    /// the human message (FR-7.1).
+    private static func isRideCapabilityWithdrawn(_ error: Error) -> Bool {
+        (error as? RestError)?.isVehicleNotOwned == true
+    }
+
     /// MYR-316: True when the failure is a typed `400 invalid_request` on a ride
     /// that carries a SCHEDULE — i.e. the server's service-window refusal.
     ///
@@ -631,6 +652,22 @@ final class LiveRideRequestService: RideRequestService {
         activeRequest = nil
         riderServerRideID = nil
         vehicleUnavailableFailure = RideVehicleUnavailableFailure(isTimeConflict: timeConflict)
+    }
+
+    /// MYR-478 RIDE-CAPABILITY create failure: the server refused because THIS
+    /// RIDER may no longer request this car, so no ride was created and nobody
+    /// declined. Clear the stuck optimistic pending — the reported symptom was a
+    /// "Sending request" card that never resolved into anything the rider could
+    /// read — and raise the shared `vehicleUnavailableFailure` carrying the
+    /// discriminator, which `SharedViewerScreen` turns into the honest notice and
+    /// a return to the idle map (where the shell's re-read has by then degraded
+    /// the CTA to `riderWatchOnly`). NEVER retried: the identical POST would 403
+    /// again, and so would a scheduled one.
+    private func failCreateRideCapabilityWithdrawn() {
+        guard let request = activeRequest, request.status == .pending else { return }
+        activeRequest = nil
+        riderServerRideID = nil
+        vehicleUnavailableFailure = RideVehicleUnavailableFailure(isRideCapabilityWithdrawn: true)
     }
 
     /// DEFINITIVE create failure: the optimistic pending describes a ride that

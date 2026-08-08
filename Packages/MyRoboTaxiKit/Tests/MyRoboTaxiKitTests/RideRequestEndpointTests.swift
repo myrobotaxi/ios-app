@@ -443,4 +443,64 @@ final class RideRequestEndpointTests: XCTestCase {
         XCTAssertFalse(RestError.invalidResponse.isVehicleUnavailable)
         XCTAssertFalse(RestError.rideActive(active: nil).isVehicleUnavailable)
     }
+
+    // MARK: - 403 vehicle_not_owned on CREATE (MYR-478)
+
+    /// §7.8's create gate reads the grant's live `allow_rides` flag, and the
+    /// contract spells out what a viewer who fails it gets: *"visible-but-not-
+    /// accessible, and any viewer whose grant lacks the ride capability →
+    /// `403 vehicle_not_owned`"*. That is the wire behind the external-beta pair
+    /// (MYR-451): the owner had turned James's Rides toggle off, his app kept
+    /// offering the booking flow, and the create was refused at the last step.
+    ///
+    /// It surfaces as a plain typed `.http(403, …)`, so `isVehicleNotOwned` reads
+    /// the typed code's RAW WIRE VALUE (never the human `message`, FR-7.1) — the
+    /// same forward-compat shape `isVehicleUnavailable` uses.
+    func testVehicleNotOwned403IsTypedAndDetectable() async throws {
+        let body = Data("""
+        { "error": { "code": "vehicle_not_owned", "message": "vehicle not accessible", "subCode": null } }
+        """.utf8)
+        let (client, _) = client([.init(status: 403, body: body)])
+
+        do {
+            _ = try await client.createRideRequest(RideRequestCreateRequest(
+                vehicleId: "clxyz1234567890abcdef",
+                pickup: RidePlace(lat: 37.7793, lng: -122.3937, label: "Current location"),
+                dropoff: RidePlace(lat: 37.6156, lng: -122.3900, label: "SFO \u{00B7} Terminal 2")
+            ))
+            XCTFail("expected a 403 RestError")
+        } catch let error as RestError {
+            guard case .http(let status, let code, _, _) = error else { return XCTFail("wrong case: \(error)") }
+            XCTAssertEqual(status, 403)
+            XCTAssertEqual(code?.rawValue, "vehicle_not_owned")
+            XCTAssertTrue(error.isVehicleNotOwned)
+        }
+    }
+
+    /// **NARROW ON THE CODE, NOT THE STATUS**, and that is the whole reason this
+    /// predicate exists rather than a bare `httpStatus == 403`.
+    ///
+    /// A 403 carrying `auth_failed` / `auth_timeout` is a DEAD SESSION (MYR-220
+    /// split it out precisely because the backend puts auth codes on a 403), and a
+    /// 403 carrying `permission_denied` is a wrong-role action — on §7.8 that is
+    /// an owner trying to cancel, which is not a capability a rider can be told
+    /// about. Both must keep their own branches.
+    func testIsVehicleNotOwnedIsNarrow() {
+        XCTAssertFalse(RestError.http(status: 403, code: .authFailed, message: "x", subCode: nil).isVehicleNotOwned)
+        XCTAssertFalse(RestError.http(status: 403, code: .authTimeout, message: "x", subCode: nil).isVehicleNotOwned)
+        XCTAssertFalse(RestError.http(status: 403, code: .permissionDenied, message: "x", subCode: nil).isVehicleNotOwned)
+        XCTAssertFalse(
+            RestError.http(status: 404, code: .unrecognized("vehicle_not_owned"), message: "x", subCode: nil).isVehicleNotOwned,
+            "only a 403 carries this meaning"
+        )
+        XCTAssertFalse(RestError.invalidResponse.isVehicleNotOwned)
+        XCTAssertFalse(RestError.transport(underlying: URLError(.notConnectedToInternet)).isVehicleNotOwned)
+        // And it is disjoint from the 409 arm, so the two can never both fire.
+        XCTAssertFalse(
+            RestError.http(status: 409, code: .unrecognized("vehicle_unavailable"), message: "x", subCode: nil).isVehicleNotOwned
+        )
+        XCTAssertFalse(
+            RestError.http(status: 403, code: .unrecognized("vehicle_not_owned"), message: "x", subCode: nil).isVehicleUnavailable
+        )
+    }
 }
