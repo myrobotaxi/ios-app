@@ -1779,6 +1779,126 @@ xcrun simctl spawn <udid> log stream --level=info \
 # The GESTURE half needs a real finger — `TrackingFollowCameraUITests`.
 ```
 
+**THE RIDER ABOARD HAD NO ROUTE AT ALL, AND THE ROUTE THEY HAD ALREADY DRIVEN WAS
+STILL ON THE MAP** (MYR-482 / MYR-483, external beta, build `202608081012`) — the
+tracking scenes **CHANGE ON PURPOSE** (the retired approach leg leaves every
+in-ride capture).
+
+> *"Live telemetry still not steaming from the car in rider mode"* (AKDNLlnM) and
+> *"Why is my location and when I'm in the car I don't need to see of my
+> location"* (AFzN_NtS) — Thomas riding his own car in rider mode, self-ride.
+
+**THE TESTER'S DIAGNOSIS WAS WRONG AND THE FRAME WAS REAL.** Telemetry was
+healthy: the gold capsule moved along Town & Country Blvd with the car between
+his two frames, the server had the car `driving` with `lastUpdated` fresh to the
+second, and the car's own dash was actively navigating to 5330 Parkwood Blvd. The
+static ETA half is MYR-472 (fixed in #200). What is left is a map carrying a car
+marker, a pickup pin, **no route line for the whole trip**, and an L-shaped gold
+fragment sitting by the pickup long after he had boarded.
+
+- **THERE WAS NO WIRE RUNG, AND THIS IS MYR-460'S HEADING HOP ONE FIELD OVER.**
+  `navRouteCoordinates` has been on the wire since contracts shipped, is folded by
+  `VehicleStateMerger`, is retained by MYR-435's viewer mask, and already reaches
+  the rider through `activity` (`VehicleContractMapping.drivingTrip`). **The
+  tracking map has simply never read it.** `RiderVehicleProjection.navRoute` is the
+  missing hop, and it applies `RideRoutePolyline.isReal` AT THE SOURCE so a 2-point
+  "route" cannot reach a consumer that might draw it and the next rung stays
+  reachable. Deliberately **not** gated on `hasFix` (unlike the coordinate and the
+  heading): the nav group and the gps group are different atomic groups.
+- **AND THE ONE SOURCE THAT DID EXIST HAD NO RETRY, WHICH IS WHY IT WAS "ALL
+  TRIP".** The in-ride polyline was `RideRouteStore.leg2` — ONE MKDirections
+  **pickup → drop-off** preview. MYR-459 gave leg 1 a live deviation trigger
+  (`RiderLiveVehicleLocator.onLiveFrame` → `reconcileTrackingRoutesForLiveFix`);
+  leg 2 got none, and `reconcileTrackingRoutes()`'s only other trigger is
+  `onChange(of: trackProgress)`, which on the live path moves only at status
+  transitions. So a single throttled/failed Apple call at the enroute transition
+  cached the straight `[pickup, drop-off]` fallback, `isReal` refused to stroke it
+  — correctly — and **nothing on the live path ever asked again.** That the leg-1
+  fragment was real road geometry while leg 2 was not is the signature: leg 1 had
+  been refetched all through the approach and had spent the budget.
+- **IT WAS ALSO THE WRONG LINE.** pickup → drop-off is the trip as planned before
+  the car moved. A rider aboard needs the road from where the car IS.
+- **#196'S ROAD-ROUTE FALLBACK COVERS THE OWNER MAP ONLY**, which the repro gate
+  had to establish rather than assume: `OwnerDrivingRoute` + `OwnerHomeState
+  .drivingRouteStore` have exactly one consumer, `HomeScreen`. The LADDER is
+  reused rather than re-derived — `OwnerDrivingRoute.resolve` is the rider's
+  in-ride resolver too (wire → the app's MKDirections car → drop-off route → the
+  last route this journey really had → nothing), so MYR-293's `isReal` gate,
+  MYR-456's hold and "never a fabricated segment" are ONE implementation for both
+  roles. `navigationActive: true` because the journey here is the RIDE, not the
+  car's nav session — a rider is aboard and going somewhere whether or not the
+  screen in the dash agrees.
+- **`SharedViewerState.trackingDestinationRouteStore` is its own instance**, for
+  `drivingRouteStore`'s reason verbatim: both legs of the ride store are spoken
+  for and leg 2 is still live during the ride (it is what the pins and the camera
+  fit are derived from). It uses the **leg-1 slot** deliberately — "a route from a
+  MOVING car to a fixed point, refetched on deviation, retried when the provider
+  degrades" is exactly this route, with `pickup:` as the drop-off.
+- **A CAR WITH ITS OWN NAV ROUTE COSTS NOTHING.** `ensureCarToDestinationRoute`
+  carries `reconcileDrivingRoute`'s guard: no fetch while `trackingWireRoute` is
+  real. So a healthy navigating trip spends **no** MKDirections call at all, and
+  the store's deviation + cooldown guards bound the rest.
+- **⚠️ THE LEG FLIP HAPPENS WITH THE CAR STANDING STILL**, and the ~11m fix-key
+  de-dupe would have swallowed it: the last leg-1 frame and the first in-ride
+  frame carry the same key, because the car is at the kerb. `setTrackingRouteContext`
+  now forgets the key whenever the surface's INTENT changes, not only when the
+  context clears — the key is a de-dupe for "this car has not moved", never for
+  "this surface has not changed its mind". Without it the new route would not be
+  asked for until the car had driven a block, which is the window a rider watches.
+- **THE APPROACH LEG IS RETIRED AT PICKUP** (`TrackingRouteMapContent.drawnLeg1`).
+  MYR-234's "the other leg dimmed" was written about leg 2 during leg 1 — the REST
+  of the trip, a fact about the journey ahead. The reverse is a road the ride has
+  already driven, and `reconcileTrackingRoutes` stopping the leg-1 FETCH on the
+  flip is not the same thing as stopping the DRAW: `RideRouteStore.leg1` keeps its
+  geometry until the slot empties. Stated as a function so the inline map, the
+  expanded viewer and the camera fit read one rule — and **PINS UNCONDITIONALLY**
+  still holds (MYR-293): the pickup pin comes off leg 2, which is untouched.
+- **"Finding route…" had to move with it.** `trackingRouteIsResolving` asked about
+  BOTH legs; with leg 1 retired that clause would have held the caption up for the
+  whole of every trip. Aboard, the question is only about the line in front of the
+  rider.
+- **MYR-483 — the rider's own blue dot is suppressed for the ABOARD phases only**
+  (`RiderOwnLocationDot.shows`). Aboard, the dot and the gold capsule are the same
+  point and only one of them is informative; before boarding, *"where am I
+  relative to the kerb"* is the rider's main question and the dot is the only
+  thing that answers it. The boundary is `TrackingLeg`, which is already this
+  app's answer to "is the rider aboard": MYR-411 settled that `arrived` means the
+  CAR IS AT THE KERB and the rider's own "Start ride" is `arrived → enroute`, so
+  `.inRide` IS aboard and `arrived` KEEPS the dot. The rule can only ever take the
+  dot away — `showsUserLocationDot` is still the outer gate, and it is `false` in
+  sim, which is what keeps every capture byte-identical.
+- **THE SIMULATED PATH IS UNTOUCHED BY CONSTRUCTION AND MEASURED TO BE**: the
+  in-ride resolution short-circuits on `resolvesTrackingMotion`, so a fixture scene
+  resolves `.none`, `inRideRoute` is empty and `activeRoute` falls back to
+  `leg2Route` — the pre-MYR-482 rendering. The ONE deliberate capture change is the
+  retired approach leg, visible in `trackingLeg2` / `trackingArriving` (clearest
+  with `MRT_EXPAND_ROUTE=1`, where the dim L-shaped fragment above the pickup dot
+  is simply gone).
+- **THE REPRO GATE** (both halves, on main): `MRT_SCENE=trackingLeg2
+  MRT_EXPAND_ROUTE=1` photographs the lingering approach leg, and
+  `MRT_SCENE=trackingLeg2 MRT_ROUTE_UNAVAILABLE=1 MRT_FOLLOW_PROBE=1` is the
+  client's own frame — live-shaped nav-less frames at 1Hz, MKDirections degraded to
+  its documented straight fallback, a car marker moving over a map with **no line
+  at all**, permanently. The same pair on the fix draws a road route from the CAR
+  to the drop-off and no fragment.
+- **Guards**: `RiderInRideRouteTests` — the wire hop, the ladder in order, the
+  straight fallback refused on both rungs, the retirement, the hold's lifetime,
+  MYR-483's rule, and the live trigger through the REAL composition (production
+  locator → `TelemetrySocket` → `LiveVehicleState`, snapshot refused `403` as the
+  server refuses it, viewer frames with and without `navRouteCoordinates` pushed
+  down the channel — MYR-449/MYR-459's harness). **Proven to be real guards by
+  restoring each defect on the branch**: the wire hop, the retirement, the active
+  stroke, the live trigger and the intent reset each fail their own test with the
+  rest of the suite green.
+
+**Found and NOT fixed here** (MYR-482): the in-ride line is drawn whole at
+`MRTRouteStroke.aheadOpacity` with no travelled/ahead split — a car → drop-off
+route starts AT the car, so `trackingLegProgress` of it would glow a stretch of
+road this ride has not driven, and the owner's `remainingMiles`-derived fraction
+has no rider-side equivalent (§7.8 carries no distance-remaining for a ride). And
+the fetched route is refreshed on DEVIATION only, so a car driving along its own
+route keeps a short tail behind it — MYR-459's accepted trade, on the other leg.
+
 **Never present over a live first responder** (MYR-353) — TestFlight, Jul 30:
 *"When I tap on schedule it pops up behind the keyboard. Needs to be fixed."*
 `RideSlideUpCard` is an in-hierarchy overlay, bottom-flush and

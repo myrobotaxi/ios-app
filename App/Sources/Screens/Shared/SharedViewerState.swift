@@ -311,8 +311,12 @@ public final class SharedViewerState {
         rideRouteStore = RideRouteStore(provider: DebugScene.routeUnavailable
             ? StraightLineRideRouteProvider()
             : AppleRideRouteProvider())
+        trackingDestinationRouteStore = RideRouteStore(provider: DebugScene.routeUnavailable
+            ? StraightLineRideRouteProvider()
+            : AppleRideRouteProvider())
         #else
         rideRouteStore = RideRouteStore(provider: AppleRideRouteProvider())
+        trackingDestinationRouteStore = RideRouteStore(provider: AppleRideRouteProvider())
         #endif
     }
 
@@ -441,6 +445,55 @@ public final class SharedViewerState {
     /// sim/tests so no network touches the sim path.
     @ObservationIgnored let rideRouteStore: RideRouteStore
 
+    /// MYR-482 — the rider's IN-RIDE road route: **the car, right now, to the
+    /// drop-off**, fetched only when Tesla has given us no `navRouteCoordinates`.
+    ///
+    /// **Its own instance rather than a third slot on the store above**, for
+    /// `OwnerHomeState.drivingRouteStore`'s reason verbatim: both legs of that
+    /// store are already spoken for (leg 1 = car → pickup, leg 2 = pickup →
+    /// drop-off) and leg 2 is still live during the ride — it is what the camera
+    /// fit and the pickup/destination pins are derived from. A shared slot would
+    /// let one route render under the other, which is the failure
+    /// `leg1Route(pickup:)`'s exact-pair guard exists to prevent.
+    ///
+    /// It uses the **leg-1** slot deliberately, and again for that store's reason:
+    /// leg 1's semantics are "a route from a MOVING car to a fixed point, refetched
+    /// when the car deviates and retried when the provider degrades", which is
+    /// exactly this route. `pickup:` is the ride's DROP-OFF here.
+    @ObservationIgnored let trackingDestinationRouteStore: RideRouteStore
+
+    /// MYR-482 / MYR-456 — the last in-ride route the tracking map really had.
+    ///
+    /// Lives here for the reason `RouteEtchLedger` and `OwnerHomeState
+    /// .drivingRouteHold` do: a fact about the JOURNEY cannot be remembered by
+    /// whichever view happens to be mounted, and the rider's map is rebuilt on every
+    /// sheet drag. Keyed on the DESTINATION, so a new ride never inherits the old
+    /// one's line.
+    @ObservationIgnored var trackingRouteHold: (destinationKey: String, resolution: OwnerDrivingRoute.Resolution)?
+
+    /// Record an in-ride resolution worth holding, or forget the hold. The ONE
+    /// writer, so "when does a held route expire" is one rule rather than a
+    /// condition repeated per call site (`OwnerHomeState.recordDrivingRoute`).
+    func recordTrackingRoute(_ resolution: OwnerDrivingRoute.Resolution, destinationKey: String?) {
+        guard let destinationKey, resolution.drawsLine, resolution.source != .held else {
+            if destinationKey == nil || destinationKey != trackingRouteHold?.destinationKey {
+                trackingRouteHold = nil
+            }
+            return
+        }
+        trackingRouteHold = (destinationKey, resolution)
+    }
+
+    /// Drop every route cached for the rider's ride, and the in-ride hold with
+    /// them. ONE door, because MYR-482 added a second store and a hold to a
+    /// lifecycle that previously had exactly one thing to clear — and an exit list
+    /// is only ever as complete as the day it was written (MYR-389).
+    func resetRideRoutes() {
+        rideRouteStore.reset()
+        trackingDestinationRouteStore.reset()
+        trackingRouteHold = nil
+    }
+
     /// MYR-422 — rung 1 of the post-ride summary's route ladder: which DRIVE this
     /// ride was, and the track the car actually drove during it (§7.2 + §7.4).
     ///
@@ -485,6 +538,11 @@ public final class SharedViewerState {
         /// Leg 1 is fetched only while heading to pickup (MYR-393: no origin, no
         /// leg-1 fetch), so a car already carrying the rider re-asks for nothing.
         var fetchesLeg1: Bool
+        /// MYR-482 — and once the rider IS aboard, the route that has to keep up is
+        /// the car → drop-off one. Defaulted so every pre-MYR-482 construction
+        /// (and every test written against one) keeps the leg-1-only behaviour by
+        /// construction.
+        var fetchesCarToDestination: Bool = false
     }
 
     @ObservationIgnored private(set) var trackingRouteContext: TrackingRouteContext?
@@ -515,9 +573,19 @@ public final class SharedViewerState {
 
     /// Publish (or clear) what the tracking surface wants routed. Clearing also
     /// forgets the fix key, so re-entering tracking always re-asks once.
+    ///
+    /// MYR-482 — **and so does a change of INTENT**, which the leg flip is. The car
+    /// is stationary at the kerb at exactly the moment `arrived → enroute` lands, so
+    /// the first in-ride frame carries the same ~11m fix key the last leg-1 frame
+    /// did; without this the new car → drop-off route would not be asked for until
+    /// the car had driven a block, which is precisely the window a rider is
+    /// watching. The key is a de-dupe for "this car has not moved", not for "this
+    /// surface has not changed its mind".
     func setTrackingRouteContext(_ context: TrackingRouteContext?) {
+        let intentChanged = context?.fetchesLeg1 != trackingRouteContext?.fetchesLeg1
+            || context?.fetchesCarToDestination != trackingRouteContext?.fetchesCarToDestination
         trackingRouteContext = context
-        if context == nil { lastReconciledFixKey = nil }
+        if context == nil || intentChanged { lastReconciledFixKey = nil }
     }
 
     /// MYR-459 — re-ask the route cache because the CAR MOVED.
@@ -530,15 +598,43 @@ public final class SharedViewerState {
     func reconcileTrackingRoutesForLiveFix() {
         guard sheetPhase == .tracking,
               let context = trackingRouteContext,
-              context.fetchesLeg1,
+              context.fetchesLeg1 || context.fetchesCarToDestination,
               let fix = trackingVehicleCoordinate,
               let key = Self.trackingFixKey(fix),
               key != lastReconciledFixKey
         else { return }
         lastReconciledFixKey = key
         trackingRouteLiveReasks += 1
-        rideRouteStore.ensureLeg1(carPosition: fix, pickup: context.pickup)
+        if context.fetchesLeg1 {
+            rideRouteStore.ensureLeg1(carPosition: fix, pickup: context.pickup)
+        }
+        if context.fetchesCarToDestination {
+            ensureCarToDestinationRoute(fix: fix, destination: context.destination)
+        }
     }
+
+    /// MYR-482 — ask for a car → drop-off road route, but only when it is NEEDED
+    /// and ANSWERABLE.
+    ///
+    /// `reconcileDrivingRoute`'s guard on the owner's side, for its reason: a car
+    /// whose own `navRouteCoordinates` are real geometry already has the better
+    /// answer, so a healthy navigating trip spends **no** MKDirections call at all
+    /// and the store's deviation + cooldown guards bound the rest. Kept here rather
+    /// than at the screen so the frame-driven trigger and the phase-driven one can
+    /// never disagree about when the app fetches.
+    func ensureCarToDestinationRoute(fix: CLLocationCoordinate2D, destination: CLLocationCoordinate2D) {
+        guard trackingWireRoute.isEmpty else { return }
+        trackingDestinationRouteAsks += 1
+        trackingDestinationRouteStore.ensureLeg1(carPosition: fix, pickup: destination)
+    }
+
+    /// How many times the car → drop-off cache has been asked. Published for
+    /// `trackingRouteLiveReasks`' reason verbatim (MYR-459): this state builds its
+    /// own `RideRouteStore`, so a test cannot count MKDirections calls — and "the
+    /// store no-oped" is indistinguishable from "the store was never asked" at
+    /// every other observation point. Being asked is the half the fix is about, and
+    /// NOT being asked is what proves a car with its own nav route costs nothing.
+    @ObservationIgnored private(set) var trackingDestinationRouteAsks = 0
 
     public func startTelemetry() {
         telemetryStarted = true
@@ -706,6 +802,20 @@ public final class SharedViewerState {
     /// position and its rotation can never come from different evidence.
     var trackingVehicleHeading: Double? {
         RiderVehicleProjection.heading(from: trackingVehicleState)
+    }
+
+    /// MYR-482 — Tesla's OWN navigation polyline for the watched car, through the
+    /// same projection and the same one read the coordinate and the heading take,
+    /// so the glyph and the line it stands on can never come from different frames.
+    /// `[]` whenever the wire carries no real geometry.
+    var trackingWireRoute: [CLLocationCoordinate2D] {
+        RiderVehicleProjection.navRoute(from: trackingVehicleState)
+    }
+
+    /// MYR-482 — the app's own road route for the car → this drop-off, or `[]`
+    /// while it is in flight, has failed, or is cached for another destination.
+    func trackingFetchedDestinationRoute(destination: CLLocationCoordinate2D) -> [CLLocationCoordinate2D] {
+        trackingDestinationRouteStore.leg1Route(pickup: destination) ?? []
     }
 
     // MARK: MYR-449 — the tracking surface's honest live state
